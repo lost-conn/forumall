@@ -1,0 +1,16 @@
+{
+  "name": "forumall",
+  "version": "1.0.0",
+  "description": "Your new jumpstart project includes basic organization with an organized `assets` folder and a `components` folder. If you chose to develop with the router feature, you will also have a `views` folder.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "tailwindcss": "^4.1.18"
+  }
+}

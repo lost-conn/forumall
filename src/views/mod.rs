@@ -1,0 +1,27 @@
+//! The views module contains the components for all Layouts and Routes for our app. Each layout and route in our [`Route`]
+//! enum will render one of these components.
+//!
+//!
+//! The [`Home`] and [`Blog`] components will be rendered when the current route is [`Route::Home`] or [`Route::Blog`] respectively.
+//!
+//!
+//! The [`Navbar`] component will be rendered on all pages of our app since every page is under the layout. The layout defines
+//! a common wrapper around all child routes.
+
+pub mod channel_view;
+pub use channel_view::ChannelView;
+
+pub mod layouts;
+pub use layouts::{SidebarLayout, ChannelLayout};
+
+mod home;
+pub use home::{Home, NoGroup, NoChannel, CreateGroupModal, CreateChannelModal, ChannelList};
+
+mod navbar;
+pub use navbar::Navbar;
+
+mod login;
+pub use login::Login;
+
+mod register;
+pub use register::Register;
