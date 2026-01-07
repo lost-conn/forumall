@@ -6,4 +6,10 @@ Designed *for 'em all*, the goal is to have a provider that's easily deployable,
 
 ## Status
 
-Still a very-early work-in-progress. You can almost actually chat on it.
+Still a very-early work-in-progress. You can sorta chat with it. [Try it live here!](https://forumall.lostconnection.dev/register)
+
+Currently, you can:
+- Sign in/register
+- Create groups and channels
+- Add local (same home-provider) users to a group
+- View and send text messages in a channel
