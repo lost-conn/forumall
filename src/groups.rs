@@ -323,3 +323,89 @@ pub async fn list_channels(group_id: String) -> Result<Json<Vec<Channel>>, Serve
     #[cfg(not(feature = "server"))]
     Ok(Json(vec![]))
 }
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AddMemberRequest {
+    pub handle: String,
+}
+
+#[post("/api/groups/:group_id/members", headers: HeaderMap)]
+pub async fn add_group_member(
+    group_id: String,
+    Json(payload): Json<AddMemberRequest>,
+) -> Result<Json<()>, ServerFnError> {
+    let user_id = crate::server::auth::require_bearer_user_id(&headers)?.user_id;
+    let now = chrono::Utc::now().to_rfc3339();
+
+    #[cfg(feature = "server")]
+    {
+        let db = &*crate::DB;
+
+        // 1. Verify requester is the owner of the group
+        let group_docs = db
+            .query("groups")
+            .filter(|f| f.eq("id", group_id.clone()) & f.eq("owner_user_id", user_id.clone()))
+            .collect()
+            .await
+            .map_err(|e| ServerFnError::new(format!("Database error checking ownership: {}", e)))?;
+
+        if group_docs.is_empty() {
+            return Err(ServerFnError::new(
+                "Unauthorized: Only the group owner can add members",
+            ));
+        }
+
+        // 2. Resolve the target user by handle
+        // Note: This assumes the handle is unique or we are looking for a local user.
+        // TODO: Handle domains for federation if needed.
+        let user_docs = db
+            .query("users")
+            .filter(|f| f.eq("handle", payload.handle.clone()))
+            .collect()
+            .await
+            .map_err(|e| ServerFnError::new(format!("Database error resolving user: {}", e)))?;
+
+        let target_user_doc = user_docs
+            .first()
+            .ok_or_else(|| ServerFnError::new(format!("User '{}' not found", payload.handle)))?;
+
+        let target_user_id = target_user_doc
+            .data
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ServerFnError::new("Invalid user data"))?
+            .to_string();
+
+        // 3. Check if user is already a member
+        let member_docs = db
+            .query("group_members")
+            .filter(
+                |f| f.eq("group_id", group_id.clone()) & f.eq("user_id", target_user_id.clone()),
+            )
+            .collect()
+            .await
+            .map_err(|e| ServerFnError::new(format!("Database error checking membership: {}", e)))?;
+
+        if !member_docs.is_empty() {
+            return Err(ServerFnError::new(format!(
+                "User '{}' is already a member of this group",
+                payload.handle
+            )));
+        }
+
+        // 4. Add the user to the group
+        db.insert_into(
+            "group_members",
+            vec![
+                ("group_id", group_id.into()),
+                ("user_id", target_user_id.into()),
+                ("role", "member".into()),
+                ("created_at", now.into()),
+            ],
+        )
+        .await
+        .map_err(|e| ServerFnError::new(format!("Database error adding member: {}", e)))?;
+    }
+
+    Ok(Json(()))
+}

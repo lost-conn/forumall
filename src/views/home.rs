@@ -423,3 +423,124 @@ pub fn CreateChannelModal(
         }
     }
 }
+
+/// Modal for adding a member to a group
+#[component]
+pub fn AddMemberModal(
+    group_id: String,
+    on_close: EventHandler<()>,
+    on_added: EventHandler<()>,
+) -> Element {
+    let auth = use_context::<AuthContext>();
+    let mut handle = use_signal(|| String::new());
+    let mut error = use_signal(|| None::<String>);
+    let mut is_loading = use_signal(|| false);
+
+    let handle_submit = move |e: FormEvent| {
+        e.prevent_default();
+        let user_handle = handle.read().trim().to_string();
+        if user_handle.is_empty() {
+            error.set(Some("User handle is required".to_string()));
+            return;
+        }
+
+        is_loading.set(true);
+        let on_added = on_added.clone();
+        let gid = group_id.clone();
+        let auth = auth.clone();
+
+        spawn(async move {
+            let token = auth.token();
+            let client = ApiClient::new(token);
+            let url = auth.api_url(&format!("/api/groups/{gid}/members"));
+
+            match client
+                .post_json::<_, ()>(
+                    &url,
+                    &AddMemberRequest {
+                        handle: user_handle,
+                    },
+                )
+                .await
+            {
+                Ok(_) => {
+                    on_added.call(());
+                }
+                Err(err) => {
+                    let msg = if let crate::api_client::ApiError::Http { body, .. } = &err {
+                        crate::problem::try_problem_detail(body)
+                            .unwrap_or_else(|| format!("{}", err))
+                    } else {
+                        format!("{}", err)
+                    };
+                    error.set(Some(msg));
+                    is_loading.set(false);
+                }
+            }
+        });
+    };
+
+    rsx! {
+        div { class: "fixed inset-0 bg-black/70 flex items-center justify-center z-50",
+            div { class: "bg-[#313338] rounded-lg shadow-2xl w-full max-w-md mx-4",
+                // Header
+                div { class: "px-6 py-4 border-b border-[#3f4147]",
+                    h3 { class: "text-xl font-bold text-white", "Add Member" }
+                    p { class: "text-sm text-gray-400 mt-1", "Invite a user to this group" }
+                }
+                // Form
+                form { onsubmit: handle_submit,
+                    div { class: "p-6 space-y-4",
+                        div {
+                            label { class: "block text-sm font-medium text-gray-300 mb-2",
+                                "User Handle"
+                            }
+                            div { class: "relative",
+                                span { class: "absolute left-4 top-1/2 -translate-y-1/2 text-gray-500",
+                                    "@"
+                                }
+                                input {
+                                    class: "w-full bg-[#2b2d31] border border-[#3f4147] rounded-lg pl-8 pr-4 py-3 text-white placeholder-[#6d6f78] focus:outline-none focus:border-indigo-500 transition-colors",
+                                    r#type: "text",
+                                    placeholder: "username",
+                                    value: "{handle}",
+                                    oninput: move |e: FormEvent| {
+                                        handle.set(e.value());
+                                        error.set(None);
+                                    },
+                                }
+                            }
+                            p { class: "text-xs text-gray-400 mt-2",
+                                "Enter the username of the person you want to add."
+                            }
+                        }
+                        if let Some(err) = error.read().as_ref() {
+                            div { class: "p-3 bg-red-500/10 border border-red-500/30 rounded-lg text-red-400 text-sm",
+                                "{err}"
+                            }
+                        }
+                    }
+                    // Footer
+                    div { class: "px-6 py-4 border-t border-[#3f4147] flex justify-end gap-3",
+                        button {
+                            r#type: "button",
+                            class: "px-4 py-2 text-gray-300 hover:text-white transition-colors",
+                            onclick: move |_| on_close.call(()),
+                            "Cancel"
+                        }
+                        button {
+                            r#type: "submit",
+                            class: "px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed",
+                            disabled: *is_loading.read(),
+                            if *is_loading.read() {
+                                "Adding..."
+                            } else {
+                                "Add Member"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

@@ -1,7 +1,7 @@
 use crate::api_client::ApiClient;
 use crate::auth_session::AuthContext;
 use crate::groups::*;
-use crate::views::{ChannelList, CreateChannelModal};
+use crate::views::{AddMemberModal, ChannelList, CreateChannelModal};
 use dioxus::prelude::*;
 use dioxus_fullstack::Json;
 
@@ -11,6 +11,7 @@ use dioxus_fullstack::Json;
 pub fn ChannelLayout(group: ReadSignal<String>) -> Element {
     let auth = use_context::<AuthContext>();
     let mut show_create_channel_modal = use_signal(|| false);
+    let mut show_add_member_modal = use_signal(|| false);
 
     // Get the current route to extract channel name
     let nav = use_navigator();
@@ -58,9 +59,27 @@ pub fn ChannelLayout(group: ReadSignal<String>) -> Element {
         // Channel Sidebar
         div { class: "w-60 bg-[#2b2d31] flex flex-col",
             // Group header with gradient
-            div { class: "h-12 px-4 flex items-center shadow-md font-semibold text-white border-b border-[#1f2023]",
+            div { class: "h-12 px-4 flex items-center justify-between shadow-md font-semibold text-white border-b border-[#1f2023]",
                 if let Some(group) = selected_group.read().as_ref() {
-                    "{group.name}"
+                    div { class: "truncate mr-2", "{group.name}" }
+                    // Add Member Button (Only visible if owner? logic for that needs owner info. For now show for all, server rejects if not owner)
+                    button {
+                        class: "w-6 h-6 flex items-center justify-center rounded hover:bg-[#35373c] text-gray-400 hover:text-gray-200 transition-colors",
+                        onclick: move |_| show_add_member_modal.set(true),
+                        title: "Add Member",
+                        svg {
+                            class: "w-4 h-4",
+                            fill: "none",
+                            stroke: "currentColor",
+                            view_box: "0 0 24 24",
+                            path {
+                                stroke_linecap: "round",
+                                stroke_linejoin: "round",
+                                stroke_width: "2",
+                                d: "M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z",
+                            }
+                        }
+                    }
                 } else {
                     span { class: "text-gray-400", "Select a Group" }
                 }
@@ -120,6 +139,20 @@ pub fn ChannelLayout(group: ReadSignal<String>) -> Element {
                 on_created: move |_| {
                     show_create_channel_modal.set(false);
                 },
+            }
+        }
+
+        // Add Member Modal
+        if *show_add_member_modal.read() {
+            if let Some(group) = selected_group.read().as_ref() {
+                AddMemberModal {
+                    group_id: group.id.clone(),
+                    on_close: move |_| show_add_member_modal.set(false),
+                    on_added: move |_| {
+                        show_add_member_modal.set(false);
+                        // Optional: Show success toast
+                    },
+                }
             }
         }
     }
