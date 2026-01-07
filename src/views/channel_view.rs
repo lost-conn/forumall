@@ -9,22 +9,9 @@ use dioxus_fullstack::Json;
 /// Channel view component that displays the chat area for a specific channel
 /// This is the innermost component in the layout hierarchy
 #[component]
-pub fn ChannelView(group: String, channel: String) -> Element {
+pub fn ChannelView(group: ReadSignal<String>, channel: ReadSignal<String>) -> Element {
     let auth = use_context::<AuthContext>();
     let nav = use_navigator();
-    let route = use_route::<crate::Route>();
-
-    // Get channel name from route
-    let channel_name = match &route {
-        crate::Route::ChannelView { channel, .. } => channel.clone(),
-        _ => channel.clone(),
-    };
-
-    // Get group name from route
-    let group_name = match &route {
-        crate::Route::ChannelView { group, .. } => group.clone(),
-        _ => group.clone(),
-    };
 
     // Fetch group data to get group_id
     let groups_resource = use_resource(move || {
@@ -44,20 +31,17 @@ pub fn ChannelView(group: String, channel: String) -> Element {
         }
     });
 
-    // Find the current group
-    let mut current_group = use_signal(|| None::<crate::groups::Group>);
-
-    // Update current_group when groups load
-    let gn = group_name.clone();
-    use_effect(move || {
-        if let Some(Ok(groups)) = groups_resource.read().as_ref() {
-            if let Some(group) = groups.0.iter().find(|g| g.name == gn) {
-                current_group.set(Some(group.clone()));
-            }
-        }
+    // Find the current group directly from the resource
+    let current_group = use_memo(move || {
+        groups_resource
+            .read()
+            .as_ref()
+            .and_then(|res| res.as_ref().ok())
+            .and_then(|groups| groups.0.iter().find(|g| g.name == *group.read()).cloned())
     });
 
     // Fetch channels to get channel_id
+    // This resource will automatically update when current_group changes because we read it
     let channels_resource = use_resource(move || {
         let group_id = current_group.read().as_ref().map(|g| g.id.clone());
         let auth = auth.clone();
@@ -81,17 +65,19 @@ pub fn ChannelView(group: String, channel: String) -> Element {
         }
     });
 
-    // Find the current channel
-    let mut current_channel = use_signal(|| None::<crate::groups::Channel>);
-
-    // Update current_channel when channels load
-    let cn = channel_name.clone();
-    use_effect(move || {
-        if let Some(Ok(channels)) = channels_resource.read().as_ref() {
-            if let Some(channel) = channels.0.iter().find(|c| c.name == cn) {
-                current_channel.set(Some(channel.clone()));
-            }
-        }
+    // Find the current channel directly from the resource
+    let current_channel = use_memo(move || {
+        channels_resource
+            .read()
+            .as_ref()
+            .and_then(|res| res.as_ref().ok())
+            .and_then(|channels| {
+                channels
+                    .0
+                    .iter()
+                    .find(|c| c.name == *channel.read())
+                    .cloned()
+            })
     });
 
     rsx! {
@@ -141,7 +127,7 @@ pub fn ChannelView(group: String, channel: String) -> Element {
                     }
                     h2 { class: "text-2xl font-bold text-white mb-2", "Channel Not Found" }
                     p { class: "text-gray-400 text-center max-w-md",
-                        "The channel '{channel_name}' does not exist in group '{group_name}'"
+                        "The channel '{channel}' does not exist in group '{group}'"
                     }
                     button {
                         class: "mt-4 px-4 py-2 bg-indigo-500 hover:bg-indigo-600 text-white rounded-lg transition-colors",
@@ -270,18 +256,10 @@ fn MessageList(group_id: String, channel_id: String) -> Element {
                                 div {
                                     key: "{msg.id}",
                                     class: "flex items-start px-4 py-1 hover:bg-[#2e3035] group",
-                                    // Avatar with gradient
-                                    div { class: "w-10 h-10 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white font-semibold flex-shrink-0 mr-4",
-                                        "{msg.author.id.chars().last().unwrap_or('U').to_uppercase()}"
-                                    }
-                                    div { class: "flex-1 min-w-0",
-                                        div { class: "flex items-baseline gap-2",
-                                            span { class: "font-medium text-white hover:underline cursor-pointer",
-                                                "{msg.author.id.split('/').last().unwrap_or(\"Unknown\")}"
-                                            }
-                                            span { class: "text-xs text-gray-500", "{msg.createdAt}" }
-                                        }
-                                        p { class: "text-[#dbdee1] leading-relaxed", "{msg.content.text}" }
+                                    MessageItem {
+                                        user_id: msg.author.id.split('/').last().unwrap_or("Unknown").to_string(),
+                                        created_at: msg.createdAt.clone(),
+                                        content: msg.content.text.clone(),
                                     }
                                 }
                             },
@@ -312,6 +290,64 @@ fn MessageList(group_id: String, channel_id: String) -> Element {
                     }
                 },
             }
+        }
+    }
+}
+
+#[component]
+fn MessageItem(user_id: String, created_at: String, content: String) -> Element {
+    let auth = use_context::<AuthContext>();
+    let user_id_sig = use_signal(|| user_id.clone());
+
+    let profile = use_resource(move || {
+        let uid = user_id_sig();
+        let auth = auth;
+        async move {
+            let token = auth.token();
+            let client = ApiClient::new(token);
+            let url = auth.api_url(&format!("/api/users/{uid}/profile"));
+            client
+                .get_json::<crate::models::UserProfile>(&url)
+                .await
+                .map(Json)
+                .map_err(|e| ServerFnError::new(e.to_string()))
+        }
+    });
+
+    let (handle, initial) = match profile.read().as_ref() {
+        Some(Ok(Json(p))) => (
+            p.handle.clone(),
+            p.handle
+                .chars()
+                .next()
+                .unwrap_or('U')
+                .to_uppercase()
+                .to_string(),
+        ),
+        _ => (
+            user_id.clone(),
+            user_id
+                .chars()
+                .last()
+                .unwrap_or('U')
+                .to_uppercase()
+                .to_string(),
+        ),
+    };
+
+    rsx! {
+        // Avatar with gradient
+        div { class: "w-10 h-10 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white font-semibold flex-shrink-0 mr-4",
+            "{initial}"
+        }
+        div { class: "flex-1 min-w-0",
+            div { class: "flex items-baseline gap-2",
+                span { class: "font-medium text-white hover:underline cursor-pointer",
+                    "{handle}"
+                }
+                span { class: "text-xs text-gray-500", "{created_at}" }
+            }
+            p { class: "text-[#dbdee1] leading-relaxed", "{content}" }
         }
     }
 }

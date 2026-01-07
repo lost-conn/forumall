@@ -8,9 +8,8 @@ use dioxus_fullstack::Json;
 /// Channel layout component that contains the channel selection sidebar
 /// This is the middle layout between SidebarLayout and ChannelView
 #[component]
-pub fn ChannelLayout(group: String) -> Element {
+pub fn ChannelLayout(group: ReadSignal<String>) -> Element {
     let auth = use_context::<AuthContext>();
-    let mut selected_group = use_signal(|| None::<Group>);
     let mut show_create_channel_modal = use_signal(|| false);
 
     // Get the current route to extract channel name
@@ -23,11 +22,9 @@ pub fn ChannelLayout(group: String) -> Element {
         _ => None,
     };
 
-    let current_group_name = Some(group.clone());
-
     // Fetch groups data
     let groups = use_resource(move || {
-        let auth = auth.clone();
+        let auth = auth;
         async move {
             let token = auth.token();
             if token.is_none() {
@@ -43,14 +40,17 @@ pub fn ChannelLayout(group: String) -> Element {
         }
     });
 
-    // Update selected_group based on current route
-    use_effect(move || {
-        if let Some(group_name) = current_group_name.clone() {
-            if let Some(Ok(groups)) = groups.read().as_ref() {
-                if let Some(group) = groups.0.iter().find(|g| g.name == group_name) {
-                    selected_group.set(Some(group.clone()));
-                }
-            }
+    // Derive selected_group from resource data using use_memo
+    // This eliminates the need for use_effect and keeps reactivity automatic
+    let selected_group = use_memo(move || {
+        if let Some(Ok(groups_data)) = groups.read().as_ref() {
+            groups_data
+                .0
+                .iter()
+                .find(|g| g.name == *group.read())
+                .cloned()
+        } else {
+            None
         }
     });
 

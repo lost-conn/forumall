@@ -15,6 +15,7 @@ mod components;
 mod groups;
 mod messages;
 mod models;
+mod users;
 mod problem;
 mod server;
 mod views;
