@@ -1,6 +1,6 @@
 use crate::api_client::ApiClient;
 use crate::auth_session::AuthContext;
-use crate::groups::*;
+use crate::models::UserJoinedGroup;
 use crate::views::CreateGroupModal;
 use dioxus::prelude::*;
 use dioxus_fullstack::Json;
@@ -10,7 +10,7 @@ use dioxus_fullstack::Json;
 #[component]
 pub fn SidebarLayout() -> Element {
     let mut auth = use_context::<AuthContext>();
-    let mut selected_group = use_signal(|| None::<Group>);
+    let mut selected_group = use_signal(|| None::<UserJoinedGroup>);
     let mut show_create_group_modal = use_signal(|| false);
 
     // Redirect to login if not authenticated
@@ -25,13 +25,14 @@ pub fn SidebarLayout() -> Element {
         let auth = auth.clone();
         async move {
             let token = auth.token();
-            if token.is_none() {
+            let user_id = auth.user_id();
+            if token.is_none() || user_id.is_none() {
                 return Err(ServerFnError::new("Not authenticated"));
             }
             let client = ApiClient::new(token);
-            let url = auth.api_url("/api/groups");
+            let url = auth.api_url(&format!("/api/users/{}/groups", user_id.unwrap()));
             client
-                .get_json::<Vec<Group>>(&url)
+                .get_json::<Vec<UserJoinedGroup>>(&url)
                 .await
                 .map(Json)
                 .map_err(|e| ServerFnError::new(format!("API error: {e:?}")))
@@ -71,10 +72,10 @@ pub fn SidebarLayout() -> Element {
                 if let Some(Ok(groups)) = groups.read().as_ref() {
                     for group in groups.0.iter() {
                         div {
-                            key: "{group.id}",
+                            key: "{group.group_id}",
                             class: format!(
                                 "group relative w-12 h-12 rounded-[24px] flex items-center justify-center text-white font-semibold cursor-pointer transition-all duration-200 hover:rounded-[16px] {}",
-                                if selected_group.read().as_ref().map(|g| &g.id) == Some(&group.id) {
+                                if selected_group.read().as_ref().map(|g| &g.group_id) == Some(&group.group_id) {
                                     "bg-gradient-to-br from-indigo-500 to-purple-600 rounded-[16px]"
                                 } else {
                                     "bg-[#313338] hover:bg-gradient-to-br hover:from-indigo-500 hover:to-purple-600"
@@ -95,7 +96,7 @@ pub fn SidebarLayout() -> Element {
                                 "{group.name}"
                             }
                             // Active indicator pill
-                            if selected_group.read().as_ref().map(|g| &g.id) == Some(&group.id) {
+                            if selected_group.read().as_ref().map(|g| &g.group_id) == Some(&group.group_id) {
                                 div { class: "absolute left-0 w-1 h-10 bg-white rounded-r-full -ml-[10px]" }
                             }
                             "{group.name.chars().next().unwrap_or('?')}"

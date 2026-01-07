@@ -112,6 +112,16 @@ pub static DB: once_cell::sync::Lazy<aurora_db::Aurora> = once_cell::sync::Lazy:
             ("created_at", FieldType::String, false),
         ],
     );
+    let _ = db.new_collection(
+        "user_joined_groups",
+        vec![
+            ("user_id", FieldType::String, false),
+            ("group_id", FieldType::String, false),
+            ("host", FieldType::String, false), // e.g. "https://remote-instance.com", or empty for local
+            ("name", FieldType::String, false),
+            ("joined_at", FieldType::String, false),
+        ],
+    );
 
     db
 });

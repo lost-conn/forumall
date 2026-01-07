@@ -32,9 +32,7 @@ pub struct CreateGroupRequest {
 }
 
 #[post("/api/groups", headers: HeaderMap)]
-pub async fn create_group(
-    Json(payload): Json<CreateGroupRequest>,
-) -> Result<Json<Group>, ServerFnError> {
+pub async fn create_group(Json(payload): Json<CreateGroupRequest>) -> Result<Group, ServerFnError> {
     let user_id = auth::require_bearer_user_id(&headers)?.user_id;
     let id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
@@ -74,10 +72,10 @@ pub async fn create_group(
         db.insert_into(
             "group_members",
             vec![
-                ("group_id", id.into()),
-                ("user_id", user_id.into()),
+                ("group_id", id.clone().into()),
+                ("user_id", user_id.clone().into()),
                 ("role", "owner".into()),
-                ("created_at", now.into()),
+                ("created_at", now.clone().into()),
             ],
         )
         .await
@@ -85,9 +83,25 @@ pub async fn create_group(
             tracing::error!("Error inserting group member: {:?}", e);
             ServerFnError::new(format!("Database error: {}", e))
         })?;
+
+        db.insert_into(
+            "user_joined_groups",
+            vec![
+                ("user_id", user_id.clone().into()),
+                ("group_id", id.clone().into()),
+                ("host", dioxus_fullstack::get_server_url().into()),
+                ("name", group.name.clone().into()),
+                ("joined_at", now.clone().into()),
+            ],
+        )
+        .await
+        .map_err(|e| {
+            tracing::error!("Error inserting user_joined_groups: {:?}", e);
+            ServerFnError::new(format!("Database error: {}", e))
+        })?;
     }
 
-    Ok(Json(group))
+    Ok(group)
 }
 
 #[get("/api/groups", headers: HeaderMap)]
@@ -379,12 +393,14 @@ pub async fn add_group_member(
         // 3. Check if user is already a member
         let member_docs = db
             .query("group_members")
-            .filter(
-                |f| f.eq("group_id", group_id.clone()) & f.eq("user_id", target_user_id.clone()),
-            )
+            .filter(|f| {
+                f.eq("group_id", group_id.clone()) & f.eq("user_id", target_user_id.clone())
+            })
             .collect()
             .await
-            .map_err(|e| ServerFnError::new(format!("Database error checking membership: {}", e)))?;
+            .map_err(|e| {
+                ServerFnError::new(format!("Database error checking membership: {}", e))
+            })?;
 
         if !member_docs.is_empty() {
             return Err(ServerFnError::new(format!(
@@ -397,14 +413,36 @@ pub async fn add_group_member(
         db.insert_into(
             "group_members",
             vec![
-                ("group_id", group_id.into()),
-                ("user_id", target_user_id.into()),
+                ("group_id", group_id.clone().into()),
+                ("user_id", target_user_id.clone().into()),
                 ("role", "member".into()),
-                ("created_at", now.into()),
+                ("created_at", now.clone().into()),
             ],
         )
         .await
         .map_err(|e| ServerFnError::new(format!("Database error adding member: {}", e)))?;
+
+        // 5. Add to user_joined_groups
+        // We need the group name for this. We already fetched the group in step 1.
+        let group_name = group_docs[0]
+            .data
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Unknown Group")
+            .to_string();
+
+        db.insert_into(
+            "user_joined_groups",
+            vec![
+                ("user_id", target_user_id.into()),
+                ("group_id", group_id.into()),
+                ("host", dioxus_fullstack::get_server_url().into()),
+                ("name", group_name.into()),
+                ("joined_at", now.into()),
+            ],
+        )
+        .await
+        .map_err(|e| ServerFnError::new(format!("Database error updating joined groups: {}", e)))?;
     }
 
     Ok(Json(()))

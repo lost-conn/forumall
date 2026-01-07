@@ -257,3 +257,12 @@ pub enum ServerEvent {
     Ack { nonce: String, message_id: String },
     Error { code: String, message: String, correlation_id: Option<String> },
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct UserJoinedGroup {
+    pub group_id: String,
+    pub host: Option<String>,
+    pub name: String,
+    pub joined_at: String,
+}

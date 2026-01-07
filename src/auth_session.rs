@@ -106,6 +106,10 @@ impl AuthContext {
         self.session.read().as_ref().map(|s| s.token.clone())
     }
 
+    pub fn user_id(&self) -> Option<String> {
+        self.session.read().as_ref().map(|s| s.user_id.clone())
+    }
+
     pub fn api_url(&self, path: &str) -> String {
         let domain = self.provider_domain.read().clone();
 
