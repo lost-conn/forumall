@@ -3,7 +3,8 @@
 use dioxus::prelude::*;
 use dioxus_fullstack::{Json, WebsocketState};
 use views::{
-    ChannelLayout, ChannelView, Home, Login, Navbar, NoChannel, NoGroup, Register, SidebarLayout,
+    ChannelView, GroupSidebarLayout, Home, HomeSidebarLayout, Login, Navbar, NoChannel, NoGroup,
+    Register,
 };
 
 use crate::models::*;
@@ -13,11 +14,12 @@ mod auth;
 mod auth_session;
 mod components;
 mod groups;
+mod hooks;
 mod messages;
 mod models;
-mod users;
 mod problem;
 mod server;
+mod users;
 mod views;
 mod ws_client;
 
@@ -35,11 +37,11 @@ enum Route {
         WebSocketTest {},
     #[end_layout]
     #[nest("/home")]
-        #[layout(SidebarLayout)]
+        #[layout(HomeSidebarLayout)]
             #[route("/")]
             NoGroup {},
             #[nest("/:group")]
-                #[layout(ChannelLayout)]
+                #[layout(GroupSidebarLayout)]
                     #[route("/")]
                     NoChannel { group: String },
                     #[route("/:channel")]

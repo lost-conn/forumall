@@ -12,12 +12,11 @@ pub mod channel_view;
 pub use channel_view::ChannelView;
 
 pub mod layouts;
-pub use layouts::{SidebarLayout, ChannelLayout};
+pub use layouts::{GroupSidebarLayout, HomeSidebarLayout};
 
 mod home;
 pub use home::{
-    ChannelList, CreateChannelModal, CreateGroupModal, GroupSettingsModal, Home, JoinGroupModal,
-    NoChannel, NoGroup,
+    ChannelList, CreateChannelModal, CreateGroupModal, Home, JoinGroupModal, NoChannel, NoGroup,
 };
 
 mod navbar;

@@ -1,5 +1,5 @@
-pub mod sidebar_layout;
-pub use sidebar_layout::SidebarLayout;
+pub mod group_sidebar_layout;
+pub mod home_sidebar_layout;
 
-pub mod channel_layout;
-pub use channel_layout::ChannelLayout;
+pub use group_sidebar_layout::GroupSidebarLayout;
+pub use home_sidebar_layout::HomeSidebarLayout;

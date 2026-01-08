@@ -1,20 +1,29 @@
 use crate::api_client::ApiClient;
 use crate::auth_session::AuthContext;
+use crate::hooks::use_refreshable_resource;
 use crate::messages::*;
 use crate::models::{ClientCommand, ServerEvent, WsEnvelope};
 use crate::ws_client::use_ws;
+use dioxus::logger::tracing;
 use dioxus::prelude::*;
 use dioxus_fullstack::Json;
+
+#[derive(Clone)]
+pub struct ChannelViewRefresh {
+    pub refresh: Signal<()>,
+}
 
 /// Channel view component that displays the chat area for a specific channel
 /// This is the innermost component in the layout hierarchy
 #[component]
 pub fn ChannelView(group: ReadSignal<String>, channel: ReadSignal<String>) -> Element {
     let auth = use_context::<AuthContext>();
+
     let nav = use_navigator();
 
     // Fetch group data to get group_id
-    let groups_resource = use_resource(move || {
+    let groups_resource = use_refreshable_resource(move || {
+        tracing::info!("ChannelView group refresh");
         let auth = auth.clone();
         async move {
             let token = auth.token();
@@ -26,7 +35,6 @@ pub fn ChannelView(group: ReadSignal<String>, channel: ReadSignal<String>) -> El
             client
                 .get_json::<Vec<crate::groups::Group>>(&url)
                 .await
-                .map(Json)
                 .map_err(|e| ServerFnError::new(format!("API error: {e:?}")))
         }
     });
@@ -37,7 +45,7 @@ pub fn ChannelView(group: ReadSignal<String>, channel: ReadSignal<String>) -> El
             .read()
             .as_ref()
             .and_then(|res| res.as_ref().ok())
-            .and_then(|groups| groups.0.iter().find(|g| g.name == *group.read()).cloned())
+            .and_then(|groups| groups.iter().find(|g| g.name == *group.read()).cloned())
     });
 
     // Fetch channels to get channel_id
@@ -80,19 +88,7 @@ pub fn ChannelView(group: ReadSignal<String>, channel: ReadSignal<String>) -> El
             })
     });
 
-    let mut show_settings = use_signal(|| false);
-
     rsx! {
-        if *show_settings.read() {
-             if let Some(group_data) = current_group.read().as_ref() {
-                 crate::views::home::GroupSettingsModal {
-                     group_id: group_data.id.clone(),
-                     group_name: group_data.name.clone(),
-                     join_policy: group_data.join_policy.clone(),
-                     on_close: move |_| show_settings.set(false),
-                 }
-             }
-        }
         // Chat Area
         div { class: "flex-1 flex flex-col bg-[#313338]",
             if let Some(channel) = current_channel.read().as_ref() {
@@ -104,31 +100,6 @@ pub fn ChannelView(group: ReadSignal<String>, channel: ReadSignal<String>) -> El
                         if let Some(topic) = &channel.topic {
                             div { class: "w-px h-6 bg-[#3f4147] mx-4" }
                             span { class: "text-sm text-gray-400 truncate", "{topic}" }
-                        }
-                    }
-                    // Group Settings Button
-                    if let Some(group) = current_group.read().as_ref() {
-                         button {
-                            class: "text-gray-400 hover:text-white transition-colors",
-                            onclick: move |_| show_settings.set(true),
-                            svg {
-                                class: "w-5 h-5",
-                                fill: "none",
-                                stroke: "currentColor",
-                                view_box: "0 0 24 24",
-                                path {
-                                    stroke_linecap: "round",
-                                    stroke_linejoin: "round",
-                                    stroke_width: "2",
-                                    d: "M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
-                                }
-                                path {
-                                    stroke_linecap: "round",
-                                    stroke_linejoin: "round",
-                                    stroke_width: "2",
-                                    d: "M15 12a3 3 0 11-6 0 3 3 0 016 0z"
-                                }
-                            }
                         }
                     }
                 }

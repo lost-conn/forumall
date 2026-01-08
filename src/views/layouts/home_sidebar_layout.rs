@@ -8,7 +8,7 @@ use dioxus_fullstack::Json;
 /// Sidebar layout component that contains the group selection and logout button
 /// This is the outermost layout for the home page
 #[component]
-pub fn SidebarLayout() -> Element {
+pub fn HomeSidebarLayout() -> Element {
     let mut auth = use_context::<AuthContext>();
     let mut selected_group = use_signal(|| None::<UserJoinedGroup>);
     let mut show_create_group_modal = use_signal(|| false);
@@ -119,7 +119,7 @@ pub fn SidebarLayout() -> Element {
                     // Let's make the "+" button open a dialogue or have two distinct buttons.
                     // Discord puts "Join Server" as a separate button at the bottom of the list usually, or inside the "+" flow.
                     // Let's make the "+" button open a "Add Server" modal that has "Create My Own" and "Join a Server".
-                    onclick: move |_| show_create_group_modal.set(true), 
+                    onclick: move |_| show_create_group_modal.set(true),
                     div { class: "absolute left-full ml-4 px-3 py-2 bg-[#111214] text-white text-sm font-medium rounded-md whitespace-nowrap opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-150 z-50 shadow-lg",
                         "Add a Group"
                     }
@@ -136,7 +136,7 @@ pub fn SidebarLayout() -> Element {
                         }
                     }
                 }
-                
+
                 // Explore/Join button (Compass)
                 div {
                     class: "group relative w-12 h-12 bg-[#313338] rounded-[24px] flex items-center justify-center text-emerald-400 font-bold cursor-pointer hover:rounded-[16px] hover:bg-emerald-500 hover:text-white transition-all duration-200",
@@ -173,7 +173,7 @@ pub fn SidebarLayout() -> Element {
                     },
                 }
             }
-            
+
             // Join Group Modal
             if *show_join_group_modal.read() {
                  JoinGroupModal {
