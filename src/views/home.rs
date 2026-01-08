@@ -194,6 +194,11 @@ pub fn CreateGroupModal(on_close: EventHandler<()>, on_created: EventHandler<()>
             return;
         }
 
+        if !crate::models::validate_resource_name(&group_name) {
+            error.set(Some("Invalid group name. Must be lowercase alphanumeric, periods, underscores, or dashes.".to_string()));
+            return;
+        }
+
         is_loading.set(true);
         let on_created = on_created.clone();
         let auth = auth.clone();
@@ -309,6 +314,11 @@ pub fn CreateChannelModal(
         let channel_name = name.read().trim().to_string();
         if channel_name.is_empty() {
             error.set(Some("Channel name is required".to_string()));
+            return;
+        }
+
+        if !crate::models::validate_resource_name(&channel_name) {
+            error.set(Some("Invalid channel name. Must be lowercase alphanumeric, periods, underscores, or dashes.".to_string()));
             return;
         }
 
@@ -611,6 +621,13 @@ pub fn GroupSettingsModal(
         is_saving.set(true);
         let gid = group_id_for_save.clone();
         let new_name = name.read().clone();
+
+        if !crate::models::validate_resource_name(&new_name) {
+            error.set(Some("Invalid group name. Must be lowercase alphanumeric, periods, underscores, or dashes.".to_string()));
+            is_saving.set(false);
+            return;
+        }
+
         let new_policy = policy.read().clone();
         let auth = auth.clone();
         let on_close = on_close.clone();

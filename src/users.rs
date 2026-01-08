@@ -59,13 +59,13 @@ pub async fn get_user_groups(user_id: String) -> Result<Vec<UserJoinedGroup>, Se
     Ok(groups)
 }
 
-#[get("/api/users/:id/profile")]
-pub async fn get_user_profile(id: String) -> Result<UserProfile, ServerFnError> {
+#[get("/api/users/:handle/profile")]
+pub async fn get_user_profile(handle: String) -> Result<UserProfile, ServerFnError> {
     let db = &*crate::DB;
 
     let user_doc = db
         .query("users")
-        .filter(|f| f.eq("id", id.clone()))
+        .filter(|f| f.eq("handle", handle.clone()))
         .collect()
         .await
         .map_err(|e| ServerFnError::new(format!("Database error: {e}")))?
@@ -95,7 +95,6 @@ pub async fn get_user_profile(id: String) -> Result<UserProfile, ServerFnError> 
         .unwrap_or_else(|_| chrono::Utc::now());
 
     Ok(UserProfile {
-        id,
         handle,
         domain,
         display_name: None,
@@ -121,9 +120,12 @@ pub async fn add_user_joined_group(
     if auth_user != user_id {
         return Err(ServerFnError::new("Unauthorized"));
     }
-    
+
     let now = chrono::Utc::now().to_rfc3339();
-    let host = payload.host.clone().unwrap_or_else(|| dioxus_fullstack::get_server_url().to_string());
+    let host = payload
+        .host
+        .clone()
+        .unwrap_or_else(|| dioxus_fullstack::get_server_url().to_string());
 
     #[cfg(feature = "server")]
     {
@@ -156,7 +158,10 @@ pub async fn add_self_joined_group(
 ) -> Result<Json<UserJoinedGroup>, ServerFnError> {
     let user_id = crate::server::auth::require_bearer_user_id(&headers)?.user_id;
     let now = chrono::Utc::now().to_rfc3339();
-    let host = payload.host.clone().unwrap_or_else(|| dioxus_fullstack::get_server_url().to_string());
+    let host = payload
+        .host
+        .clone()
+        .unwrap_or_else(|| dioxus_fullstack::get_server_url().to_string());
 
     #[cfg(feature = "server")]
     {

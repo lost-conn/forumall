@@ -25,7 +25,12 @@ pub async fn register(
     let payload = payload.0;
     tracing::info!("Registering user: {}", payload.handle);
 
-    let id = uuid::Uuid::new_v4().to_string();
+    if !crate::models::validate_resource_name(&payload.handle) {
+        return Err(ServerFnError::new(
+            "Invalid handle. Must be lowercase alphanumeric, periods, underscores, or dashes.",
+        ));
+    }
+
     let domain = "localhost".to_string();
     let now = chrono::Utc::now().to_rfc3339();
 
@@ -42,8 +47,7 @@ pub async fn register(
         db.insert_into(
             "users",
             vec![
-                ("id", id.clone().into()),
-                ("handle", payload.handle.into()),
+                ("handle", payload.handle.clone().into()),
                 ("domain", domain.into()),
                 ("password_hash", password_hash.into()),
                 ("updated_at", now.clone().into()),
@@ -57,11 +61,11 @@ pub async fn register(
         })?;
 
         // Registration auto-logs-in by returning a new JWT bearer token.
-        let token = jwt::issue_access_token(&id)
+        let token = jwt::issue_access_token(&payload.handle)
             .map_err(|e| ServerFnError::new(format!("Failed to issue token: {e}")))?;
 
         Ok(Json(LoginResponse {
-            user_id: id.clone(),
+            user_id: payload.handle,
             token,
         }))
     }
@@ -105,16 +109,16 @@ pub async fn login(payload: Json<LoginRequest>) -> Result<Json<LoginResponse>, S
             .next()
             .ok_or_else(|| ServerFnError::new("User not found"))?;
 
-        let user_id = user
+        let user_handle = user
             .data
-            .get("id")
-            .and_then(|v: &aurora_db::Value| v.as_str())
+            .get("handle")
+            .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
         let user_password_hash = user
             .data
             .get("password_hash")
-            .and_then(|v: &aurora_db::Value| v.as_str())
+            .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
 
@@ -127,10 +131,13 @@ pub async fn login(payload: Json<LoginRequest>) -> Result<Json<LoginResponse>, S
             .map_err(|_| ServerFnError::new("Invalid password"))?;
 
         // Issue a JWT bearer token
-        let token = jwt::issue_access_token(&user_id)
+        let token = jwt::issue_access_token(&user_handle)
             .map_err(|e| ServerFnError::new(format!("Failed to issue token: {e}")))?;
 
-        Ok(Json(LoginResponse { user_id, token }))
+        Ok(Json(LoginResponse {
+            user_id: user_handle,
+            token,
+        }))
     }
     #[cfg(not(feature = "server"))]
     Ok(Json(LoginResponse {

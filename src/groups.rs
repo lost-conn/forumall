@@ -11,7 +11,7 @@ pub struct Group {
     pub description: Option<String>,
     #[serde(default = "default_join_policy")]
     pub join_policy: String,
-    pub owner_user_id: String,
+    pub owner: String,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -44,8 +44,10 @@ pub async fn create_group(Json(payload): Json<CreateGroupRequest>) -> Result<Gro
     let user_id = auth::require_bearer_user_id(&headers)?.user_id;
     // Use name as ID (enforce uniqueness)
     let id = payload.name.trim().to_string();
-    if id.is_empty() {
-        return Err(ServerFnError::new("Group name cannot be empty"));
+    if !crate::models::validate_resource_name(&id) {
+        return Err(ServerFnError::new(
+            "Invalid group name. Must be lowercase alphanumeric, periods, underscores, or dashes.",
+        ));
     }
 
     let now = chrono::Utc::now().to_rfc3339();
@@ -70,7 +72,7 @@ pub async fn create_group(Json(payload): Json<CreateGroupRequest>) -> Result<Gro
         name: payload.name, // Name is same as ID
         description: payload.description,
         join_policy: payload.join_policy.unwrap_or_else(|| "open".to_string()),
-        owner_user_id: user_id.clone(),
+        owner: user_id.clone(),
         created_at: now.clone(),
         updated_at: now.clone(),
     };
@@ -88,7 +90,7 @@ pub async fn create_group(Json(payload): Json<CreateGroupRequest>) -> Result<Gro
                     group.description.as_deref().unwrap_or("").into(),
                 ),
                 ("join_policy", group.join_policy.clone().into()),
-                ("owner_user_id", group.owner_user_id.clone().into()),
+                ("owner", group.owner.clone().into()),
                 ("created_at", group.created_at.clone().into()),
                 ("updated_at", group.updated_at.clone().into()),
             ],
@@ -192,9 +194,9 @@ pub async fn list_groups_for_user() -> Result<Json<Vec<Group>>, ServerFnError> {
                     .and_then(|v: &aurora_db::Value| v.as_str())
                     .unwrap_or("open")
                     .to_string();
-                let owner_user_id = doc
+                let owner = doc
                     .data
-                    .get("owner_user_id")
+                    .get("owner")
                     .and_then(|v: &aurora_db::Value| v.as_str())
                     .unwrap_or("")
                     .to_string();
@@ -215,7 +217,7 @@ pub async fn list_groups_for_user() -> Result<Json<Vec<Group>>, ServerFnError> {
                     name,
                     description,
                     join_policy,
-                    owner_user_id,
+                    owner,
                     created_at,
                     updated_at,
                 });
@@ -242,6 +244,12 @@ pub async fn create_channel(
     Json(payload): Json<CreateChannelRequest>,
 ) -> Result<Json<Channel>, ServerFnError> {
     let user_id = crate::server::auth::require_bearer_user_id(&headers)?.user_id;
+
+    if !crate::models::validate_resource_name(&payload.name) {
+        return Err(ServerFnError::new(
+            "Invalid channel name. Must be lowercase alphanumeric, periods, underscores, or dashes.",
+        ));
+    }
 
     let channel_id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
@@ -393,7 +401,7 @@ pub async fn add_group_member(
     // 1. Verify requester is the owner of the group
     let group_docs = db
         .query("groups")
-        .filter(|f| f.eq("id", group_id.clone()) & f.eq("owner_user_id", user_id.clone()))
+        .filter(|f| f.eq("id", group_id.clone()) & f.eq("owner", user_id.clone()))
         .collect()
         .await
         .map_err(|e| ServerFnError::new(format!("Database error checking ownership: {}", e)))?;
@@ -420,7 +428,7 @@ pub async fn add_group_member(
 
     let target_user_id = target_user_doc
         .data
-        .get("id")
+        .get("handle")
         .and_then(|v| v.as_str())
         .ok_or_else(|| ServerFnError::new("Invalid user data"))?
         .to_string();
@@ -497,7 +505,7 @@ pub async fn update_group_settings(
     // 1. Verify ownership
     let group_docs = db
         .query("groups")
-        .filter(|f| f.eq("id", group_id.clone()) & f.eq("owner_user_id", user_id.clone()))
+        .filter(|f| f.eq("id", group_id.clone()) & f.eq("owner", user_id.clone()))
         .collect()
         .await
         .map_err(|e| ServerFnError::new(format!("Database error checking ownership: {}", e)))?;

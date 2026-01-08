@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 // --- Common Definitions ---
 
@@ -10,6 +10,13 @@ pub enum Discoverability {
     Group,
     Public,
     Discoverable,
+}
+
+pub fn validate_resource_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.chars().all(|c| {
+            c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '_' || c == '-'
+        })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -44,7 +51,6 @@ pub enum UserRef {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct UserProfile {
-    pub id: String,
     pub handle: String,
     pub domain: String,
     pub display_name: Option<String>,
@@ -243,19 +249,36 @@ pub struct WsEnvelope<T> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data", rename_all = "camelCase")]
 pub enum ClientCommand {
-    Subscribe { channel_id: String },
-    Unsubscribe { channel_id: String },
+    Subscribe {
+        channel_id: String,
+    },
+    Unsubscribe {
+        channel_id: String,
+    },
     #[serde(rename = "message.create")]
-    MessageCreate { channel_id: String, body: String, nonce: String },
+    MessageCreate {
+        channel_id: String,
+        body: String,
+        nonce: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data", rename_all = "camelCase")]
 pub enum ServerEvent {
     #[serde(rename = "message.new")]
-    MessageNew { message: BaseMessage },
-    Ack { nonce: String, message_id: String },
-    Error { code: String, message: String, correlation_id: Option<String> },
+    MessageNew {
+        message: BaseMessage,
+    },
+    Ack {
+        nonce: String,
+        message_id: String,
+    },
+    Error {
+        code: String,
+        message: String,
+        correlation_id: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

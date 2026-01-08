@@ -47,6 +47,13 @@ pub fn Register() -> Element {
                                 is_submitting.set(true);
                                 error.set(None);
 
+                                let handle_value = handle.read().clone();
+                                if !crate::models::validate_resource_name(&handle_value) {
+                                    error.set(Some("Invalid handle. Must be lowercase alphanumeric, periods, underscores, or dashes.".to_string()));
+                                    is_submitting.set(false);
+                                    return;
+                                }
+
                                 // Persist provider domain (OFSCP endpoints are standardized; no discovery fetch needed).
                                 let current_domain = domain.read().clone();
                                 auth.provider_domain.set(current_domain);

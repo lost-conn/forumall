@@ -59,7 +59,6 @@ pub static DB: once_cell::sync::Lazy<aurora_db::Aurora> = once_cell::sync::Lazy:
     let _ = db.new_collection(
         "users",
         vec![
-            ("id", FieldType::String, true),
             ("handle", FieldType::String, true),
             ("domain", FieldType::String, false),
             ("password_hash", FieldType::String, false),
@@ -263,13 +262,5 @@ async fn ofscp_provider() -> Result<Json<DiscoveryDocument>> {
 
 #[get("/.well-known/jwks.json")]
 async fn jwks() -> Result<crate::server::jwt::Jwks> {
-    #[cfg(feature = "server")]
-    {
-        Ok(crate::server::jwt::jwks())
-    }
-
-    #[cfg(not(feature = "server"))]
-    {
-        Ok(crate::server::jwt::Jwks { keys: vec![] })
-    }
+    Ok(crate::server::jwt::jwks())
 }
