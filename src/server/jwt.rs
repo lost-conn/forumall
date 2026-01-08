@@ -101,7 +101,7 @@ pub struct AccessTokenClaims {
 pub fn issue_access_token(user_id: &str) -> Result<String> {
     let now = chrono::Utc::now();
     let iat = now.timestamp() as usize;
-    let exp = (now + chrono::Duration::minutes(10)).timestamp() as usize;
+    let exp = (now + chrono::Duration::days(30)).timestamp() as usize;
 
     let claims = AccessTokenClaims {
         iss: "https://localhost".to_string(),
@@ -116,8 +116,7 @@ pub fn issue_access_token(user_id: &str) -> Result<String> {
     header.typ = Some("JWT".to_string());
     header.kid = Some(DEV_RSA_KEYPAIR.kid.clone());
 
-    jsonwebtoken::encode(&header, &claims, &DEV_RSA_KEYPAIR.encoding)
-        .context("encode jwt")
+    jsonwebtoken::encode(&header, &claims, &DEV_RSA_KEYPAIR.encoding).context("encode jwt")
 }
 
 /// Validate an incoming JWT and return claims.
@@ -127,8 +126,9 @@ pub fn validate_access_token(token: &str) -> Result<AccessTokenClaims> {
     validation.set_audience(&["https://localhost"]);
     validation.set_issuer(&["https://localhost"]);
 
-    let data = jsonwebtoken::decode::<AccessTokenClaims>(token, &DEV_RSA_KEYPAIR.decoding, &validation)
-        .context("decode jwt")?;
+    let data =
+        jsonwebtoken::decode::<AccessTokenClaims>(token, &DEV_RSA_KEYPAIR.decoding, &validation)
+            .context("decode jwt")?;
     Ok(data.claims)
 }
 
