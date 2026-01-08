@@ -54,9 +54,19 @@ pub fn GroupSidebarLayout(group: ReadSignal<String>) -> Element {
         }
     });
 
+    // Determine if we're currently viewing a specific channel (for responsive hiding)
+    let is_channel_selected = matches!(&route, crate::Route::ChannelView { .. });
+
+    // Build sidebar classes: hide on mobile only when a channel is selected
+    let sidebar_classes = if is_channel_selected {
+        "hidden md:flex w-60 bg-[#2b2d31] flex-col"
+    } else {
+        "flex w-60 bg-[#2b2d31] flex-col"
+    };
+
     rsx! {
-        // Channel Sidebar
-        div { class: "w-60 bg-[#2b2d31] flex flex-col",
+        // Channel Sidebar - hidden on mobile only when viewing a channel
+        div { class: "{sidebar_classes}",
             // Group header with gradient
             div { class: "h-12 px-4 flex items-center justify-between shadow-md font-semibold text-white border-b border-[#1f2023]",
                 if let Some(group) = selected_group.read().as_ref() {

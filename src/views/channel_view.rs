@@ -4,6 +4,7 @@ use crate::hooks::use_refreshable_resource;
 use crate::messages::*;
 use crate::models::{ClientCommand, ServerEvent, WsEnvelope};
 use crate::ws_client::use_ws;
+use chrono::{DateTime, Local, Utc};
 use dioxus::logger::tracing;
 use dioxus::prelude::*;
 use dioxus_fullstack::Json;
@@ -95,16 +96,39 @@ pub fn ChannelView(group: ReadSignal<String>, channel: ReadSignal<String>) -> El
                 // Channel header
                 div { class: "h-12 px-4 flex items-center shadow-sm border-b border-[#232428] justify-between",
                     div { class: "flex items-center",
+                        // Back button - visible only on mobile
+                        button {
+                            class: "md:hidden mr-3 p-1.5 -ml-1 rounded-lg text-gray-400 hover:text-white hover:bg-[#404249] transition-colors",
+                            onclick: move |_| {
+                                nav.push(crate::Route::NoChannel {
+                                    group: group().clone(),
+                                });
+                            },
+                            svg {
+                                class: "w-5 h-5",
+                                fill: "none",
+                                stroke: "currentColor",
+                                view_box: "0 0 24 24",
+                                path {
+                                    stroke_linecap: "round",
+                                    stroke_linejoin: "round",
+                                    stroke_width: "2",
+                                    d: "M15 19l-7-7 7-7",
+                                }
+                            }
+                        }
                         span { class: "text-[#80848e] text-xl mr-2", "#" }
                         span { class: "font-semibold text-white", "{channel.name}" }
                         if let Some(topic) = &channel.topic {
-                            div { class: "w-px h-6 bg-[#3f4147] mx-4" }
-                            span { class: "text-sm text-gray-400 truncate", "{topic}" }
+                            div { class: "w-px h-6 bg-[#3f4147] mx-4 hidden sm:block" }
+                            span { class: "text-sm text-gray-400 truncate hidden sm:block", "{topic}" }
                         }
                     }
                 }
-                // Messages
-                div { class: "flex-1 overflow-y-auto",
+                // Messages - container with flex-col-reverse to anchor at bottom
+                div {
+                    id: "messages-container",
+                    class: "flex-1 overflow-y-auto flex flex-col",
                     MessageList {
                         group_id: channel.group_id.clone(),
                         channel_id: channel.id.clone(),
@@ -256,28 +280,56 @@ fn MessageList(group_id: String, channel_id: String) -> Element {
         }
     });
 
+    // Function to scroll the messages container to the bottom
+    fn do_scroll_to_bottom() {
+        #[cfg(feature = "web")]
+        {
+            if let Some(window) = web_sys::window() {
+                if let Some(document) = window.document() {
+                    if let Some(container) = document.get_element_by_id("messages-container") {
+                        let scroll_height = container.scroll_height();
+                        container.set_scroll_top(scroll_height);
+                    }
+                }
+            }
+        }
+    }
+
+    // Scroll to bottom when messages load
+    use_effect(move || {
+        if messages.read().is_some() {
+            do_scroll_to_bottom();
+        }
+    });
+
+    // Scroll to bottom when new realtime messages arrive
+    use_effect(move || {
+        let _ = realtime_msgs.read();
+        do_scroll_to_bottom();
+    });
+
     rsx! {
-        div { class: "flex flex-col py-4",
+        // Spacer that grows to push messages to the bottom when they don't fill the container
+        div { class: "flex-1" }
+        // Messages container
+        div { class: "flex flex-col px-4 py-4 gap-3",
             match messages.read().as_ref() {
                 Some(Ok(page)) => rsx! {
                     for item in page.0.items.iter().chain(realtime_msgs.read().iter()) {
                         match item {
                             TimelineItem::Message(msg) => rsx! {
-                                div {
+                                MessageItem {
                                     key: "{msg.id}",
-                                    class: "flex items-start px-4 py-1 hover:bg-[#2e3035] group",
-                                    MessageItem {
-                                        user_id: msg.author.id.split('/').last().unwrap_or("Unknown").to_string(),
-                                        created_at: msg.createdAt.clone(),
-                                        content: msg.content.text.clone(),
-                                    }
+                                    user_id: msg.author.id.split('/').last().unwrap_or("Unknown").to_string(),
+                                    created_at: msg.createdAt.clone(),
+                                    content: msg.content.text.clone(),
                                 }
                             },
                         }
                     }
                 },
                 Some(Err(e)) => rsx! {
-                    div { class: "flex items-center justify-center p-8 text-red-400 bg-red-900/10 rounded m-4",
+                    div { class: "flex items-center justify-center p-8 text-red-400 bg-red-900/10 rounded-xl",
                         svg {
                             class: "w-6 h-6 mr-2",
                             fill: "none",
@@ -304,10 +356,42 @@ fn MessageList(group_id: String, channel_id: String) -> Element {
     }
 }
 
+/// Format a timestamp string into a human-readable format
+fn format_timestamp(created_at: &str) -> String {
+    let parsed: Result<DateTime<Utc>, _> = created_at.parse();
+    match parsed {
+        Ok(dt) => {
+            let local: DateTime<Local> = dt.with_timezone(&Local);
+            let now = Local::now();
+            let today = now.date_naive();
+            let msg_date = local.date_naive();
+            let yesterday = today.pred_opt().unwrap_or(today);
+
+            let time_str = local.format("%l:%M %p").to_string().trim().to_string();
+
+            if msg_date == today {
+                format!("Today at {}", time_str)
+            } else if msg_date == yesterday {
+                format!("Yesterday at {}", time_str)
+            } else if (today - msg_date).num_days() < 7 {
+                // Within the last week, show day name
+                format!("{} at {}", local.format("%A"), time_str)
+            } else {
+                // Older than a week, show full date
+                format!("{}", local.format("%m/%d/%Y %l:%M %p").to_string().trim())
+            }
+        }
+        Err(_) => created_at.to_string(),
+    }
+}
+
 #[component]
 fn MessageItem(user_id: String, created_at: String, content: String) -> Element {
     let auth = use_context::<AuthContext>();
     let user_id_sig = use_signal(|| user_id.clone());
+
+    // Check if this message is from the current user
+    let is_own_message = auth.user_id().map(|uid| uid == user_id).unwrap_or(false);
 
     let profile = use_resource(move || {
         let uid = user_id_sig();
@@ -345,19 +429,67 @@ fn MessageItem(user_id: String, created_at: String, content: String) -> Element 
         ),
     };
 
-    rsx! {
-        // Avatar with gradient
-        div { class: "w-10 h-10 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white font-semibold flex-shrink-0 mr-4",
-            "{initial}"
-        }
-        div { class: "flex-1 min-w-0",
-            div { class: "flex items-baseline gap-2",
-                span { class: "font-medium text-white hover:underline cursor-pointer",
-                    "{handle}"
+    let formatted_time = format_timestamp(&created_at);
+
+    if is_own_message {
+        // Own message: right-aligned on mobile, left-aligned on desktop, with distinct color
+        rsx! {
+            // Container: flex-row-reverse on mobile, normal row on md+
+            div { class: "flex items-start gap-3 group flex-row-reverse md:flex-row",
+                // Avatar with gradient (teal/emerald for own messages)
+                div { class: "w-10 h-10 rounded-full bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center text-white font-semibold flex-shrink-0 shadow-lg",
+                    "{initial}"
                 }
-                span { class: "text-xs text-gray-500", "{created_at}" }
+                // Message bubble container
+                div { class: "flex flex-col items-end md:items-start max-w-[85%]",
+                    // Header: reversed on mobile, normal on md+
+                    div { class: "flex items-baseline gap-2 mb-1 flex-row-reverse md:flex-row",
+                        span { class: "font-semibold text-white hover:underline cursor-pointer text-sm",
+                            "{handle}"
+                        }
+                        span { class: "text-xs text-gray-500 opacity-0 group-hover:opacity-100 transition-opacity",
+                            "{formatted_time}"
+                        }
+                    }
+                    // Chat bubble with indigo/purple gradient for own messages
+                    div { class: "inline-block bg-gradient-to-br from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 rounded-2xl rounded-tl-md px-4 py-2.5 shadow-md transition-colors",
+                        p { class: "text-white leading-relaxed break-words", "{content}" }
+                    }
+                    // Timestamp below bubble (visible on mobile)
+                    span { class: "text-[10px] text-gray-600 mt-1 block md:hidden",
+                        "{formatted_time}"
+                    }
+                }
             }
-            p { class: "text-[#dbdee1] leading-relaxed", "{content}" }
+        }
+    } else {
+        // Other users: always left-aligned with standard color
+        rsx! {
+            div { class: "flex items-start gap-3 group",
+                // Avatar with gradient
+                div { class: "w-10 h-10 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white font-semibold flex-shrink-0 shadow-lg",
+                    "{initial}"
+                }
+                // Message bubble container - using inline-block for variable width
+                div { class: "flex flex-col max-w-[85%]",
+                    div { class: "flex items-baseline gap-2 mb-1",
+                        span { class: "font-semibold text-white hover:underline cursor-pointer text-sm",
+                            "{handle}"
+                        }
+                        span { class: "text-xs text-gray-500 opacity-0 group-hover:opacity-100 transition-opacity",
+                            "{formatted_time}"
+                        }
+                    }
+                    // Chat bubble with subtle background - inline-block for variable width
+                    div { class: "inline-block bg-[#383a40] hover:bg-[#3f4147] rounded-2xl rounded-tl-md px-4 py-2.5 shadow-md transition-colors",
+                        p { class: "text-[#dbdee1] leading-relaxed break-words", "{content}" }
+                    }
+                    // Timestamp below bubble (visible on mobile)
+                    span { class: "text-[10px] text-gray-600 mt-1 block md:hidden",
+                        "{formatted_time}"
+                    }
+                }
+            }
         }
     }
 }

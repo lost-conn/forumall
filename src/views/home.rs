@@ -52,7 +52,8 @@ pub fn NoGroup() -> Element {
 #[component]
 pub fn NoChannel(group: String) -> Element {
     rsx! {
-        div { class: "flex-1 flex flex-col items-center justify-center bg-[#313338] text-white p-8",
+        // Hidden on mobile since the channel sidebar is visible for selection
+        div { class: "hidden md:flex flex-1 flex-col items-center justify-center bg-[#313338] text-white p-8",
             div { class: "w-20 h-20 bg-[#2b2d31] rounded-full flex items-center justify-center mb-6 text-gray-400",
                 svg {
                     class: "w-10 h-10",

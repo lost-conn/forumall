@@ -40,10 +40,21 @@ pub fn HomeSidebarLayout() -> Element {
         }
     });
 
+    // Check if we're currently viewing a specific channel (for responsive sidebar hiding)
+    let route = use_route::<crate::Route>();
+    let is_channel_selected = matches!(&route, crate::Route::ChannelView { .. });
+
+    // Build sidebar classes: hide on mobile only when a channel is selected
+    let sidebar_classes = if is_channel_selected {
+        "hidden md:flex w-[72px] bg-[#1e1f22] flex-col items-center py-3 gap-2 overflow-y-auto"
+    } else {
+        "flex w-[72px] bg-[#1e1f22] flex-col items-center py-3 gap-2 overflow-y-auto"
+    };
+
     rsx! {
         div { class: "flex h-screen overflow-hidden",
-            // Sidebar for Groups - Discord-style with gradient icons
-            div { class: "w-[72px] bg-[#1e1f22] flex flex-col items-center py-3 gap-2 overflow-y-auto",
+            // Sidebar for Groups - hidden on mobile when viewing a channel
+            div { class: "{sidebar_classes}",
                 // Logout button
                 button {
                     class: "group relative w-12 h-12 bg-[#313338] rounded-[24px] flex items-center justify-center text-red-400 font-bold cursor-pointer hover:rounded-[16px] hover:bg-red-500 hover:text-white transition-all duration-200",
