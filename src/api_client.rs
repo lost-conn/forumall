@@ -90,28 +90,68 @@ impl ApiClient {
         path: &str,
         body: &TReq,
     ) -> Result<TRes, ApiError> {
-        let mut rb = self.client.post(self.url(path))
-            .json(body);
-
+        let mut rb = self.client.post(self.url(path));
         if let Some(token) = &self.bearer_token {
-            rb = rb.bearer_auth(token);
+             rb = rb.bearer_auth(token);
         }
-
-        let resp = rb.send()
+        
+        let resp = rb
+            .json(body)
+            .send()
             .await
             .map_err(|e| ApiError::Network(e.to_string()))?;
 
         let status = resp.status().as_u16();
         let is_success = resp.status().is_success();
-        
-        let text = resp.text()
-            .await
-            .map_err(|e| ApiError::Network(format!("failed to read body: {e}")))?;
+        let text = resp.text().await.map_err(|e| ApiError::Network(e.to_string()))?;
 
         if !is_success {
-            return Err(ApiError::Http { status, body: text });
+            return Err(ApiError::Http {
+                status,
+                body: text,
+            });
+        }
+        
+        // Handle void returns which might be empty string
+        if text.is_empty() {
+            // This is hacky for (), but let's try serde
+             serde_json::from_str("null").map_err(|e| ApiError::Deserialize(e.to_string()))
+        } else {
+             serde_json::from_str(&text).map_err(|e| ApiError::Deserialize(e.to_string()))
+        }
+    }
+
+    pub async fn put_json<TReq: Serialize, TRes: DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &TReq,
+    ) -> Result<TRes, ApiError> {
+        let mut rb = self.client.put(self.url(path));
+        if let Some(token) = &self.bearer_token {
+             rb = rb.bearer_auth(token);
         }
 
-        serde_json::from_str(&text).map_err(|e| ApiError::Deserialize(e.to_string()))
+        let resp = rb
+            .json(body)
+            .send()
+            .await
+            .map_err(|e| ApiError::Network(e.to_string()))?;
+
+        let status = resp.status().as_u16();
+        let is_success = resp.status().is_success();
+        let text = resp.text().await.map_err(|e| ApiError::Network(e.to_string()))?;
+
+        if !is_success {
+            return Err(ApiError::Http {
+                status,
+                body: text,
+            });
+        }
+
+        if text.is_empty() {
+             serde_json::from_str("null").map_err(|e| ApiError::Deserialize(e.to_string()))
+        } else {
+             serde_json::from_str(&text).map_err(|e| ApiError::Deserialize(e.to_string()))
+        }
     }
 }

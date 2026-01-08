@@ -208,6 +208,7 @@ pub fn CreateGroupModal(on_close: EventHandler<()>, on_created: EventHandler<()>
                     &CreateGroupRequest {
                         name: group_name,
                         description: None,
+                        join_policy: Some("open".to_string()),
                     },
                 )
                 .await
@@ -424,50 +425,67 @@ pub fn CreateChannelModal(
     }
 }
 
-/// Modal for adding a member to a group
+/// Modal for joining a group
 #[component]
-pub fn AddMemberModal(
-    group_id: String,
-    on_close: EventHandler<()>,
-    on_added: EventHandler<()>,
-) -> Element {
+pub fn JoinGroupModal(on_close: EventHandler<()>, on_joined: EventHandler<()>) -> Element {
     let auth = use_context::<AuthContext>();
-    let mut handle = use_signal(|| String::new());
+    let mut group_name = use_signal(|| String::new());
+    let mut host_url = use_signal(|| String::new());
     let mut error = use_signal(|| None::<String>);
     let mut is_loading = use_signal(|| false);
 
     let handle_submit = move |e: FormEvent| {
         e.prevent_default();
-        let user_handle = handle.read().trim().to_string();
-        if user_handle.is_empty() {
-            error.set(Some("User handle is required".to_string()));
+        let name = group_name.read().trim().to_string();
+        let host = host_url.read().trim().to_string();
+        
+        if name.is_empty() {
+            error.set(Some("Group name is required".to_string()));
             return;
         }
 
         is_loading.set(true);
-        let on_added = on_added.clone();
-        let gid = group_id.clone();
+        let on_joined = on_joined.clone();
         let auth = auth.clone();
-
+        
         spawn(async move {
             let token = auth.token();
-            let client = ApiClient::new(token);
-            let url = auth.api_url(&format!("/api/groups/{gid}/members"));
+            let client = ApiClient::new(token.clone());
+            
+            // 1. Join the group on the target host (or local if no host specified)
+            let target_url = if host.is_empty() {
+                auth.api_url(&format!("/api/groups/{name}/join"))
+            } else {
+                let base = host.trim_end_matches('/');
+                let base = if base.starts_with("http") { base.to_string() } else { format!("https://{}", base) };
+                format!("{base}/api/groups/{name}/join")
+            };
 
-            match client
-                .post_json::<_, ()>(
-                    &url,
-                    &AddMemberRequest {
-                        handle: user_handle,
-                    },
-                )
-                .await
-            {
+            match client.post_json::<_, ()>(&target_url, &()).await {
                 Ok(_) => {
-                    on_added.call(());
-                }
+                    // 2. If successful, add to our local profile if it was a remote join
+                    if !host.is_empty() {
+                         let local_client = ApiClient::new(token.clone());
+                         let local_url = auth.api_url("/api/me/groups");
+                         
+                         let req = crate::users::AddJoinedGroupRequest {
+                             group_id: name.clone(), // Use name as ID
+                             name: name.clone(),
+                             host: Some(host.clone()),
+                         };
+                         
+                         // We don't block heavily on this, but we should await it to ensure consistency
+                         if let Err(e) = local_client.post_json::<_, crate::models::UserJoinedGroup>(&local_url, &req).await {
+                             error.set(Some(format!("Joined remote group, but failed to save locally: {}", e)));
+                             is_loading.set(false);
+                             return;
+                         }
+                    }
+                    
+                    on_joined.call(());
+                },
                 Err(err) => {
-                    let msg = if let crate::api_client::ApiError::Http { body, .. } = &err {
+                     let msg = if let crate::api_client::ApiError::Http { body, .. } = &err {
                         crate::problem::try_problem_detail(body)
                             .unwrap_or_else(|| format!("{}", err))
                     } else {
@@ -485,33 +503,41 @@ pub fn AddMemberModal(
             div { class: "bg-[#313338] rounded-lg shadow-2xl w-full max-w-md mx-4",
                 // Header
                 div { class: "px-6 py-4 border-b border-[#3f4147]",
-                    h3 { class: "text-xl font-bold text-white", "Add Member" }
-                    p { class: "text-sm text-gray-400 mt-1", "Invite a user to this group" }
+                    h3 { class: "text-xl font-bold text-white", "Join a Group" }
+                    p { class: "text-sm text-gray-400 mt-1",
+                        "Join a group by its unique name"
+                    }
                 }
                 // Form
                 form { onsubmit: handle_submit,
                     div { class: "p-6 space-y-4",
                         div {
                             label { class: "block text-sm font-medium text-gray-300 mb-2",
-                                "User Handle"
+                                "Group Name (ID)"
                             }
-                            div { class: "relative",
-                                span { class: "absolute left-4 top-1/2 -translate-y-1/2 text-gray-500",
-                                    "@"
-                                }
-                                input {
-                                    class: "w-full bg-[#2b2d31] border border-[#3f4147] rounded-lg pl-8 pr-4 py-3 text-white placeholder-[#6d6f78] focus:outline-none focus:border-indigo-500 transition-colors",
-                                    r#type: "text",
-                                    placeholder: "username",
-                                    value: "{handle}",
-                                    oninput: move |e: FormEvent| {
-                                        handle.set(e.value());
-                                        error.set(None);
-                                    },
-                                }
+                            input {
+                                class: "w-full bg-[#1e1f22] border-none rounded p-2.5 text-white placeholder-[#949ba4] focus:ring-0",
+                                r#type: "text",
+                                placeholder: "rust-developers",
+                                value: "{group_name}",
+                                oninput: move |e: FormEvent| {
+                                    group_name.set(e.value());
+                                    error.set(None);
+                                },
                             }
-                            p { class: "text-xs text-gray-400 mt-2",
-                                "Enter the username of the person you want to add."
+                        }
+                        div {
+                            label { class: "block text-sm font-medium text-gray-300 mb-2",
+                                "Host (Optional)"
+                            }
+                            input {
+                                class: "w-full bg-[#1e1f22] border-none rounded p-2.5 text-white placeholder-[#949ba4] focus:ring-0",
+                                r#type: "text",
+                                placeholder: "e.g. matrix.org (leave empty for local)",
+                                value: "{host_url}",
+                                oninput: move |e: FormEvent| {
+                                    host_url.set(e.value());
+                                },
                             }
                         }
                         if let Some(err) = error.read().as_ref() {
@@ -530,14 +556,256 @@ pub fn AddMemberModal(
                         }
                         button {
                             r#type: "submit",
-                            class: "px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed",
+                            class: "px-4 py-2 bg-indigo-500 hover:bg-indigo-600 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed",
                             disabled: *is_loading.read(),
                             if *is_loading.read() {
-                                "Adding..."
+                                "Joining..."
                             } else {
-                                "Add Member"
+                                "Join Group"
                             }
                         }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Modal for Group Settings
+#[component]
+pub fn GroupSettingsModal(
+    group_id: String,
+    group_name: String,
+    join_policy: String,
+    on_close: EventHandler<()>,
+) -> Element {
+    let auth = use_context::<AuthContext>();
+    let mut current_tab = use_signal(|| "general"); // "general" or "members"
+    
+    // General Settings State
+    let mut name = use_signal(|| group_name.clone());
+    let mut policy = use_signal(|| join_policy.clone());
+    let mut is_saving = use_signal(|| false);
+    let mut error = use_signal(|| None::<String>);
+    
+    let group_id_for_save = group_id.clone();
+    let group_id_for_add = group_id.clone();
+
+    // Members Tab State
+    let mut add_member_handle = use_signal(|| String::new());
+    let mut add_member_error = use_signal(|| None::<String>);
+    let mut is_adding_member = use_signal(|| false);
+
+    let handle_save = move |e: FormEvent| {
+        e.prevent_default();
+        is_saving.set(true);
+        let gid = group_id_for_save.clone();
+        let new_name = name.read().clone();
+        let new_policy = policy.read().clone();
+        let auth = auth.clone();
+        let on_close = on_close.clone();
+
+        spawn(async move {
+            let token = auth.token();
+            let client = ApiClient::new(token);
+            let url = auth.api_url(&format!("/api/groups/{gid}"));
+            
+            match client.put_json::<_, Group>(&url, &UpdateGroupSettingsRequest {
+                name: Some(new_name),
+                description: None,
+                join_policy: Some(new_policy),
+            }).await {
+                Ok(_) => {
+                    let nav = use_navigator();
+                    nav.replace(crate::Route::Home {});
+                    on_close.call(());
+                },
+                Err(err) => {
+                     let msg = if let crate::api_client::ApiError::Http { body, .. } = &err {
+                        crate::problem::try_problem_detail(body)
+                            .unwrap_or_else(|| format!("{}", err))
+                    } else {
+                        format!("{}", err)
+                    };
+                    error.set(Some(msg));
+                    is_saving.set(false);
+                }
+            }
+        });
+    };
+    
+    let handle_add_member = move |e: FormEvent| {
+        e.prevent_default();
+        let user_handle = add_member_handle.read().trim().to_string();
+        if user_handle.is_empty() { return; }
+        
+        is_adding_member.set(true);
+        let gid = group_id_for_add.clone();
+        let auth = auth.clone();
+        
+        spawn(async move {
+            let token = auth.token();
+            let client = ApiClient::new(token);
+            let url = auth.api_url(&format!("/api/groups/{gid}/members"));
+
+            match client.post_json::<_, ()>(&url, &AddMemberRequest { handle: user_handle }).await {
+                 Ok(_) => {
+                    is_adding_member.set(false);
+                    add_member_handle.set(String::new());
+                    add_member_error.set(None);
+                 },
+                 Err(err) => {
+                     let msg = if let crate::api_client::ApiError::Http { body, .. } = &err {
+                        crate::problem::try_problem_detail(body)
+                            .unwrap_or_else(|| format!("{}", err))
+                    } else {
+                        format!("{}", err)
+                    };
+                    add_member_error.set(Some(msg));
+                    is_adding_member.set(false);
+                 }
+            }
+        });
+    };
+
+    rsx! {
+        div { class: "fixed inset-0 bg-black/70 flex items-center justify-center z-50",
+            div { class: "bg-[#313338] rounded-lg shadow-2xl w-full max-w-2xl h-[600px] flex overflow-hidden",
+                // Sidebar
+                div { class: "w-48 bg-[#2b2d31] p-3 flex flex-col gap-1",
+                    div { 
+                        class: format!("px-3 py-2 rounded cursor-pointer text-sm font-medium {}", 
+                            if *current_tab.read() == "general" { "bg-[#404249] text-white" } else { "text-[#b5bac1] hover:bg-[#35373c] hover:text-[#dbdee1]" }
+                        ),
+                        onclick: move |_| current_tab.set("general"),
+                        "Overview"
+                    }
+                    div { 
+                        class: format!("px-3 py-2 rounded cursor-pointer text-sm font-medium {}", 
+                            if *current_tab.read() == "members" { "bg-[#404249] text-white" } else { "text-[#b5bac1] hover:bg-[#35373c] hover:text-[#dbdee1]" }
+                        ),
+                        onclick: move |_| current_tab.set("members"),
+                        "Members"
+                    }
+                    div { class: "flex-1" }
+                    div { 
+                        class: "px-3 py-2 rounded cursor-pointer text-sm font-medium text-red-400 hover:bg-[#35373c]",
+                        "Delete Group"
+                    }
+                }
+                
+                // Content
+                div { class: "flex-1 flex flex-col bg-[#313338]",
+                    // Header
+                    div { class: "px-6 py-6",
+                         h2 { class: "text-xl font-bold text-white", 
+                            if *current_tab.read() == "general" { "Overview" } else { "Members" }
+                         }
+                    }
+                    
+                    // Body
+                    div { class: "flex-1 px-6 overflow-y-auto",
+                        if *current_tab.read() == "general" {
+                             form { onsubmit: handle_save, class: "space-y-6",
+                                div {
+                                    label { class: "block text-xs font-bold text-[#b5bac1] uppercase mb-2", "Group Name" }
+                                    input {
+                                        class: "w-full bg-[#1e1f22] border-none rounded p-2.5 text-white focus:ring-0",
+                                        value: "{name}",
+                                        oninput: move |e: FormEvent| name.set(e.value()),
+                                    }
+                                }
+                                
+                                div {
+                                    label { class: "block text-xs font-bold text-[#b5bac1] uppercase mb-2", "Join Policy" }
+                                    div { class: "flex flex-col gap-2",
+                                        label { class: "flex items-center gap-3 p-3 rounded bg-[#2b2d31] cursor-pointer hover:bg-[#404249]",
+                                            input { 
+                                                r#type: "radio", 
+                                                name: "policy", 
+                                                checked: *policy.read() == "open",
+                                                onchange: move |_| policy.set("open".to_string()),
+                                                class: "text-indigo-500 focus:ring-indigo-500 bg-[#1e1f22] border-none"
+                                            }
+                                            div {
+                                                div { class: "text-white font-medium", "Open" }
+                                                div { class: "text-xs text-[#b5bac1]", "Anyone can join this group." }
+                                            }
+                                        }
+                                        label { class: "flex items-center gap-3 p-3 rounded bg-[#2b2d31] cursor-pointer hover:bg-[#404249]",
+                                            input { 
+                                                r#type: "radio", 
+                                                name: "policy", 
+                                                checked: *policy.read() == "whitelist",
+                                                onchange: move |_| policy.set("whitelist".to_string()),
+                                                class: "text-indigo-500 focus:ring-indigo-500 bg-[#1e1f22] border-none"
+                                            }
+                                            div {
+                                                div { class: "text-white font-medium", "Whitelist" }
+                                                div { class: "text-xs text-[#b5bac1]", "Join request must be approved." }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                if let Some(err) = error.read().as_ref() {
+                                    div { class: "text-red-400 text-sm", "{err}" }
+                                }
+                                
+                                div { class: "flex justify-end pt-4",
+                                    button {
+                                        r#type: "submit",
+                                        class: "px-4 py-2 bg-indigo-500 hover:bg-indigo-600 text-white rounded transition-colors disabled:opacity-50",
+                                        disabled: *is_saving.read(),
+                                        if *is_saving.read() { "Saving..." } else { "Save Changes" }
+                                    }
+                                }
+                             }
+                        } else {
+                            // Members Tab
+                            div { class: "space-y-6",
+                                // Add Member
+                                div { class: "bg-[#2b2d31] p-4 rounded",
+                                    h3 { class: "text-white font-medium mb-2", "Add Member" }
+                                    form { onsubmit: handle_add_member, class: "flex gap-2",
+                                        input {
+                                            class: "flex-1 bg-[#1e1f22] border-none rounded p-2 text-white placeholder-[#949ba4] focus:ring-0",
+                                            placeholder: "Enter user handle",
+                                            value: "{add_member_handle}",
+                                            oninput: move |e: FormEvent| {
+                                                add_member_handle.set(e.value());
+                                                add_member_error.set(None);
+                                            },
+                                        }
+                                        button {
+                                            r#type: "submit",
+                                            class: "px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded transition-colors disabled:opacity-50",
+                                            disabled: *is_adding_member.read(),
+                                            if *is_adding_member.read() { "Adding..." } else { "Add" }
+                                        }
+                                    }
+                                    if let Some(err) = add_member_error.read().as_ref() {
+                                        div { class: "mt-2 text-red-400 text-sm", "{err}" }
+                                    }
+                                }
+                                
+                                // Member List (Placeholder)
+                                div { class: "bg-[#2b2d31] p-4 rounded text-center",
+                                    p { class: "text-[#949ba4] text-sm", 
+                                        "Member management list coming soon." 
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    // Footer
+                    div { class: "p-4 bg-[#2b2d31] flex justify-end",
+                         button {
+                            class: "px-4 py-2 bg-[#404249] hover:bg-[#4e5058] text-white rounded font-medium",
+                            onclick: move |_| on_close.call(()),
+                            "Done"
+                         }
                     }
                 }
             }

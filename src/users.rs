@@ -1,6 +1,6 @@
 use crate::models::{UserJoinedGroup, UserProfile};
 use dioxus::prelude::*;
-use dioxus_fullstack::HeaderMap;
+use dioxus_fullstack::{HeaderMap, Json};
 
 #[get("/api/users/:user_id/groups", headers: HeaderMap)]
 pub async fn get_user_groups(user_id: String) -> Result<Vec<UserJoinedGroup>, ServerFnError> {
@@ -103,4 +103,82 @@ pub async fn get_user_profile(id: String) -> Result<UserProfile, ServerFnError> 
         updated_at,
         metadata: vec![],
     })
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AddJoinedGroupRequest {
+    pub group_id: String,
+    pub name: String,
+    pub host: Option<String>,
+}
+
+#[post("/api/users/:user_id/groups", headers: HeaderMap)]
+pub async fn add_user_joined_group(
+    user_id: String,
+    Json(payload): Json<AddJoinedGroupRequest>,
+) -> Result<Json<UserJoinedGroup>, ServerFnError> {
+    let auth_user = crate::server::auth::require_bearer_user_id(&headers)?.user_id;
+    if auth_user != user_id {
+        return Err(ServerFnError::new("Unauthorized"));
+    }
+    
+    let now = chrono::Utc::now().to_rfc3339();
+    let host = payload.host.clone().unwrap_or_else(|| dioxus_fullstack::get_server_url().to_string());
+
+    #[cfg(feature = "server")]
+    {
+        let db = &*crate::DB;
+        db.insert_into(
+            "user_joined_groups",
+            vec![
+                ("user_id", user_id.clone().into()),
+                ("group_id", payload.group_id.clone().into()),
+                ("host", host.clone().into()),
+                ("name", payload.name.clone().into()),
+                ("joined_at", now.clone().into()),
+            ],
+        )
+        .await
+        .map_err(|e| ServerFnError::new(format!("Database error: {}", e)))?;
+    }
+
+    Ok(Json(UserJoinedGroup {
+        group_id: payload.group_id,
+        host: Some(host),
+        name: payload.name,
+        joined_at: now,
+    }))
+}
+
+#[post("/api/me/groups", headers: HeaderMap)]
+pub async fn add_self_joined_group(
+    Json(payload): Json<AddJoinedGroupRequest>,
+) -> Result<Json<UserJoinedGroup>, ServerFnError> {
+    let user_id = crate::server::auth::require_bearer_user_id(&headers)?.user_id;
+    let now = chrono::Utc::now().to_rfc3339();
+    let host = payload.host.clone().unwrap_or_else(|| dioxus_fullstack::get_server_url().to_string());
+
+    #[cfg(feature = "server")]
+    {
+        let db = &*crate::DB;
+        db.insert_into(
+            "user_joined_groups",
+            vec![
+                ("user_id", user_id.clone().into()),
+                ("group_id", payload.group_id.clone().into()),
+                ("host", host.clone().into()),
+                ("name", payload.name.clone().into()),
+                ("joined_at", now.clone().into()),
+            ],
+        )
+        .await
+        .map_err(|e| ServerFnError::new(format!("Database error: {}", e)))?;
+    }
+
+    Ok(Json(UserJoinedGroup {
+        group_id: payload.group_id,
+        host: Some(host),
+        name: payload.name,
+        joined_at: now,
+    }))
 }

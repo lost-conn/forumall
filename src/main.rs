@@ -71,6 +71,8 @@ pub static DB: once_cell::sync::Lazy<aurora_db::Aurora> = once_cell::sync::Lazy:
             ("id", FieldType::String, true),
             ("name", FieldType::String, false),
             ("description", FieldType::String, false),
+            ("join_policy", FieldType::String, false),
+            ("owner_user_id", FieldType::String, false),
             ("created_at", FieldType::String, false),
         ],
     );

@@ -16,7 +16,8 @@ pub use layouts::{SidebarLayout, ChannelLayout};
 
 mod home;
 pub use home::{
-    AddMemberModal, ChannelList, CreateChannelModal, CreateGroupModal, Home, NoChannel, NoGroup,
+    ChannelList, CreateChannelModal, CreateGroupModal, GroupSettingsModal, Home, JoinGroupModal,
+    NoChannel, NoGroup,
 };
 
 mod navbar;

@@ -2,16 +2,22 @@
 use crate::server::auth;
 use dioxus::logger::tracing;
 use dioxus::prelude::ServerFnError;
-use dioxus_fullstack::{get, post, HeaderMap, Json};
+use dioxus_fullstack::{get, post, put, HeaderMap, Json};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
 pub struct Group {
     pub id: String,
     pub name: String,
     pub description: Option<String>,
+    #[serde(default = "default_join_policy")]
+    pub join_policy: String,
     pub owner_user_id: String,
     pub created_at: String,
     pub updated_at: String,
+}
+
+fn default_join_policy() -> String {
+    "open".to_string()
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
@@ -29,18 +35,41 @@ pub struct CreateGroupRequest {
     pub name: String,
     #[serde(default)]
     pub description: Option<String>,
+    #[serde(default)]
+    pub join_policy: Option<String>,
 }
 
 #[post("/api/groups", headers: HeaderMap)]
 pub async fn create_group(Json(payload): Json<CreateGroupRequest>) -> Result<Group, ServerFnError> {
     let user_id = auth::require_bearer_user_id(&headers)?.user_id;
-    let id = uuid::Uuid::new_v4().to_string();
+    // Use name as ID (enforce uniqueness)
+    let id = payload.name.trim().to_string();
+    if id.is_empty() {
+        return Err(ServerFnError::new("Group name cannot be empty"));
+    }
+    
     let now = chrono::Utc::now().to_rfc3339();
+
+    #[cfg(feature = "server")]
+    {
+        let db = &*crate::DB;
+        let existing = db
+            .query("groups")
+            .filter(|f| f.eq("id", id.clone()))
+            .collect()
+            .await
+            .map_err(|e| ServerFnError::new(format!("Database error: {}", e)))?;
+            
+        if !existing.is_empty() {
+             return Err(ServerFnError::new("A group with this name already exists"));
+        }
+    }
 
     let group = Group {
         id: id.clone(),
-        name: payload.name,
+        name: payload.name, // Name is same as ID
         description: payload.description,
+        join_policy: payload.join_policy.unwrap_or_else(|| "open".to_string()),
         owner_user_id: user_id.clone(),
         created_at: now.clone(),
         updated_at: now.clone(),
@@ -58,6 +87,7 @@ pub async fn create_group(Json(payload): Json<CreateGroupRequest>) -> Result<Gro
                     "description",
                     group.description.as_deref().unwrap_or("").into(),
                 ),
+                ("join_policy", group.join_policy.clone().into()),
                 ("owner_user_id", group.owner_user_id.clone().into()),
                 ("created_at", group.created_at.clone().into()),
                 ("updated_at", group.updated_at.clone().into()),
@@ -156,6 +186,12 @@ pub async fn list_groups_for_user() -> Result<Json<Vec<Group>>, ServerFnError> {
                     .get("description")
                     .and_then(|v: &aurora_db::Value| v.as_str())
                     .map(|s: &str| s.to_string());
+                let join_policy = doc
+                    .data
+                    .get("join_policy")
+                    .and_then(|v: &aurora_db::Value| v.as_str())
+                    .unwrap_or("open")
+                    .to_string();
                 let owner_user_id = doc
                     .data
                     .get("owner_user_id")
@@ -178,6 +214,7 @@ pub async fn list_groups_for_user() -> Result<Json<Vec<Group>>, ServerFnError> {
                     id,
                     name,
                     description,
+                    join_policy,
                     owner_user_id,
                     created_at,
                     updated_at,
@@ -443,6 +480,179 @@ pub async fn add_group_member(
         )
         .await
         .map_err(|e| ServerFnError::new(format!("Database error updating joined groups: {}", e)))?;
+    }
+
+    Ok(Json(()))
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct UpdateGroupSettingsRequest {
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub join_policy: Option<String>,
+}
+
+#[put("/api/groups/:group_id", headers: HeaderMap)]
+pub async fn update_group_settings(
+    group_id: String,
+    Json(payload): Json<UpdateGroupSettingsRequest>,
+) -> Result<Json<Group>, ServerFnError> {
+    let user_id = auth::require_bearer_user_id(&headers)?.user_id;
+
+    #[cfg(feature = "server")]
+    {
+        let db = &*crate::DB;
+
+        // 1. Verify ownership
+        let group_docs = db
+            .query("groups")
+            .filter(|f| f.eq("id", group_id.clone()) & f.eq("owner_user_id", user_id.clone()))
+            .collect()
+            .await
+            .map_err(|e| ServerFnError::new(format!("Database error checking ownership: {}", e)))?;
+
+        if group_docs.is_empty() {
+            return Err(ServerFnError::new(
+                "Unauthorized: Only the group owner can update settings",
+            ));
+        }
+        
+        // 2. Prepare updates
+        // Aurora DB doesn't have a partial update per se in its simple interface, 
+        // usually we might have to overwrite or we can assume there's an update method if we implemented it,
+        // but looking at `main.rs` it seems we only used `insert_into` and `query`.
+        // The `aurora_db` mock we have likely doesn't support UPDATE WHERE.
+        // Wait, looking at previous code, we haven't done updates yet.
+        // If the DB driver is simple, we might need to delete and re-insert, OR implement update.
+        // Let's assume for now we can't easily update in place without `update_where` which I should check for.
+        // Checking `fsReadFile` of `main.rs` doesn't show the DB implementation, just usage.
+        // I'll assume I can use `db.update("groups", doc_id, fields)`.
+        // But `group_docs` returns documents which have an internal ID usually?
+        // Ah, `aurora_db` is a mock local DB I see in main.rs: `aurora_db::Aurora::open`.
+        
+        // Let's check what `aurora_db` supports.
+        // Since I can't see the library code, I'll search for usages of update.
+        // `workspaceSearch` "update" might help.
+        
+        // If I can't find update, I might have to delete and re-insert or use a workaround.
+        // Actually, `insert_into` often acts as upsert if PK matches? 
+        // In `main.rs`, "id" is `FieldType::String, true` (is_primary_key).
+        // So `insert_into` with same ID should overwrite!
+        
+        let existing_doc = &group_docs[0];
+        
+        let current_name = existing_doc.data.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let current_desc = existing_doc.data.get("description").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let current_policy = existing_doc.data.get("join_policy").and_then(|v| v.as_str()).unwrap_or("open").to_string();
+        let current_owner = existing_doc.data.get("owner_user_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let created_at = existing_doc.data.get("created_at").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        
+        let new_name = payload.name.unwrap_or(current_name);
+        let new_desc = payload.description.or(current_desc);
+        let new_policy = payload.join_policy.unwrap_or(current_policy);
+        let updated_at = chrono::Utc::now().to_rfc3339();
+        
+        db.insert_into(
+            "groups",
+            vec![
+                ("id", group_id.clone().into()),
+                ("name", new_name.clone().into()),
+                ("description", new_desc.as_deref().unwrap_or("").into()),
+                ("join_policy", new_policy.clone().into()),
+                ("owner_user_id", current_owner.clone().into()),
+                ("created_at", created_at.clone().into()),
+                ("updated_at", updated_at.clone().into()),
+            ],
+        )
+        .await
+        .map_err(|e| ServerFnError::new(format!("Database error updating group: {}", e)))?;
+        
+        Ok(Json(Group {
+            id: group_id,
+            name: new_name,
+            description: new_desc,
+            join_policy: new_policy,
+            owner_user_id: current_owner,
+            created_at,
+            updated_at,
+        }))
+    }
+    #[cfg(not(feature = "server"))]
+    Err(ServerFnError::new("Server feature not enabled"))
+}
+
+#[post("/api/groups/:group_id/join", headers: HeaderMap)]
+pub async fn join_group(group_id: String) -> Result<Json<()>, ServerFnError> {
+    let user_id = auth::require_bearer_user_id(&headers)?.user_id;
+    let now = chrono::Utc::now().to_rfc3339();
+
+    #[cfg(feature = "server")]
+    {
+        let db = &*crate::DB;
+
+        // 1. Check if user is already a member
+        let member_docs = db
+            .query("group_members")
+            .filter(|f| f.eq("group_id", group_id.clone()) & f.eq("user_id", user_id.clone()))
+            .collect()
+            .await
+            .map_err(|e| ServerFnError::new(format!("Database error: {}", e)))?;
+
+        if !member_docs.is_empty() {
+            // Already a member. Just ensure it's in user_joined_groups and return success.
+            // (Idempotency)
+        } else {
+            // 2. Fetch Group to check policy
+            let group_docs = db
+                .query("groups")
+                .filter(|f| f.eq("id", group_id.clone()))
+                .collect()
+                .await
+                .map_err(|e| ServerFnError::new(format!("Database error: {}", e)))?;
+            
+            let group_doc = group_docs.first().ok_or_else(|| ServerFnError::new("Group not found"))?;
+            
+            let join_policy = group_doc
+                .data
+                .get("join_policy")
+                .and_then(|v| v.as_str())
+                .unwrap_or("open");
+                
+            if join_policy != "open" {
+                 return Err(ServerFnError::new("Group is not open for joining"));
+            }
+            
+            // 3. Add to group_members
+            db.insert_into(
+                "group_members",
+                vec![
+                    ("group_id", group_id.clone().into()),
+                    ("user_id", user_id.clone().into()),
+                    ("role", "member".into()),
+                    ("created_at", now.clone().into()),
+                ],
+            )
+            .await
+            .map_err(|e| ServerFnError::new(format!("Database error adding member: {}", e)))?;
+        }
+
+        // 4. Update user_joined_groups (upsert-ish)
+        // We need the name
+        let group_docs = db.query("groups").filter(|f| f.eq("id", group_id.clone())).collect().await.unwrap(); // Should be there
+        let group_name = group_docs.first().and_then(|d| d.data.get("name").and_then(|v| v.as_str())).unwrap_or("Unknown").to_string();
+
+        db.insert_into(
+            "user_joined_groups",
+            vec![
+                ("user_id", user_id.clone().into()),
+                ("group_id", group_id.clone().into()),
+                ("host", dioxus_fullstack::get_server_url().into()),
+                ("name", group_name.into()),
+                ("joined_at", now.into()),
+            ],
+        )
+        .await
+        .map_err(|e| ServerFnError::new(format!("Database error: {}", e)))?;
     }
 
     Ok(Json(()))

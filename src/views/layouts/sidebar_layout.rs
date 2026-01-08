@@ -1,7 +1,7 @@
 use crate::api_client::ApiClient;
 use crate::auth_session::AuthContext;
 use crate::models::UserJoinedGroup;
-use crate::views::CreateGroupModal;
+use crate::views::{CreateGroupModal, JoinGroupModal};
 use dioxus::prelude::*;
 use dioxus_fullstack::Json;
 
@@ -12,6 +12,7 @@ pub fn SidebarLayout() -> Element {
     let mut auth = use_context::<AuthContext>();
     let mut selected_group = use_signal(|| None::<UserJoinedGroup>);
     let mut show_create_group_modal = use_signal(|| false);
+    let mut show_join_group_modal = use_signal(|| false);
 
     // Redirect to login if not authenticated
     let nav = use_navigator();
@@ -110,7 +111,15 @@ pub fn SidebarLayout() -> Element {
                 // Add group button
                 div {
                     class: "group relative w-12 h-12 bg-[#313338] rounded-[24px] flex items-center justify-center text-emerald-400 font-bold cursor-pointer hover:rounded-[16px] hover:bg-emerald-500 hover:text-white transition-all duration-200",
-                    onclick: move |_| show_create_group_modal.set(true),
+                    // We can perhaps open a small menu, or just show Create for now and handle Join elsewhere?
+                    // User asked for "Update `SidebarLayout` to show "Join Group" option in "+""
+                    // A simple way is to toggle a modal selector, or just make the + button open a menu.
+                    // For now, let's keep it simple: The "+" button will open a small modal asking "Create" or "Join".
+                    // Or, we can just put two buttons.
+                    // Let's make the "+" button open a dialogue or have two distinct buttons.
+                    // Discord puts "Join Server" as a separate button at the bottom of the list usually, or inside the "+" flow.
+                    // Let's make the "+" button open a "Add Server" modal that has "Create My Own" and "Join a Server".
+                    onclick: move |_| show_create_group_modal.set(true), 
                     div { class: "absolute left-full ml-4 px-3 py-2 bg-[#111214] text-white text-sm font-medium rounded-md whitespace-nowrap opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-150 z-50 shadow-lg",
                         "Add a Group"
                     }
@@ -124,6 +133,27 @@ pub fn SidebarLayout() -> Element {
                             stroke_linejoin: "round",
                             stroke_width: "2",
                             d: "M12 4v16m8-8H4",
+                        }
+                    }
+                }
+                
+                // Explore/Join button (Compass)
+                div {
+                    class: "group relative w-12 h-12 bg-[#313338] rounded-[24px] flex items-center justify-center text-emerald-400 font-bold cursor-pointer hover:rounded-[16px] hover:bg-emerald-500 hover:text-white transition-all duration-200",
+                    onclick: move |_| show_join_group_modal.set(true),
+                    div { class: "absolute left-full ml-4 px-3 py-2 bg-[#111214] text-white text-sm font-medium rounded-md whitespace-nowrap opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-150 z-50 shadow-lg",
+                        "Join a Group"
+                    }
+                    svg {
+                        class: "w-5 h-5",
+                        fill: "none",
+                        stroke: "currentColor",
+                        view_box: "0 0 24 24",
+                        path {
+                            stroke_linecap: "round",
+                            stroke_linejoin: "round",
+                            stroke_width: "2",
+                            d: "M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h7a3 3 0 013 3v1", // Compass-ish or just Enter
                         }
                     }
                 }
@@ -142,6 +172,18 @@ pub fn SidebarLayout() -> Element {
                         let _ = groups.restart();
                     },
                 }
+            }
+            
+            // Join Group Modal
+            if *show_join_group_modal.read() {
+                 JoinGroupModal {
+                    on_close: move |_| show_join_group_modal.set(false),
+                    on_joined: move |_| {
+                        show_join_group_modal.set(false);
+                        // Refresh the groups list
+                        let _ = groups.restart();
+                    },
+                 }
             }
         }
     }
