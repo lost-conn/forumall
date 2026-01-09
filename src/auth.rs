@@ -4,7 +4,7 @@ use dioxus_fullstack::{post, Json};
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "server")]
-use crate::server::jwt;
+use {crate::server::jwt, crate::server::middleware::cors::api_cors_layer};
 
 #[cfg(feature = "server")]
 use argon2::{
@@ -19,9 +19,8 @@ pub struct RegisterRequest {
 }
 
 #[post("/api/auth/register")]
-pub async fn register(
-    payload: Json<RegisterRequest>,
-) -> Result<Json<LoginResponse>, ServerFnError> {
+#[middleware(api_cors_layer())]
+pub async fn register(payload: Json<RegisterRequest>) -> Result<LoginResponse, ServerFnError> {
     let payload = payload.0;
     tracing::info!("Registering user: {}", payload.handle);
 
@@ -64,17 +63,17 @@ pub async fn register(
         let token = jwt::issue_access_token(&payload.handle)
             .map_err(|e| ServerFnError::new(format!("Failed to issue token: {e}")))?;
 
-        Ok(Json(LoginResponse {
+        Ok(LoginResponse {
             user_id: payload.handle,
             token,
-        }))
+        })
     }
     #[cfg(not(feature = "server"))]
     {
-        Ok(Json(LoginResponse {
+        Ok(LoginResponse {
             user_id: id,
             token: String::new(),
-        }))
+        })
     }
 }
 
@@ -91,7 +90,8 @@ pub struct LoginResponse {
 }
 
 #[post("/api/auth/login")]
-pub async fn login(payload: Json<LoginRequest>) -> Result<Json<LoginResponse>, ServerFnError> {
+#[middleware(api_cors_layer())]
+pub async fn login(payload: Json<LoginRequest>) -> Result<LoginResponse, ServerFnError> {
     let payload = payload.0;
     tracing::info!("Logging in user: {}", payload.handle);
 
@@ -134,14 +134,14 @@ pub async fn login(payload: Json<LoginRequest>) -> Result<Json<LoginResponse>, S
         let token = jwt::issue_access_token(&user_handle)
             .map_err(|e| ServerFnError::new(format!("Failed to issue token: {e}")))?;
 
-        Ok(Json(LoginResponse {
+        Ok(LoginResponse {
             user_id: user_handle,
             token,
-        }))
+        })
     }
     #[cfg(not(feature = "server"))]
-    Ok(Json(LoginResponse {
+    Ok(LoginResponse {
         user_id: String::new(),
         token: String::new(),
-    }))
+    })
 }

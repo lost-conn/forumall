@@ -2189,6 +2189,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tokio",
+ "tower-http",
  "uuid",
  "wasm-bindgen",
  "wasm-bindgen-futures",

@@ -2,7 +2,11 @@ use crate::models::{UserJoinedGroup, UserProfile};
 use dioxus::prelude::*;
 use dioxus_fullstack::{HeaderMap, Json};
 
+#[cfg(feature = "server")]
+use crate::server::middleware::cors::api_cors_layer;
+
 #[get("/api/users/:user_id/groups", headers: HeaderMap)]
+#[middleware(api_cors_layer())]
 pub async fn get_user_groups(user_id: String) -> Result<Vec<UserJoinedGroup>, ServerFnError> {
     // 1. Authenticate. We should ensure the caller is allowed to see these groups.
     // For now, we only allow the user themselves to see their joined groups.
@@ -60,6 +64,7 @@ pub async fn get_user_groups(user_id: String) -> Result<Vec<UserJoinedGroup>, Se
 }
 
 #[get("/api/users/:handle/profile")]
+#[middleware(api_cors_layer())]
 pub async fn get_user_profile(handle: String) -> Result<UserProfile, ServerFnError> {
     let db = &*crate::DB;
 
@@ -112,10 +117,11 @@ pub struct AddJoinedGroupRequest {
 }
 
 #[post("/api/users/:user_id/groups", headers: HeaderMap)]
+#[middleware(api_cors_layer())]
 pub async fn add_user_joined_group(
     user_id: String,
     Json(payload): Json<AddJoinedGroupRequest>,
-) -> Result<Json<UserJoinedGroup>, ServerFnError> {
+) -> Result<UserJoinedGroup, ServerFnError> {
     let auth_user = crate::server::auth::require_bearer_user_id(&headers)?.user_id;
     if auth_user != user_id {
         return Err(ServerFnError::new("Unauthorized"));
@@ -144,18 +150,19 @@ pub async fn add_user_joined_group(
         .map_err(|e| ServerFnError::new(format!("Database error: {}", e)))?;
     }
 
-    Ok(Json(UserJoinedGroup {
+    Ok(UserJoinedGroup {
         group_id: payload.group_id,
         host: Some(host),
         name: payload.name,
         joined_at: now,
-    }))
+    })
 }
 
 #[post("/api/me/groups", headers: HeaderMap)]
+#[middleware(api_cors_layer())]
 pub async fn add_self_joined_group(
     Json(payload): Json<AddJoinedGroupRequest>,
-) -> Result<Json<UserJoinedGroup>, ServerFnError> {
+) -> Result<UserJoinedGroup, ServerFnError> {
     let user_id = crate::server::auth::require_bearer_user_id(&headers)?.user_id;
     let now = chrono::Utc::now().to_rfc3339();
     let host = payload
@@ -180,10 +187,10 @@ pub async fn add_self_joined_group(
         .map_err(|e| ServerFnError::new(format!("Database error: {}", e)))?;
     }
 
-    Ok(Json(UserJoinedGroup {
+    Ok(UserJoinedGroup {
         group_id: payload.group_id,
         host: Some(host),
         name: payload.name,
         joined_at: now,
-    }))
+    })
 }

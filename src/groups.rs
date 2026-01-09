@@ -1,8 +1,8 @@
-#[cfg(feature = "server")]
-use crate::server::auth;
 use dioxus::logger::tracing;
 use dioxus::prelude::ServerFnError;
 use dioxus_fullstack::{get, post, put, HeaderMap, Json};
+#[cfg(feature = "server")]
+use {crate::server::auth, crate::server::middleware::cors::api_cors_layer};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
 pub struct Group {
@@ -40,6 +40,7 @@ pub struct CreateGroupRequest {
 }
 
 #[post("/api/groups", headers: HeaderMap)]
+#[middleware(api_cors_layer())]
 pub async fn create_group(Json(payload): Json<CreateGroupRequest>) -> Result<Group, ServerFnError> {
     let user_id = auth::require_bearer_user_id(&headers)?.user_id;
     // Use name as ID (enforce uniqueness)
@@ -137,7 +138,8 @@ pub async fn create_group(Json(payload): Json<CreateGroupRequest>) -> Result<Gro
 }
 
 #[get("/api/groups", headers: HeaderMap)]
-pub async fn list_groups_for_user() -> Result<Json<Vec<Group>>, ServerFnError> {
+#[middleware(api_cors_layer())]
+pub async fn list_groups_for_user() -> Result<Vec<Group>, ServerFnError> {
     let user_id = crate::server::auth::require_bearer_user_id(&headers)?.user_id;
 
     #[cfg(feature = "server")]
@@ -225,10 +227,10 @@ pub async fn list_groups_for_user() -> Result<Json<Vec<Group>>, ServerFnError> {
         }
 
         groups.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-        Ok(Json(groups))
+        Ok(groups)
     }
     #[cfg(not(feature = "server"))]
-    Ok(Json(vec![]))
+    Ok(vec![])
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -239,10 +241,11 @@ pub struct CreateChannelRequest {
 }
 
 #[post("/api/groups/:group_id/channels", headers: HeaderMap)]
+#[middleware(api_cors_layer())]
 pub async fn create_channel(
     group_id: String,
     Json(payload): Json<CreateChannelRequest>,
-) -> Result<Json<Channel>, ServerFnError> {
+) -> Result<Channel, ServerFnError> {
     let user_id = crate::server::auth::require_bearer_user_id(&headers)?.user_id;
 
     if !crate::models::validate_resource_name(&payload.name) {
@@ -294,14 +297,15 @@ pub async fn create_channel(
         .await
         .map_err(|e| ServerFnError::new(format!("Database error: {}", e)))?;
 
-        Ok(Json(channel))
+        Ok(channel)
     }
     #[cfg(not(feature = "server"))]
     Err(ServerFnError::new("Server feature not enabled"))
 }
 
 #[get("/api/groups/:group_id/channels", headers: HeaderMap)]
-pub async fn list_channels(group_id: String) -> Result<Json<Vec<Channel>>, ServerFnError> {
+#[middleware(api_cors_layer())]
+pub async fn list_channels(group_id: String) -> Result<Vec<Channel>, ServerFnError> {
     let user_id = crate::server::auth::require_bearer_user_id(&headers)?.user_id;
 
     #[cfg(feature = "server")]
@@ -377,10 +381,10 @@ pub async fn list_channels(group_id: String) -> Result<Json<Vec<Channel>>, Serve
 
         channels.sort_by(|a, b| a.created_at.cmp(&b.created_at));
 
-        Ok(Json(channels))
+        Ok(channels)
     }
     #[cfg(not(feature = "server"))]
-    Ok(Json(vec![]))
+    Ok(vec![])
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -389,6 +393,7 @@ pub struct AddMemberRequest {
 }
 
 #[post("/api/groups/:group_id/members", headers: HeaderMap)]
+#[middleware(api_cors_layer())]
 pub async fn add_group_member(
     group_id: String,
     Json(payload): Json<AddMemberRequest>,
@@ -494,6 +499,7 @@ pub struct UpdateGroupSettingsRequest {
 }
 
 #[put("/api/groups/:group_id", headers: HeaderMap)]
+#[middleware(api_cors_layer())]
 pub async fn update_group_settings(
     group_id: String,
     Json(payload): Json<UpdateGroupSettingsRequest>,
@@ -539,6 +545,7 @@ pub async fn update_group_settings(
 }
 
 #[post("/api/groups/:group_id/join", headers: HeaderMap)]
+#[middleware(api_cors_layer())]
 pub async fn join_group(group_id: String) -> Result<(), ServerFnError> {
     let user_id = auth::require_bearer_user_id(&headers)?.user_id;
     let now = chrono::Utc::now().to_rfc3339();

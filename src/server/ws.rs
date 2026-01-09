@@ -15,10 +15,13 @@ static CHANNELS: Lazy<ChannelMap> = Lazy::new(|| Arc::new(RwLock::new(HashMap::n
 
 #[cfg(feature = "server")]
 use dioxus_fullstack::TypedWebsocket;
+#[cfg(feature = "server")]
+use crate::server::middleware::cors::api_cors_layer;
 use dioxus_fullstack::{get, HeaderMap, HttpError, WebSocketOptions, Websocket};
 use dioxus_fullstack::http::Uri;
 
 #[get("/api/ws", headers: HeaderMap, uri: Uri)]
+#[middleware(api_cors_layer())]
 async fn new_ws(
     options: WebSocketOptions,
 ) -> Result<Websocket<WsEnvelope<ClientCommand>, WsEnvelope<ServerEvent>>, HttpError> {

@@ -1,6 +1,9 @@
 use base64::Engine as _;
 use dioxus_fullstack::{get, post, HeaderMap, HttpError, Json, StatusCode};
 
+#[cfg(feature = "server")]
+use crate::server::middleware::cors::api_cors_layer;
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SendMessageRequest {
     pub body: String,
@@ -42,11 +45,12 @@ pub struct UserRef {
 
 /// OFSCP v0.1: Post a message to a group channel.
 #[post("/api/groups/:group_id/channels/:channel_id/messages", headers: HeaderMap)]
+#[middleware(api_cors_layer())]
 pub async fn send_message(
     group_id: String,
     channel_id: String,
     Json(payload): Json<SendMessageRequest>,
-) -> Result<Json<SendMessageResponse>, HttpError> {
+) -> Result<SendMessageResponse, HttpError> {
     let authed = crate::server::auth::require_bearer_user_id(&headers)?;
     let idempotency_key = crate::server::auth::idempotency_key(&headers);
     let message_id = uuid::Uuid::new_v4().to_string();
@@ -183,7 +187,7 @@ pub async fn send_message(
             metadata: vec![],
         });
 
-        Ok(Json(SendMessageResponse { item }))
+        Ok(SendMessageResponse { item })
     }
     #[cfg(not(feature = "server"))]
     Err(HttpError::new(
@@ -206,13 +210,14 @@ pub struct MessagesPage {
 
 /// OFSCP v0.1: List messages in a group channel.
 #[get("/api/groups/:group_id/channels/:channel_id/messages", headers: HeaderMap)]
+#[middleware(api_cors_layer())]
 pub async fn list_messages(
     group_id: String,
     channel_id: String,
     cursor: Option<String>,
     direction: Option<String>,
     limit: Option<u32>,
-) -> Result<Json<MessagesPage>, HttpError> {
+) -> Result<MessagesPage, HttpError> {
     let authed = crate::server::auth::require_bearer_user_id(&headers)?;
     let limit = limit.unwrap_or(50).min(200) as usize;
     let direction = direction.unwrap_or_else(|| "backward".to_string());
@@ -440,13 +445,13 @@ pub async fn list_messages(
             encode_cursor(&m.createdAt, &m.id)
         });
 
-        Ok(Json(MessagesPage {
+        Ok(MessagesPage {
             items,
             page: PageInfo {
                 nextCursor: next_cursor,
                 prevCursor: prev_cursor,
             },
-        }))
+        })
     }
     #[cfg(not(feature = "server"))]
     Err(HttpError::new(

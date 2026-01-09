@@ -42,6 +42,7 @@ futures-util = "0.3.30"
 
 tokio = { version = "1.40", features = ["full"], optional = true }
 axum = { version = "0.7", optional = true }
+tower-http = { version = "0.6.8", features = ["cors"], optional = true }
 
 [features]
 default = ["web", "server"]
@@ -64,4 +65,5 @@ server = [
     "dep:argon2",
     "dep:tokio",
     "dep:axum",
+    "dep:tower-http",
 ]
