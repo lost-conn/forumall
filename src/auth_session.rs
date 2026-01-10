@@ -11,13 +11,17 @@ pub struct AuthContext {
     pub provider_domain: Signal<String>,
 }
 
+use crate::auth::client_keys::KeyPair;
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct AuthSession {
     pub user_id: String,
-    pub token: String,
+    pub keys: Option<KeyPair>,
 }
 
+#[allow(dead_code)]
 const STORAGE_KEY: &str = "ofscp_session";
+#[allow(dead_code)]
 const DOMAIN_KEY: &str = "ofscp_provider_domain";
 
 #[component]
@@ -54,11 +58,11 @@ pub fn AuthProvider(children: Element) -> Element {
 
     // Sync session to local storage
     use_effect(move || {
-        let current = session.cloned();
+        let _current = session.cloned();
         #[cfg(target_arch = "wasm32")]
         if let Some(window) = web_sys::window() {
             if let Ok(Some(storage)) = window.local_storage() {
-                if let Some(sess) = current.as_ref() {
+                if let Some(sess) = _current.as_ref() {
                     if let Ok(data) = serde_json::to_string(sess) {
                         let _ = storage.set_item(STORAGE_KEY, &data);
                     }
@@ -71,12 +75,12 @@ pub fn AuthProvider(children: Element) -> Element {
 
     // Sync domain to local storage
     use_effect(move || {
-        let domain = provider_domain.cloned();
+        let _domain = provider_domain.cloned();
 
         #[cfg(target_arch = "wasm32")]
         if let Some(window) = web_sys::window() {
             if let Ok(Some(storage)) = window.local_storage() {
-                let _ = storage.set_item(DOMAIN_KEY, &domain);
+                let _ = storage.set_item(DOMAIN_KEY, &_domain);
             }
         }
     });
@@ -90,12 +94,31 @@ pub fn AuthProvider(children: Element) -> Element {
 }
 
 impl AuthContext {
-    pub fn login(&mut self, user_id: String, token: String) {
-        self.session.set(Some(AuthSession { user_id, token }));
+    #[allow(dead_code)]
+    pub fn login(&mut self, user_id: String) {
+        self.session.set(Some(AuthSession {
+            user_id,
+            keys: None,
+        }));
+    }
+
+    pub fn login_with_keys(&mut self, user_id: String, keys: Option<KeyPair>) {
+        self.session.set(Some(AuthSession { user_id, keys }));
     }
 
     pub fn logout(&mut self) {
         self.session.set(None);
+    }
+
+    #[allow(dead_code)]
+    pub fn client(&self) -> crate::api_client::ApiClient {
+        let session = self.session.read();
+        let mut client = crate::api_client::ApiClient::new();
+        client = client.with_signing(
+            session.as_ref().and_then(|s| s.keys.clone()),
+            session.as_ref().map(|s| s.user_id.clone()),
+        );
+        client
     }
 
     pub fn is_authenticated(&self) -> bool {
@@ -103,7 +126,15 @@ impl AuthContext {
     }
 
     pub fn token(&self) -> Option<String> {
-        self.session.read().as_ref().map(|s| s.token.clone())
+        None // JWT removed
+    }
+
+    #[allow(dead_code)]
+    pub fn clear_keypair(&mut self) {
+        if let Some(mut session) = self.session.cloned() {
+            session.keys = None;
+            self.session.set(Some(session));
+        }
     }
 
     pub fn user_id(&self) -> Option<String> {

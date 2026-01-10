@@ -3,8 +3,10 @@ use dioxus::prelude::ServerFnError;
 use dioxus_fullstack::{post, Json};
 use serde::{Deserialize, Serialize};
 
+pub mod client_keys;
+
 #[cfg(feature = "server")]
-use {crate::server::jwt, crate::server::middleware::cors::api_cors_layer};
+use crate::server::middleware::cors::api_cors_layer;
 
 #[cfg(feature = "server")]
 use argon2::{
@@ -16,6 +18,8 @@ use argon2::{
 pub struct RegisterRequest {
     pub handle: String,
     pub password: String,
+    pub device_public_key: Option<String>,
+    pub device_name: Option<String>,
 }
 
 #[post("/api/auth/register")]
@@ -50,7 +54,7 @@ pub async fn register(payload: Json<RegisterRequest>) -> Result<LoginResponse, S
                 ("domain", domain.into()),
                 ("password_hash", password_hash.into()),
                 ("updated_at", now.clone().into()),
-                ("created_at", now.into()),
+                ("created_at", now.clone().into()),
             ],
         )
         .await
@@ -59,20 +63,45 @@ pub async fn register(payload: Json<RegisterRequest>) -> Result<LoginResponse, S
             ServerFnError::new(format!("Database error: {e}"))
         })?;
 
-        // Registration auto-logs-in by returning a new JWT bearer token.
-        let token = jwt::issue_access_token(&payload.handle)
-            .map_err(|e| ServerFnError::new(format!("Failed to issue token: {e}")))?;
+        let now_for_key = chrono::Utc::now().to_rfc3339();
+        if let Some(pub_key) = payload.device_public_key {
+            let key_id = format!("device_{}", uuid::Uuid::new_v4());
+            db.insert_into(
+                "device_keys",
+                vec![
+                    ("key_id", key_id.clone().into()),
+                    ("user_handle", payload.handle.clone().into()),
+                    ("public_key", pub_key.into()),
+                    (
+                        "device_name",
+                        payload
+                            .device_name
+                            .unwrap_or_else(|| "Unknown device".to_string())
+                            .into(),
+                    ),
+                    ("created_at", now_for_key.clone().into()),
+                    ("last_used_at", now_for_key.into()),
+                    ("revoked", "false".into()),
+                ],
+            )
+            .await
+            .map_err(|e| ServerFnError::new(format!("Failed to register device key: {e}")))?;
 
-        Ok(LoginResponse {
-            user_id: payload.handle,
-            token,
-        })
+            Ok(LoginResponse {
+                user_id: payload.handle,
+                key_id: Some(key_id),
+            })
+        } else {
+            Ok(LoginResponse {
+                user_id: payload.handle,
+                key_id: None,
+            })
+        }
     }
     #[cfg(not(feature = "server"))]
     {
         Ok(LoginResponse {
-            user_id: id,
-            token: String::new(),
+            user_id: "dev-user".to_string(),
         })
     }
 }
@@ -81,12 +110,14 @@ pub async fn register(payload: Json<RegisterRequest>) -> Result<LoginResponse, S
 pub struct LoginRequest {
     pub handle: String,
     pub password: String,
+    pub device_public_key: Option<String>,
+    pub device_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoginResponse {
     pub user_id: String,
-    pub token: String,
+    pub key_id: Option<String>,
 }
 
 #[post("/api/auth/login")]
@@ -130,18 +161,45 @@ pub async fn login(payload: Json<LoginRequest>) -> Result<LoginResponse, ServerF
             .verify_password(payload.password.as_bytes(), &parsed_hash)
             .map_err(|_| ServerFnError::new("Invalid password"))?;
 
-        // Issue a JWT bearer token
-        let token = jwt::issue_access_token(&user_handle)
-            .map_err(|e| ServerFnError::new(format!("Failed to issue token: {e}")))?;
+        let now_for_key = chrono::Utc::now().to_rfc3339();
+        if let Some(pub_key) = payload.device_public_key {
+            let key_id = format!("device_{}", uuid::Uuid::new_v4());
+            db.insert_into(
+                "device_keys",
+                vec![
+                    ("key_id", key_id.clone().into()),
+                    ("user_handle", user_handle.clone().into()),
+                    ("public_key", pub_key.into()),
+                    (
+                        "device_name",
+                        payload
+                            .device_name
+                            .unwrap_or_else(|| "Unknown device".to_string())
+                            .into(),
+                    ),
+                    ("created_at", now_for_key.clone().into()),
+                    ("last_used_at", now_for_key.into()),
+                    ("revoked", "false".into()),
+                ],
+            )
+            .await
+            .map_err(|e| ServerFnError::new(format!("Failed to register device key: {e}")))?;
 
-        Ok(LoginResponse {
-            user_id: user_handle,
-            token,
-        })
+            Ok(LoginResponse {
+                user_id: user_handle,
+                key_id: Some(key_id),
+            })
+        } else {
+            Ok(LoginResponse {
+                user_id: user_handle,
+                key_id: None,
+            })
+        }
     }
     #[cfg(not(feature = "server"))]
-    Ok(LoginResponse {
-        user_id: String::new(),
-        token: String::new(),
-    })
+    {
+        Ok(LoginResponse {
+            user_id: "dev-user".to_string(),
+        })
+    }
 }

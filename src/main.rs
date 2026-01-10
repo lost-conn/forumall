@@ -13,6 +13,7 @@ mod api_client;
 mod auth;
 mod auth_session;
 mod components;
+mod device_keys;
 mod groups;
 mod hooks;
 mod messages;
@@ -123,6 +124,18 @@ pub static DB: once_cell::sync::Lazy<aurora_db::Aurora> = once_cell::sync::Lazy:
             ("host", FieldType::String, false), // e.g. "https://remote-instance.com", or empty for local
             ("name", FieldType::String, false),
             ("joined_at", FieldType::String, false),
+        ],
+    );
+    let _ = db.new_collection(
+        "device_keys",
+        vec![
+            ("key_id", FieldType::String, true),
+            ("user_handle", FieldType::String, false),
+            ("public_key", FieldType::String, false), // Base64 encoded
+            ("device_name", FieldType::String, false),
+            ("created_at", FieldType::String, false),
+            ("last_used_at", FieldType::String, false),
+            ("revoked", FieldType::String, false), // "true" or "false"
         ],
     );
 
@@ -258,9 +271,4 @@ async fn ofscp_provider() -> Result<Json<DiscoveryDocument>> {
             tiers: format!("{}/api/tiers", base_url),
         },
     }))
-}
-
-#[get("/.well-known/jwks.json")]
-async fn jwks() -> Result<crate::server::jwt::Jwks> {
-    Ok(crate::server::jwt::jwks())
 }

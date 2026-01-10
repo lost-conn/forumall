@@ -5,6 +5,7 @@ use crate::components::ui::{
     Button, ButtonVariant, Card, CardBody, CardHeader, InputType, TextInput,
 };
 use crate::Route;
+
 use dioxus::prelude::*;
 
 #[component]
@@ -54,17 +55,25 @@ pub fn Login() -> Element {
                                 let current_domain = domain.read().clone();
                                 auth.provider_domain.set(current_domain);
 
-                                // 2. Perform login
+                                // 2. Generate Key Pair locally
+                                let keys = crate::auth::client_keys::generate_keypair();
+
+                                // 3. Perform login with atomic device key registration
                                 let login_url = auth.api_url("/api/auth/login");
-                                let client = ApiClient::new(None);
+                                let client = ApiClient::new();
                                 let req = LoginRequest {
                                     handle: handle.cloned(),
                                     password: password.cloned(),
+                                    device_public_key: Some(keys.public_key.clone()),
+                                    device_name: Some("Web Browser".to_string()),
                                 };
 
                                 match client.post_json::<LoginRequest, LoginResponse>(&login_url, &req).await {
                                     Ok(res) => {
-                                        auth.login(res.user_id, res.token);
+                                        let mut final_keys = keys;
+                                        final_keys.key_id = res.key_id;
+
+                                        auth.login_with_keys(res.user_id, Some(final_keys));
                                         nav.push(Route::Home {});
                                     }
                                     Err(ApiError::Http { status: 401, body }) => {

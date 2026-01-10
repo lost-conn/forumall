@@ -1,4 +1,4 @@
 pub mod auth;
-pub mod jwt;
 pub mod middleware;
+pub mod signature;
 pub mod ws;

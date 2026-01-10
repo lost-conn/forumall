@@ -1,12 +1,13 @@
+use reqwest::Client;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
-use reqwest::Client;
 
 #[derive(Debug, Clone)]
 pub struct ApiClient {
     client: Client,
     base_url: String,
-    bearer_token: Option<String>,
+    keys: Option<crate::auth::client_keys::KeyPair>,
+    handle: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,16 +30,23 @@ impl std::fmt::Display for ApiError {
 impl std::error::Error for ApiError {}
 
 impl ApiClient {
-    pub fn new(bearer_token: Option<String>) -> Self {
+    pub fn new() -> Self {
         Self {
             client: Client::new(),
             base_url: "".to_string(),
-            bearer_token,
+            keys: None,
+            handle: None,
         }
     }
 
-    pub fn with_token(mut self, bearer_token: Option<String>) -> Self {
-        self.bearer_token = bearer_token;
+    #[allow(dead_code)]
+    pub fn with_signing(
+        mut self,
+        keys: Option<crate::auth::client_keys::KeyPair>,
+        handle: Option<String>,
+    ) -> Self {
+        self.keys = keys;
+        self.handle = handle;
         self
     }
 
@@ -61,20 +69,41 @@ impl ApiClient {
     }
 
     pub async fn get_json<TRes: DeserializeOwned>(&self, path: &str) -> Result<TRes, ApiError> {
-        let mut rb = self.client.get(self.url(path));
-        
-        if let Some(token) = &self.bearer_token {
-            rb = rb.bearer_auth(token);
+        let url = self.url(path);
+        let mut rb = self.client.get(&url);
+
+        // JWT logic removed
+
+        // Sign if keys present
+        if let (Some(keys), Some(handle)) = (&self.keys, &self.handle) {
+            let path_only = if url.starts_with("http") {
+                reqwest::Url::parse(&url)
+                    .map(|u| u.path().to_string())
+                    .unwrap_or_else(|_| path.to_string())
+            } else {
+                path.to_string()
+            };
+
+            if let Some(headers) =
+                crate::auth::client_keys::sign_request("GET", &path_only, &[], keys, handle)
+            {
+                rb = rb.header("X-OFSCP-Actor", headers.actor);
+                rb = rb.header("X-OFSCP-Key-ID", headers.key_id);
+                rb = rb.header("X-OFSCP-Timestamp", headers.timestamp);
+                rb = rb.header("X-OFSCP-Signature", headers.signature);
+            }
         }
 
-        let resp = rb.send()
+        let resp = rb
+            .send()
             .await
             .map_err(|e| ApiError::Network(e.to_string()))?;
 
         let status = resp.status().as_u16();
         let is_success = resp.status().is_success();
-        
-        let text = resp.text()
+
+        let text = resp
+            .text()
             .await
             .map_err(|e| ApiError::Network(format!("failed to read body: {e}")))?;
 
@@ -90,34 +119,62 @@ impl ApiClient {
         path: &str,
         body: &TReq,
     ) -> Result<TRes, ApiError> {
-        let mut rb = self.client.post(self.url(path));
-        if let Some(token) = &self.bearer_token {
-             rb = rb.bearer_auth(token);
+        let url = self.url(path);
+        let mut rb = self.client.post(&url);
+
+        // JWT logic removed
+
+        let body_bytes =
+            serde_json::to_vec(body).map_err(|e| ApiError::Deserialize(e.to_string()))?;
+
+        // Sign if keys present
+        if let (Some(keys), Some(handle)) = (&self.keys, &self.handle) {
+            let path_only = if url.starts_with("http") {
+                reqwest::Url::parse(&url)
+                    .map(|u| u.path().to_string())
+                    .unwrap_or_else(|_| path.to_string())
+            } else {
+                path.to_string()
+            };
+
+            if let Some(headers) = crate::auth::client_keys::sign_request(
+                "POST",
+                &path_only,
+                &body_bytes,
+                keys,
+                handle,
+            ) {
+                rb = rb.header("X-OFSCP-Actor", headers.actor);
+                rb = rb.header("X-OFSCP-Key-ID", headers.key_id);
+                rb = rb.header("X-OFSCP-Timestamp", headers.timestamp);
+                rb = rb.header("X-OFSCP-Signature", headers.signature);
+            }
         }
-        
+
         let resp = rb
-            .json(body)
+            .body(body_bytes)
+            .header("Content-Type", "application/json")
             .send()
             .await
             .map_err(|e| ApiError::Network(e.to_string()))?;
 
         let status = resp.status().as_u16();
         let is_success = resp.status().is_success();
-        let text = resp.text().await.map_err(|e| ApiError::Network(e.to_string()))?;
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| ApiError::Network(e.to_string()))?;
 
         if !is_success {
-            return Err(ApiError::Http {
-                status,
-                body: text,
-            });
+            return Err(ApiError::Http { status, body: text });
         }
-        
+
         // Handle void returns which might be empty string
         if text.is_empty() {
             // This is hacky for (), but let's try serde
-             serde_json::from_str("null").map_err(|e| ApiError::Deserialize(e.to_string()))
+            serde_json::from_str("null").map_err(|e| ApiError::Deserialize(e.to_string()))
         } else {
-             serde_json::from_str(&text).map_err(|e| ApiError::Deserialize(e.to_string()))
+            serde_json::from_str(&text).map_err(|e| ApiError::Deserialize(e.to_string()))
         }
     }
 
@@ -126,32 +183,54 @@ impl ApiClient {
         path: &str,
         body: &TReq,
     ) -> Result<TRes, ApiError> {
-        let mut rb = self.client.put(self.url(path));
-        if let Some(token) = &self.bearer_token {
-             rb = rb.bearer_auth(token);
+        let url = self.url(path);
+        let mut rb = self.client.put(&url);
+
+        let body_bytes =
+            serde_json::to_vec(body).map_err(|e| ApiError::Deserialize(e.to_string()))?;
+
+        // Sign if keys present
+        if let (Some(keys), Some(handle)) = (&self.keys, &self.handle) {
+            let path_only = if url.starts_with("http") {
+                reqwest::Url::parse(&url)
+                    .map(|u| u.path().to_string())
+                    .unwrap_or_else(|_| path.to_string())
+            } else {
+                path.to_string()
+            };
+
+            if let Some(headers) =
+                crate::auth::client_keys::sign_request("PUT", &path_only, &body_bytes, keys, handle)
+            {
+                rb = rb.header("X-OFSCP-Actor", headers.actor);
+                rb = rb.header("X-OFSCP-Key-ID", headers.key_id);
+                rb = rb.header("X-OFSCP-Timestamp", headers.timestamp);
+                rb = rb.header("X-OFSCP-Signature", headers.signature);
+            }
         }
 
         let resp = rb
-            .json(body)
+            .body(body_bytes)
+            .header("Content-Type", "application/json")
             .send()
             .await
             .map_err(|e| ApiError::Network(e.to_string()))?;
 
         let status = resp.status().as_u16();
         let is_success = resp.status().is_success();
-        let text = resp.text().await.map_err(|e| ApiError::Network(e.to_string()))?;
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| ApiError::Network(e.to_string()))?;
 
         if !is_success {
-            return Err(ApiError::Http {
-                status,
-                body: text,
-            });
+            return Err(ApiError::Http { status, body: text });
         }
 
         if text.is_empty() {
-             serde_json::from_str("null").map_err(|e| ApiError::Deserialize(e.to_string()))
+            serde_json::from_str("null").map_err(|e| ApiError::Deserialize(e.to_string()))
         } else {
-             serde_json::from_str(&text).map_err(|e| ApiError::Deserialize(e.to_string()))
+            serde_json::from_str(&text).map_err(|e| ApiError::Deserialize(e.to_string()))
         }
     }
 }

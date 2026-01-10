@@ -1,16 +1,26 @@
 use crate::models::{UserJoinedGroup, UserProfile};
 use dioxus::prelude::*;
-use dioxus_fullstack::{HeaderMap, Json};
+use dioxus_fullstack::http::{Method, Uri};
+use dioxus_fullstack::{HeaderMap, ServerFnError};
 
 #[cfg(feature = "server")]
 use crate::server::middleware::cors::api_cors_layer;
+use crate::server::signature::SignedJson;
 
-#[get("/api/users/:user_id/groups", headers: HeaderMap)]
+#[get("/api/users/:user_id/groups", headers: HeaderMap, method: Method, uri: Uri)]
 #[middleware(api_cors_layer())]
 pub async fn get_user_groups(user_id: String) -> Result<Vec<UserJoinedGroup>, ServerFnError> {
-    // 1. Authenticate. We should ensure the caller is allowed to see these groups.
-    // For now, we only allow the user themselves to see their joined groups.
-    let auth_user = crate::server::auth::require_bearer_user_id(&headers)?.user_id;
+    #[cfg(feature = "server")]
+    let auth_user = {
+        let (uid, _) =
+            crate::server::signature::verify_ofscp_signature(&method, &uri, &headers, &[])
+                .await
+                .map_err(|e| ServerFnError::new(format!("Signature error: {:?}", e)))?;
+        uid
+    };
+    #[cfg(not(feature = "server"))]
+    let auth_user = "dev-user".to_string();
+
     if auth_user != user_id {
         return Err(ServerFnError::new(
             "Unauthorized: You can only view your own joined groups.",
@@ -116,13 +126,14 @@ pub struct AddJoinedGroupRequest {
     pub host: Option<String>,
 }
 
-#[post("/api/users/:user_id/groups", headers: HeaderMap)]
+#[post("/api/users/:user_id/groups")]
 #[middleware(api_cors_layer())]
 pub async fn add_user_joined_group(
     user_id: String,
-    Json(payload): Json<AddJoinedGroupRequest>,
+    signed: SignedJson<AddJoinedGroupRequest>,
 ) -> Result<UserJoinedGroup, ServerFnError> {
-    let auth_user = crate::server::auth::require_bearer_user_id(&headers)?.user_id;
+    let auth_user = signed.user_id;
+    let payload = signed.value;
     if auth_user != user_id {
         return Err(ServerFnError::new("Unauthorized"));
     }
@@ -131,7 +142,7 @@ pub async fn add_user_joined_group(
     let host = payload
         .host
         .clone()
-        .unwrap_or_else(|| dioxus_fullstack::get_server_url().to_string());
+        .unwrap_or_else(|| "localhost".to_string());
 
     #[cfg(feature = "server")]
     {
@@ -158,17 +169,18 @@ pub async fn add_user_joined_group(
     })
 }
 
-#[post("/api/me/groups", headers: HeaderMap)]
+#[post("/api/me/groups")]
 #[middleware(api_cors_layer())]
 pub async fn add_self_joined_group(
-    Json(payload): Json<AddJoinedGroupRequest>,
+    signed: SignedJson<AddJoinedGroupRequest>,
 ) -> Result<UserJoinedGroup, ServerFnError> {
-    let user_id = crate::server::auth::require_bearer_user_id(&headers)?.user_id;
+    let user_id = signed.user_id;
+    let payload = signed.value;
     let now = chrono::Utc::now().to_rfc3339();
     let host = payload
         .host
         .clone()
-        .unwrap_or_else(|| dioxus_fullstack::get_server_url().to_string());
+        .unwrap_or_else(|| "localhost".to_string());
 
     #[cfg(feature = "server")]
     {

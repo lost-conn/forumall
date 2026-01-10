@@ -31,7 +31,7 @@ pub fn ChannelView(group: ReadSignal<String>, channel: ReadSignal<String>) -> El
             if token.is_none() {
                 return Err(ServerFnError::new("Not authenticated"));
             }
-            let client = crate::api_client::ApiClient::new(token);
+            let client = crate::api_client::ApiClient::new();
             let url = auth.api_url("/api/groups");
             client
                 .get_json::<Vec<crate::groups::Group>>(&url)
@@ -61,7 +61,7 @@ pub fn ChannelView(group: ReadSignal<String>, channel: ReadSignal<String>) -> El
                     return Err(ServerFnError::new("Not authenticated"));
                 }
 
-                let client = ApiClient::new(token);
+                let client = ApiClient::new();
                 let url = auth.api_url(&format!("/api/groups/{group_id}/channels"));
                 client
                     .get_json::<Vec<crate::groups::Channel>>(&url)
@@ -268,7 +268,7 @@ fn MessageList(group_id: String, channel_id: String) -> Element {
                 return Err(ServerFnError::new("Not authenticated"));
             }
 
-            let client = ApiClient::new(token);
+            let client = ApiClient::new();
             let url = auth.api_url(&format!(
                 "/api/groups/{gid}/channels/{cid}/messages?limit=50&direction=backward"
             ));
@@ -397,8 +397,7 @@ fn MessageItem(user_id: String, created_at: String, content: String) -> Element 
         let uid = user_id_sig();
         let auth = auth;
         async move {
-            let token = auth.token();
-            let client = ApiClient::new(token);
+            let client = ApiClient::new();
             let url = auth.api_url(&format!("/api/users/{uid}/profile"));
             client
                 .get_json::<crate::models::UserProfile>(&url)

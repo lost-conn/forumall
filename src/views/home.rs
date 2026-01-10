@@ -97,12 +97,11 @@ pub fn ChannelList(
         let gid = track_group_id();
         let auth = auth.clone();
         async move {
-            let token = auth.token();
-            if token.is_none() {
+            if !auth.is_authenticated() {
                 return Err(ServerFnError::new("Not authenticated"));
             }
 
-            let client = ApiClient::new(token);
+            let client = ApiClient::new();
             let url = auth.api_url(&format!("/api/groups/{gid}/channels"));
             client
                 .get_json::<Vec<Channel>>(&url)
@@ -205,9 +204,9 @@ pub fn CreateGroupModal(on_close: EventHandler<()>, on_created: EventHandler<()>
         let auth = auth.clone();
 
         spawn(async move {
-            let token = auth.token();
+            let _token = auth.token();
 
-            let client = ApiClient::new(token);
+            let client = ApiClient::new();
             let url = auth.api_url("/api/groups");
             match client
                 .post_json::<_, Group>(
@@ -329,8 +328,8 @@ pub fn CreateChannelModal(
         let topic_value = topic.read().trim().to_string();
         let auth = auth.clone();
         spawn(async move {
-            let token = auth.token();
-            let client = ApiClient::new(token);
+            let _token = auth.token();
+            let client = ApiClient::new();
             let url = auth.api_url(&format!("/api/groups/{gid}/channels"));
             match client
                 .post_json::<_, Channel>(
@@ -461,8 +460,8 @@ pub fn JoinGroupModal(on_close: EventHandler<()>, on_joined: EventHandler<()>) -
         let auth = auth.clone();
 
         spawn(async move {
-            let token = auth.token();
-            let client = ApiClient::new(token.clone());
+            let _token = auth.token();
+            let client = ApiClient::new();
 
             // 1. Join the group on the target host (or local if no host specified)
             let target_url = if host.is_empty() {
@@ -481,7 +480,7 @@ pub fn JoinGroupModal(on_close: EventHandler<()>, on_joined: EventHandler<()>) -
                 Ok(_) => {
                     // 2. If successful, add to our local profile if it was a remote join
                     if !host.is_empty() {
-                        let local_client = ApiClient::new(token.clone());
+                        let local_client = ApiClient::new();
                         let local_url = auth.api_url("/api/me/groups");
 
                         let req = crate::users::AddJoinedGroupRequest {
@@ -601,7 +600,7 @@ pub fn GroupSettingsModal(
 ) -> Element {
     let auth = use_context::<AuthContext>();
     let mut current_tab = use_signal(|| "general"); // "general" or "members"
-    let mut refresh = use_refresh_resource::<Result<Vec<Group>, ServerFnError>>();
+    let refresh = use_refresh_resource::<Result<Vec<Group>, ServerFnError>>();
 
     // General Settings State
     let mut name = use_signal(|| group_name.clone());
@@ -635,8 +634,8 @@ pub fn GroupSettingsModal(
         let mut refresh = refresh.clone();
 
         spawn(async move {
-            let token = auth.token();
-            let client = ApiClient::new(token);
+            let _token = auth.token();
+            let client = ApiClient::new();
             let url = auth.api_url(&format!("/api/groups/{gid}"));
 
             match client
@@ -680,8 +679,8 @@ pub fn GroupSettingsModal(
         let auth = auth.clone();
 
         spawn(async move {
-            let token = auth.token();
-            let client = ApiClient::new(token);
+            let _token = auth.token();
+            let client = ApiClient::new();
             let url = auth.api_url(&format!("/api/groups/{gid}/members"));
 
             match client

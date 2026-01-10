@@ -4,8 +4,6 @@ use crate::groups::*;
 use crate::hooks::use_refreshable_resource;
 use crate::views::{ChannelList, CreateChannelModal};
 use dioxus::prelude::*;
-use dioxus_fullstack::Json;
-
 /// Channel layout component that contains the channel selection sidebar
 /// This is the middle layout between SidebarLayout and ChannelView
 #[component]
@@ -32,7 +30,7 @@ pub fn GroupSidebarLayout(group: ReadSignal<String>) -> Element {
             if token.is_none() {
                 return Err(ServerFnError::new("Not authenticated"));
             }
-            let client = ApiClient::new(token);
+            let client = ApiClient::new();
             let url = auth.api_url("/api/groups");
             client
                 .get_json::<Vec<Group>>(&url)

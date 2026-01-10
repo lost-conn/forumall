@@ -1,8 +1,10 @@
+#[cfg(feature = "server")]
+use crate::server::middleware::cors::api_cors_layer;
+use crate::server::signature::SignedJson;
 use dioxus::logger::tracing;
 use dioxus::prelude::ServerFnError;
-use dioxus_fullstack::{get, post, put, HeaderMap, Json};
-#[cfg(feature = "server")]
-use {crate::server::auth, crate::server::middleware::cors::api_cors_layer};
+use dioxus_fullstack::http::{Method, Uri};
+use dioxus_fullstack::{get, post, put, HeaderMap};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
 pub struct Group {
@@ -39,10 +41,11 @@ pub struct CreateGroupRequest {
     pub join_policy: Option<String>,
 }
 
-#[post("/api/groups", headers: HeaderMap)]
+#[post("/api/groups")]
 #[middleware(api_cors_layer())]
-pub async fn create_group(Json(payload): Json<CreateGroupRequest>) -> Result<Group, ServerFnError> {
-    let user_id = auth::require_bearer_user_id(&headers)?.user_id;
+pub async fn create_group(signed: SignedJson<CreateGroupRequest>) -> Result<Group, ServerFnError> {
+    let user_id = signed.user_id;
+    let payload = signed.value;
     // Use name as ID (enforce uniqueness)
     let id = payload.name.trim().to_string();
     if !crate::models::validate_resource_name(&id) {
@@ -137,10 +140,16 @@ pub async fn create_group(Json(payload): Json<CreateGroupRequest>) -> Result<Gro
     Ok(group)
 }
 
-#[get("/api/groups", headers: HeaderMap)]
+#[get("/api/groups", headers: HeaderMap, method: Method, uri: Uri)]
 #[middleware(api_cors_layer())]
 pub async fn list_groups_for_user() -> Result<Vec<Group>, ServerFnError> {
-    let user_id = crate::server::auth::require_bearer_user_id(&headers)?.user_id;
+    #[cfg(feature = "server")]
+    let (user_id, _key_id) =
+        crate::server::signature::verify_ofscp_signature(&method, &uri, &headers, &[])
+            .await
+            .map_err(|e| ServerFnError::new(format!("Signature error: {:?}", e)))?;
+    #[cfg(not(feature = "server"))]
+    let user_id = "dev-user".to_string();
 
     #[cfg(feature = "server")]
     {
@@ -240,13 +249,14 @@ pub struct CreateChannelRequest {
     pub topic: Option<String>,
 }
 
-#[post("/api/groups/:group_id/channels", headers: HeaderMap)]
+#[post("/api/groups/:group_id/channels")]
 #[middleware(api_cors_layer())]
 pub async fn create_channel(
     group_id: String,
-    Json(payload): Json<CreateChannelRequest>,
+    signed: SignedJson<CreateChannelRequest>,
 ) -> Result<Channel, ServerFnError> {
-    let user_id = crate::server::auth::require_bearer_user_id(&headers)?.user_id;
+    let user_id = signed.user_id;
+    let payload = signed.value;
 
     if !crate::models::validate_resource_name(&payload.name) {
         return Err(ServerFnError::new(
@@ -303,10 +313,16 @@ pub async fn create_channel(
     Err(ServerFnError::new("Server feature not enabled"))
 }
 
-#[get("/api/groups/:group_id/channels", headers: HeaderMap)]
+#[get("/api/groups/:group_id/channels", headers: HeaderMap, method: Method, uri: Uri)]
 #[middleware(api_cors_layer())]
 pub async fn list_channels(group_id: String) -> Result<Vec<Channel>, ServerFnError> {
-    let user_id = crate::server::auth::require_bearer_user_id(&headers)?.user_id;
+    #[cfg(feature = "server")]
+    let (user_id, _key_id) =
+        crate::server::signature::verify_ofscp_signature(&method, &uri, &headers, &[])
+            .await
+            .map_err(|e| ServerFnError::new(format!("Signature error: {:?}", e)))?;
+    #[cfg(not(feature = "server"))]
+    let user_id = "dev-user".to_string();
 
     #[cfg(feature = "server")]
     {
@@ -392,13 +408,14 @@ pub struct AddMemberRequest {
     pub handle: String,
 }
 
-#[post("/api/groups/:group_id/members", headers: HeaderMap)]
+#[post("/api/groups/:group_id/members")]
 #[middleware(api_cors_layer())]
 pub async fn add_group_member(
     group_id: String,
-    Json(payload): Json<AddMemberRequest>,
+    signed: SignedJson<AddMemberRequest>,
 ) -> Result<(), ServerFnError> {
-    let user_id = crate::server::auth::require_bearer_user_id(&headers)?.user_id;
+    let user_id = signed.user_id;
+    let payload = signed.value;
     let now = chrono::Utc::now().to_rfc3339();
 
     let db = &*crate::DB;
@@ -498,13 +515,14 @@ pub struct UpdateGroupSettingsRequest {
     pub join_policy: Option<String>,
 }
 
-#[put("/api/groups/:group_id", headers: HeaderMap)]
+#[put("/api/groups/:group_id")]
 #[middleware(api_cors_layer())]
 pub async fn update_group_settings(
     group_id: String,
-    Json(payload): Json<UpdateGroupSettingsRequest>,
+    signed: SignedJson<UpdateGroupSettingsRequest>,
 ) -> Result<(), ServerFnError> {
-    let user_id = auth::require_bearer_user_id(&headers)?.user_id;
+    let user_id = signed.user_id;
+    let payload = signed.value;
 
     let db = &*crate::DB;
 
@@ -544,10 +562,17 @@ pub async fn update_group_settings(
     Ok(())
 }
 
-#[post("/api/groups/:group_id/join", headers: HeaderMap)]
+#[post("/api/groups/:group_id/join", headers: HeaderMap, method: Method, uri: Uri)]
 #[middleware(api_cors_layer())]
 pub async fn join_group(group_id: String) -> Result<(), ServerFnError> {
-    let user_id = auth::require_bearer_user_id(&headers)?.user_id;
+    #[cfg(feature = "server")]
+    let (user_id, _key_id) =
+        crate::server::signature::verify_ofscp_signature(&method, &uri, &headers, &[])
+            .await
+            .map_err(|e| ServerFnError::new(format!("Signature error: {:?}", e)))?;
+    #[cfg(not(feature = "server"))]
+    let user_id = "dev-user".to_string();
+
     let now = chrono::Utc::now().to_rfc3339();
 
     let db = &*crate::DB;

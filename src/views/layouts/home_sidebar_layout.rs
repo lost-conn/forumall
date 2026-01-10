@@ -30,7 +30,7 @@ pub fn HomeSidebarLayout() -> Element {
             if token.is_none() || user_id.is_none() {
                 return Err(ServerFnError::new("Not authenticated"));
             }
-            let client = ApiClient::new(token);
+            let client = ApiClient::new();
             let url = auth.api_url(&format!("/api/users/{}/groups", user_id.unwrap()));
             client
                 .get_json::<Vec<UserJoinedGroup>>(&url)

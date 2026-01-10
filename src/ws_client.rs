@@ -35,21 +35,11 @@ fn WsConnection(children: Element) -> Element {
         async move {
             use dioxus_fullstack::http::{Extensions, HeaderMap, Method};
 
-            // Fail early if not authenticated to avoid 401 errors
-            let token = auth.token().ok_or_else(|| {
-                dioxus::CapturedError::from_display("Authentication required for WebSocket")
-            })?;
-
             let ws_url = auth.ws_url("/api/ws");
-            // Pass token in query param because browser WebSockets don't support custom headers
-            let ws_url = format!("{}?access_token={}", ws_url, token);
+            // Placeholder: signature-based WS auth not yet fully implemented for browser query params
             let url = ws_url.parse().expect("Invalid URL");
 
-            let mut headers = HeaderMap::new();
-            headers.insert(
-                dioxus_fullstack::http::header::AUTHORIZATION,
-                format!("Bearer {}", token).parse().unwrap(),
-            );
+            let headers = HeaderMap::new();
 
             let request = ClientRequest {
                 url,
