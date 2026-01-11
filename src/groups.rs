@@ -1,10 +1,9 @@
 #[cfg(feature = "server")]
 use crate::server::middleware::cors::api_cors_layer;
-use crate::server::signature::SignedJson;
 use dioxus::logger::tracing;
 use dioxus::prelude::ServerFnError;
 use dioxus_fullstack::http::{Method, Uri};
-use dioxus_fullstack::{get, post, put, HeaderMap};
+use dioxus_fullstack::{get, post, put, HeaderMap, Json};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
 pub struct Group {
@@ -41,11 +40,22 @@ pub struct CreateGroupRequest {
     pub join_policy: Option<String>,
 }
 
-#[post("/api/groups")]
+#[post("/api/groups", headers: HeaderMap, method: Method, uri: Uri)]
 #[middleware(api_cors_layer())]
-pub async fn create_group(signed: SignedJson<CreateGroupRequest>) -> Result<Group, ServerFnError> {
-    let user_id = signed.user_id;
-    let payload = signed.value;
+pub async fn create_group(Json(payload): Json<CreateGroupRequest>) -> Result<Group, ServerFnError> {
+    #[cfg(feature = "server")]
+    let user_id = {
+        let body_bytes =
+            serde_json::to_vec(&payload).map_err(|e| ServerFnError::new(e.to_string()))?;
+        let (uid, _) =
+            crate::server::signature::verify_ofscp_signature(&method, &uri, &headers, &body_bytes)
+                .await
+                .map_err(|e| ServerFnError::new(format!("Signature error: {:?}", e)))?;
+        uid
+    };
+    #[cfg(not(feature = "server"))]
+    let user_id = "dev-user".to_string();
+
     // Use name as ID (enforce uniqueness)
     let id = payload.name.trim().to_string();
     if !crate::models::validate_resource_name(&id) {
@@ -249,14 +259,24 @@ pub struct CreateChannelRequest {
     pub topic: Option<String>,
 }
 
-#[post("/api/groups/:group_id/channels")]
+#[post("/api/groups/:group_id/channels", headers: HeaderMap, method: Method, uri: Uri)]
 #[middleware(api_cors_layer())]
 pub async fn create_channel(
     group_id: String,
-    signed: SignedJson<CreateChannelRequest>,
+    payload: CreateChannelRequest,
 ) -> Result<Channel, ServerFnError> {
-    let user_id = signed.user_id;
-    let payload = signed.value;
+    #[cfg(feature = "server")]
+    let user_id = {
+        let body_bytes =
+            serde_json::to_vec(&payload).map_err(|e| ServerFnError::new(e.to_string()))?;
+        let (uid, _) =
+            crate::server::signature::verify_ofscp_signature(&method, &uri, &headers, &body_bytes)
+                .await
+                .map_err(|e| ServerFnError::new(format!("Signature error: {:?}", e)))?;
+        uid
+    };
+    #[cfg(not(feature = "server"))]
+    let user_id = "dev-user".to_string();
 
     if !crate::models::validate_resource_name(&payload.name) {
         return Err(ServerFnError::new(
@@ -408,14 +428,25 @@ pub struct AddMemberRequest {
     pub handle: String,
 }
 
-#[post("/api/groups/:group_id/members")]
+#[post("/api/groups/:group_id/members", headers: HeaderMap, method: Method, uri: Uri)]
 #[middleware(api_cors_layer())]
 pub async fn add_group_member(
     group_id: String,
-    signed: SignedJson<AddMemberRequest>,
+    payload: AddMemberRequest,
 ) -> Result<(), ServerFnError> {
-    let user_id = signed.user_id;
-    let payload = signed.value;
+    #[cfg(feature = "server")]
+    let user_id = {
+        let body_bytes =
+            serde_json::to_vec(&payload).map_err(|e| ServerFnError::new(e.to_string()))?;
+        let (uid, _) =
+            crate::server::signature::verify_ofscp_signature(&method, &uri, &headers, &body_bytes)
+                .await
+                .map_err(|e| ServerFnError::new(format!("Signature error: {:?}", e)))?;
+        uid
+    };
+    #[cfg(not(feature = "server"))]
+    let user_id = "dev-user".to_string();
+
     let now = chrono::Utc::now().to_rfc3339();
 
     let db = &*crate::DB;
@@ -515,14 +546,24 @@ pub struct UpdateGroupSettingsRequest {
     pub join_policy: Option<String>,
 }
 
-#[put("/api/groups/:group_id")]
+#[put("/api/groups/:group_id", headers: HeaderMap, method: Method, uri: Uri)]
 #[middleware(api_cors_layer())]
 pub async fn update_group_settings(
     group_id: String,
-    signed: SignedJson<UpdateGroupSettingsRequest>,
+    payload: UpdateGroupSettingsRequest,
 ) -> Result<(), ServerFnError> {
-    let user_id = signed.user_id;
-    let payload = signed.value;
+    #[cfg(feature = "server")]
+    let user_id = {
+        let body_bytes =
+            serde_json::to_vec(&payload).map_err(|e| ServerFnError::new(e.to_string()))?;
+        let (uid, _) =
+            crate::server::signature::verify_ofscp_signature(&method, &uri, &headers, &body_bytes)
+                .await
+                .map_err(|e| ServerFnError::new(format!("Signature error: {:?}", e)))?;
+        uid
+    };
+    #[cfg(not(feature = "server"))]
+    let user_id = "dev-user".to_string();
 
     let db = &*crate::DB;
 

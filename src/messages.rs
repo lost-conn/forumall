@@ -5,7 +5,6 @@ use dioxus_fullstack::{get, post, HeaderMap, HttpError, StatusCode};
 
 #[cfg(feature = "server")]
 use crate::server::middleware::cors::api_cors_layer;
-use crate::server::signature::SignedJson;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SendMessageRequest {
@@ -47,15 +46,31 @@ pub struct UserRef {
 }
 
 /// OFSCP v0.1: Post a message to a group channel.
-#[post("/api/groups/:group_id/channels/:channel_id/messages", headers: HeaderMap)]
+#[post("/api/groups/:group_id/channels/:channel_id/messages", headers: HeaderMap, method: Method, uri: Uri)]
 #[middleware(api_cors_layer())]
 pub async fn send_message(
     group_id: String,
     channel_id: String,
-    signed: SignedJson<SendMessageRequest>,
+    payload: SendMessageRequest,
 ) -> Result<SendMessageResponse, HttpError> {
-    let authed_user_id = signed.user_id;
-    let payload = signed.value;
+    #[cfg(feature = "server")]
+    let (authed_user_id, key_id) = {
+        let body_bytes = serde_json::to_vec(&payload)
+            .map_err(|e| HttpError::new(StatusCode::BAD_REQUEST, e.to_string()))?;
+        let (uid, kid) =
+            crate::server::signature::verify_ofscp_signature(&method, &uri, &headers, &body_bytes)
+                .await
+                .map_err(|e| {
+                    HttpError::new(
+                        StatusCode::UNAUTHORIZED,
+                        format!("Signature error: {:?}", e),
+                    )
+                })?;
+        (uid, kid)
+    };
+    #[cfg(not(feature = "server"))]
+    let (authed_user_id, key_id) = ("dev-user".to_string(), "dev-key".to_string());
+
     let idempotency_key = crate::server::auth::idempotency_key(&headers);
 
     #[cfg(feature = "server")]
@@ -155,7 +170,7 @@ pub async fn send_message(
         })?;
 
         // 2. Register key/user_id for idempotency (if needed, or just use the signature key_id)
-        let key = &signed.key_id;
+        let key = &key_id;
         db.insert_into(
             "idempotency_keys",
             vec![

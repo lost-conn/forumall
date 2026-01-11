@@ -1,4 +1,3 @@
-use crate::api_client::ApiClient;
 use crate::auth_session::AuthContext;
 use crate::models::UserJoinedGroup;
 use crate::views::{CreateGroupModal, JoinGroupModal};
@@ -30,7 +29,7 @@ pub fn HomeSidebarLayout() -> Element {
             if token.is_none() || user_id.is_none() {
                 return Err(ServerFnError::new("Not authenticated"));
             }
-            let client = ApiClient::new();
+            let client = auth.client();
             let url = auth.api_url(&format!("/api/users/{}/groups", user_id.unwrap()));
             client
                 .get_json::<Vec<UserJoinedGroup>>(&url)

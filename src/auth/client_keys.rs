@@ -105,7 +105,7 @@ pub fn sign_request(
     let sig_b64 = BASE64.encode(signature.to_bytes());
 
     Some(SignedHeaders {
-        actor: format!("@{}", handle), // Assuming local domain for now or handle format handling
+        actor: format!("@{}@localhost", handle),
         key_id: key_id.clone(),
         timestamp,
         signature: sig_b64,

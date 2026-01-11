@@ -3,7 +3,6 @@ use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "server")]
 use crate::server::middleware::cors::api_cors_layer;
-use crate::server::signature::SignedJson;
 use dioxus_fullstack::http::{Method, Uri};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -44,13 +43,23 @@ pub struct PublicKeyDiscoveryResponse {
     pub cache_until: String,
 }
 
-#[post("/api/auth/device-keys")]
+#[post("/api/auth/device-keys", headers: HeaderMap, method: Method, uri: Uri)]
 #[middleware(api_cors_layer())]
 pub async fn register_device_key(
-    signed: SignedJson<RegisterDeviceKeyRequest>,
+    payload: RegisterDeviceKeyRequest,
 ) -> Result<RegisterDeviceKeyResponse, ServerFnError> {
-    let payload = signed.value;
-    let auth_user = signed.user_id;
+    #[cfg(feature = "server")]
+    let auth_user = {
+        let body_bytes =
+            serde_json::to_vec(&payload).map_err(|e| ServerFnError::new(e.to_string()))?;
+        let (uid, _) =
+            crate::server::signature::verify_ofscp_signature(&method, &uri, &headers, &body_bytes)
+                .await
+                .map_err(|e| ServerFnError::new(format!("Signature error: {:?}", e)))?;
+        uid
+    };
+    #[cfg(not(feature = "server"))]
+    let auth_user = "dev-user".to_string();
 
     #[cfg(feature = "server")]
     {

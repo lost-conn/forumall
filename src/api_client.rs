@@ -76,21 +76,25 @@ impl ApiClient {
 
         // Sign if keys present
         if let (Some(keys), Some(handle)) = (&self.keys, &self.handle) {
-            let path_only = if url.starts_with("http") {
-                reqwest::Url::parse(&url)
-                    .map(|u| u.path().to_string())
-                    .unwrap_or_else(|_| path.to_string())
+            let path_only = if let Ok(u) = reqwest::Url::parse(&url) {
+                u.path().to_string()
             } else {
-                path.to_string()
+                // FALLBACK: if it's a relative path like /api/..., strip query manually
+                path.split('?').next().unwrap_or(path).to_string()
             };
 
             if let Some(headers) =
                 crate::auth::client_keys::sign_request("GET", &path_only, &[], keys, handle)
             {
                 rb = rb.header("X-OFSCP-Actor", headers.actor);
-                rb = rb.header("X-OFSCP-Key-ID", headers.key_id);
                 rb = rb.header("X-OFSCP-Timestamp", headers.timestamp);
-                rb = rb.header("X-OFSCP-Signature", headers.signature);
+                rb = rb.header(
+                    "X-OFSCP-Signature",
+                    format!(
+                        "keyId=\"{}\", signature=\"{}\"",
+                        headers.key_id, headers.signature
+                    ),
+                );
             }
         }
 
@@ -129,12 +133,11 @@ impl ApiClient {
 
         // Sign if keys present
         if let (Some(keys), Some(handle)) = (&self.keys, &self.handle) {
-            let path_only = if url.starts_with("http") {
-                reqwest::Url::parse(&url)
-                    .map(|u| u.path().to_string())
-                    .unwrap_or_else(|_| path.to_string())
+            let path_only = if let Ok(u) = reqwest::Url::parse(&url) {
+                u.path().to_string()
             } else {
-                path.to_string()
+                // FALLBACK: if it's a relative path like /api/..., strip query manually
+                path.split('?').next().unwrap_or(path).to_string()
             };
 
             if let Some(headers) = crate::auth::client_keys::sign_request(
@@ -145,9 +148,14 @@ impl ApiClient {
                 handle,
             ) {
                 rb = rb.header("X-OFSCP-Actor", headers.actor);
-                rb = rb.header("X-OFSCP-Key-ID", headers.key_id);
                 rb = rb.header("X-OFSCP-Timestamp", headers.timestamp);
-                rb = rb.header("X-OFSCP-Signature", headers.signature);
+                rb = rb.header(
+                    "X-OFSCP-Signature",
+                    format!(
+                        "keyId=\"{}\", signature=\"{}\"",
+                        headers.key_id, headers.signature
+                    ),
+                );
             }
         }
 
@@ -191,21 +199,25 @@ impl ApiClient {
 
         // Sign if keys present
         if let (Some(keys), Some(handle)) = (&self.keys, &self.handle) {
-            let path_only = if url.starts_with("http") {
-                reqwest::Url::parse(&url)
-                    .map(|u| u.path().to_string())
-                    .unwrap_or_else(|_| path.to_string())
+            let path_only = if let Ok(u) = reqwest::Url::parse(&url) {
+                u.path().to_string()
             } else {
-                path.to_string()
+                // FALLBACK: if it's a relative path like /api/..., strip query manually
+                path.split('?').next().unwrap_or(path).to_string()
             };
 
             if let Some(headers) =
                 crate::auth::client_keys::sign_request("PUT", &path_only, &body_bytes, keys, handle)
             {
                 rb = rb.header("X-OFSCP-Actor", headers.actor);
-                rb = rb.header("X-OFSCP-Key-ID", headers.key_id);
                 rb = rb.header("X-OFSCP-Timestamp", headers.timestamp);
-                rb = rb.header("X-OFSCP-Signature", headers.signature);
+                rb = rb.header(
+                    "X-OFSCP-Signature",
+                    format!(
+                        "keyId=\"{}\", signature=\"{}\"",
+                        headers.key_id, headers.signature
+                    ),
+                );
             }
         }
 

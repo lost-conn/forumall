@@ -5,7 +5,6 @@ use dioxus_fullstack::{HeaderMap, ServerFnError};
 
 #[cfg(feature = "server")]
 use crate::server::middleware::cors::api_cors_layer;
-use crate::server::signature::SignedJson;
 
 #[get("/api/users/:user_id/groups", headers: HeaderMap, method: Method, uri: Uri)]
 #[middleware(api_cors_layer())]
@@ -126,14 +125,25 @@ pub struct AddJoinedGroupRequest {
     pub host: Option<String>,
 }
 
-#[post("/api/users/:user_id/groups")]
+#[post("/api/users/:user_id/groups", headers: HeaderMap, method: Method, uri: Uri)]
 #[middleware(api_cors_layer())]
 pub async fn add_user_joined_group(
     user_id: String,
-    signed: SignedJson<AddJoinedGroupRequest>,
+    payload: AddJoinedGroupRequest,
 ) -> Result<UserJoinedGroup, ServerFnError> {
-    let auth_user = signed.user_id;
-    let payload = signed.value;
+    #[cfg(feature = "server")]
+    let auth_user = {
+        let body_bytes =
+            serde_json::to_vec(&payload).map_err(|e| ServerFnError::new(e.to_string()))?;
+        let (uid, _) =
+            crate::server::signature::verify_ofscp_signature(&method, &uri, &headers, &body_bytes)
+                .await
+                .map_err(|e| ServerFnError::new(format!("Signature error: {:?}", e)))?;
+        uid
+    };
+    #[cfg(not(feature = "server"))]
+    let auth_user = "dev-user".to_string();
+
     if auth_user != user_id {
         return Err(ServerFnError::new("Unauthorized"));
     }
@@ -169,13 +179,24 @@ pub async fn add_user_joined_group(
     })
 }
 
-#[post("/api/me/groups")]
+#[post("/api/me/groups", headers: HeaderMap, method: Method, uri: Uri)]
 #[middleware(api_cors_layer())]
 pub async fn add_self_joined_group(
-    signed: SignedJson<AddJoinedGroupRequest>,
+    payload: AddJoinedGroupRequest,
 ) -> Result<UserJoinedGroup, ServerFnError> {
-    let user_id = signed.user_id;
-    let payload = signed.value;
+    #[cfg(feature = "server")]
+    let user_id = {
+        let body_bytes =
+            serde_json::to_vec(&payload).map_err(|e| ServerFnError::new(e.to_string()))?;
+        let (uid, _) =
+            crate::server::signature::verify_ofscp_signature(&method, &uri, &headers, &body_bytes)
+                .await
+                .map_err(|e| ServerFnError::new(format!("Signature error: {:?}", e)))?;
+        uid
+    };
+    #[cfg(not(feature = "server"))]
+    let user_id = "dev-user".to_string();
+
     let now = chrono::Utc::now().to_rfc3339();
     let host = payload
         .host

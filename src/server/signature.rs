@@ -103,7 +103,24 @@ pub async fn verify_ofscp_signature(
         .verify(base.as_bytes(), &signature)
         .map_err(|e| format!("Signature verification failed: {}", e))?;
 
-    Ok((actor_handle.to_string(), sig_header.key_id))
+    // 4. Return normalized ID
+    let final_id = if actor_handle.starts_with('@') {
+        let segments: Vec<&str> = actor_handle.split('@').collect();
+        if segments.len() >= 3 {
+            let domain = segments[2];
+            if domain == "localhost" || domain == "127.0.0.1" {
+                segments[1].to_string()
+            } else {
+                actor_handle.to_string()
+            }
+        } else {
+            actor_handle.to_string()
+        }
+    } else {
+        actor_handle.to_string()
+    };
+
+    Ok((final_id, sig_header.key_id))
 }
 
 #[cfg(feature = "server")]

@@ -101,7 +101,7 @@ pub fn ChannelList(
                 return Err(ServerFnError::new("Not authenticated"));
             }
 
-            let client = ApiClient::new();
+            let client = auth.client();
             let url = auth.api_url(&format!("/api/groups/{gid}/channels"));
             client
                 .get_json::<Vec<Channel>>(&url)
@@ -206,7 +206,7 @@ pub fn CreateGroupModal(on_close: EventHandler<()>, on_created: EventHandler<()>
         spawn(async move {
             let _token = auth.token();
 
-            let client = ApiClient::new();
+            let client = auth.client();
             let url = auth.api_url("/api/groups");
             match client
                 .post_json::<_, Group>(
@@ -461,7 +461,7 @@ pub fn JoinGroupModal(on_close: EventHandler<()>, on_joined: EventHandler<()>) -
 
         spawn(async move {
             let _token = auth.token();
-            let client = ApiClient::new();
+            let client = auth.client();
 
             // 1. Join the group on the target host (or local if no host specified)
             let target_url = if host.is_empty() {
@@ -480,7 +480,7 @@ pub fn JoinGroupModal(on_close: EventHandler<()>, on_joined: EventHandler<()>) -
                 Ok(_) => {
                     // 2. If successful, add to our local profile if it was a remote join
                     if !host.is_empty() {
-                        let local_client = ApiClient::new();
+                        let local_client = auth.client();
                         let local_url = auth.api_url("/api/me/groups");
 
                         let req = crate::users::AddJoinedGroupRequest {
