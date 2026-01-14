@@ -605,12 +605,16 @@ pub async fn update_group_settings(
 
 #[post("/api/groups/:group_id/join", headers: HeaderMap, method: Method, uri: Uri)]
 #[middleware(api_cors_layer())]
-pub async fn join_group(group_id: String) -> Result<(), ServerFnError> {
+pub async fn join_group(group_id: String, Json(_payload): Json<()>) -> Result<(), ServerFnError> {
     #[cfg(feature = "server")]
-    let (user_id, _key_id) =
-        crate::server::signature::verify_ofscp_signature(&method, &uri, &headers, &[])
+    let (user_id, _key_id) = {
+        // Client sends serialized () which is "null" - re-serialize to get matching bytes
+        let body_bytes =
+            serde_json::to_vec(&_payload).map_err(|e| ServerFnError::new(e.to_string()))?;
+        crate::server::signature::verify_ofscp_signature(&method, &uri, &headers, &body_bytes)
             .await
-            .map_err(|e| ServerFnError::new(format!("Signature error: {:?}", e)))?;
+            .map_err(|e| ServerFnError::new(format!("Signature error: {:?}", e)))?
+    };
     #[cfg(not(feature = "server"))]
     let user_id = "dev-user".to_string();
 
