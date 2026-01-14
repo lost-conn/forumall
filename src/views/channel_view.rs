@@ -189,6 +189,7 @@ fn MessageList(group_id: String, channel_id: String) -> Element {
     let cid_sig = track_channel_id;
     use_effect(move || {
         let target_cid = cid_sig();
+        let Some(ws_ctx) = ws_ctx else { return };
         let ws = ws_ctx.ws;
 
         spawn(async move {
@@ -223,6 +224,7 @@ fn MessageList(group_id: String, channel_id: String) -> Element {
 
     // Listen for new messages
     use_effect(move || {
+        let Some(ws_ctx) = ws_ctx else { return };
         if let Some(env) = (ws_ctx.last_event)() {
             if let ServerEvent::MessageNew { message } = env.payload {
                 // Convert model message to timeline item
@@ -481,10 +483,13 @@ fn MessageItem(user_id: String, created_at: String, content: String) -> Element 
 #[component]
 fn MessageInput(group_id: String, channel_id: String, channel_name: String) -> Element {
     let mut text = use_signal(|| String::new());
-    let ws = crate::ws_client::use_ws().ws;
+    let ws_ctx = crate::ws_client::use_ws();
 
     let onsubmit = move |e: dioxus_core::Event<FormData>| {
         e.prevent_default();
+
+        let Some(ws_ctx) = ws_ctx else { return };
+        let ws = ws_ctx.ws;
 
         let cid = channel_id.clone();
         let body = text.read().clone();

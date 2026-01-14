@@ -154,8 +154,6 @@ fn WebSocketTest() -> Element {
     use uuid;
 
     let auth = use_context::<AuthContext>();
-    let ws_ctx = use_ws();
-    let ws = ws_ctx.ws;
 
     if !auth.is_authenticated() {
         return rsx! {
@@ -174,6 +172,15 @@ fn WebSocketTest() -> Element {
             }
         };
     }
+
+    let Some(ws_ctx) = use_ws() else {
+        return rsx! {
+            div { class: "flex items-center justify-center min-h-screen bg-slate-900 text-white p-8",
+                "WebSocket not available"
+            }
+        };
+    };
+    let ws = ws_ctx.ws;
 
     rsx! {
         div { class: "flex flex-col items-center justify-center min-h-screen bg-slate-900 text-white p-8",

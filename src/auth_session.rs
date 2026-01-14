@@ -107,6 +107,13 @@ impl AuthContext {
     }
 
     pub fn logout(&mut self) {
+        // Clear localStorage immediately (don't rely on use_effect which may not run if component unmounts)
+        #[cfg(target_arch = "wasm32")]
+        if let Some(window) = web_sys::window() {
+            if let Ok(Some(storage)) = window.local_storage() {
+                let _ = storage.remove_item(STORAGE_KEY);
+            }
+        }
         self.session.set(None);
     }
 

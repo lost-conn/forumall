@@ -12,13 +12,20 @@ pub struct WsContext {
     pub last_event: Signal<Option<WsEnvelope<ServerEvent>>>,
 }
 
-pub fn use_ws() -> WsContext {
-    use_context::<WsContext>()
+pub fn use_ws() -> Option<WsContext> {
+    try_use_context::<WsContext>()
 }
 
 #[component]
 pub fn WsProvider(children: Element) -> Element {
     let auth = use_context::<AuthContext>();
+
+    // Don't create WebSocket connection if not authenticated
+    // This prevents borrow conflicts when logging out
+    if !auth.is_authenticated() {
+        return children;
+    }
+
     let user_id = auth.user_id().unwrap_or_default();
 
     rsx! {
