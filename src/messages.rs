@@ -1,7 +1,7 @@
 use base64::Engine as _;
 use dioxus::prelude::*;
 use dioxus_fullstack::http::{Method, Uri};
-use dioxus_fullstack::{get, post, HeaderMap, HttpError, StatusCode};
+use dioxus_fullstack::{get, post, HeaderMap, HttpError, Json, StatusCode};
 
 #[cfg(feature = "server")]
 use crate::server::middleware::cors::api_cors_layer;
@@ -51,7 +51,7 @@ pub struct UserRef {
 pub async fn send_message(
     group_id: String,
     channel_id: String,
-    payload: SendMessageRequest,
+    Json(payload): Json<SendMessageRequest>,
 ) -> Result<SendMessageResponse, HttpError> {
     #[cfg(feature = "server")]
     let (authed_user_id, key_id) = {

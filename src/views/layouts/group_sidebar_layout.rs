@@ -1,4 +1,3 @@
-use crate::api_client::ApiClient;
 use crate::auth_session::AuthContext;
 use crate::groups::*;
 use crate::hooks::use_refreshable_resource;
@@ -26,11 +25,7 @@ pub fn GroupSidebarLayout(group: ReadSignal<String>) -> Element {
     let groups = use_refreshable_resource(move || {
         let auth = auth;
         async move {
-            let token = auth.token();
-            if token.is_none() {
-                return Err(ServerFnError::new("Not authenticated"));
-            }
-            let client = ApiClient::new();
+            let client = auth.client();
             let url = auth.api_url("/api/groups");
             client
                 .get_json::<Vec<Group>>(&url)

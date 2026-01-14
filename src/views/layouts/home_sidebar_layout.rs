@@ -24,9 +24,8 @@ pub fn HomeSidebarLayout() -> Element {
     let mut groups = use_resource(move || {
         let auth = auth.clone();
         async move {
-            let token = auth.token();
             let user_id = auth.user_id();
-            if token.is_none() || user_id.is_none() {
+            if user_id.is_none() {
                 return Err(ServerFnError::new("Not authenticated"));
             }
             let client = auth.client();

@@ -1,7 +1,7 @@
 use crate::models::{UserJoinedGroup, UserProfile};
 use dioxus::prelude::*;
 use dioxus_fullstack::http::{Method, Uri};
-use dioxus_fullstack::{HeaderMap, ServerFnError};
+use dioxus_fullstack::{HeaderMap, Json, ServerFnError};
 
 #[cfg(feature = "server")]
 use crate::server::middleware::cors::api_cors_layer;
@@ -129,7 +129,7 @@ pub struct AddJoinedGroupRequest {
 #[middleware(api_cors_layer())]
 pub async fn add_user_joined_group(
     user_id: String,
-    payload: AddJoinedGroupRequest,
+    Json(payload): Json<AddJoinedGroupRequest>,
 ) -> Result<UserJoinedGroup, ServerFnError> {
     #[cfg(feature = "server")]
     let auth_user = {
@@ -182,7 +182,7 @@ pub async fn add_user_joined_group(
 #[post("/api/me/groups", headers: HeaderMap, method: Method, uri: Uri)]
 #[middleware(api_cors_layer())]
 pub async fn add_self_joined_group(
-    payload: AddJoinedGroupRequest,
+    Json(payload): Json<AddJoinedGroupRequest>,
 ) -> Result<UserJoinedGroup, ServerFnError> {
     #[cfg(feature = "server")]
     let user_id = {

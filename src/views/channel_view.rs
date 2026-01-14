@@ -26,10 +26,6 @@ pub fn ChannelView(group: ReadSignal<String>, channel: ReadSignal<String>) -> El
         tracing::info!("ChannelView group refresh");
         let auth = auth.clone();
         async move {
-            let token = auth.token();
-            if token.is_none() {
-                return Err(ServerFnError::new("Not authenticated"));
-            }
             let client = auth.client();
             let url = auth.api_url("/api/groups");
             client
@@ -55,11 +51,6 @@ pub fn ChannelView(group: ReadSignal<String>, channel: ReadSignal<String>) -> El
         let auth = auth.clone();
         async move {
             if let Some(group_id) = group_id {
-                let token = auth.token();
-                if token.is_none() {
-                    return Err(ServerFnError::new("Not authenticated"));
-                }
-
                 let client = auth.client();
                 let url = auth.api_url(&format!("/api/groups/{group_id}/channels"));
                 client
@@ -262,11 +253,6 @@ fn MessageList(group_id: String, channel_id: String) -> Element {
         let cid = track_channel_id();
         let auth = auth.clone();
         async move {
-            let token = auth.token();
-            if token.is_none() {
-                return Err(ServerFnError::new("Not authenticated"));
-            }
-
             let client = auth.client();
             let url = auth.api_url(&format!(
                 "/api/groups/{gid}/channels/{cid}/messages?limit=50&direction=backward"

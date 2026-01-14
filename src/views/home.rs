@@ -1,4 +1,3 @@
-use crate::api_client::ApiClient;
 use crate::auth_session::AuthContext;
 use crate::groups::*;
 use crate::hooks::use_refresh_resource;
@@ -204,8 +203,6 @@ pub fn CreateGroupModal(on_close: EventHandler<()>, on_created: EventHandler<()>
         let auth = auth.clone();
 
         spawn(async move {
-            let _token = auth.token();
-
             let client = auth.client();
             let url = auth.api_url("/api/groups");
             match client
@@ -328,8 +325,7 @@ pub fn CreateChannelModal(
         let topic_value = topic.read().trim().to_string();
         let auth = auth.clone();
         spawn(async move {
-            let _token = auth.token();
-            let client = ApiClient::new();
+            let client = auth.client();
             let url = auth.api_url(&format!("/api/groups/{gid}/channels"));
             match client
                 .post_json::<_, Channel>(
@@ -460,7 +456,6 @@ pub fn JoinGroupModal(on_close: EventHandler<()>, on_joined: EventHandler<()>) -
         let auth = auth.clone();
 
         spawn(async move {
-            let _token = auth.token();
             let client = auth.client();
 
             // 1. Join the group on the target host (or local if no host specified)
@@ -634,8 +629,7 @@ pub fn GroupSettingsModal(
         let mut refresh = refresh.clone();
 
         spawn(async move {
-            let _token = auth.token();
-            let client = ApiClient::new();
+            let client = auth.client();
             let url = auth.api_url(&format!("/api/groups/{gid}"));
 
             match client
@@ -679,8 +673,7 @@ pub fn GroupSettingsModal(
         let auth = auth.clone();
 
         spawn(async move {
-            let _token = auth.token();
-            let client = ApiClient::new();
+            let client = auth.client();
             let url = auth.api_url(&format!("/api/groups/{gid}/members"));
 
             match client

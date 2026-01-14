@@ -263,7 +263,7 @@ pub struct CreateChannelRequest {
 #[middleware(api_cors_layer())]
 pub async fn create_channel(
     group_id: String,
-    payload: CreateChannelRequest,
+    Json(payload): Json<CreateChannelRequest>,
 ) -> Result<Channel, ServerFnError> {
     #[cfg(feature = "server")]
     let user_id = {
@@ -432,7 +432,7 @@ pub struct AddMemberRequest {
 #[middleware(api_cors_layer())]
 pub async fn add_group_member(
     group_id: String,
-    payload: AddMemberRequest,
+    Json(payload): Json<AddMemberRequest>,
 ) -> Result<(), ServerFnError> {
     #[cfg(feature = "server")]
     let user_id = {
@@ -550,7 +550,7 @@ pub struct UpdateGroupSettingsRequest {
 #[middleware(api_cors_layer())]
 pub async fn update_group_settings(
     group_id: String,
-    payload: UpdateGroupSettingsRequest,
+    Json(payload): Json<UpdateGroupSettingsRequest>,
 ) -> Result<(), ServerFnError> {
     #[cfg(feature = "server")]
     let user_id = {

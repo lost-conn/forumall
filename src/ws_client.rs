@@ -19,10 +19,10 @@ pub fn use_ws() -> WsContext {
 #[component]
 pub fn WsProvider(children: Element) -> Element {
     let auth = use_context::<AuthContext>();
-    let token_str = auth.token().unwrap_or_default();
+    let user_id = auth.user_id().unwrap_or_default();
 
     rsx! {
-        WsConnection { key: "{token_str}", children }
+        WsConnection { key: "{user_id}", children }
     }
 }
 

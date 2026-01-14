@@ -1,4 +1,4 @@
-use dioxus_fullstack::{delete, get, post, HeaderMap, ServerFnError}; // Added HeaderMap
+use dioxus_fullstack::{delete, get, post, HeaderMap, Json, ServerFnError};
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "server")]
@@ -46,7 +46,7 @@ pub struct PublicKeyDiscoveryResponse {
 #[post("/api/auth/device-keys", headers: HeaderMap, method: Method, uri: Uri)]
 #[middleware(api_cors_layer())]
 pub async fn register_device_key(
-    payload: RegisterDeviceKeyRequest,
+    Json(payload): Json<RegisterDeviceKeyRequest>,
 ) -> Result<RegisterDeviceKeyResponse, ServerFnError> {
     #[cfg(feature = "server")]
     let auth_user = {
