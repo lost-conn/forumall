@@ -111,3 +111,52 @@ pub fn sign_request(
         signature: sig_b64,
     })
 }
+
+/// Authentication parameters for WebSocket connections via query string
+#[derive(Clone, Debug)]
+pub struct WsAuthParams {
+    pub actor: String,
+    pub key_id: String,
+    pub timestamp: String,
+    pub signature: String,
+}
+
+impl WsAuthParams {
+    /// Convert to URL query string format
+    pub fn to_query_string(&self) -> String {
+        format!(
+            "actor={}&timestamp={}&keyId={}&signature={}",
+            urlencoding::encode(&self.actor),
+            urlencoding::encode(&self.timestamp),
+            urlencoding::encode(&self.key_id),
+            urlencoding::encode(&self.signature)
+        )
+    }
+}
+
+/// Sign a WebSocket upgrade request (GET with empty body)
+pub fn sign_ws_request(path: &str, keys: &KeyPair, handle: &str) -> Option<WsAuthParams> {
+    let key_id = keys.key_id.as_ref()?;
+
+    // Decode private key
+    let priv_bytes = BASE64.decode(&keys.private_key).ok()?;
+    let priv_arr: [u8; 32] = priv_bytes.try_into().ok()?;
+    let signing_key = SigningKey::from_bytes(&priv_arr);
+
+    let timestamp = Utc::now().to_rfc3339();
+    // For GET requests with no body, body_hash is hash of empty bytes
+    let body_hash = hex::encode(Sha256::digest(&[]));
+
+    // Same canonical format as HTTP signatures
+    let canonical = format!("GET\n{}\n{}\n{}", path, timestamp, body_hash);
+
+    let signature = signing_key.sign(canonical.as_bytes());
+    let sig_b64 = BASE64.encode(signature.to_bytes());
+
+    Some(WsAuthParams {
+        actor: format!("@{}@localhost", handle),
+        key_id: key_id.clone(),
+        timestamp,
+        signature: sig_b64,
+    })
+}

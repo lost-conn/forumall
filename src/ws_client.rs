@@ -35,10 +35,26 @@ fn WsConnection(children: Element) -> Element {
         async move {
             use dioxus_fullstack::http::{Extensions, HeaderMap, Method};
 
-            let ws_url = auth.ws_url("/api/ws");
-            // Placeholder: signature-based WS auth not yet fully implemented for browser query params
-            let url = ws_url.parse().expect("Invalid URL");
+            let base_ws_url = auth.ws_url("/api/ws");
 
+            // Generate signed URL if authenticated
+            let ws_url = if let Some(session) = auth.session.read().as_ref() {
+                if let Some(keys) = &session.keys {
+                    if let Some(params) =
+                        crate::auth::client_keys::sign_ws_request("/api/ws", keys, &session.user_id)
+                    {
+                        format!("{}?{}", base_ws_url, params.to_query_string())
+                    } else {
+                        base_ws_url
+                    }
+                } else {
+                    base_ws_url
+                }
+            } else {
+                base_ws_url
+            };
+
+            let url = ws_url.parse().expect("Invalid URL");
             let headers = HeaderMap::new();
 
             let request = ClientRequest {

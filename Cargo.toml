@@ -40,6 +40,8 @@ getrandom = { version = "0.2", features = ["js"] }
 # ezsockets = { version = "0.6", default-features = false, features = ["wasm_client"], optional = true }
 async-trait = "0.1.52"
 futures-util = "0.3.30"
+urlencoding = "2.1"
+url = "2.5"
 
 tokio = { version = "1.40", features = ["full"], optional = true }
 axum = { version = "0.7", optional = true }

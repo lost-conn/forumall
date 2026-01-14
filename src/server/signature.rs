@@ -123,6 +123,94 @@ pub async fn verify_ofscp_signature(
     Ok((final_id, sig_header.key_id))
 }
 
+/// Verify OFSCP signature from WebSocket query parameters
+/// Used for WebSocket upgrade requests where headers can't be sent from browsers
+#[cfg(feature = "server")]
+pub async fn verify_ofscp_signature_from_query(uri: &Uri) -> Result<(String, String), String> {
+    use chrono::{DateTime, Duration, Utc};
+
+    // 1. Parse query parameters
+    let query = uri.query().ok_or("Missing query string")?;
+    let params: std::collections::HashMap<String, String> =
+        url::form_urlencoded::parse(query.as_bytes())
+            .into_owned()
+            .collect();
+
+    let actor = params
+        .get("actor")
+        .ok_or("Missing actor parameter")?;
+    let timestamp = params
+        .get("timestamp")
+        .ok_or("Missing timestamp parameter")?;
+    let key_id = params
+        .get("keyId")
+        .ok_or("Missing keyId parameter")?;
+    let signature = params
+        .get("signature")
+        .ok_or("Missing signature parameter")?;
+
+    // 2. Validate timestamp (5 minute window to prevent replay attacks)
+    let ts = DateTime::parse_from_rfc3339(timestamp)
+        .map_err(|_| "Invalid timestamp format")?;
+    let now = Utc::now();
+    let diff = now.signed_duration_since(ts.with_timezone(&Utc));
+    if diff.abs() > Duration::minutes(5) {
+        return Err("Timestamp outside acceptable window".to_string());
+    }
+
+    // 3. Fetch public key
+    let public_key_str = fetch_public_key(actor, key_id).await?;
+
+    // 4. Reconstruct signature base (GET, path only, timestamp, empty body hash)
+    let path = uri.path();
+    let body_hash = hex::encode(Sha256::digest(&[]));
+    let base = format!("GET\n{}\n{}\n{}", path, timestamp, body_hash);
+
+    // 5. Verify signature
+    let decoded_sig = BASE64
+        .decode(signature)
+        .map_err(|_| "Invalid base64 signature")?;
+    let decoded_pubkey = BASE64
+        .decode(&public_key_str)
+        .map_err(|_| "Invalid base64 public key")?;
+
+    let public_key = ed25519_dalek::VerifyingKey::from_bytes(
+        &decoded_pubkey
+            .try_into()
+            .map_err(|_| "Invalid public key length")?,
+    )
+    .map_err(|_| "Invalid public key")?;
+
+    let sig = ed25519_dalek::Signature::from_bytes(
+        &decoded_sig
+            .try_into()
+            .map_err(|_| "Invalid signature length")?,
+    );
+
+    use ed25519_dalek::Verifier;
+    public_key
+        .verify(base.as_bytes(), &sig)
+        .map_err(|e| format!("Signature verification failed: {}", e))?;
+
+    // 6. Normalize actor ID and return
+    let final_id = normalize_actor_id(actor);
+    Ok((final_id, key_id.clone()))
+}
+
+#[cfg(feature = "server")]
+fn normalize_actor_id(actor: &str) -> String {
+    if actor.starts_with('@') {
+        let segments: Vec<&str> = actor.split('@').collect();
+        if segments.len() >= 3 {
+            let domain = segments[2];
+            if domain == "localhost" || domain == "127.0.0.1" {
+                return segments[1].to_string();
+            }
+        }
+    }
+    actor.to_string()
+}
+
 #[cfg(feature = "server")]
 pub fn reconstruct_signature_base(
     method: &Method,
