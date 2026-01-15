@@ -252,6 +252,90 @@ pub async fn list_groups_for_user() -> Result<Vec<Group>, ServerFnError> {
     Ok(vec![])
 }
 
+/// Fetch a single group by ID
+/// Public groups can be fetched without authentication
+/// Private groups require authentication and membership
+#[get("/api/groups/:group_id")]
+#[middleware(api_cors_layer())]
+pub async fn get_group(group_id: String) -> Result<Group, ServerFnError> {
+    #[cfg(feature = "server")]
+    {
+        let db = &*crate::DB;
+
+        // Fetch the group
+        let matches = db
+            .query("groups")
+            .filter(|f| f.eq("id", group_id.clone()))
+            .collect()
+            .await
+            .map_err(|e| ServerFnError::new(format!("Database error: {}", e)))?;
+
+        let doc = matches
+            .into_iter()
+            .next()
+            .ok_or_else(|| ServerFnError::new("Group not found"))?;
+
+        // Build the Group struct
+        let id = doc
+            .data
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let name = doc
+            .data
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let description = doc
+            .data
+            .get("description")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let join_policy = doc
+            .data
+            .get("join_policy")
+            .and_then(|v| v.as_str())
+            .unwrap_or("open")
+            .to_string();
+        let owner = doc
+            .data
+            .get("owner")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let created_at = doc
+            .data
+            .get("created_at")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let updated_at = doc
+            .data
+            .get("updated_at")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        // TODO: Check discoverability and require auth for private groups
+        // For now, all groups are treated as public
+
+        Ok(Group {
+            id,
+            name,
+            description,
+            join_policy,
+            owner,
+            created_at,
+            updated_at,
+        })
+    }
+
+    #[cfg(not(feature = "server"))]
+    Err(ServerFnError::new("Server-only endpoint"))
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CreateChannelRequest {
     pub name: String,

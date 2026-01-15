@@ -21,27 +21,28 @@ pub fn ChannelView(group: ReadSignal<String>, channel: ReadSignal<String>) -> El
 
     let nav = use_navigator();
 
-    // Fetch group data to get group_id
-    let groups_resource = use_refreshable_resource(move || {
+    // Fetch the specific group by ID (group name is used as ID)
+    let group_resource = use_refreshable_resource(move || {
         tracing::info!("ChannelView group refresh");
         let auth = auth.clone();
+        let group_id = group.read().clone();
         async move {
             let client = auth.client();
-            let url = auth.api_url("/api/groups");
+            let url = auth.api_url(&format!("/api/groups/{}", group_id));
             client
-                .get_json::<Vec<crate::groups::Group>>(&url)
+                .get_json::<crate::groups::Group>(&url)
                 .await
                 .map_err(|e| ServerFnError::new(format!("API error: {e:?}")))
         }
     });
 
-    // Find the current group directly from the resource
+    // Get the current group from the resource
     let current_group = use_memo(move || {
-        groups_resource
+        group_resource
             .read()
             .as_ref()
             .and_then(|res| res.as_ref().ok())
-            .and_then(|groups| groups.iter().find(|g| g.name == *group.read()).cloned())
+            .cloned()
     });
 
     // Fetch channels to get channel_id
