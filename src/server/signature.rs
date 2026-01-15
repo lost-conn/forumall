@@ -103,16 +103,11 @@ pub async fn verify_ofscp_signature(
         .verify(base.as_bytes(), &signature)
         .map_err(|e| format!("Signature verification failed: {}", e))?;
 
-    // 4. Return normalized ID
+    // 4. Return just the handle (without @handle@domain format)
     let final_id = if actor_handle.starts_with('@') {
         let segments: Vec<&str> = actor_handle.split('@').collect();
-        if segments.len() >= 3 {
-            let domain = segments[2];
-            if domain == "localhost" || domain == "127.0.0.1" {
-                segments[1].to_string()
-            } else {
-                actor_handle.to_string()
-            }
+        if segments.len() >= 2 {
+            segments[1].to_string()
         } else {
             actor_handle.to_string()
         }
@@ -199,13 +194,11 @@ pub async fn verify_ofscp_signature_from_query(uri: &Uri) -> Result<(String, Str
 
 #[cfg(feature = "server")]
 fn normalize_actor_id(actor: &str) -> String {
+    // Always return just the handle, stripping @handle@domain format
     if actor.starts_with('@') {
         let segments: Vec<&str> = actor.split('@').collect();
-        if segments.len() >= 3 {
-            let domain = segments[2];
-            if domain == "localhost" || domain == "127.0.0.1" {
-                return segments[1].to_string();
-            }
+        if segments.len() >= 2 {
+            return segments[1].to_string();
         }
     }
     actor.to_string()
@@ -233,6 +226,16 @@ pub fn reconstruct_signature_base(
 }
 
 #[cfg(feature = "server")]
+fn is_local_address(host: &str) -> bool {
+    let host_part = host.split(':').next().unwrap_or(host);
+    host_part == "localhost"
+        || host_part == "127.0.0.1"
+        || host_part == "0.0.0.0"
+        || host_part.starts_with("192.168.")
+        || host_part.starts_with("10.")
+}
+
+#[cfg(feature = "server")]
 pub async fn fetch_public_key(actor: &str, key_id: &str) -> Result<String, String> {
     // 1. Extract handle and domain
     let segments: Vec<&str> = if actor.starts_with('@') {
@@ -247,33 +250,68 @@ pub async fn fetch_public_key(actor: &str, key_id: &str) -> Result<String, Strin
     let handle = segments[1];
     let domain = segments[2];
 
-    // 2. Optimization: if local domain, query DB directly
-    if domain == "localhost" || domain == "127.0.0.1" {
-        let db = &*crate::DB;
-        let keys = db
-            .query("device_keys")
-            .filter(|f| {
-                f.eq("key_id", key_id.to_string())
-                    & f.eq("user_handle", handle.to_string())
-                    & f.eq("revoked", "false")
-            })
-            .collect()
-            .await
-            .map_err(|e| e.to_string())?;
+    // 2. Try local DB first (covers same-origin requests)
+    let db = &*crate::DB;
+    let keys = db
+        .query("device_keys")
+        .filter(|f| {
+            f.eq("key_id", key_id.to_string())
+                & f.eq("user_handle", handle.to_string())
+                & f.eq("revoked", "false")
+        })
+        .collect()
+        .await
+        .map_err(|e| e.to_string())?;
 
-        if let Some(doc) = keys.into_iter().next() {
-            return doc
-                .data
-                .get("public_key")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-                .ok_or("Public key not found in record".to_string());
-        }
-        return Err("Key not found locally".to_string());
+    if let Some(doc) = keys.into_iter().next() {
+        return doc
+            .data
+            .get("public_key")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .ok_or("Public key not found in record".to_string());
     }
 
-    // 3. Remote fetching (future implementation)
-    Err("Remote key fetching not yet implemented".to_string())
+    // 3. If not found locally, try remote fetch (for cross-origin requests)
+    // Use HTTP for local addresses, HTTPS otherwise
+    let scheme = if is_local_address(domain) { "http" } else { "https" };
+    let url = format!(
+        "{}://{}/.well-known/ofscp/users/{}/keys",
+        scheme, domain, handle
+    );
+
+    tracing::debug!("Fetching remote public key from: {}", url);
+
+    // 4. Make HTTP request
+    let client = reqwest::Client::new();
+    let response = client
+        .get(&url)
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch remote key: {}", e))?;
+
+    if !response.status().is_success() {
+        return Err(format!(
+            "Remote key fetch failed with status: {}",
+            response.status()
+        ));
+    }
+
+    // 5. Parse response
+    let discovery: crate::device_keys::PublicKeyDiscoveryResponse = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse remote key response: {}", e))?;
+
+    // 6. Find the matching key
+    for key in discovery.keys {
+        if key.key_id == key_id {
+            return Ok(key.public_key);
+        }
+    }
+
+    Err(format!("Key {} not found for actor {}", key_id, actor))
 }
 
 #[cfg(feature = "server")]

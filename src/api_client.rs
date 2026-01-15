@@ -8,6 +8,7 @@ pub struct ApiClient {
     base_url: String,
     keys: Option<crate::auth::client_keys::KeyPair>,
     handle: Option<String>,
+    domain: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,6 +37,7 @@ impl ApiClient {
             base_url: "".to_string(),
             keys: None,
             handle: None,
+            domain: None,
         }
     }
 
@@ -44,9 +46,11 @@ impl ApiClient {
         mut self,
         keys: Option<crate::auth::client_keys::KeyPair>,
         handle: Option<String>,
+        domain: Option<String>,
     ) -> Self {
         self.keys = keys;
         self.handle = handle;
+        self.domain = domain;
         self
     }
 
@@ -75,7 +79,7 @@ impl ApiClient {
         // JWT logic removed
 
         // Sign if keys present
-        if let (Some(keys), Some(handle)) = (&self.keys, &self.handle) {
+        if let (Some(keys), Some(handle), Some(domain)) = (&self.keys, &self.handle, &self.domain) {
             let path_only = if let Ok(u) = reqwest::Url::parse(&url) {
                 u.path().to_string()
             } else {
@@ -84,7 +88,7 @@ impl ApiClient {
             };
 
             if let Some(headers) =
-                crate::auth::client_keys::sign_request("GET", &path_only, &[], keys, handle)
+                crate::auth::client_keys::sign_request("GET", &path_only, &[], keys, handle, domain)
             {
                 rb = rb.header("X-OFSCP-Actor", headers.actor);
                 rb = rb.header("X-OFSCP-Timestamp", headers.timestamp);
@@ -132,7 +136,7 @@ impl ApiClient {
             serde_json::to_vec(body).map_err(|e| ApiError::Deserialize(e.to_string()))?;
 
         // Sign if keys present
-        if let (Some(keys), Some(handle)) = (&self.keys, &self.handle) {
+        if let (Some(keys), Some(handle), Some(domain)) = (&self.keys, &self.handle, &self.domain) {
             let path_only = if let Ok(u) = reqwest::Url::parse(&url) {
                 u.path().to_string()
             } else {
@@ -146,6 +150,7 @@ impl ApiClient {
                 &body_bytes,
                 keys,
                 handle,
+                domain,
             ) {
                 rb = rb.header("X-OFSCP-Actor", headers.actor);
                 rb = rb.header("X-OFSCP-Timestamp", headers.timestamp);
@@ -198,7 +203,7 @@ impl ApiClient {
             serde_json::to_vec(body).map_err(|e| ApiError::Deserialize(e.to_string()))?;
 
         // Sign if keys present
-        if let (Some(keys), Some(handle)) = (&self.keys, &self.handle) {
+        if let (Some(keys), Some(handle), Some(domain)) = (&self.keys, &self.handle, &self.domain) {
             let path_only = if let Ok(u) = reqwest::Url::parse(&url) {
                 u.path().to_string()
             } else {
@@ -207,7 +212,7 @@ impl ApiClient {
             };
 
             if let Some(headers) =
-                crate::auth::client_keys::sign_request("PUT", &path_only, &body_bytes, keys, handle)
+                crate::auth::client_keys::sign_request("PUT", &path_only, &body_bytes, keys, handle, domain)
             {
                 rb = rb.header("X-OFSCP-Actor", headers.actor);
                 rb = rb.header("X-OFSCP-Timestamp", headers.timestamp);

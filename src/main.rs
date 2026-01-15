@@ -53,7 +53,8 @@ const MAIN_CSS: Asset = asset!("/assets/styling/main.css");
 
 #[cfg(feature = "server")]
 pub static DB: once_cell::sync::Lazy<aurora_db::Aurora> = once_cell::sync::Lazy::new(|| {
-    let db = aurora_db::Aurora::open("aurora_db_data").expect("Failed to open database");
+    let db_path = std::env::var("FORUMALL_DB_PATH").unwrap_or_else(|_| "aurora_db_data".to_string());
+    let db = aurora_db::Aurora::open(&db_path).expect("Failed to open database");
 
     // Initialize collections
     use aurora_db::FieldType;

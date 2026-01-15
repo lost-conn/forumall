@@ -11,9 +11,9 @@
 .hifide-public
 AGENTS.md
 
-# Aurora DB
-aurora_db_data.db
-aurora_db_data.wal
+# Database
+**/*.db
+**/*.wal
 
 # Node
 node_modules

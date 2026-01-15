@@ -120,10 +120,12 @@ impl AuthContext {
     #[allow(dead_code)]
     pub fn client(&self) -> crate::api_client::ApiClient {
         let session = self.session.read();
+        let domain = self.provider_domain.read().clone();
         let mut client = crate::api_client::ApiClient::new();
         client = client.with_signing(
             session.as_ref().and_then(|s| s.keys.clone()),
             session.as_ref().map(|s| s.user_id.clone()),
+            Some(domain),
         );
         client
     }
@@ -168,13 +170,19 @@ impl AuthContext {
         // Normalize to a base URL.
         let base = if domain.contains("://") {
             domain.trim_end_matches('/').to_string()
-        } else if domain == "localhost"
-            || domain.starts_with("localhost:")
-            || domain.starts_with("127.0.0.1")
-        {
-            format!("http://{}", domain.trim_end_matches('/'))
         } else {
-            format!("https://{}", domain.trim_end_matches('/'))
+            // Use HTTP for local addresses, HTTPS for everything else
+            let host_part = domain.split(':').next().unwrap_or(&domain);
+            let is_local = host_part == "localhost"
+                || host_part == "127.0.0.1"
+                || host_part == "0.0.0.0"
+                || host_part.starts_with("192.168.")
+                || host_part.starts_with("10.");
+            if is_local {
+                format!("http://{}", domain.trim_end_matches('/'))
+            } else {
+                format!("https://{}", domain.trim_end_matches('/'))
+            }
         };
 
         let base = base.trim_end_matches('/');

@@ -466,7 +466,18 @@ pub fn JoinGroupModal(on_close: EventHandler<()>, on_joined: EventHandler<()>) -
                 let base = if base.starts_with("http") {
                     base.to_string()
                 } else {
-                    format!("https://{}", base)
+                    // Use HTTP for local addresses, HTTPS for everything else
+                    let host_part = base.split(':').next().unwrap_or(base);
+                    let is_local = host_part == "localhost"
+                        || host_part == "127.0.0.1"
+                        || host_part == "0.0.0.0"
+                        || host_part.starts_with("192.168.")
+                        || host_part.starts_with("10.");
+                    if is_local {
+                        format!("http://{}", base)
+                    } else {
+                        format!("https://{}", base)
+                    }
                 };
                 format!("{base}/api/groups/{name}/join")
             };

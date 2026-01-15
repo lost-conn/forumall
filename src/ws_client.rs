@@ -47,8 +47,9 @@ fn WsConnection(children: Element) -> Element {
             // Generate signed URL if authenticated
             let ws_url = if let Some(session) = auth.session.read().as_ref() {
                 if let Some(keys) = &session.keys {
+                    let domain = auth.provider_domain.read().clone();
                     if let Some(params) =
-                        crate::auth::client_keys::sign_ws_request("/api/ws", keys, &session.user_id)
+                        crate::auth::client_keys::sign_ws_request("/api/ws", keys, &session.user_id, &domain)
                     {
                         format!("{}?{}", base_ws_url, params.to_query_string())
                     } else {

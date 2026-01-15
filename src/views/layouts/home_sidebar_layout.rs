@@ -79,39 +79,57 @@ pub fn HomeSidebarLayout() -> Element {
                 }
 
                 // Groups list
-                if let Some(Ok(groups)) = groups.read().as_ref() {
-                    for group in groups.0.iter() {
-                        div {
-                            key: "{group.group_id}",
-                            class: format!(
-                                "group relative w-12 h-12 rounded-[24px] flex items-center justify-center text-white font-semibold cursor-pointer transition-all duration-200 hover:rounded-[16px] {}",
-                                if selected_group.read().as_ref().map(|g| &g.group_id) == Some(&group.group_id) {
-                                    "bg-gradient-to-br from-indigo-500 to-purple-600 rounded-[16px]"
-                                } else {
-                                    "bg-[#313338] hover:bg-gradient-to-br hover:from-indigo-500 hover:to-purple-600"
+                match groups.read().as_ref() {
+                    Some(Ok(groups)) => rsx! {
+                        for group in groups.0.iter() {
+                            div {
+                                key: "{group.group_id}@{group.host.as_deref().unwrap_or(\"local\")}",
+                                class: format!(
+                                    "group relative w-12 h-12 rounded-[24px] flex items-center justify-center text-white font-semibold cursor-pointer transition-all duration-200 hover:rounded-[16px] {}",
+                                    if selected_group.read().as_ref().map(|g| &g.group_id) == Some(&group.group_id) {
+                                        "bg-gradient-to-br from-indigo-500 to-purple-600 rounded-[16px]"
+                                    } else {
+                                        "bg-[#313338] hover:bg-gradient-to-br hover:from-indigo-500 hover:to-purple-600"
+                                    },
+                                ),
+                                onclick: {
+                                    let group = group.clone();
+                                    move |_| {
+                                        selected_group.set(Some(group.clone()));
+                                        // Navigate to the group's default view
+                                        nav.push(crate::Route::NoChannel {
+                                            group: group.name.clone(),
+                                        });
+                                    }
                                 },
-                            ),
-                            onclick: {
-                                let group = group.clone();
-                                move |_| {
-                                    selected_group.set(Some(group.clone()));
-                                    // Navigate to the group's default view
-                                    nav.push(crate::Route::NoChannel {
-                                        group: group.name.clone(),
-                                    });
+                                // Tooltip
+                                div { class: "absolute left-full ml-4 px-3 py-2 bg-[#111214] text-white text-sm font-medium rounded-md whitespace-nowrap opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-150 z-50 shadow-lg",
+                                    "{group.name}"
                                 }
-                            },
-                            // Tooltip
-                            div { class: "absolute left-full ml-4 px-3 py-2 bg-[#111214] text-white text-sm font-medium rounded-md whitespace-nowrap opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-150 z-50 shadow-lg",
-                                "{group.name}"
+                                // Active indicator pill
+                                if selected_group.read().as_ref().map(|g| &g.group_id) == Some(&group.group_id) {
+                                    div { class: "absolute left-0 w-1 h-10 bg-white rounded-r-full -ml-[10px]" }
+                                }
+                                "{group.name.chars().next().unwrap_or('?')}"
                             }
-                            // Active indicator pill
-                            if selected_group.read().as_ref().map(|g| &g.group_id) == Some(&group.group_id) {
-                                div { class: "absolute left-0 w-1 h-10 bg-white rounded-r-full -ml-[10px]" }
-                            }
-                            "{group.name.chars().next().unwrap_or('?')}"
                         }
-                    }
+                    },
+                    Some(Err(e)) => rsx! {
+                        div {
+                            class: "group relative w-12 h-12 bg-red-900 rounded-[24px] flex items-center justify-center text-red-400 cursor-pointer",
+                            title: "{e}",
+                            div { class: "absolute left-full ml-4 px-3 py-2 bg-red-900 text-red-200 text-xs font-medium rounded-md max-w-xs opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-150 z-50 shadow-lg break-all",
+                                "Error: {e}"
+                            }
+                            "!"
+                        }
+                    },
+                    None => rsx! {
+                        div {
+                            class: "w-12 h-12 bg-[#313338] rounded-[24px] flex items-center justify-center text-gray-500 animate-pulse",
+                            "..."
+                        }
+                    },
                 }
 
                 // Separator

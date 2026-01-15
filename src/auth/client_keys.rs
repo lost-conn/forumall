@@ -88,6 +88,7 @@ pub fn sign_request(
     body: &[u8],
     keys: &KeyPair,
     handle: &str,
+    domain: &str,
 ) -> Option<SignedHeaders> {
     let key_id = keys.key_id.as_ref()?;
 
@@ -105,7 +106,7 @@ pub fn sign_request(
     let sig_b64 = BASE64.encode(signature.to_bytes());
 
     Some(SignedHeaders {
-        actor: format!("@{}@localhost", handle),
+        actor: format!("@{}@{}", handle, domain),
         key_id: key_id.clone(),
         timestamp,
         signature: sig_b64,
@@ -135,7 +136,7 @@ impl WsAuthParams {
 }
 
 /// Sign a WebSocket upgrade request (GET with empty body)
-pub fn sign_ws_request(path: &str, keys: &KeyPair, handle: &str) -> Option<WsAuthParams> {
+pub fn sign_ws_request(path: &str, keys: &KeyPair, handle: &str, domain: &str) -> Option<WsAuthParams> {
     let key_id = keys.key_id.as_ref()?;
 
     // Decode private key
@@ -154,7 +155,7 @@ pub fn sign_ws_request(path: &str, keys: &KeyPair, handle: &str) -> Option<WsAut
     let sig_b64 = BASE64.encode(signature.to_bytes());
 
     Some(WsAuthParams {
-        actor: format!("@{}@localhost", handle),
+        actor: format!("@{}@{}", handle, domain),
         key_id: key_id.clone(),
         timestamp,
         signature: sig_b64,
