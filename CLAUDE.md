@@ -4,104 +4,159 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Forumall is a Rust-based OFSCP (Open Federated Social Communications Protocol) provider and chat application built with **Dioxus fullstack**. It's the reference implementation for the OFSCP federation protocol, designed to be self-hostable.
+Forumall is a Rust-based OFSCP (Open Federated Social Communications Protocol) provider and chat application. The project is structured as a **Cargo workspace** with three main crates:
+
+- **forumall-shared**: Common types, protocol definitions, and utilities
+- **forumall-server**: Pure Axum HTTP/WebSocket server
+- **forumall-client**: Dioxus web application
+
+> **Note**: The `src/` directory contains legacy Dioxus fullstack code that is being migrated to the new workspace structure. The new crates in `crates/` are the active implementation.
+
+## Project Structure
+
+```
+forumall/
+├── Cargo.toml              # Workspace root (also legacy package, ignore)
+├── crates/
+│   ├── shared/             # forumall-shared: Types and protocol
+│   │   └── src/
+│   │       ├── lib.rs
+│   │       ├── models.rs   # All shared types
+│   │       ├── protocol.rs # OFSCP signature/verification
+│   │       └── error.rs    # Error types including ProblemDetails
+│   │
+│   ├── server/             # forumall-server: Axum server
+│   │   └── src/
+│   │       ├── main.rs     # Server entrypoint
+│   │       ├── db.rs       # Aurora DB initialization
+│   │       ├── state.rs    # AppState
+│   │       ├── routes/     # API endpoints
+│   │       ├── middleware/ # OFSCP signature verification
+│   │       └── ws.rs       # WebSocket handler
+│   │
+│   └── client/             # forumall-client: Dioxus app
+│       └── src/
+│           ├── main.rs     # App entrypoint
+│           ├── api_client.rs
+│           ├── auth_session.rs
+│           ├── client_keys.rs
+│           ├── ws_manager.rs
+│           ├── views/
+│           └── components/
+│
+├── src/                    # LEGACY - being migrated
+└── MIGRATION_PLAN.md       # Detailed migration guide
+```
 
 ## Build Commands
 
 ```bash
-# Development (web + server, the default)
-dx serve
+# Build the server
+cargo build -p forumall-server
 
-# Production build
-dx build --release
+# Build the client (for development)
+cd crates/client && dx serve
 
-# Run tests
-cargo test
+# Build the server (release)
+cargo build -p forumall-server --release
+
+# Run the server
+cargo run -p forumall-server
 
 # Lint
-cargo clippy
+cargo clippy -p forumall-shared -p forumall-server -p forumall-client
 
-# Build specific targets
-cargo build --features server          # Server only
-cargo build --features desktop         # Desktop app
-cargo build --features mobile          # Mobile app
+# Run tests
+cargo test -p forumall-shared -p forumall-server
 ```
 
 ## Architecture
 
-### Unified Codebase Pattern
+### Workspace Crates
 
-This is a **fullstack Rust application** where the same codebase compiles to:
-- Server (Axum) via `--features server`
-- Web client (WASM) via `--features web`
-- Desktop/Mobile via respective features
+| Crate | Purpose |
+|-------|---------|
+| `forumall-shared` | Types, OFSCP protocol, error handling - used by both server and client |
+| `forumall-server` | Pure Axum server with all API endpoints and WebSocket support |
+| `forumall-client` | Dioxus web app that can connect to any OFSCP provider |
 
-Code is conditionally compiled using `#[cfg(feature = "...")]` attributes.
+### Server Architecture (forumall-server)
 
-### Server Functions
+- **Axum router** with standard route handlers (not Dioxus server functions)
+- **Aurora DB** for storage (embedded NoSQL)
+- **OFSCP signature verification** via custom extractors (`SignedJson`, `SignedRequest`)
+- **WebSocket** support for real-time messaging
 
-Dioxus fullstack uses annotated functions that automatically become HTTP endpoints on the server and RPC calls on the client:
+### Client Architecture (forumall-client)
 
-```rust
-#[post("/api/auth/register")]
-async fn register(Json(req): Json<RegisterRequest>) -> Result<Json<User>> { ... }
-```
-
-The `#[get]`, `#[post]`, `#[put]` macros from `dioxus_fullstack` handle routing and serialization.
-
-### Key Modules
-
-| Module | Purpose |
-|--------|---------|
-| `auth.rs` | Registration/login endpoints, Argon2 password hashing |
-| `auth_session.rs` | Client-side auth context (Signal-based reactive state) |
-| `auth/client_keys.rs` | Ed25519 key generation for OFSCP request signing |
-| `api_client.rs` | HTTP client that signs requests per OFSCP spec |
-| `groups.rs` | Group/channel CRUD operations |
-| `messages.rs` | Message creation with idempotency support |
-| `ws_client.rs` | WebSocket client provider for real-time messaging |
-| `server/signature.rs` | OFSCP signature verification middleware |
-| `server/ws.rs` | WebSocket server handler |
-
-### State Management
-
-Dioxus uses **Signals** for reactive state (not React-style hooks):
-
-```rust
-let auth = use_context::<AuthContext>();
-let count: Signal<i32> = use_signal(|| 0);
-```
-
-Auth and WebSocket contexts are provided at the app root in `main.rs`.
+- **Dioxus** for UI (router, signals, components)
+- **ApiClient** for HTTP requests with OFSCP signing
+- **Provider URL** configurable to connect to any OFSCP server
+- **WsManager** for WebSocket connections
 
 ### OFSCP Protocol
 
 All authenticated API requests require Ed25519 signatures with these headers:
-- `X-OFSCP-Signature`: Base64-encoded signature
-- `X-OFSCP-Actor`: User identifier (`handle@domain`)
+- `X-OFSCP-Signature`: `keyId="...", signature="..."`
+- `X-OFSCP-Actor`: User identifier (`@handle@domain`)
 - `X-OFSCP-Timestamp`: ISO 8601 timestamp
-
-The client generates keys in `auth/client_keys.rs` and signs via `api_client.rs`.
 
 ### Database
 
-Aurora DB (embedded NoSQL) with collections defined in `main.rs`:
+Aurora DB (embedded NoSQL) with collections:
 - `users`, `groups`, `group_members`, `channels`, `messages`, `device_keys`, `idempotency_keys`, `user_joined_groups`
 
-Access via the global `DB` static: `crate::DB.collection("users")`
-
-### Routes
+### Routes (Server)
 
 ```
-/                           Landing page
-/login, /register           Auth pages
-/home                       Dashboard (no group selected)
-/home/:group                Group view (no channel selected)
-/home/:group/:channel       Channel chat view
-/test-ws                    WebSocket debug page
-/.well-known/ofscp-provider OFSCP discovery endpoint
+/                                              Landing (client serves)
+/.well-known/ofscp-provider                    OFSCP discovery
+/.well-known/ofscp/users/{handle}/keys         Public key discovery
+
+/api/auth/register                             POST - Registration
+/api/auth/login                                POST - Login
+/api/auth/device-keys                          POST/GET - Device key management
+
+/api/groups                                    POST/GET - Groups
+/api/groups/{group_id}                         GET/PUT - Group details
+/api/groups/{group_id}/join                    POST - Join group
+/api/groups/{group_id}/channels                POST/GET - Channels
+/api/groups/{group_id}/channels/{id}/messages  POST/GET - Messages
+
+/api/users/{handle}/profile                    GET - User profile
+/api/users/{user_id}/groups                    GET/POST - User's groups
+/api/me/groups                                 POST - Add self to group
+
+/api/ws                                        WebSocket endpoint
 ```
 
-## Current Status
+## Development Workflow
 
-Auth system is under active development (see recent commits). WebSocket authentication is not fully implemented yet.
+1. **Run the server**:
+   ```bash
+   cargo run -p forumall-server
+   ```
+   Server runs on `http://localhost:8080`
+
+2. **Run the client** (separate terminal):
+   ```bash
+   cd crates/client
+   dx serve
+   ```
+   Client runs on `http://localhost:8081` (or similar)
+
+3. **Configure client to connect to server**:
+   The client reads `provider_domain` from localStorage or defaults to current origin.
+
+## Migration Status
+
+The migration from Dioxus fullstack to separated server/client is in progress:
+
+- ✅ Shared crate created with all types
+- ✅ Server crate with Axum routes
+- ✅ Client crate skeleton with auth, API client, WS manager
+- ⏳ Views need to be copied from `src/views/` to `crates/client/src/views/`
+- ⏳ Components need to be copied
+- ⏳ Legacy `src/` can be removed once migration complete
+
+See `MIGRATION_PLAN.md` for detailed migration steps.
