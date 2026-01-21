@@ -2,7 +2,7 @@
 
 use crate::auth_session::AuthContext;
 use crate::views::{CreateGroupModal, JoinGroupModal};
-use crate::ws_manager::WS_HOSTS;
+use crate::ws::{normalize_host, WS_HOSTS};
 use crate::Route;
 use dioxus::prelude::*;
 use forumall_shared::UserJoinedGroup;
@@ -113,9 +113,9 @@ pub fn HomeSidebarLayout() -> Element {
                                     let group = group.clone();
                                     move |_| {
                                         selected_group.set(Some(group.clone()));
-                                        // Navigate to the group's default view with host
+                                        // Navigate to the group's default view with host (normalized to strip protocol)
                                         nav.push(Route::NoChannel {
-                                            group_host: group.host.clone().unwrap_or_default(),
+                                            group_host: normalize_host(&group.host.clone().unwrap_or_default()),
                                             group: group.name.clone(),
                                         });
                                     }

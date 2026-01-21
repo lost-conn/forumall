@@ -391,7 +391,7 @@ pub type UpdateGroupRequest = UpdateGroupSettingsRequest;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MessagesPage {
-    pub items: Vec<TimelineItem>,
+    pub items: Vec<ChannelMessage>,
     pub page: PageInfo,
 }
 

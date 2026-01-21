@@ -2,6 +2,7 @@
 
 use crate::auth_session::AuthContext;
 use crate::hooks::use_refresh_resource;
+use crate::ws::normalize_host;
 use crate::Route;
 use dioxus::prelude::*;
 use forumall_shared::{
@@ -505,7 +506,7 @@ pub fn JoinGroupModal(on_close: EventHandler<()>, on_joined: EventHandler<()>) -
                         let req = AddJoinedGroupRequest {
                             group_id: name.clone(), // Use name as ID
                             name: name.clone(),
-                            host: Some(host.clone()),
+                            host: Some(normalize_host(&host)),
                         };
 
                         // We don't block heavily on this, but we should await it to ensure consistency

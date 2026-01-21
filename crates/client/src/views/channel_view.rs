@@ -2,15 +2,12 @@
 
 use crate::auth_session::AuthContext;
 use crate::hooks::use_refreshable_resource;
-use crate::ws_manager::{normalize_host, WS_MANAGER};
+use crate::ws::{get_handle, normalize_host, WsEvent, WS_EVENTS};
 use crate::Route;
 use chrono::{DateTime, Local, Utc};
 use dioxus::logger::tracing;
 use dioxus::prelude::*;
-use forumall_shared::{
-    ClientCommand, Group, MessagesPage, ServerEvent, TimelineItem, UserProfile, UserRef,
-    WsEnvelope,
-};
+use forumall_shared::{BaseMessage, Group, MessagesPage, UserProfile, UserRef};
 
 #[derive(Clone)]
 pub struct ChannelViewRefresh {
@@ -190,7 +187,9 @@ fn MessageList(group_id: String, channel_id: String, group_host: String) -> Elem
     let mut track_group_id = use_signal(|| group_id.clone());
     let mut track_channel_id = use_signal(|| channel_id.clone());
     let mut track_group_host = use_signal(|| group_host.clone());
-    let mut realtime_msgs = use_signal(|| Vec::<TimelineItem>::new());
+    // Store realtime messages as BaseMessage (from WebSocket)
+    let mut realtime_msgs = use_signal(|| Vec::<BaseMessage>::new());
+    let mut processed_ids = use_signal(|| std::collections::HashSet::<String>::new());
     let mut subscribed_channel = use_signal(|| None::<String>);
 
     if track_group_id() != group_id {
@@ -199,6 +198,7 @@ fn MessageList(group_id: String, channel_id: String, group_host: String) -> Elem
     if track_channel_id() != channel_id {
         track_channel_id.set(channel_id.clone());
         realtime_msgs.set(Vec::new()); // Clear realtime messages on channel switch
+        processed_ids.set(std::collections::HashSet::new()); // Clear processed IDs
     }
     if track_group_host() != group_host {
         track_group_host.set(group_host.clone());
@@ -215,48 +215,32 @@ fn MessageList(group_id: String, channel_id: String, group_host: String) -> Elem
         if sub.as_ref() != Some(&target_cid) {
             // Unsubscribe from previous
             if let Some(old) = sub.take() {
-                let unsub_key = key.clone();
-                let msg = WsEnvelope {
-                    id: uuid::Uuid::new_v4().to_string(),
-                    ts: chrono::Utc::now(),
-                    payload: ClientCommand::Unsubscribe { channel_id: old },
-                    correlation_id: None,
-                };
-                spawn(async move {
-                    let manager = WS_MANAGER.read();
-                    if let Some(ws) = manager.get(&unsub_key) {
-                        let _ = ws.send(msg).await;
-                    }
-                });
+                if let Some(handle) = get_handle(&key) {
+                    let _ = handle.unsubscribe(&old);
+                }
             }
 
             // Subscribe to new
-            let sub_key = key.clone();
-            let msg = WsEnvelope {
-                id: uuid::Uuid::new_v4().to_string(),
-                ts: chrono::Utc::now(),
-                payload: ClientCommand::Subscribe {
-                    channel_id: target_cid.clone(),
-                },
-                correlation_id: None,
-            };
-            spawn(async move {
-                let manager = WS_MANAGER.read();
-                if let Some(ws) = manager.get(&sub_key) {
-                    let _ = ws.send(msg).await;
-                }
-            });
+            if let Some(handle) = get_handle(&key) {
+                let _ = handle.subscribe(&target_cid);
+            }
             *sub = Some(target_cid);
         }
     });
 
     // Listen for new messages from WebSocket events
     use_effect(move || {
-        let events = crate::ws_manager::WS_EVENTS.read();
+        // Read events to subscribe to changes
+        let events = WS_EVENTS.read();
+
         for event in events.iter() {
-            if let ServerEvent::MessageNew { message } = &event.payload {
-                // Push received message to realtime messages
-                realtime_msgs.write().push(TimelineItem::Message(message.clone()));
+            if let WsEvent::NewMessage { message, .. } = event {
+                // Check if we've already processed this message
+                if !processed_ids.read().contains(&message.id) {
+                    // Mark as processed and add to realtime messages
+                    processed_ids.write().insert(message.id.clone());
+                    realtime_msgs.write().push(message.clone());
+                }
             }
         }
     });
@@ -311,17 +295,24 @@ fn MessageList(group_id: String, channel_id: String, group_host: String) -> Elem
         div { class: "flex flex-col px-4 py-4 gap-3",
             match messages.read().as_ref() {
                 Some(Ok(page)) => rsx! {
-                    for item in page.items.iter().chain(realtime_msgs.read().iter()) {
-                        match item {
-                            TimelineItem::Message(msg) => rsx! {
-                                MessageItem {
-                                    key: "{msg.id}",
-                                    user_id: extract_user_id(&msg.author),
-                                    created_at: msg.created_at,
-                                    content: msg.content.text.clone(),
-                                }
-                            },
-                            TimelineItem::Reaction(_) => rsx! {},
+                    // Render REST API messages (ChannelMessage format)
+                    for msg in page.items.iter() {
+                        MessageItem {
+                            key: "{msg.id}",
+                            user_id: msg.sender_user_id.clone(),
+                            created_at_str: Some(msg.created_at.clone()),
+                            created_at_dt: None,
+                            content: msg.body.clone(),
+                        }
+                    }
+                    // Render WebSocket messages (BaseMessage format)
+                    for msg in realtime_msgs.read().iter() {
+                        MessageItem {
+                            key: "{msg.id}",
+                            user_id: extract_user_id(&msg.author),
+                            created_at_str: None,
+                            created_at_dt: Some(msg.created_at),
+                            content: msg.content.text.clone(),
                         }
                     }
                 },
@@ -385,9 +376,25 @@ fn format_timestamp(dt: DateTime<Utc>) -> String {
 }
 
 #[component]
-fn MessageItem(user_id: String, created_at: DateTime<Utc>, content: String) -> Element {
+fn MessageItem(
+    user_id: String,
+    created_at_str: Option<String>,
+    created_at_dt: Option<DateTime<Utc>>,
+    content: String,
+) -> Element {
     let auth = use_context::<AuthContext>();
     let user_id_sig = use_signal(|| user_id.clone());
+
+    // Parse the timestamp - either from string or DateTime
+    let created_at: DateTime<Utc> = if let Some(dt) = created_at_dt {
+        dt
+    } else if let Some(s) = &created_at_str {
+        chrono::DateTime::parse_from_rfc3339(s)
+            .map(|dt| dt.with_timezone(&Utc))
+            .unwrap_or_else(|_| Utc::now())
+    } else {
+        Utc::now()
+    };
 
     // Check if this message is from the current user
     let is_own_message = auth.user_id().map(|uid| uid == user_id).unwrap_or(false);
@@ -518,26 +525,17 @@ fn MessageInput(
             return;
         }
 
-        let cid = channel_id.clone();
-        let msg = WsEnvelope {
-            id: uuid::Uuid::new_v4().to_string(),
-            ts: chrono::Utc::now(),
-            payload: ClientCommand::MessageCreate {
-                channel_id: cid,
-                body,
-                nonce: uuid::Uuid::new_v4().to_string(),
-            },
-            correlation_id: None,
-        };
-
-        // Send via websocket from manager
+        // Send via websocket handle
         let key = ws_key.clone();
-        spawn(async move {
-            let manager = WS_MANAGER.read();
-            if let Some(ws) = manager.get(&key) {
-                let _ = ws.send(msg).await;
-            }
-        });
+        let cid = channel_id.clone();
+        web_sys::console::log_1(&format!("MessageInput: looking for handle with key '{}'", key).into());
+        if let Some(handle) = get_handle(&key) {
+            let nonce = uuid::Uuid::new_v4().to_string();
+            web_sys::console::log_1(&format!("MessageInput: sending to channel '{}' with nonce '{}'", cid, nonce).into());
+            let _ = handle.send_message(&cid, &body, &nonce);
+        } else {
+            web_sys::console::error_1(&format!("MessageInput: no handle found for key '{}'", key).into());
+        }
         text.set(String::new());
     };
 

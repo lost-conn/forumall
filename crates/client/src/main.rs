@@ -5,7 +5,7 @@
 #![allow(non_snake_case)]
 
 use dioxus::prelude::*;
-use forumall_client::{auth_session::AuthProvider, routes::Route, ws_manager::WsManager};
+use forumall_client::{auth_session::AuthProvider, routes::Route, ws::WsManager};
 
 // Assets
 const FAVICON: Asset = asset!("/assets/favicon.ico");

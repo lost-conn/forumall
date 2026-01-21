@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::api_client::ApiClient;
 use crate::client_keys::KeyPair;
-use crate::ws_manager;
+use crate::ws;
 
 const STORAGE_KEY: &str = "ofscp_session";
 const DOMAIN_KEY: &str = "ofscp_provider_domain";
@@ -97,7 +97,7 @@ impl AuthContext {
 
     /// Logout and clear session
     pub fn logout(&mut self) {
-        ws_manager::clear_connections();
+        ws::clear_connections();
 
         if let Some(window) = web_sys::window() {
             if let Ok(Some(storage)) = window.local_storage() {
@@ -216,9 +216,18 @@ impl AuthContext {
         }
     }
 
-    /// Construct WebSocket URL
+    /// Construct WebSocket URL for the local provider
     pub fn ws_url(&self, path: &str) -> String {
-        let url = self.api_url(path);
+        Self::http_to_ws(&self.api_url(path), path)
+    }
+
+    /// Construct WebSocket URL for a specific host
+    pub fn ws_url_for_host(&self, host: Option<&str>, path: &str) -> String {
+        Self::http_to_ws(&self.api_url_for_host(host, path), path)
+    }
+
+    /// Convert HTTP/HTTPS URL to WS/WSS
+    fn http_to_ws(url: &str, path: &str) -> String {
         if url.starts_with("https://") {
             url.replacen("https://", "wss://", 1)
         } else if url.starts_with("http://") {
@@ -239,7 +248,7 @@ impl AuthContext {
                     );
                 }
             }
-            url
+            url.to_string()
         }
     }
 }
