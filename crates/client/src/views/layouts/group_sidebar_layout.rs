@@ -10,7 +10,7 @@ use forumall_shared::{Channel, Group};
 /// Channel layout component that contains the channel selection sidebar
 /// This is the middle layout between SidebarLayout and ChannelView
 #[component]
-pub fn GroupSidebarLayout(group_host: Signal<String>, group: Signal<String>) -> Element {
+pub fn GroupSidebarLayout(group_host: ReadSignal<String>, group: ReadSignal<String>) -> Element {
     let auth = use_context::<AuthContext>();
     let mut show_create_channel_modal = use_signal(|| false);
     let mut show_settings = use_signal(|| false);

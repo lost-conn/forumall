@@ -18,9 +18,9 @@ pub struct ChannelViewRefresh {
 /// This is the innermost component in the layout hierarchy
 #[component]
 pub fn ChannelView(
-    group_host: Signal<String>,
-    group: Signal<String>,
-    channel: Signal<String>,
+    group_host: ReadSignal<String>,
+    group: ReadSignal<String>,
+    channel: ReadSignal<String>,
 ) -> Element {
     let auth = use_context::<AuthContext>();
     let nav = use_navigator();

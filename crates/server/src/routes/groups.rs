@@ -86,7 +86,6 @@ pub async fn create_group(
             vec![
                 ("user_id", user_id.into()),
                 ("group_id", id.into()),
-                ("host", state.base_url.clone().into()),
                 ("name", group.name.clone().into()),
                 ("joined_at", now.into()),
             ],
@@ -288,7 +287,6 @@ pub async fn join_group(
                 vec![
                     ("user_id", user_id.into()),
                     ("group_id", group_id.into()),
-                    ("host", state.base_url.clone().into()),
                     ("name", group_name.into()),
                     ("joined_at", now.into()),
                 ],
@@ -377,7 +375,6 @@ pub async fn add_member(
             vec![
                 ("user_id", target_user_id.into()),
                 ("group_id", group_id.into()),
-                ("host", state.base_url.clone().into()),
                 ("name", group_name.into()),
                 ("joined_at", now.into()),
             ],
