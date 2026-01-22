@@ -1,0 +1,13 @@
+{
+  "name": "forumall-client",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "css": "tailwindcss -i ./assets/styling/input.css -o ./assets/styling/main.css",
+    "css:watch": "tailwindcss -i ./assets/styling/input.css -o ./assets/styling/main.css --watch"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "^4.1.18",
+    "tailwindcss": "^4.1.18"
+  }
+}

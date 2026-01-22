@@ -138,14 +138,21 @@ Aurora DB (embedded NoSQL) with collections:
    ```
    Server runs on `http://localhost:8080`
 
-2. **Run the client** (separate terminal):
+2. **Build Tailwind CSS** (required before running client):
+   ```bash
+   cd crates/client
+   npm run css:watch
+   ```
+   Run this in a separate terminal to rebuild CSS when classes change. Use `npm run css` for a one-time build.
+
+3. **Run the client** (separate terminal):
    ```bash
    cd crates/client
    dx serve
    ```
    Client runs on `http://localhost:8081` (or similar)
 
-3. **Configure client to connect to server**:
+4. **Configure client to connect to server**:
    The client reads `provider_domain` from localStorage or defaults to current origin.
 
 ## Migration Status
