@@ -259,33 +259,43 @@ pub async fn join_group(
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)))?;
     }
 
-    // Add to user_joined_groups
-    let group_docs = state.db
-        .query("groups")
-        .filter(|f| f.eq("id", group_id.clone()))
+    // Check if already in user_joined_groups
+    let joined_docs = state.db
+        .query("user_joined_groups")
+        .filter(|f| f.eq("user_id", user_id.clone()) & f.eq("group_id", group_id.clone()))
         .collect()
         .await
-        .unwrap_or_default();
-
-    let group_name = group_docs
-        .first()
-        .and_then(|d| d.data.get("name").and_then(|v| v.as_str()))
-        .unwrap_or("Unknown")
-        .to_string();
-
-    state.db
-        .insert_into(
-            "user_joined_groups",
-            vec![
-                ("user_id", user_id.into()),
-                ("group_id", group_id.into()),
-                ("host", state.base_url.clone().into()),
-                ("name", group_name.into()),
-                ("joined_at", now.into()),
-            ],
-        )
-        .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)))?;
+
+    // Only add to user_joined_groups if not already there
+    if joined_docs.is_empty() {
+        let group_docs = state.db
+            .query("groups")
+            .filter(|f| f.eq("id", group_id.clone()))
+            .collect()
+            .await
+            .unwrap_or_default();
+
+        let group_name = group_docs
+            .first()
+            .and_then(|d| d.data.get("name").and_then(|v| v.as_str()))
+            .unwrap_or("Unknown")
+            .to_string();
+
+        state.db
+            .insert_into(
+                "user_joined_groups",
+                vec![
+                    ("user_id", user_id.into()),
+                    ("group_id", group_id.into()),
+                    ("host", state.base_url.clone().into()),
+                    ("name", group_name.into()),
+                    ("joined_at", now.into()),
+                ],
+            )
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)))?;
+    }
 
     Ok(StatusCode::NO_CONTENT)
 }
