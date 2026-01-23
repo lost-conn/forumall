@@ -80,7 +80,7 @@ pub fn get_handle(host: &str) -> Option<WsHandle> {
     let normalized = normalize_host(host);
     let handles = WS_HANDLES.read();
     let available_keys: Vec<_> = handles.keys().collect();
-    web_sys::console::log_1(&format!("get_handle: looking for '{}' (normalized: '{}'), available: {:?}", host, normalized, available_keys).into());
+    crate::log_info!("get_handle: looking for '{}' (normalized: '{}'), available: {:?}", host, normalized, available_keys);
     handles.get(&normalized).cloned()
 }
 
@@ -201,7 +201,7 @@ pub fn WsManager(children: Element) -> Element {
                 .write()
                 .insert(host.clone(), Rc::new(connection));
 
-            web_sys::console::log_1(&format!("Created WebSocket connection for: {}", host).into());
+            crate::log_info!("Created WebSocket connection for: {}", host);
         }
     });
 

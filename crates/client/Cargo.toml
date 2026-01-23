@@ -3,17 +3,18 @@ name = "forumall-client"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = ["web"]
+web = []
+desktop = []
+
 [dependencies]
 forumall-shared = { path = "../shared" }
 
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-uuid = { version = "1.19", features = ["v4", "serde", "js"] }
 chrono = { version = "0.4", features = ["serde"] }
 anyhow = "1.0"
-
-# Dioxus
-dioxus = { version = "0.7", features = ["router", "web", "logger"] }
 
 # HTTP client
 reqwest = { version = "0.12", features = ["json"] }
@@ -24,9 +25,22 @@ base64 = "0.22"
 sha2 = "0.10"
 hex = "0.4"
 rand = "0.8"
-getrandom = { version = "0.2", features = ["js"] }
 
-# WASM
+# Async
+futures-util = { version = "0.3", features = ["sink"] }
+futures-channel = "0.3"
+urlencoding = "2.1"
+url = "2.5"
+
+# =========================================
+# Platform-specific dependencies
+# =========================================
+
+# WASM-specific dependencies
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+dioxus = { version = "0.7", features = ["router", "web", "logger"] }
+uuid = { version = "1.19", features = ["v4", "serde", "js"] }
+getrandom = { version = "0.2", features = ["js"] }
 web-sys = { version = "0.3", features = [
     "Window", "Storage", "console",
     "WebSocket", "MessageEvent", "CloseEvent", "ErrorEvent", "Event",
@@ -36,8 +50,13 @@ wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 gloo-timers = { version = "0.3", features = ["futures"] }
 
-# Async
-futures-util = { version = "0.3", features = ["sink"] }
-futures-channel = "0.3"
-urlencoding = "2.1"
-url = "2.5"
+# Native/desktop-specific dependencies
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+dioxus = { version = "0.7", features = ["router", "desktop", "logger"] }
+uuid = { version = "1.19", features = ["v4", "serde"] }
+getrandom = "0.2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
+dirs = "6"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

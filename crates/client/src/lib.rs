@@ -1,7 +1,17 @@
-//! Forumall Client - Dioxus web application
+//! Forumall Client - Dioxus application
 //!
-//! This crate contains the web/desktop/mobile client for forumall,
+//! This crate contains the web/desktop client for forumall,
 //! a Dioxus-based OFSCP chat application.
+//!
+//! # Platform Support
+//!
+//! - **Web (WASM)**: Uses `web_sys::WebSocket` and `localStorage`
+//! - **Desktop (Native)**: Uses `tokio-tungstenite` and file-based config storage
+
+// Cross-platform modules (must be declared first for macro availability)
+#[macro_use]
+pub mod logging;
+pub mod storage;
 
 pub mod api_client;
 pub mod auth_session;

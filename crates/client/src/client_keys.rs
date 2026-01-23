@@ -33,38 +33,21 @@ pub fn generate_keypair() -> KeyPair {
     }
 }
 
-/// Save keypair to localStorage
+/// Save keypair to persistent storage
 #[allow(dead_code)]
 pub fn save_keypair(keys: &KeyPair) {
-    if let Ok(json) = serde_json::to_string(keys) {
-        if let Some(win) = web_sys::window() {
-            if let Ok(Some(storage)) = win.local_storage() {
-                let _ = storage.set_item(STORAGE_KEY, &json);
-            }
-        }
-    }
+    crate::storage::save(STORAGE_KEY, keys);
 }
 
-/// Load keypair from localStorage
+/// Load keypair from persistent storage
 #[allow(dead_code)]
 pub fn load_keypair() -> Option<KeyPair> {
-    if let Some(win) = web_sys::window() {
-        if let Ok(Some(storage)) = win.local_storage() {
-            if let Ok(Some(json)) = storage.get_item(STORAGE_KEY) {
-                return serde_json::from_str(&json).ok();
-            }
-        }
-    }
-    None
+    crate::storage::load(STORAGE_KEY)
 }
 
-/// Clear keypair from localStorage
+/// Clear keypair from persistent storage
 pub fn clear_keypair() {
-    if let Some(win) = web_sys::window() {
-        if let Ok(Some(storage)) = win.local_storage() {
-            let _ = storage.remove_item(STORAGE_KEY);
-        }
-    }
+    crate::storage::remove(STORAGE_KEY);
 }
 
 /// OFSCP signature headers for HTTP requests

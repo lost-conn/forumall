@@ -1,4 +1,4 @@
-//! Authentication session management with localStorage persistence.
+//! Authentication session management with cross-platform persistence.
 
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -27,58 +27,31 @@ pub struct AuthSession {
 /// Provider component that sets up auth context
 #[component]
 pub fn AuthProvider(children: Element) -> Element {
-    let session = use_signal(|| {
-        if let Some(window) = web_sys::window() {
-            if let Ok(Some(storage)) = window.local_storage() {
-                if let Ok(Some(data)) = storage.get_item(STORAGE_KEY) {
-                    if let Ok(sess) = serde_json::from_str::<AuthSession>(&data) {
-                        return Some(sess);
-                    }
-                }
-            }
-        }
-        None
-    });
+    let session = use_signal(|| crate::storage::load::<AuthSession>(STORAGE_KEY));
 
     let provider_domain = use_signal(|| {
-        if let Some(window) = web_sys::window() {
-            if let Ok(Some(storage)) = window.local_storage() {
-                if let Ok(Some(domain)) = storage.get_item(DOMAIN_KEY) {
-                    return domain;
-                }
-            }
-            // Default to current origin's host
-            if let Ok(host) = window.location().host() {
-                return host;
-            }
+        // Try to load from storage first
+        if let Some(domain) = crate::storage::load::<String>(DOMAIN_KEY) {
+            return domain;
         }
-        "localhost".to_string()
+        // Default to current origin's host
+        get_current_origin()
     });
 
-    // Sync session to localStorage
+    // Sync session to storage
     use_effect(move || {
         let current = session.cloned();
-        if let Some(window) = web_sys::window() {
-            if let Ok(Some(storage)) = window.local_storage() {
-                if let Some(sess) = current.as_ref() {
-                    if let Ok(data) = serde_json::to_string(sess) {
-                        let _ = storage.set_item(STORAGE_KEY, &data);
-                    }
-                } else {
-                    let _ = storage.remove_item(STORAGE_KEY);
-                }
-            }
+        if let Some(sess) = current.as_ref() {
+            crate::storage::save(STORAGE_KEY, sess);
+        } else {
+            crate::storage::remove(STORAGE_KEY);
         }
     });
 
-    // Sync domain to localStorage
+    // Sync domain to storage
     use_effect(move || {
         let domain = provider_domain.cloned();
-        if let Some(window) = web_sys::window() {
-            if let Ok(Some(storage)) = window.local_storage() {
-                let _ = storage.set_item(DOMAIN_KEY, &domain);
-            }
-        }
+        crate::storage::save(DOMAIN_KEY, &domain);
     });
 
     use_context_provider(|| AuthContext {
@@ -98,12 +71,7 @@ impl AuthContext {
     /// Logout and clear session
     pub fn logout(&mut self) {
         ws::clear_connections();
-
-        if let Some(window) = web_sys::window() {
-            if let Ok(Some(storage)) = window.local_storage() {
-                let _ = storage.remove_item(STORAGE_KEY);
-            }
-        }
+        crate::storage::remove(STORAGE_KEY);
         self.session.set(None);
     }
 
@@ -233,22 +201,66 @@ impl AuthContext {
         } else if url.starts_with("http://") {
             url.replacen("http://", "ws://", 1)
         } else {
-            // Handle relative paths
-            if let Some(window) = web_sys::window() {
-                if let Ok(origin) = window.location().origin() {
-                    let ws_origin = if origin.starts_with("https://") {
-                        origin.replacen("https://", "wss://", 1)
-                    } else {
-                        origin.replacen("http://", "ws://", 1)
-                    };
-                    return format!(
-                        "{}{}",
-                        ws_origin.trim_end_matches('/'),
-                        if path.starts_with('/') { path.to_string() } else { format!("/{path}") }
-                    );
+            // Handle relative paths - use platform-specific origin
+            let origin = get_current_origin_url();
+            let ws_origin = if origin.starts_with("https://") {
+                origin.replacen("https://", "wss://", 1)
+            } else {
+                origin.replacen("http://", "ws://", 1)
+            };
+            format!(
+                "{}{}",
+                ws_origin.trim_end_matches('/'),
+                if path.starts_with('/') {
+                    path.to_string()
+                } else {
+                    format!("/{path}")
                 }
-            }
-            url.to_string()
+            )
         }
     }
+}
+
+// =========================================
+// Platform-specific helpers
+// =========================================
+
+/// Get the current origin's host (for default provider domain).
+///
+/// - Web: Returns `window.location.host`
+/// - Desktop: Returns default localhost
+#[cfg(target_arch = "wasm32")]
+fn get_current_origin() -> String {
+    if let Some(window) = web_sys::window() {
+        if let Ok(host) = window.location().host() {
+            return host;
+        }
+    }
+    "localhost:8080".to_string()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn get_current_origin() -> String {
+    // Desktop default - can be configured via storage
+    "localhost:8080".to_string()
+}
+
+/// Get the current origin as a full URL (for WebSocket conversion).
+///
+/// - Web: Returns `window.location.origin`
+/// - Desktop: Returns default localhost URL
+#[cfg(target_arch = "wasm32")]
+fn get_current_origin_url() -> String {
+    if let Some(window) = web_sys::window() {
+        if let Ok(origin) = window.location().origin() {
+            return origin;
+        }
+    }
+    "http://localhost:8080".to_string()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn get_current_origin_url() -> String {
+    // Desktop default - can be configured via storage
+    "http://localhost:8080".to_string()
 }

@@ -1,136 +1,23 @@
-//! WebSocket connection with state management and auto-reconnect.
+//! WASM/Web-specific WebSocket implementation using web_sys::WebSocket.
 
-use chrono::Utc;
 use dioxus::prelude::*;
 use forumall_shared::{ClientCommand, ServerEvent, WsEnvelope};
-use futures_channel::mpsc::{unbounded, UnboundedReceiver, UnboundedSender};
+use futures_channel::mpsc::{unbounded, UnboundedReceiver};
 use futures_util::StreamExt;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::js_sys;
 
-/// Connection state for a WebSocket
-#[derive(Debug, Clone, PartialEq)]
-pub enum ConnectionState {
-    Disconnected,
-    Connecting,
-    Connected,
-    Reconnecting { attempt: u32 },
-    Failed { reason: String },
-}
+use super::{ConnectionState, ReconnectConfig, WsHandle};
 
-impl ConnectionState {
-    pub fn is_connected(&self) -> bool {
-        matches!(self, ConnectionState::Connected)
-    }
-
-    pub fn is_connecting(&self) -> bool {
-        matches!(
-            self,
-            ConnectionState::Connecting | ConnectionState::Reconnecting { .. }
-        )
-    }
-}
-
-/// Configuration for auto-reconnect behavior
-#[derive(Debug, Clone)]
-pub struct ReconnectConfig {
-    /// Maximum number of reconnect attempts (0 = infinite)
-    pub max_attempts: u32,
-    /// Initial delay in milliseconds
-    pub initial_delay_ms: u32,
-    /// Maximum delay in milliseconds
-    pub max_delay_ms: u32,
-    /// Multiplier for exponential backoff
-    pub backoff_multiplier: f32,
-}
-
-impl Default for ReconnectConfig {
-    fn default() -> Self {
-        Self {
-            max_attempts: 10,
-            initial_delay_ms: 1000,
-            max_delay_ms: 30000,
-            backoff_multiplier: 1.5,
-        }
-    }
-}
-
-impl ReconnectConfig {
-    /// Calculate delay for a given attempt number
-    pub fn delay_for_attempt(&self, attempt: u32) -> u32 {
-        let delay = self.initial_delay_ms as f32 * self.backoff_multiplier.powi(attempt as i32);
-        (delay as u32).min(self.max_delay_ms)
-    }
-}
-
-/// Handle for sending commands through a WebSocket connection
-#[derive(Clone)]
-pub struct WsHandle {
-    sender: UnboundedSender<WsEnvelope<ClientCommand>>,
-    pub host: String,
-}
-
-impl WsHandle {
-    /// Send a command to the server
-    pub fn send(&self, cmd: ClientCommand) -> Result<(), String> {
-        web_sys::console::log_1(&format!("WsHandle::send to host '{}': {:?}", self.host, cmd).into());
-        let envelope = WsEnvelope {
-            id: uuid::Uuid::new_v4().to_string(),
-            payload: cmd,
-            ts: Utc::now(),
-            correlation_id: None,
-        };
-        self.sender
-            .unbounded_send(envelope)
-            .map_err(|e| format!("Failed to send: {}", e))
-    }
-
-    /// Send a command with a correlation ID for tracking responses
-    pub fn send_with_correlation(&self, cmd: ClientCommand, correlation_id: String) -> Result<(), String> {
-        let envelope = WsEnvelope {
-            id: uuid::Uuid::new_v4().to_string(),
-            payload: cmd,
-            ts: Utc::now(),
-            correlation_id: Some(correlation_id),
-        };
-        self.sender
-            .unbounded_send(envelope)
-            .map_err(|e| format!("Failed to send: {}", e))
-    }
-
-    /// Subscribe to a channel
-    pub fn subscribe(&self, channel_id: &str) -> Result<(), String> {
-        self.send(ClientCommand::Subscribe {
-            channel_id: channel_id.to_string(),
-        })
-    }
-
-    /// Unsubscribe from a channel
-    pub fn unsubscribe(&self, channel_id: &str) -> Result<(), String> {
-        self.send(ClientCommand::Unsubscribe {
-            channel_id: channel_id.to_string(),
-        })
-    }
-
-    /// Send a message to a channel
-    pub fn send_message(&self, channel_id: &str, body: &str, nonce: &str) -> Result<(), String> {
-        self.send(ClientCommand::MessageCreate {
-            channel_id: channel_id.to_string(),
-            body: body.to_string(),
-            nonce: nonce.to_string(),
-        })
-    }
-}
-
-/// A managed WebSocket connection to a single OFSCP provider
+/// A managed WebSocket connection to a single OFSCP provider (WASM implementation)
 pub struct WsConnection {
     /// The host this connection is for (normalized, e.g. "example.com:8080")
     pub host: String,
     /// Current connection state
     pub state: Signal<ConnectionState>,
     /// Channel for sending commands
-    sender: UnboundedSender<WsEnvelope<ClientCommand>>,
+    sender: futures_channel::mpsc::UnboundedSender<WsEnvelope<ClientCommand>>,
     /// Reconnect configuration
     reconnect_config: ReconnectConfig,
     /// URL builder function (called on each reconnect attempt)
@@ -167,10 +54,7 @@ impl WsConnection {
 
     /// Get a handle for sending commands
     pub fn handle(&self) -> WsHandle {
-        WsHandle {
-            sender: self.sender.clone(),
-            host: self.host.clone(),
-        }
+        WsHandle::new(self.sender.clone(), self.host.clone())
     }
 
     /// Start the connection management loop
@@ -211,15 +95,16 @@ impl WsConnection {
                     Ok(ws) => {
                         state.set(ConnectionState::Connected);
                         attempt = 0;
-                        web_sys::console::log_1(&format!("WebSocket connected to {}", host).into());
+                        crate::log_info!("WebSocket connected to {}", host);
 
                         // Channel to signal when connection closes
                         let (close_tx, mut close_rx) = futures_channel::mpsc::unbounded::<()>();
 
                         // Set up close handler
-                        let onclose_callback = Closure::wrap(Box::new(move |_: web_sys::CloseEvent| {
-                            let _ = close_tx.unbounded_send(());
-                        }) as Box<dyn FnMut(web_sys::CloseEvent)>);
+                        let onclose_callback =
+                            Closure::wrap(Box::new(move |_: web_sys::CloseEvent| {
+                                let _ = close_tx.unbounded_send(());
+                            }) as Box<dyn FnMut(web_sys::CloseEvent)>);
                         ws.set_onclose(Some(onclose_callback.as_ref().unchecked_ref()));
                         onclose_callback.forget();
 
@@ -239,24 +124,30 @@ impl WsConnection {
                                     Some(cmd) => {
                                         // Check if socket is still open (readyState 1 = OPEN)
                                         if ws_for_send.ready_state() != 1 {
-                                            web_sys::console::log_1(&"WebSocket no longer open, stopping send task".into());
+                                            crate::log_info!(
+                                                "WebSocket no longer open, stopping send task"
+                                            );
                                             break;
                                         }
                                         match serde_json::to_string(&cmd) {
                                             Ok(json) => {
-                                                web_sys::console::log_1(&format!("Sending to {}: {}", host_for_send, json).into());
+                                                crate::log_info!(
+                                                    "Sending to {}: {}",
+                                                    host_for_send,
+                                                    json
+                                                );
                                                 if let Err(e) = ws_for_send.send_with_str(&json) {
-                                                    web_sys::console::error_1(&format!("Send failed: {:?}", e).into());
+                                                    crate::log_error!("Send failed: {:?}", e);
                                                 }
                                             }
                                             Err(e) => {
-                                                web_sys::console::error_1(&format!("Serialize failed: {}", e).into());
+                                                crate::log_error!("Serialize failed: {}", e);
                                             }
                                         }
                                     }
                                     None => {
                                         // Sender dropped
-                                        web_sys::console::log_1(&"Sender dropped, stopping send task".into());
+                                        crate::log_info!("Sender dropped, stopping send task");
                                         break;
                                     }
                                 }
@@ -265,34 +156,32 @@ impl WsConnection {
 
                         // Wait for connection to close
                         close_rx.next().await;
-                        web_sys::console::log_1(&format!("WebSocket to {} closed", host).into());
+                        crate::log_info!("WebSocket to {} closed", host);
                         state.set(ConnectionState::Disconnected);
                     }
                     Err(e) => {
-                        web_sys::console::error_1(
-                            &format!("WebSocket error for {}: {}", host, e).into(),
-                        );
+                        crate::log_error!("WebSocket error for {}: {}", host, e);
 
                         // Check if we should retry
                         if reconnect_config.max_attempts > 0
                             && attempt >= reconnect_config.max_attempts
                         {
                             state.set(ConnectionState::Failed {
-                                reason: format!("Max reconnect attempts ({}) exceeded", reconnect_config.max_attempts),
+                                reason: format!(
+                                    "Max reconnect attempts ({}) exceeded",
+                                    reconnect_config.max_attempts
+                                ),
                             });
                             break;
                         }
 
                         // Wait before reconnecting
                         let delay = reconnect_config.delay_for_attempt(attempt);
-                        web_sys::console::log_1(
-                            &format!(
-                                "Reconnecting to {} in {}ms (attempt {})",
-                                host,
-                                delay,
-                                attempt + 1
-                            )
-                            .into(),
+                        crate::log_info!(
+                            "Reconnecting to {} in {}ms (attempt {})",
+                            host,
+                            delay,
+                            attempt + 1
                         );
                         gloo_timers::future::TimeoutFuture::new(delay).await;
                         attempt += 1;
@@ -322,7 +211,7 @@ async fn connect_websocket(
     // Set up open handler
     let is_open_clone = is_open.clone();
     let onopen_callback = Closure::wrap(Box::new(move |_: web_sys::Event| {
-        web_sys::console::log_1(&"WebSocket onopen fired".into());
+        crate::log_info!("WebSocket onopen fired");
         *is_open_clone.borrow_mut() = true;
     }) as Box<dyn FnMut(web_sys::Event)>);
     ws.set_onopen(Some(onopen_callback.as_ref().unchecked_ref()));
@@ -336,7 +225,7 @@ async fn connect_websocket(
         } else {
             e.reason()
         };
-        web_sys::console::log_1(&format!("WebSocket onclose: {}", reason).into());
+        crate::log_info!("WebSocket onclose: {}", reason);
         *error_reason_close.borrow_mut() = Some(reason);
     }) as Box<dyn FnMut(CloseEvent)>);
     ws.set_onclose(Some(onclose_callback.as_ref().unchecked_ref()));
@@ -345,7 +234,7 @@ async fn connect_websocket(
     // Set up error handler
     let error_reason_err = error_reason.clone();
     let onerror_callback = Closure::wrap(Box::new(move |_: web_sys::ErrorEvent| {
-        web_sys::console::error_1(&"WebSocket onerror fired".into());
+        crate::log_error!("WebSocket onerror fired");
         *error_reason_err.borrow_mut() = Some("WebSocket error".to_string());
     }) as Box<dyn FnMut(web_sys::ErrorEvent)>);
     ws.set_onerror(Some(onerror_callback.as_ref().unchecked_ref()));
@@ -355,7 +244,7 @@ async fn connect_websocket(
     let onmessage_callback = Closure::wrap(Box::new(move |e: MessageEvent| {
         if let Ok(text) = e.data().dyn_into::<js_sys::JsString>() {
             let text: String = text.into();
-            web_sys::console::log_1(&format!("WebSocket received: {}", text).into());
+            crate::log_info!("WebSocket received: {}", text);
             if let Ok(event) = serde_json::from_str::<WsEnvelope<ServerEvent>>(&text) {
                 on_event(event);
             }
@@ -368,7 +257,7 @@ async fn connect_websocket(
     for _ in 0..500 {
         // 5 second timeout
         if *is_open.borrow() {
-            web_sys::console::log_1(&"WebSocket connected, ready to send/receive".into());
+            crate::log_info!("WebSocket connected, ready to send/receive");
             return Ok(ws);
         }
         if let Some(reason) = error_reason.borrow().clone() {

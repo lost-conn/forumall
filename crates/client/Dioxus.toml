@@ -16,3 +16,11 @@ script = []
 [web.resource.dev]
 style = []
 script = []
+
+# Desktop configuration
+[desktop]
+window_title = "Forumall"
+window_width = 1200
+window_height = 800
+resizable = true
+decorations = true

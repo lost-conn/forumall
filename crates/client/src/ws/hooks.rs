@@ -45,11 +45,9 @@ pub fn use_channel_messages(
         if !current_channel.is_empty() {
             if let Some(handle) = get_handle(&current_host) {
                 if let Err(e) = handle.subscribe(&current_channel) {
-                    web_sys::console::error_1(&format!("Failed to subscribe: {}", e).into());
+                    crate::log_error!("Failed to subscribe: {}", e);
                 } else {
-                    web_sys::console::log_1(
-                        &format!("Subscribed to channel: {}", current_channel).into(),
-                    );
+                    crate::log_info!("Subscribed to channel: {}", current_channel);
                 }
             }
         }
@@ -113,7 +111,7 @@ pub fn use_channel_messages(
         if let Some(handle) = get_handle(&current_host) {
             let nonce = uuid::Uuid::new_v4().to_string();
             if let Err(e) = handle.send_message(&current_channel, &body, &nonce) {
-                web_sys::console::error_1(&format!("Failed to send message: {}", e).into());
+                crate::log_error!("Failed to send message: {}", e);
             }
         }
     };

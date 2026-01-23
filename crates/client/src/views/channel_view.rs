@@ -265,13 +265,24 @@ fn MessageList(group_id: String, channel_id: String, group_host: String) -> Elem
 
     // Function to scroll the messages container to the bottom
     fn do_scroll_to_bottom() {
-        if let Some(window) = web_sys::window() {
-            if let Some(document) = window.document() {
-                if let Some(container) = document.get_element_by_id("messages-container") {
-                    let scroll_height = container.scroll_height();
-                    container.set_scroll_top(scroll_height);
+        #[cfg(target_arch = "wasm32")]
+        {
+            if let Some(window) = web_sys::window() {
+                if let Some(document) = window.document() {
+                    if let Some(container) = document.get_element_by_id("messages-container") {
+                        let scroll_height = container.scroll_height();
+                        container.set_scroll_top(scroll_height);
+                    }
                 }
             }
+        }
+        // On desktop, Dioxus handles scrolling differently - this may need
+        // platform-specific implementation using Dioxus desktop APIs
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            // Desktop implementation - Dioxus desktop uses webview which supports
+            // the same DOM APIs, but accessed differently. For now, this is a no-op
+            // as the webview should handle it automatically.
         }
     }
 
@@ -528,13 +539,13 @@ fn MessageInput(
         // Send via websocket handle
         let key = ws_key.clone();
         let cid = channel_id.clone();
-        web_sys::console::log_1(&format!("MessageInput: looking for handle with key '{}'", key).into());
+        crate::log_info!("MessageInput: looking for handle with key '{}'", key);
         if let Some(handle) = get_handle(&key) {
             let nonce = uuid::Uuid::new_v4().to_string();
-            web_sys::console::log_1(&format!("MessageInput: sending to channel '{}' with nonce '{}'", cid, nonce).into());
+            crate::log_info!("MessageInput: sending to channel '{}' with nonce '{}'", cid, nonce);
             let _ = handle.send_message(&cid, &body, &nonce);
         } else {
-            web_sys::console::error_1(&format!("MessageInput: no handle found for key '{}'", key).into());
+            crate::log_error!("MessageInput: no handle found for key '{}'", key);
         }
         text.set(String::new());
     };
