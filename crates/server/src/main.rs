@@ -10,7 +10,9 @@ use std::net::SocketAddr;
 use tower_http::cors::{Any, CorsLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+mod config;
 mod db;
+mod frontend;
 mod middleware;
 mod routes;
 mod state;
@@ -33,6 +35,9 @@ async fn main() {
     let db = db::init_database();
     let state = AppState::new(db);
 
+    // Load frontend configuration
+    let frontend_mode = config::FrontendMode::from_env();
+
     // Build CORS layer
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -40,7 +45,7 @@ async fn main() {
         .allow_headers(Any);
 
     // Build router
-    let app = Router::new()
+    let api_router = Router::new()
         // Discovery
         .route("/.well-known/ofscp-provider", get(routes::discovery::ofscp_provider))
         .route("/.well-known/ofscp/users/{handle}/keys", get(routes::device_keys::get_public_keys))
@@ -73,6 +78,9 @@ async fn main() {
         // Apply middleware
         .layer(cors)
         .with_state(state);
+
+    // Apply frontend fallback service based on configuration
+    let app = frontend::with_frontend_fallback(api_router, &frontend_mode);
 
     // Start server
     let port: u16 = std::env::var("PORT")
