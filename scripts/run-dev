@@ -5,4 +5,4 @@ npx concurrently \
   --names "server,client" \
   --prefix-colors "blue,green" \
   "PORT=8080 FORUMALL_DB_PATH=db0 FORUMALL_FRONTEND_MODE=proxy FORUMALL_PROXY_TARGET=http://localhost:5173 cargo run -p forumall-server" \
-  "cd crates/client && dx serve --port 5173"
+  "cd crates/client && dx serve --port 5173 --platform ${PLATFORM:-'web'}"

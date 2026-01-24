@@ -620,7 +620,7 @@ pub fn GroupSettingsModal(
 ) -> Element {
     let auth = use_context::<AuthContext>();
     let mut current_tab = use_signal(|| "general"); // "general" or "members"
-    let refresh = use_refresh_resource::<Result<Vec<Group>, String>>();
+    let refresh = use_refresh_resource::<Result<Group, String>>();
 
     // General Settings State
     let mut name = use_signal(|| group_name.clone());
