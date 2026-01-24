@@ -9,7 +9,7 @@ use dioxus::prelude::*;
 use forumall_client::{auth_session::AuthProvider, routes::Route, ws::WsManager};
 
 // Assets
-const FAVICON: Asset = asset!("/assets/favicon.ico");
+const FAVICON: Asset = asset!("/assets/favicon.png");
 const MAIN_CSS: Asset = asset!("/assets/styling/main.css");
 
 fn main() {
