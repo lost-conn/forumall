@@ -60,13 +60,16 @@ async fn main() {
         .route("/api/groups", get(routes::groups::list_groups))
         .route("/api/groups/{group_id}", get(routes::groups::get_group))
         .route("/api/groups/{group_id}", put(routes::groups::update_group))
+        .route("/api/groups/{group_id}", delete(routes::groups::delete_group))
         .route("/api/groups/{group_id}/join", post(routes::groups::join_group))
+        .route("/api/groups/{group_id}/leave", post(routes::groups::leave_group))
         .route("/api/groups/{group_id}/members", post(routes::groups::add_member))
         // Channels
         .route("/api/groups/{group_id}/channels", get(routes::channels::list_channels))
         .route("/api/groups/{group_id}/channels", post(routes::channels::create_channel))
         .route("/api/groups/{group_id}/channels/{channel_id}", get(routes::channels::get_channel))
         .route("/api/groups/{group_id}/channels/{channel_id}", put(routes::channels::update_channel))
+        .route("/api/groups/{group_id}/channels/{channel_id}", delete(routes::channels::delete_channel))
         .route("/api/groups/{group_id}/channels/{channel_id}/settings", get(routes::channels::get_channel_settings))
         .route("/api/groups/{group_id}/channels/{channel_id}/settings", put(routes::channels::update_channel_settings))
         // Messages
@@ -77,6 +80,7 @@ async fn main() {
         .route("/api/users/{user_id}/groups", get(routes::users::get_user_groups))
         .route("/api/users/{user_id}/groups", post(routes::users::add_user_joined_group))
         .route("/api/me/groups", post(routes::users::add_self_joined_group))
+        .route("/api/me/groups/{group_id}", delete(routes::users::remove_self_joined_group))
         // WebSocket
         .route("/api/ws", get(ws::ws_handler))
         // Apply middleware

@@ -12,6 +12,253 @@ use forumall_shared::{
     UpdateGroupRequest, UserJoinedGroup, AddMemberRequest,
 };
 
+/// Classification of group access errors
+#[derive(Clone, PartialEq)]
+pub enum GroupErrorKind {
+    /// Network/connection error - provider unreachable
+    Network,
+    /// 404 - Group doesn't exist
+    NotFound,
+    /// 403 - Access denied (not a member, kicked, etc.)
+    AccessDenied,
+    /// 500+ - Server error
+    ServerError,
+    /// Unknown error type
+    Unknown,
+}
+
+impl GroupErrorKind {
+    /// Parse error string to determine the error kind
+    pub fn from_error(error: &str) -> Self {
+        // Check for network-level errors first
+        if error.contains("Network") || error.contains("Failed to fetch") || error.contains("connect") {
+            return Self::Network;
+        }
+
+        // Parse "HTTP XXX:" format (from ApiError Display impl)
+        if let Some(rest) = error.strip_prefix("HTTP ") {
+            if let Some(end) = rest.find(':') {
+                if let Ok(status) = rest[..end].trim().parse::<u16>() {
+                    return Self::from_status(status);
+                }
+            }
+        }
+
+        // Parse "API error: Http { status: XXX, ... }" format (Debug format)
+        if let Some(status_start) = error.find("status: ") {
+            let rest = &error[status_start + 8..];
+            if let Some(end) = rest.find(|c: char| !c.is_ascii_digit()) {
+                if let Ok(status) = rest[..end].parse::<u16>() {
+                    return Self::from_status(status);
+                }
+            }
+        }
+
+        Self::Unknown
+    }
+
+    fn from_status(status: u16) -> Self {
+        match status {
+            404 => Self::NotFound,
+            403 | 401 => Self::AccessDenied,
+            500..=599 => Self::ServerError,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+/// Error view component shown when a group cannot be accessed
+#[component]
+pub fn GroupErrorView(
+    error: String,
+    group_name: String,
+    group_host: String,
+    on_retry: EventHandler<()>,
+    on_removed: EventHandler<()>,
+) -> Element {
+    let auth = use_context::<AuthContext>();
+    let nav = use_navigator();
+    let mut is_removing = use_signal(|| false);
+    let mut is_rejoining = use_signal(|| false);
+    let mut action_error = use_signal(|| None::<String>);
+
+    let error_kind = GroupErrorKind::from_error(&error);
+
+    let (icon, title, message) = match &error_kind {
+        GroupErrorKind::Network => (
+            "M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z",
+            "Can't reach the provider",
+            "The server hosting this group is currently unreachable. Check your connection or try again later.",
+        ),
+        GroupErrorKind::NotFound => (
+            "M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16",
+            "This group no longer exists",
+            "The group may have been deleted by its owner. You can remove it from your list.",
+        ),
+        GroupErrorKind::AccessDenied => (
+            "M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636",
+            "You no longer have access",
+            "You may have been removed from this group or your membership expired.",
+        ),
+        GroupErrorKind::ServerError => (
+            "M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z",
+            "Server error",
+            "The server encountered an error. Please try again later.",
+        ),
+        GroupErrorKind::Unknown => (
+            "M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z",
+            "Something went wrong",
+            "An unexpected error occurred while loading this group.",
+        ),
+    };
+
+    let handle_remove = {
+        let auth = auth.clone();
+        let group_name = group_name.clone();
+        let nav = nav.clone();
+        move |_| {
+            is_removing.set(true);
+            action_error.set(None);
+
+            let auth = auth.clone();
+            let group_name = group_name.clone();
+            let nav = nav.clone();
+            let on_removed = on_removed.clone();
+
+            spawn(async move {
+                let client = auth.client();
+                // Remove from local provider's joined groups
+                let url = auth.api_url(&format!("/api/me/groups/{}", group_name));
+
+                match client.delete(&url).await {
+                    Ok(_) => {
+                        on_removed.call(());
+                        nav.push(Route::NoGroup {});
+                    }
+                    Err(err) => {
+                        let msg = if let ApiError::Http { body, .. } = &err {
+                            try_problem_detail(body).unwrap_or_else(|| format!("{}", err))
+                        } else {
+                            format!("{}", err)
+                        };
+                        action_error.set(Some(msg));
+                        is_removing.set(false);
+                    }
+                }
+            });
+        }
+    };
+
+    let handle_rejoin = {
+        let auth = auth.clone();
+        let group_name = group_name.clone();
+        let group_host = group_host.clone();
+        move |_| {
+            is_rejoining.set(true);
+            action_error.set(None);
+
+            let auth = auth.clone();
+            let group_name = group_name.clone();
+            let group_host = group_host.clone();
+            let on_retry = on_retry.clone();
+
+            spawn(async move {
+                let client = auth.client();
+                let url = auth.api_url_for_host(Some(&group_host), &format!("/api/groups/{}/join", group_name));
+
+                match client.post_json::<_, ()>(&url, &()).await {
+                    Ok(_) => {
+                        // Successfully rejoined, trigger a retry to reload the group
+                        on_retry.call(());
+                    }
+                    Err(err) => {
+                        let msg = if let ApiError::Http { body, .. } = &err {
+                            try_problem_detail(body).unwrap_or_else(|| format!("{}", err))
+                        } else {
+                            format!("{}", err)
+                        };
+                        action_error.set(Some(msg));
+                        is_rejoining.set(false);
+                    }
+                }
+            });
+        }
+    };
+
+    rsx! {
+        div { class: "flex-1 flex flex-col items-center justify-center bg-[#313338] text-white p-8",
+            // Icon
+            div { class: "w-20 h-20 bg-[#2b2d31] rounded-full flex items-center justify-center mb-6 text-red-400",
+                svg {
+                    class: "w-10 h-10",
+                    fill: "none",
+                    stroke: "currentColor",
+                    view_box: "0 0 24 24",
+                    path {
+                        stroke_linecap: "round",
+                        stroke_linejoin: "round",
+                        stroke_width: "1.5",
+                        d: "{icon}",
+                    }
+                }
+            }
+            // Title
+            h2 { class: "text-2xl font-bold mb-2", "{title}" }
+            // Message
+            p { class: "text-gray-400 text-center max-w-md mb-6", "{message}" }
+            // Group info
+            div { class: "text-sm text-gray-500 mb-6",
+                span { class: "font-medium text-gray-400", "{group_name}" }
+                if !group_host.is_empty() {
+                    span { " on " }
+                    span { class: "font-medium text-gray-400", "{group_host}" }
+                }
+            }
+            // Action buttons
+            div { class: "flex flex-wrap gap-3 justify-center",
+                // Retry button (always show for network errors, sometimes for others)
+                if matches!(error_kind, GroupErrorKind::Network | GroupErrorKind::ServerError | GroupErrorKind::Unknown) {
+                    button {
+                        class: "px-4 py-2 bg-indigo-500 hover:bg-indigo-600 text-white rounded-lg transition-colors",
+                        onclick: move |_| on_retry.call(()),
+                        "Try Again"
+                    }
+                }
+                // Rejoin button (for access denied)
+                if matches!(error_kind, GroupErrorKind::AccessDenied) {
+                    button {
+                        class: "px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors disabled:opacity-50",
+                        disabled: *is_rejoining.read(),
+                        onclick: handle_rejoin,
+                        if *is_rejoining.read() {
+                            "Rejoining..."
+                        } else {
+                            "Try to Rejoin"
+                        }
+                    }
+                }
+                // Remove from history button (always show)
+                button {
+                    class: "px-4 py-2 bg-[#404249] hover:bg-[#4e5058] text-white rounded-lg transition-colors disabled:opacity-50",
+                    disabled: *is_removing.read(),
+                    onclick: handle_remove,
+                    if *is_removing.read() {
+                        "Removing..."
+                    } else {
+                        "Remove from My Groups"
+                    }
+                }
+            }
+            // Action error display
+            if let Some(err) = action_error.read().as_ref() {
+                div { class: "mt-4 p-3 bg-red-500/10 border border-red-500/30 rounded-lg text-red-400 text-sm max-w-md",
+                    "{err}"
+                }
+            }
+        }
+    }
+}
+
 /// Home component that redirects to /home
 #[component]
 pub fn Home() -> Element {
@@ -171,9 +418,14 @@ pub fn ChannelList(
     selected_channel_name: Option<String>,
     on_select: EventHandler<Channel>,
     on_add_channel: EventHandler<()>,
+    #[props(default)] on_access_error: EventHandler<String>,
 ) -> Element {
     let auth = use_context::<AuthContext>();
+    let nav = use_navigator();
     let mut show_channel_settings = use_signal(|| None::<Channel>);
+    let mut is_rejoining = use_signal(|| false);
+    let mut is_removing = use_signal(|| false);
+    let mut action_error = use_signal(|| None::<String>);
 
     // Create signals to track props, ensuring the resource re-runs when they change
     let mut track_group_id = use_signal(|| group_id.clone());
@@ -225,8 +477,93 @@ pub fn ChannelList(
                         }
                     }
                 },
-                Some(Err(e)) => rsx! {
-                    div { class: "px-4 py-2 text-red-500 text-xs", "Error: {e}" }
+                Some(Err(e)) => {
+                    let error_kind = GroupErrorKind::from_error(e);
+                    if matches!(error_kind, GroupErrorKind::AccessDenied) {
+                        let auth_clone = auth.clone();
+                        let group_name_clone = group_name.clone();
+                        let group_host_clone = group_host.clone();
+                        let handle_rejoin = move |_| {
+                            is_rejoining.set(true);
+                            action_error.set(None);
+                            let auth = auth_clone.clone();
+                            let group_name = group_name_clone.clone();
+                            let group_host = group_host_clone.clone();
+                            let mut channels = channels.clone();
+                            spawn(async move {
+                                let client = auth.client();
+                                let url = auth.api_url_for_host(Some(&group_host), &format!("/api/groups/{}/join", group_name));
+                                match client.post_json::<_, ()>(&url, &()).await {
+                                    Ok(_) => {
+                                        channels.restart();
+                                    }
+                                    Err(err) => {
+                                        let msg = if let ApiError::Http { body, .. } = &err {
+                                            try_problem_detail(body).unwrap_or_else(|| format!("{}", err))
+                                        } else {
+                                            format!("{}", err)
+                                        };
+                                        action_error.set(Some(msg));
+                                    }
+                                }
+                                is_rejoining.set(false);
+                            });
+                        };
+                        let auth_clone2 = auth.clone();
+                        let group_name_clone2 = group_name.clone();
+                        let nav_clone = nav.clone();
+                        let handle_remove = move |_| {
+                            is_removing.set(true);
+                            action_error.set(None);
+                            let auth = auth_clone2.clone();
+                            let group_name = group_name_clone2.clone();
+                            let nav = nav_clone.clone();
+                            spawn(async move {
+                                let client = auth.client();
+                                let url = auth.api_url(&format!("/api/me/groups/{}", group_name));
+                                match client.delete(&url).await {
+                                    Ok(_) => {
+                                        nav.push(Route::NoGroup {});
+                                    }
+                                    Err(err) => {
+                                        let msg = if let ApiError::Http { body, .. } = &err {
+                                            try_problem_detail(body).unwrap_or_else(|| format!("{}", err))
+                                        } else {
+                                            format!("{}", err)
+                                        };
+                                        action_error.set(Some(msg));
+                                    }
+                                }
+                                is_removing.set(false);
+                            });
+                        };
+                        rsx! {
+                            div { class: "px-3 py-2 text-xs",
+                                p { class: "text-red-400 mb-2", "You no longer have access to this group." }
+                                div { class: "flex flex-col gap-1.5",
+                                    button {
+                                        class: "w-full px-2 py-1 bg-green-600 hover:bg-green-700 text-white rounded text-xs transition-colors disabled:opacity-50",
+                                        disabled: *is_rejoining.read(),
+                                        onclick: handle_rejoin,
+                                        if *is_rejoining.read() { "Rejoining..." } else { "Try to Rejoin" }
+                                    }
+                                    button {
+                                        class: "w-full px-2 py-1 bg-[#404249] hover:bg-[#4e5058] text-white rounded text-xs transition-colors disabled:opacity-50",
+                                        disabled: *is_removing.read(),
+                                        onclick: handle_remove,
+                                        if *is_removing.read() { "Removing..." } else { "Remove from Groups" }
+                                    }
+                                }
+                                if let Some(err) = action_error.read().as_ref() {
+                                    p { class: "mt-2 text-red-400", "{err}" }
+                                }
+                            }
+                        }
+                    } else {
+                        rsx! {
+                            div { class: "px-4 py-2 text-red-500 text-xs", "Error: {e}" }
+                        }
+                    }
                 },
                 None => rsx! {
                     div { class: "px-4 py-2 text-gray-500 text-xs", "Loading channels..." }
@@ -259,6 +596,10 @@ pub fn ChannelList(
                 host: Some(group_host.clone()),
                 on_close: move |_| show_channel_settings.set(None),
                 on_updated: move |_updated_channel| {
+                    show_channel_settings.set(None);
+                    channels.restart();
+                },
+                on_deleted: move |_| {
                     show_channel_settings.set(None);
                     channels.restart();
                 },
@@ -696,11 +1037,18 @@ pub fn GroupSettingsModal(
     group_name: String,
     group_host: String,
     join_policy: String,
+    owner: String,
     on_close: EventHandler<()>,
+    on_deleted: EventHandler<()>,
 ) -> Element {
     let auth = use_context::<AuthContext>();
+    let nav = use_navigator();
     let mut current_tab = use_signal(|| "general"); // "general" or "members"
     let refresh = use_refresh_resource::<Result<Group, String>>();
+
+    // Check if current user is the owner
+    let current_user_id = auth.user_id();
+    let is_owner = current_user_id.as_ref().map(|h| h == &owner).unwrap_or(false);
 
     // General Settings State
     let mut name = use_signal(|| group_name.clone());
@@ -708,15 +1056,90 @@ pub fn GroupSettingsModal(
     let mut is_saving = use_signal(|| false);
     let mut error = use_signal(|| None::<String>);
 
+    // Delete/Leave State
+    let mut show_delete_confirm = use_signal(|| false);
+    let mut show_leave_confirm = use_signal(|| false);
+    let mut is_deleting = use_signal(|| false);
+    let mut is_leaving = use_signal(|| false);
+    let mut delete_error = use_signal(|| None::<String>);
+
     let group_id_for_save = group_id.clone();
     let group_id_for_add = group_id.clone();
+    let group_id_for_delete = group_id.clone();
+    let group_id_for_leave = group_id.clone();
     let group_host_for_save = group_host.clone();
     let group_host_for_add = group_host.clone();
+    let group_host_for_delete = group_host.clone();
+    let group_host_for_leave = group_host.clone();
 
     // Members Tab State
     let mut add_member_handle = use_signal(|| String::new());
     let mut add_member_error = use_signal(|| None::<String>);
     let mut is_adding_member = use_signal(|| false);
+
+    // Delete Group Handler
+    let handle_delete = move |_| {
+        is_deleting.set(true);
+        delete_error.set(None);
+        let gid = group_id_for_delete.clone();
+        let host = group_host_for_delete.clone();
+        let auth = auth.clone();
+        let on_deleted = on_deleted.clone();
+        let nav = nav.clone();
+
+        spawn(async move {
+            let client = auth.client();
+            let url = auth.api_url_for_host(Some(&host), &format!("/api/groups/{gid}"));
+
+            match client.delete(&url).await {
+                Ok(_) => {
+                    on_deleted.call(());
+                    nav.push(Route::NoGroup {});
+                }
+                Err(err) => {
+                    let msg = if let ApiError::Http { body, .. } = &err {
+                        try_problem_detail(body).unwrap_or_else(|| format!("{}", err))
+                    } else {
+                        format!("{}", err)
+                    };
+                    delete_error.set(Some(msg));
+                    is_deleting.set(false);
+                }
+            }
+        });
+    };
+
+    // Leave Group Handler
+    let handle_leave = move |_| {
+        is_leaving.set(true);
+        delete_error.set(None);
+        let gid = group_id_for_leave.clone();
+        let host = group_host_for_leave.clone();
+        let auth = auth.clone();
+        let on_deleted = on_deleted.clone();
+        let nav = nav.clone();
+
+        spawn(async move {
+            let client = auth.client();
+            let url = auth.api_url_for_host(Some(&host), &format!("/api/groups/{gid}/leave"));
+
+            match client.post_json::<_, ()>(&url, &()).await {
+                Ok(_) => {
+                    on_deleted.call(());
+                    nav.push(Route::NoGroup {});
+                }
+                Err(err) => {
+                    let msg = if let ApiError::Http { body, .. } = &err {
+                        try_problem_detail(body).unwrap_or_else(|| format!("{}", err))
+                    } else {
+                        format!("{}", err)
+                    };
+                    delete_error.set(Some(msg));
+                    is_leaving.set(false);
+                }
+            }
+        });
+    };
 
     let handle_save = move |e: FormEvent| {
         e.prevent_default();
@@ -812,6 +1235,7 @@ pub fn GroupSettingsModal(
     };
 
     rsx! {
+        // Main Settings Modal
         div { class: "fixed inset-0 bg-black/70 flex items-center justify-center z-50",
             div { class: "bg-[#313338] rounded-lg shadow-2xl w-full max-w-2xl h-[600px] flex overflow-hidden",
                 // Sidebar
@@ -841,8 +1265,21 @@ pub fn GroupSettingsModal(
                         "Members"
                     }
                     div { class: "flex-1" }
-                    div { class: "px-3 py-2 rounded cursor-pointer text-sm font-medium text-red-400 hover:bg-[#35373c]",
-                        "Delete Group"
+                    button {
+                        r#type: "button",
+                        class: "w-full text-left px-3 py-2 rounded cursor-pointer text-sm font-medium text-red-400 hover:bg-[#35373c]",
+                        onclick: move |_| {
+                            if is_owner {
+                                show_delete_confirm.set(true);
+                            } else {
+                                show_leave_confirm.set(true);
+                            }
+                        },
+                        if is_owner {
+                            "Delete Group"
+                        } else {
+                            "Leave Group"
+                        }
                     }
                 }
                 // Content
@@ -982,6 +1419,82 @@ pub fn GroupSettingsModal(
                 }
             }
         }
+
+        // Delete Confirmation Modal
+        if *show_delete_confirm.read() {
+            div { class: "fixed inset-0 bg-black/80 flex items-center justify-center z-[100]",
+                onclick: move |_| show_delete_confirm.set(false),
+                div {
+                    class: "bg-[#313338] rounded-lg p-6 max-w-md w-full mx-4",
+                    onclick: move |e: MouseEvent| e.stop_propagation(),
+                    h3 { class: "text-xl font-bold text-white mb-2", "Delete Group" }
+                    p { class: "text-[#b5bac1] mb-4",
+                        "Are you sure you want to delete this group? This will permanently delete all channels, messages, and member data. This action cannot be undone."
+                    }
+                    if let Some(err) = delete_error.read().as_ref() {
+                        div { class: "text-red-400 text-sm mb-4", "{err}" }
+                    }
+                    div { class: "flex gap-3 justify-end",
+                        button {
+                            r#type: "button",
+                            class: "px-4 py-2 bg-[#404249] hover:bg-[#4e5058] text-white rounded font-medium",
+                            onclick: move |_| show_delete_confirm.set(false),
+                            disabled: *is_deleting.read(),
+                            "Cancel"
+                        }
+                        button {
+                            r#type: "button",
+                            class: "px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded font-medium disabled:opacity-50",
+                            onclick: handle_delete,
+                            disabled: *is_deleting.read(),
+                            if *is_deleting.read() {
+                                "Deleting..."
+                            } else {
+                                "Delete Group"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Leave Confirmation Modal
+        if *show_leave_confirm.read() {
+            div { class: "fixed inset-0 bg-black/80 flex items-center justify-center z-[100]",
+                onclick: move |_| show_leave_confirm.set(false),
+                div {
+                    class: "bg-[#313338] rounded-lg p-6 max-w-md w-full mx-4",
+                    onclick: move |e: MouseEvent| e.stop_propagation(),
+                    h3 { class: "text-xl font-bold text-white mb-2", "Leave Group" }
+                    p { class: "text-[#b5bac1] mb-4",
+                        "Are you sure you want to leave this group? You will no longer have access to any channels or messages."
+                    }
+                    if let Some(err) = delete_error.read().as_ref() {
+                        div { class: "text-red-400 text-sm mb-4", "{err}" }
+                    }
+                    div { class: "flex gap-3 justify-end",
+                        button {
+                            r#type: "button",
+                            class: "px-4 py-2 bg-[#404249] hover:bg-[#4e5058] text-white rounded font-medium",
+                            onclick: move |_| show_leave_confirm.set(false),
+                            disabled: *is_leaving.read(),
+                            "Cancel"
+                        }
+                        button {
+                            r#type: "button",
+                            class: "px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded font-medium disabled:opacity-50",
+                            onclick: handle_leave,
+                            disabled: *is_leaving.read(),
+                            if *is_leaving.read() {
+                                "Leaving..."
+                            } else {
+                                "Leave Group"
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -993,8 +1506,10 @@ pub fn ChannelSettingsModal(
     host: Option<String>,
     on_close: EventHandler<()>,
     on_updated: EventHandler<Channel>,
+    on_deleted: EventHandler<()>,
 ) -> Element {
     let auth = use_context::<AuthContext>();
+    let nav = use_navigator();
     let mut current_tab = use_signal(|| "overview"); // "overview" or "permissions"
 
     // Overview tab state
@@ -1012,9 +1527,17 @@ pub fn ChannelSettingsModal(
     let mut is_saving = use_signal(|| false);
     let mut error = use_signal(|| None::<String>);
 
+    // Delete state
+    let mut show_delete_confirm = use_signal(|| false);
+    let mut is_deleting = use_signal(|| false);
+    let mut delete_error = use_signal(|| None::<String>);
+
     let channel_id = channel.id.clone();
+    let channel_id_for_delete = channel.id.clone();
     let group_id_for_save = group_id.clone();
+    let group_id_for_delete = group_id.clone();
     let host_for_save = host.clone();
+    let host_for_delete = host.clone();
 
     let handle_save = move |e: FormEvent| {
         e.prevent_default();
@@ -1079,6 +1602,43 @@ pub fn ChannelSettingsModal(
         });
     };
 
+    // Delete Channel Handler
+    let handle_delete = move |_| {
+        is_deleting.set(true);
+        delete_error.set(None);
+        let channel_id = channel_id_for_delete.clone();
+        let gid = group_id_for_delete.clone();
+        let host = host_for_delete.clone();
+        let auth = auth.clone();
+        let on_deleted = on_deleted.clone();
+        let nav = nav.clone();
+
+        spawn(async move {
+            let client = auth.client();
+            let url = auth.api_url_for_host(host.as_deref(), &format!("/api/groups/{gid}/channels/{channel_id}"));
+
+            match client.delete(&url).await {
+                Ok(_) => {
+                    on_deleted.call(());
+                    // Navigate to the group without a channel selected
+                    nav.push(Route::NoChannel {
+                        group_host: host.unwrap_or_default(),
+                        group: gid,
+                    });
+                }
+                Err(err) => {
+                    let msg = if let ApiError::Http { body, .. } = &err {
+                        try_problem_detail(body).unwrap_or_else(|| format!("{}", err))
+                    } else {
+                        format!("{}", err)
+                    };
+                    delete_error.set(Some(msg));
+                    is_deleting.set(false);
+                }
+            }
+        });
+    };
+
     // Available permission targets
     let permission_targets = ["@everyone", "@admin", "@owner"];
 
@@ -1115,7 +1675,10 @@ pub fn ChannelSettingsModal(
                         "Permissions"
                     }
                     div { class: "flex-1" }
-                    div { class: "px-3 py-2 rounded cursor-pointer text-sm font-medium text-red-400 hover:bg-[#35373c]",
+                    button {
+                        r#type: "button",
+                        class: "w-full text-left px-3 py-2 rounded cursor-pointer text-sm font-medium text-red-400 hover:bg-[#35373c]",
+                        onclick: move |_| show_delete_confirm.set(true),
                         "Delete Channel"
                     }
                 }
@@ -1452,6 +2015,44 @@ pub fn ChannelSettingsModal(
                                 } else {
                                     "Save Changes"
                                 }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Delete Confirmation Modal
+        if *show_delete_confirm.read() {
+            div { class: "fixed inset-0 bg-black/80 flex items-center justify-center z-[100]",
+                onclick: move |_| show_delete_confirm.set(false),
+                div {
+                    class: "bg-[#313338] rounded-lg p-6 max-w-md w-full mx-4",
+                    onclick: move |e: MouseEvent| e.stop_propagation(),
+                    h3 { class: "text-xl font-bold text-white mb-2", "Delete Channel" }
+                    p { class: "text-[#b5bac1] mb-4",
+                        "Are you sure you want to delete this channel? All messages in this channel will be permanently deleted. This action cannot be undone."
+                    }
+                    if let Some(err) = delete_error.read().as_ref() {
+                        div { class: "text-red-400 text-sm mb-4", "{err}" }
+                    }
+                    div { class: "flex gap-3 justify-end",
+                        button {
+                            r#type: "button",
+                            class: "px-4 py-2 bg-[#404249] hover:bg-[#4e5058] text-white rounded font-medium",
+                            onclick: move |_| show_delete_confirm.set(false),
+                            disabled: *is_deleting.read(),
+                            "Cancel"
+                        }
+                        button {
+                            r#type: "button",
+                            class: "px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded font-medium disabled:opacity-50",
+                            onclick: handle_delete,
+                            disabled: *is_deleting.read(),
+                            if *is_deleting.read() {
+                                "Deleting..."
+                            } else {
+                                "Delete Channel"
                             }
                         }
                     }

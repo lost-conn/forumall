@@ -2,7 +2,7 @@
 
 use crate::auth_session::AuthContext;
 use crate::hooks::use_refreshable_resource;
-use crate::views::{ChannelList, CreateChannelModal, GroupSettingsModal};
+use crate::views::{ChannelList, CreateChannelModal, GroupErrorView, GroupSettingsModal};
 use crate::Route;
 use dioxus::prelude::*;
 use forumall_shared::{Channel, Group};
@@ -26,7 +26,7 @@ pub fn GroupSidebarLayout(group_host: ReadSignal<String>, group: ReadSignal<Stri
     };
 
     // Fetch the specific group from the correct host
-    let group_resource = use_refreshable_resource(move || {
+    let mut group_resource = use_refreshable_resource(move || {
         let auth = auth;
         let host = group_host.read().clone();
         let group_name = group.read().clone();
@@ -49,6 +49,15 @@ pub fn GroupSidebarLayout(group_host: ReadSignal<String>, group: ReadSignal<Stri
             .cloned()
     });
 
+    // Extract error if present
+    let group_error = use_memo(move || {
+        group_resource
+            .read()
+            .as_ref()
+            .and_then(|res| res.as_ref().err())
+            .cloned()
+    });
+
     // Determine if we're currently viewing a specific channel (for responsive hiding)
     let is_channel_selected = matches!(&route, Route::ChannelView { .. });
 
@@ -58,6 +67,9 @@ pub fn GroupSidebarLayout(group_host: ReadSignal<String>, group: ReadSignal<Stri
     } else {
         "flex w-60 bg-[#2b2d31] flex-col"
     };
+
+    // Check if we have an error
+    let has_error = group_error.read().is_some();
 
     rsx! {
         // Channel Sidebar - hidden on mobile only when viewing a channel
@@ -90,8 +102,24 @@ pub fn GroupSidebarLayout(group_host: ReadSignal<String>, group: ReadSignal<Stri
                             }
                         }
                     }
+                } else if has_error {
+                    div { class: "flex items-center text-red-400 min-w-0",
+                        svg {
+                            class: "w-4 h-4 mr-2 flex-shrink-0",
+                            fill: "none",
+                            stroke: "currentColor",
+                            view_box: "0 0 24 24",
+                            path {
+                                stroke_linecap: "round",
+                                stroke_linejoin: "round",
+                                stroke_width: "2",
+                                d: "M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z",
+                            }
+                        }
+                        span { class: "truncate", "{group.read()}" }
+                    }
                 } else {
-                    span { class: "text-gray-400", "Select a Group" }
+                    span { class: "text-gray-400", "Loading..." }
                 }
             }
             // Channels list
@@ -137,12 +165,39 @@ pub fn GroupSidebarLayout(group_host: ReadSignal<String>, group: ReadSignal<Stri
                             }
                         }
                     }
+                } else if has_error {
+                    // Show error hint in sidebar
+                    div { class: "px-4 py-2 text-gray-500 text-xs italic",
+                        "Unable to load channels"
+                    }
                 }
             }
         }
 
-        // Outlet for child routes (ChannelView)
-        Outlet::<Route> {}
+        // Show error view instead of outlet when there's an error
+        if let Some(error) = group_error.read().as_ref() {
+            {
+                let error = error.clone();
+                let group_name = group.read().clone();
+                let host = group_host.read().clone();
+                rsx! {
+                    GroupErrorView {
+                        error: error,
+                        group_name: group_name,
+                        group_host: host,
+                        on_retry: move |_| {
+                            group_resource.restart();
+                        },
+                        on_removed: move |_| {
+                            // Resource will be restarted when navigation happens
+                        },
+                    }
+                }
+            }
+        } else {
+            // Outlet for child routes (ChannelView)
+            Outlet::<Route> {}
+        }
 
         // Create Channel Modal
         if *show_create_channel_modal.read() {
@@ -165,7 +220,9 @@ pub fn GroupSidebarLayout(group_host: ReadSignal<String>, group: ReadSignal<Stri
                     group_name: group_data.name.clone(),
                     group_host: group_host.read().clone(),
                     join_policy: group_data.join_policy.clone(),
+                    owner: group_data.owner.clone(),
                     on_close: move |_| show_settings.set(false),
+                    on_deleted: move |_| show_settings.set(false),
                 }
             }
         }

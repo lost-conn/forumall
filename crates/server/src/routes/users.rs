@@ -137,3 +137,34 @@ pub async fn add_self_joined_group(
         joined_at: now,
     }))
 }
+
+/// Remove a joined group from the current user's history (/api/me/groups/{group_id})
+/// This does NOT require being a member of the group - it only removes the local history entry.
+pub async fn remove_self_joined_group(
+    State(state): State<AppState>,
+    Path(group_id): Path<String>,
+    signed: SignedRequest,
+) -> Result<StatusCode, (StatusCode, String)> {
+    // Find and delete matching entries for this user
+    let entries: Vec<_> = state.db
+        .query("user_joined_groups")
+        .filter(|f| f.eq("user_id", signed.user_id.clone()))
+        .filter(|f| f.eq("group_id", group_id.clone()))
+        .collect()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)))?;
+
+    if entries.is_empty() {
+        return Err((StatusCode::NOT_FOUND, "Group not found in your history".to_string()));
+    }
+
+    // Delete all matching entries (there should typically be only one)
+    for entry in entries {
+        state.db
+            .delete(&format!("user_joined_groups:{}", entry.id))
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)))?;
+    }
+
+    Ok(StatusCode::NO_CONTENT)
+}

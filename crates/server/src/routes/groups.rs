@@ -298,6 +298,151 @@ pub async fn join_group(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Leave a group (members only, not owner)
+pub async fn leave_group(
+    State(state): State<AppState>,
+    Path(group_id): Path<String>,
+    SignedJson { user_id, .. }: SignedJson<()>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    // Check if user is a member
+    let member_docs = state.db
+        .query("group_members")
+        .filter(|f| f.eq("group_id", group_id.clone()) & f.eq("user_id", user_id.clone()))
+        .collect()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)))?;
+
+    let member_doc = member_docs
+        .first()
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "You are not a member of this group".to_string()))?;
+
+    // Check if user is the owner
+    let role = member_doc.data
+        .get("role")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    if role == "owner" {
+        return Err((StatusCode::FORBIDDEN, "Group owner cannot leave. Delete the group instead.".to_string()));
+    }
+
+    // Remove from group_members
+    state.db
+        .delete(&format!("group_members:{}", member_doc.id))
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)))?;
+
+    // Remove from user_joined_groups
+    let joined_docs = state.db
+        .query("user_joined_groups")
+        .filter(|f| f.eq("user_id", user_id.clone()) & f.eq("group_id", group_id.clone()))
+        .collect()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)))?;
+
+    for doc in joined_docs {
+        state.db
+            .delete(&format!("user_joined_groups:{}", doc.id))
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)))?;
+    }
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Delete a group (owner only)
+pub async fn delete_group(
+    State(state): State<AppState>,
+    Path(group_id): Path<String>,
+    signed: SignedRequest,
+) -> Result<StatusCode, (StatusCode, String)> {
+    // Verify ownership
+    let group_docs = state.db
+        .query("groups")
+        .filter(|f| f.eq("id", group_id.clone()) & f.eq("owner", signed.user_id.clone()))
+        .collect()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)))?;
+
+    let group_doc = group_docs
+        .first()
+        .ok_or_else(|| (StatusCode::FORBIDDEN, "Only the group owner can delete this group".to_string()))?;
+
+    // Delete all messages in all channels of this group
+    let channel_docs = state.db
+        .query("channels")
+        .filter(|f| f.eq("group_id", group_id.clone()))
+        .collect()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)))?;
+
+    for channel_doc in &channel_docs {
+        let channel_id = channel_doc.data
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        // Delete messages in this channel
+        let message_docs = state.db
+            .query("messages")
+            .filter(|f| f.eq("channel_id", channel_id.to_string()))
+            .collect()
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)))?;
+
+        for msg_doc in message_docs {
+            state.db
+                .delete(&format!("messages:{}", msg_doc.id))
+                .await
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)))?;
+        }
+
+        // Delete the channel
+        state.db
+            .delete(&format!("channels:{}", channel_doc.id))
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)))?;
+    }
+
+    // Delete all group_members
+    let member_docs = state.db
+        .query("group_members")
+        .filter(|f| f.eq("group_id", group_id.clone()))
+        .collect()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)))?;
+
+    for doc in member_docs {
+        state.db
+            .delete(&format!("group_members:{}", doc.id))
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)))?;
+    }
+
+    // Delete all user_joined_groups entries for this group
+    let joined_docs = state.db
+        .query("user_joined_groups")
+        .filter(|f| f.eq("group_id", group_id.clone()))
+        .collect()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)))?;
+
+    for doc in joined_docs {
+        state.db
+            .delete(&format!("user_joined_groups:{}", doc.id))
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)))?;
+    }
+
+    // Delete the group itself
+    state.db
+        .delete(&format!("groups:{}", group_doc.id))
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)))?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// Add a member to a group (owner only)
 pub async fn add_member(
     State(state): State<AppState>,

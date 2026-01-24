@@ -8,8 +8,8 @@ pub mod register;
 
 pub use channel_view::ChannelView;
 pub use home::{
-    ChannelList, CreateChannelModal, CreateGroupModal, GroupSettingsModal, Home, JoinGroupModal,
-    NoChannel, NoGroup,
+    ChannelList, CreateChannelModal, CreateGroupModal, GroupErrorKind, GroupErrorView,
+    GroupSettingsModal, Home, JoinGroupModal, NoChannel, NoGroup,
 };
 pub use layouts::{GroupSidebarLayout, HomeSidebarLayout};
 pub use login::Login;

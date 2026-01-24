@@ -200,6 +200,42 @@ impl ApiClient {
             serde_json::from_str(&text).map_err(|e| ApiError::Deserialize(e.to_string()))
         }
     }
+
+    /// Make a signed DELETE request
+    pub async fn delete(&self, path: &str) -> Result<(), ApiError> {
+        let url = self.url(path);
+        let mut rb = self.client.delete(&url);
+
+        if let (Some(keys), Some(handle), Some(domain)) = (&self.keys, &self.handle, &self.domain) {
+            let path_only = if let Ok(u) = reqwest::Url::parse(&url) {
+                u.path().to_string()
+            } else {
+                path.split('?').next().unwrap_or(path).to_string()
+            };
+
+            if let Some(headers) = sign_request("DELETE", &path_only, &[], keys, handle, domain) {
+                rb = rb.header("X-OFSCP-Actor", headers.actor);
+                rb = rb.header("X-OFSCP-Timestamp", headers.timestamp);
+                rb = rb.header(
+                    "X-OFSCP-Signature",
+                    format!("keyId=\"{}\", signature=\"{}\"", headers.key_id, headers.signature),
+                );
+            }
+        }
+
+        let resp = rb.send().await.map_err(|e| ApiError::Network(e.to_string()))?;
+
+        let status = resp.status().as_u16();
+        let is_success = resp.status().is_success();
+
+        let text = resp.text().await.map_err(|e| ApiError::Network(format!("failed to read body: {e}")))?;
+
+        if !is_success {
+            return Err(ApiError::Http { status, body: text });
+        }
+
+        Ok(())
+    }
 }
 
 impl Default for ApiClient {

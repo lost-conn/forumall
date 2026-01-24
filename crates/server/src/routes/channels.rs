@@ -589,3 +589,73 @@ pub async fn update_channel_settings(
 
     Ok(Json(settings))
 }
+
+/// Delete a channel (owner/admin only)
+pub async fn delete_channel(
+    State(state): State<AppState>,
+    Path((group_id, channel_id)): Path<(String, String)>,
+    signed: SignedRequest,
+) -> Result<StatusCode, (StatusCode, String)> {
+    // Check if user is owner or admin
+    let member_doc = state
+        .db
+        .query("group_members")
+        .filter(|f| f.eq("group_id", group_id.clone()) & f.eq("user_id", signed.user_id.clone()))
+        .collect()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)))?
+        .into_iter()
+        .next()
+        .ok_or_else(|| (StatusCode::FORBIDDEN, "Not a group member".to_string()))?;
+
+    let role = member_doc
+        .data
+        .get("role")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    if role != "owner" && role != "admin" {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "Only owners and admins can delete channels".to_string(),
+        ));
+    }
+
+    // Get the channel
+    let channel_doc = state
+        .db
+        .query("channels")
+        .filter(|f| f.eq("id", channel_id.clone()) & f.eq("group_id", group_id.clone()))
+        .collect()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)))?
+        .into_iter()
+        .next()
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "Channel not found".to_string()))?;
+
+    // Delete all messages in this channel
+    let message_docs = state
+        .db
+        .query("messages")
+        .filter(|f| f.eq("channel_id", channel_id.clone()))
+        .collect()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)))?;
+
+    for msg_doc in message_docs {
+        state
+            .db
+            .delete(&format!("messages:{}", msg_doc.id))
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)))?;
+    }
+
+    // Delete the channel
+    state
+        .db
+        .delete(&format!("channels:{}", channel_doc.id))
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)))?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
