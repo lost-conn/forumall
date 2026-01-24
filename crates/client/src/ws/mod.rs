@@ -3,7 +3,7 @@
 //! This module provides:
 //! - Connection management with auto-reconnect
 //! - Multi-provider support (for OFSCP federation)
-//! - React-style hooks for easy component integration
+//! - Direct writes to global stores (components read from stores, not events)
 //!
 //! # Architecture
 //!
@@ -22,18 +22,25 @@
 //!          │              │              │
 //!          └──────────────┼──────────────┘
 //!                         ▼
-//!                  WS_EVENTS (global)
+//!              ┌─────────────────────┐
+//!              │   Global Stores     │
+//!              │  (e.g., MESSAGES)   │
+//!              └─────────────────────┘
 //!                         │
 //!          ┌──────────────┼──────────────┐
 //!          ▼              ▼              ▼
 //!   ┌────────────┐ ┌────────────┐ ┌────────────┐
 //!   │ Component  │ │ Component  │ │ Component  │
-//!   │(use_channel│ │(use_ws_    │ │(use_ws_    │
-//!   │ _messages) │ │ events)    │ │ handle)    │
+//!   │ (reads     │ │ (reads     │ │ (reads     │
+//!   │  store)    │ │  store)    │ │  store)    │
 //!   └────────────┘ └────────────┘ └────────────┘
 //! ```
 //!
 //! # Usage
+//!
+//! Components should read from global stores (like `MESSAGES`), not from
+//! WebSocket events directly. The WebSocket manager writes incoming messages
+//! to the appropriate store automatically.
 //!
 //! ```rust,ignore
 //! // In your app root, wrap with WsManager
@@ -43,20 +50,16 @@
 //!     }
 //! }
 //!
-//! // In a component that needs channel messages
-//! fn MyChannel(channel_id: Signal<String>) -> Element {
-//!     let (messages, send) = use_channel_messages(
-//!         use_signal(|| String::new()), // local provider
-//!         channel_id,
-//!     );
+//! // In a component, read from the message store
+//! fn MyChannel(channel_id: String) -> Element {
+//!     let store = MESSAGES.resolve();
+//!     let messages = store.read().get(&channel_id);
 //!
 //!     rsx! {
-//!         for msg in messages.read().iter() {
-//!             div { "{msg.content.text}" }
-//!         }
-//!         button {
-//!             onclick: move |_| send("Hello!".to_string()),
-//!             "Send"
+//!         if let Some(ch) = messages {
+//!             for msg in ch.messages.iter() {
+//!                 div { "{msg.content}" }
+//!             }
 //!         }
 //!     }
 //! }
@@ -75,7 +78,5 @@ pub use manager::{
     WsEvent, WsManager, WS_EVENTS, WS_HANDLES, WS_HOSTS, WS_STATES,
 };
 
-// Re-export hooks
-pub use hooks::{
-    use_channel_messages, use_connection_state, use_consume_events, use_ws_events, use_ws_handle,
-};
+// Re-export hooks (minimal - most data comes from stores)
+pub use hooks::{use_connection_state, use_ws_handle};

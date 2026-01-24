@@ -183,23 +183,38 @@ async fn handle_client_command(
             channel_id,
             body,
             nonce,
+            title,
+            message_type,
         } => {
             tracing::debug!("User {} sending message to channel {}", user_id, channel_id);
 
             let message_id = uuid::Uuid::new_v4().to_string();
             let now = chrono::Utc::now();
+            let msg_type = message_type.clone().unwrap_or(MessageType::Message);
+
+            // Serialize message type to store in DB
+            let message_type_str = match msg_type {
+                MessageType::Message => "message",
+                MessageType::Memo => "memo",
+                MessageType::Article => "article",
+            };
+
+            // Build insert fields
+            let mut fields = vec![
+                ("id", message_id.clone().into()),
+                ("channel_id", channel_id.clone().into()),
+                ("sender_user_id", user_id.to_string().into()),
+                ("body", body.clone().into()),
+                ("message_type", message_type_str.into()),
+                ("created_at", now.to_rfc3339().into()),
+            ];
+
+            if let Some(ref t) = title {
+                fields.push(("title", t.clone().into()));
+            }
 
             let insert_result = state.db
-                .insert_into(
-                    "messages",
-                    vec![
-                        ("id", message_id.clone().into()),
-                        ("channel_id", channel_id.clone().into()),
-                        ("sender_user_id", user_id.to_string().into()),
-                        ("body", body.clone().into()),
-                        ("created_at", now.to_rfc3339().into()),
-                    ],
-                )
+                .insert_into("messages", fields)
                 .await;
 
             match insert_result {
@@ -207,7 +222,8 @@ async fn handle_client_command(
                     let message = BaseMessage {
                         id: message_id.clone(),
                         author: UserRef::Handle(user_id.to_string()),
-                        r#type: MessageType::Message,
+                        r#type: msg_type,
+                        title: title.clone(),
                         content: Content {
                             text: body.clone(),
                             mime: "text/plain".to_string(),
@@ -222,7 +238,10 @@ async fn handle_client_command(
 
                     let event = WsEnvelope {
                         id: uuid::Uuid::new_v4().to_string(),
-                        payload: ServerEvent::MessageNew { message },
+                        payload: ServerEvent::MessageNew {
+                            channel_id: channel_id.clone(),
+                            message,
+                        },
                         ts: now,
                         correlation_id: Some(envelope.id.clone()),
                     };

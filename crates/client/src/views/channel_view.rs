@@ -1,13 +1,15 @@
 //! Channel view component for displaying chat messages.
 
 use crate::auth_session::AuthContext;
+use crate::components::messages::{ArticleItem, ArticleModal, MemoItem};
 use crate::hooks::use_refreshable_resource;
-use crate::ws::{get_handle, normalize_host, WsEvent, WS_EVENTS};
+use crate::stores::{ChannelMessages, StoredMessage, MESSAGES};
+use crate::ws::{get_handle, normalize_host};
 use crate::Route;
 use chrono::{DateTime, Local, Utc};
 use dioxus::logger::tracing;
 use dioxus::prelude::*;
-use forumall_shared::{BaseMessage, Group, MessagesPage, UserProfile, UserRef};
+use forumall_shared::{Group, MessagesPage, MessageType, UserProfile};
 
 #[derive(Clone)]
 pub struct ChannelViewRefresh {
@@ -81,8 +83,8 @@ pub fn ChannelView(
     });
 
     rsx! {
-        // Chat Area
-        div { class: "flex-1 flex flex-col bg-[#313338]",
+        // Chat Area - overflow-visible to allow dropdowns to escape
+        div { class: "flex-1 flex flex-col bg-[#313338] overflow-visible",
             if let Some(channel) = current_channel.read().as_ref() {
                 // Channel header
                 div { class: "h-12 px-4 flex items-center shadow-sm border-b border-[#232428] justify-between",
@@ -127,13 +129,14 @@ pub fn ChannelView(
                         group_host: group_host.read().clone(),
                     }
                 }
-                // Input area
-                div { class: "px-4 pb-6",
+                // Input area - overflow-visible to allow dropdown to escape
+                div { class: "px-4 pb-6 overflow-visible relative z-20",
                     MessageInput {
                         group_id: channel.group_id.clone(),
                         channel_id: channel.id.clone(),
                         channel_name: channel.name.clone(),
                         group_host: group_host.read().clone(),
+                        allowed_types: channel.settings.message_types.root_types.clone(),
                     }
                 }
             } else {
@@ -170,11 +173,20 @@ pub fn ChannelView(
     }
 }
 
+/// State for an expanded article in the modal
+#[derive(Clone)]
+struct ExpandedArticle {
+    user_id: String,
+    created_at: DateTime<Utc>,
+    title: Option<String>,
+    content: String,
+}
+
 #[component]
 fn MessageList(group_id: String, channel_id: String, group_host: String) -> Element {
     let auth = use_context::<AuthContext>();
 
-    // Get WebSocket from the manager
+    // Compute WebSocket key for subscription
     let local_domain = auth.provider_domain.read().clone();
     let normalized = normalize_host(&group_host);
     let ws_key = if group_host.is_empty() || normalized == normalize_host(&local_domain) {
@@ -183,32 +195,84 @@ fn MessageList(group_id: String, channel_id: String, group_host: String) -> Elem
         normalized
     };
 
-    // Track props to ensure resource reactivity
-    let mut track_group_id = use_signal(|| group_id.clone());
-    let mut track_channel_id = use_signal(|| channel_id.clone());
-    let mut track_group_host = use_signal(|| group_host.clone());
-    // Store realtime messages as BaseMessage (from WebSocket)
-    let mut realtime_msgs = use_signal(|| Vec::<BaseMessage>::new());
-    let mut processed_ids = use_signal(|| std::collections::HashSet::<String>::new());
+    // State for expanded article modal
+    let mut expanded_article = use_signal(|| None::<ExpandedArticle>);
+
+    // Track subscribed channel to manage WebSocket subscriptions
     let mut subscribed_channel = use_signal(|| None::<String>);
 
-    if track_group_id() != group_id {
-        track_group_id.set(group_id.clone());
-    }
-    if track_channel_id() != channel_id {
-        track_channel_id.set(channel_id.clone());
-        realtime_msgs.set(Vec::new()); // Clear realtime messages on channel switch
-        processed_ids.set(std::collections::HashSet::new()); // Clear processed IDs
-    }
-    if track_group_host() != group_host {
-        track_group_host.set(group_host.clone());
-    }
+    // Check if this channel is already loaded in the store
+    let store = MESSAGES.resolve();
+    let is_loaded = store
+        .read()
+        .get(&channel_id)
+        .map(|ch| ch.is_loaded)
+        .unwrap_or(false);
 
-    // Subscribe to channel via WebSocket
-    let cid_sig = track_channel_id;
+    // Fetch message history if not loaded, then populate the store
+    let channel_id_for_fetch = channel_id.clone();
+    let group_id_for_fetch = group_id.clone();
+    let group_host_for_fetch = group_host.clone();
+    let fetch_status = use_resource(move || {
+        let cid = channel_id_for_fetch.clone();
+        let gid = group_id_for_fetch.clone();
+        let host = group_host_for_fetch.clone();
+        let auth = auth.clone();
+        let already_loaded = is_loaded;
+        async move {
+            // Skip fetch if already loaded
+            if already_loaded {
+                return Ok::<(), String>(());
+            }
+
+            let client = auth.client();
+            let url = auth.api_url_for_host(
+                Some(&host),
+                &format!("/api/groups/{gid}/channels/{cid}/messages?limit=50&direction=backward"),
+            );
+
+            match client.get_json::<MessagesPage>(&url).await {
+                Ok(page) => {
+                    // Convert to StoredMessage and populate store
+                    let messages: Vec<StoredMessage> = page
+                        .items
+                        .into_iter()
+                        .map(|msg| {
+                            let created_at = chrono::DateTime::parse_from_rfc3339(&msg.created_at)
+                                .map(|dt| dt.with_timezone(&Utc))
+                                .unwrap_or_else(|_| Utc::now());
+
+                            StoredMessage {
+                                id: msg.id,
+                                user_id: msg.sender_user_id,
+                                title: msg.title,
+                                content: msg.body,
+                                message_type: msg.message_type.unwrap_or(MessageType::Message),
+                                created_at,
+                            }
+                        })
+                        .collect();
+
+                    // Write to the global store
+                    let mut store = MESSAGES.resolve();
+                    let mut channel_msgs = ChannelMessages::default();
+                    channel_msgs.set_history(messages);
+                    store.write().insert(cid, channel_msgs);
+
+                    Ok(())
+                }
+                Err(e) => Err(e.to_string()),
+            }
+        }
+    });
+
+    // Subscribe to channel via WebSocket when channel changes
+    let channel_id_for_sub = channel_id.clone();
     let ws_key_for_sub = ws_key.clone();
+    // Note: We still need use_effect for WebSocket subscription management
+    // because it involves side effects (subscribe/unsubscribe calls)
     use_effect(move || {
-        let target_cid = cid_sig();
+        let target_cid = channel_id_for_sub.clone();
         let key = ws_key_for_sub.clone();
 
         let mut sub = subscribed_channel.write();
@@ -228,41 +292,6 @@ fn MessageList(group_id: String, channel_id: String, group_host: String) -> Elem
         }
     });
 
-    // Listen for new messages from WebSocket events
-    use_effect(move || {
-        // Read events to subscribe to changes
-        let events = WS_EVENTS.read();
-
-        for event in events.iter() {
-            if let WsEvent::NewMessage { message, .. } = event {
-                // Check if we've already processed this message
-                if !processed_ids.read().contains(&message.id) {
-                    // Mark as processed and add to realtime messages
-                    processed_ids.write().insert(message.id.clone());
-                    realtime_msgs.write().push(message.clone());
-                }
-            }
-        }
-    });
-
-    let messages = use_resource(move || {
-        let gid = track_group_id();
-        let cid = track_channel_id();
-        let host = track_group_host();
-        let auth = auth.clone();
-        async move {
-            let client = auth.client();
-            let url = auth.api_url_for_host(
-                Some(&host),
-                &format!("/api/groups/{gid}/channels/{cid}/messages?limit=50&direction=backward"),
-            );
-            client
-                .get_json::<MessagesPage>(&url)
-                .await
-                .map_err(|e| e.to_string())
-        }
-    });
-
     // Function to scroll the messages container to the bottom
     fn do_scroll_to_bottom() {
         #[cfg(target_arch = "wasm32")]
@@ -276,58 +305,43 @@ fn MessageList(group_id: String, channel_id: String, group_host: String) -> Elem
                 }
             }
         }
-        // On desktop, Dioxus handles scrolling differently - this may need
-        // platform-specific implementation using Dioxus desktop APIs
         #[cfg(not(target_arch = "wasm32"))]
-        {
-            // Desktop implementation - Dioxus desktop uses webview which supports
-            // the same DOM APIs, but accessed differently. For now, this is a no-op
-            // as the webview should handle it automatically.
-        }
+        {}
     }
 
-    // Scroll to bottom when messages load
-    use_effect(move || {
-        if messages.read().is_some() {
-            do_scroll_to_bottom();
-        }
-    });
-
-    // Scroll to bottom when new realtime messages arrive
-    use_effect(move || {
-        let _ = realtime_msgs.read();
-        do_scroll_to_bottom();
-    });
+    // Read messages from the global store
+    let store = MESSAGES.resolve();
+    let store_read = store.read();
+    let channel_data = store_read.get(&channel_id);
 
     rsx! {
         // Spacer that grows to push messages to the bottom when they don't fill the container
         div { class: "flex-1" }
         // Messages container
         div { class: "flex flex-col px-4 py-4 gap-3",
-            match messages.read().as_ref() {
-                Some(Ok(page)) => rsx! {
-                    // Render REST API messages (ChannelMessage format)
-                    for msg in page.items.iter() {
-                        MessageItem {
-                            key: "{msg.id}",
-                            user_id: msg.sender_user_id.clone(),
-                            created_at_str: Some(msg.created_at.clone()),
-                            created_at_dt: None,
-                            content: msg.body.clone(),
+            match (channel_data, fetch_status.read().as_ref()) {
+                // Channel loaded - render from store
+                (Some(ch), _) if ch.is_loaded => {
+                    // Scroll to bottom when messages are available
+                    do_scroll_to_bottom();
+                    rsx! {
+                        for msg in ch.messages.iter() {
+                            MessageItem {
+                                key: "{msg.id}",
+                                user_id: msg.user_id.clone(),
+                                created_at: msg.created_at,
+                                title: msg.title.clone(),
+                                content: msg.content.clone(),
+                                message_type: msg.message_type.clone(),
+                                on_expand_article: move |article: ExpandedArticle| {
+                                    expanded_article.set(Some(article));
+                                },
+                            }
                         }
                     }
-                    // Render WebSocket messages (BaseMessage format)
-                    for msg in realtime_msgs.read().iter() {
-                        MessageItem {
-                            key: "{msg.id}",
-                            user_id: extract_user_id(&msg.author),
-                            created_at_str: None,
-                            created_at_dt: Some(msg.created_at),
-                            content: msg.content.text.clone(),
-                        }
-                    }
-                },
-                Some(Err(e)) => rsx! {
+                }
+                // Fetch failed
+                (_, Some(Err(e))) => rsx! {
                     div { class: "flex items-center justify-center p-8 text-red-400 bg-red-900/10 rounded-xl",
                         svg {
                             class: "w-6 h-6 mr-2",
@@ -344,7 +358,8 @@ fn MessageList(group_id: String, channel_id: String, group_host: String) -> Elem
                         "Failed to load messages: {e}"
                     }
                 },
-                None => rsx! {
+                // Still loading
+                _ => rsx! {
                     div { class: "flex items-center justify-center p-8 text-gray-400",
                         div { class: "animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-500 mr-3" }
                         "Loading messages..."
@@ -352,14 +367,18 @@ fn MessageList(group_id: String, channel_id: String, group_host: String) -> Elem
                 },
             }
         }
-    }
-}
-
-/// Extract user ID from UserRef
-fn extract_user_id(user_ref: &UserRef) -> String {
-    match user_ref {
-        UserRef::Handle(h) => h.split('/').last().unwrap_or("Unknown").to_string(),
-        UserRef::Uri(u) => u.split('/').last().unwrap_or("Unknown").to_string(),
+        // Article modal overlay
+        if let Some(article) = expanded_article.read().as_ref() {
+            ArticleModal {
+                user_id: article.user_id.clone(),
+                created_at: article.created_at,
+                title: article.title.clone(),
+                content: article.content.clone(),
+                on_close: move |_| {
+                    expanded_article.set(None);
+                },
+            }
+        }
     }
 }
 
@@ -389,26 +408,77 @@ fn format_timestamp(dt: DateTime<Utc>) -> String {
 #[component]
 fn MessageItem(
     user_id: String,
-    created_at_str: Option<String>,
-    created_at_dt: Option<DateTime<Utc>>,
+    created_at: DateTime<Utc>,
+    title: Option<String>,
     content: String,
+    message_type: MessageType,
+    on_expand_article: EventHandler<ExpandedArticle>,
 ) -> Element {
     let auth = use_context::<AuthContext>();
-    let user_id_sig = use_signal(|| user_id.clone());
-
-    // Parse the timestamp - either from string or DateTime
-    let created_at: DateTime<Utc> = if let Some(dt) = created_at_dt {
-        dt
-    } else if let Some(s) = &created_at_str {
-        chrono::DateTime::parse_from_rfc3339(s)
-            .map(|dt| dt.with_timezone(&Utc))
-            .unwrap_or_else(|_| Utc::now())
-    } else {
-        Utc::now()
-    };
 
     // Check if this message is from the current user
     let is_own_message = auth.user_id().map(|uid| uid == user_id).unwrap_or(false);
+
+    // Route to appropriate component based on message type
+    match message_type {
+        MessageType::Memo => {
+            rsx! {
+                MemoItem {
+                    user_id: user_id.clone(),
+                    created_at,
+                    content: content.clone(),
+                    is_own_message,
+                }
+            }
+        }
+        MessageType::Article => {
+            let user_id_for_expand = user_id.clone();
+            let title_for_expand = title.clone();
+            let content_for_expand = content.clone();
+            rsx! {
+                ArticleItem {
+                    user_id: user_id.clone(),
+                    created_at,
+                    title: title.clone(),
+                    content: content.clone(),
+                    is_own_message,
+                    on_expand: move |_| {
+                        on_expand_article.call(ExpandedArticle {
+                            user_id: user_id_for_expand.clone(),
+                            created_at,
+                            title: title_for_expand.clone(),
+                            content: content_for_expand.clone(),
+                        });
+                    },
+                }
+            }
+        }
+        MessageType::Message => {
+            // Default chat bubble style
+            rsx! {
+                ChatBubble {
+                    user_id,
+                    created_at,
+                    title,
+                    content,
+                    is_own_message,
+                }
+            }
+        }
+    }
+}
+
+/// Chat bubble component for regular Message type
+#[component]
+fn ChatBubble(
+    user_id: String,
+    created_at: DateTime<Utc>,
+    title: Option<String>,
+    content: String,
+    is_own_message: bool,
+) -> Element {
+    let auth = use_context::<AuthContext>();
+    let user_id_sig = use_signal(|| user_id.clone());
 
     let profile = use_resource(move || {
         let uid = user_id_sig();
@@ -468,6 +538,9 @@ fn MessageItem(
                     }
                     // Chat bubble with indigo/purple gradient for own messages
                     div { class: "inline-block bg-gradient-to-br from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 rounded-2xl rounded-tl-md px-4 py-2.5 shadow-md transition-colors",
+                        if let Some(ref t) = title {
+                            h3 { class: "text-white font-bold text-lg mb-1", "{t}" }
+                        }
                         p { class: "text-white leading-relaxed break-words", "{content}" }
                     }
                     // Timestamp below bubble (visible on mobile)
@@ -497,6 +570,9 @@ fn MessageItem(
                     }
                     // Chat bubble with subtle background - inline-block for variable width
                     div { class: "inline-block bg-[#383a40] hover:bg-[#3f4147] rounded-2xl rounded-tl-md px-4 py-2.5 shadow-md transition-colors",
+                        if let Some(ref t) = title {
+                            h3 { class: "text-white font-bold text-lg mb-1", "{t}" }
+                        }
                         p { class: "text-[#dbdee1] leading-relaxed break-words", "{content}" }
                     }
                     // Timestamp below bubble (visible on mobile)
@@ -515,9 +591,20 @@ fn MessageInput(
     channel_id: String,
     channel_name: String,
     group_host: String,
+    allowed_types: Vec<MessageType>,
 ) -> Element {
     let auth = use_context::<AuthContext>();
     let mut text = use_signal(|| String::new());
+    let mut title = use_signal(|| String::new());
+    let mut message_type = use_signal(|| {
+        // Default to first allowed type, or Message if available
+        if allowed_types.contains(&MessageType::Message) {
+            MessageType::Message
+        } else {
+            allowed_types.first().cloned().unwrap_or(MessageType::Message)
+        }
+    });
+    let mut show_type_dropdown = use_signal(|| false);
 
     // Compute websocket key
     let local_domain = auth.provider_domain.read().clone();
@@ -528,6 +615,10 @@ fn MessageInput(
         normalized
     };
 
+    let is_article = matches!(*message_type.read(), MessageType::Article);
+    let allowed_types_for_render = allowed_types.clone();
+    let allowed_types_for_submit = allowed_types.clone();
+
     let onsubmit = move |e: dioxus_core::Event<FormData>| {
         e.prevent_default();
 
@@ -536,23 +627,61 @@ fn MessageInput(
             return;
         }
 
-        // Send via websocket handle
+        let current_type = message_type.read().clone();
+        let current_title = if matches!(current_type, MessageType::Article) {
+            let t = title.read().clone();
+            if t.is_empty() { None } else { Some(t) }
+        } else {
+            None
+        };
+
+        // Send via websocket handle with type and title
         let key = ws_key.clone();
         let cid = channel_id.clone();
         crate::log_info!("MessageInput: looking for handle with key '{}'", key);
         if let Some(handle) = get_handle(&key) {
             let nonce = uuid::Uuid::new_v4().to_string();
-            crate::log_info!("MessageInput: sending to channel '{}' with nonce '{}'", cid, nonce);
-            let _ = handle.send_message(&cid, &body, &nonce);
+            crate::log_info!("MessageInput: sending {:?} to channel '{}' with nonce '{}'", current_type, cid, nonce);
+            let _ = handle.send_message_with_options(
+                &cid,
+                &body,
+                &nonce,
+                current_title,
+                Some(current_type.clone()),
+            );
         } else {
             crate::log_error!("MessageInput: no handle found for key '{}'", key);
         }
         text.set(String::new());
+        title.set(String::new());
+        // Reset to Message type if allowed, otherwise keep current type
+        if allowed_types_for_submit.contains(&MessageType::Message) {
+            message_type.set(MessageType::Message);
+        }
+    };
+
+    // Get display info for current type
+    let type_label = match *message_type.read() {
+        MessageType::Message => "Msg",
+        MessageType::Memo => "Memo",
+        MessageType::Article => "Art",
     };
 
     rsx! {
         form { onsubmit, class: "relative",
-            div { class: "flex items-center bg-[#383a40] rounded-lg",
+            // Article mode: show title field above
+            if is_article {
+                div { class: "flex items-center bg-[#383a40] rounded-t-lg border-b border-[#2b2d31] px-3 py-2",
+                    input {
+                        class: "flex-1 bg-transparent text-white placeholder-[#6d6f78] outline-none text-sm font-medium",
+                        r#type: "text",
+                        placeholder: "Article title...",
+                        value: "{title}",
+                        oninput: move |e: FormEvent| title.set(e.value()),
+                    }
+                }
+            }
+            div { class: format!("flex items-center bg-[#383a40] {}", if is_article { "rounded-b-lg" } else { "rounded-lg" }),
                 // Plus button for attachments
                 button {
                     r#type: "button",
@@ -570,11 +699,83 @@ fn MessageInput(
                         }
                     }
                 }
+                // Message type selector - using overflow-visible to allow dropdown to escape
+                div { class: "relative overflow-visible",
+                    button {
+                        r#type: "button",
+                        class: "flex items-center gap-1 px-2 py-1.5 rounded text-xs font-medium bg-[#2b2d31] text-[#b5bac1] hover:text-white hover:bg-[#404249] transition-colors",
+                        onclick: move |_| show_type_dropdown.set(!show_type_dropdown()),
+                        span { "{type_label}" }
+                        svg {
+                            class: format!("w-3 h-3 transition-transform {}", if *show_type_dropdown.read() { "rotate-180" } else { "" }),
+                            fill: "none",
+                            stroke: "currentColor",
+                            view_box: "0 0 24 24",
+                            path {
+                                stroke_linecap: "round",
+                                stroke_linejoin: "round",
+                                stroke_width: "2",
+                                d: "M19 9l-7 7-7-7",
+                            }
+                        }
+                    }
+                    // Dropdown menu - positioned above with high z-index
+                    if *show_type_dropdown.read() {
+                        // Invisible backdrop to catch clicks outside
+                        div {
+                            class: "fixed inset-0 z-[99]",
+                            onclick: move |_| show_type_dropdown.set(false),
+                        }
+                        div {
+                            class: "absolute left-0 bg-[#1e1f22] rounded-lg shadow-2xl border border-[#3f4147] py-1 min-w-[140px] z-[100]",
+                            style: "bottom: 100%; margin-bottom: 8px;",
+                            for msg_type in [MessageType::Message, MessageType::Memo, MessageType::Article].iter() {
+                                {
+                                    let msg_type_clone = msg_type.clone();
+                                    let is_allowed = allowed_types_for_render.contains(msg_type);
+                                    let is_selected = *message_type.read() == *msg_type;
+                                    let (label, description) = match msg_type {
+                                        MessageType::Message => ("Message", "Chat bubble"),
+                                        MessageType::Memo => ("Memo", "Post-style card"),
+                                        MessageType::Article => ("Article", "Forum-style post"),
+                                    };
+                                    rsx! {
+                                        button {
+                                            key: "{label}",
+                                            r#type: "button",
+                                            disabled: !is_allowed,
+                                            class: format!(
+                                                "w-full px-3 py-2 text-left transition-colors {}",
+                                                if !is_allowed {
+                                                    "opacity-40 cursor-not-allowed"
+                                                } else if is_selected {
+                                                    "bg-indigo-500/20 text-white"
+                                                } else {
+                                                    "text-[#dbdee1] hover:bg-[#404249]"
+                                                }
+                                            ),
+                                            onclick: move |_| {
+                                                if is_allowed {
+                                                    message_type.set(msg_type_clone.clone());
+                                                    show_type_dropdown.set(false);
+                                                }
+                                            },
+                                            div { class: "flex flex-col",
+                                                span { class: "text-sm font-medium", "{label}" }
+                                                span { class: "text-xs text-[#b5bac1]", "{description}" }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 // Input
                 input {
-                    class: "flex-1 bg-transparent text-[#dbdee1] placeholder-[#6d6f78] py-3 pr-4 outline-none",
+                    class: "flex-1 bg-transparent text-[#dbdee1] placeholder-[#6d6f78] py-3 px-3 outline-none",
                     r#type: "text",
-                    placeholder: "Message #{channel_name}",
+                    placeholder: format!("{} #{}", if is_article { "Write your article for" } else { "Message" }, channel_name),
                     value: "{text}",
                     oninput: move |e: FormEvent| text.set(e.value()),
                 }

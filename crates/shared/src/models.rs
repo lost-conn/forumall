@@ -109,6 +109,9 @@ pub struct BaseMessage {
     pub author: UserRef,
     #[serde(rename = "type")]
     pub r#type: MessageType,
+    /// Optional title for Article messages
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     pub content: Content,
     pub attachments: Vec<Attachment>,
     pub reference: Option<MessageReference>,
@@ -262,6 +265,12 @@ pub enum ClientCommand {
         channel_id: String,
         body: String,
         nonce: String,
+        /// Optional title for Article messages
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        /// Message type (defaults to Message)
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message_type: Option<MessageType>,
     },
 }
 
@@ -270,6 +279,7 @@ pub enum ClientCommand {
 pub enum ServerEvent {
     #[serde(rename = "message.new")]
     MessageNew {
+        channel_id: String,
         message: BaseMessage,
     },
     Ack {
@@ -311,13 +321,107 @@ fn default_join_policy() -> String {
     "open".to_string()
 }
 
+// --- Channels ---
+
+/// Channel type (text or call)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum ChannelType {
+    #[default]
+    Text,
+    Call,
+}
+
+/// Permission target - can be a role (@everyone, @admin, @owner, @custom)
+/// or an individual user ID (no @ prefix)
+pub type PermissionTarget = String;
+
+fn default_view_permission() -> Vec<PermissionTarget> {
+    vec!["@everyone".to_string()]
+}
+
+fn default_send_permission() -> Vec<PermissionTarget> {
+    vec!["@everyone".to_string()]
+}
+
+/// Channel permission settings
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelPermissions {
+    /// Who can view the channel (default: ["@everyone"])
+    /// Accepts: "@everyone", "@admin", "@owner", "@customrole", or user IDs
+    #[serde(default = "default_view_permission")]
+    pub view: Vec<PermissionTarget>,
+    /// Who can send messages (default: ["@everyone"])
+    #[serde(default = "default_send_permission")]
+    pub send: Vec<PermissionTarget>,
+}
+
+impl Default for ChannelPermissions {
+    fn default() -> Self {
+        Self {
+            view: default_view_permission(),
+            send: default_send_permission(),
+        }
+    }
+}
+
+fn default_root_types() -> Vec<MessageType> {
+    vec![MessageType::Message, MessageType::Memo, MessageType::Article]
+}
+
+fn default_reply_types() -> Vec<MessageType> {
+    vec![MessageType::Message, MessageType::Memo, MessageType::Article]
+}
+
+/// Message type settings for a channel
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageTypeSettings {
+    /// Allowed types for root/top-level messages
+    #[serde(default = "default_root_types")]
+    pub root_types: Vec<MessageType>,
+    /// Allowed types for replies
+    #[serde(default = "default_reply_types")]
+    pub reply_types: Vec<MessageType>,
+}
+
+impl Default for MessageTypeSettings {
+    fn default() -> Self {
+        Self {
+            root_types: default_root_types(),
+            reply_types: default_reply_types(),
+        }
+    }
+}
+
+/// Full channel settings object
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelSettings {
+    #[serde(default)]
+    pub permissions: ChannelPermissions,
+    #[serde(default)]
+    pub message_types: MessageTypeSettings,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Channel {
     pub id: String,
     pub group_id: String,
     pub name: String,
+    #[serde(default)]
+    pub channel_type: ChannelType,
     pub topic: Option<String>,
+    #[serde(default)]
+    pub discoverability: Option<Discoverability>,
+    #[serde(default)]
+    pub settings: ChannelSettings,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub metadata: Metadata,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -367,6 +471,31 @@ pub struct CreateChannelRequest {
     pub name: String,
     #[serde(default)]
     pub topic: Option<String>,
+    #[serde(default)]
+    pub channel_type: Option<ChannelType>,
+    #[serde(default)]
+    pub discoverability: Option<Discoverability>,
+    #[serde(default)]
+    pub settings: Option<ChannelSettings>,
+    #[serde(default)]
+    pub tags: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateChannelRequest {
+    pub name: Option<String>,
+    pub topic: Option<String>,
+    pub discoverability: Option<Discoverability>,
+    pub settings: Option<ChannelSettings>,
+    pub tags: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateChannelSettingsRequest {
+    pub permissions: Option<ChannelPermissions>,
+    pub message_types: Option<MessageTypeSettings>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -447,6 +576,8 @@ pub struct PublicKeyDiscoveryResponse {
 pub struct CreateMessageRequest {
     pub body: String,
     #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
     pub idempotency_key: Option<String>,
 }
 
@@ -456,7 +587,13 @@ pub struct ChannelMessage {
     pub id: String,
     pub channel_id: String,
     pub sender_user_id: String,
+    /// Optional title for Article messages
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     pub body: String,
+    /// Message type (Message, Memo, or Article)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_type: Option<MessageType>,
     pub created_at: String,
 }
 

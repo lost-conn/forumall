@@ -6,15 +6,26 @@ use axum::{
     Json,
 };
 use base64::Engine as _;
-use forumall_shared::ChannelMessage;
+use forumall_shared::{ChannelMessage, MessageType};
 use serde::{Deserialize, Serialize};
 
 use crate::middleware::signature::{SignedJson, SignedRequest};
+use crate::routes::channels::{check_channel_permission, get_settings_from_doc, ChannelPermission};
 use crate::state::AppState;
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SendMessageRequest {
     pub body: String,
+    /// Optional title for Article messages
+    #[serde(default)]
+    pub title: Option<String>,
+    /// Message type (defaults to Message if not specified)
+    #[serde(default)]
+    pub message_type: Option<MessageType>,
+    /// Parent message ID for replies (if set, this is a reply)
+    #[serde(default)]
+    pub parent_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -68,33 +79,85 @@ pub async fn send_message(
         return Err((StatusCode::NOT_FOUND, "Channel not found in group".to_string()));
     }
 
-    // Check membership
-    let is_member = state.db
-        .query("group_members")
-        .filter(|f| f.eq("group_id", group_id.clone()) & f.eq("user_id", user_id.clone()))
-        .collect()
-        .await
-        .map(|docs| !docs.is_empty())
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {e}")))?;
+    // Check send permission
+    let channel_settings = get_settings_from_doc(&channel_match);
+    let can_send = check_channel_permission(
+        &state,
+        &user_id,
+        &group_id,
+        &channel_settings,
+        ChannelPermission::Send,
+    )
+    .await?;
 
-    if !is_member {
-        return Err((StatusCode::FORBIDDEN, "Not a member of that group".to_string()));
+    if !can_send {
+        return Err((StatusCode::FORBIDDEN, "You don't have permission to send messages in this channel".to_string()));
+    }
+
+    // Validate message type
+    let message_type = payload.message_type.clone().unwrap_or(MessageType::Message);
+    let is_reply = payload.parent_id.is_some();
+
+    let allowed_types = if is_reply {
+        &channel_settings.message_types.reply_types
+    } else {
+        &channel_settings.message_types.root_types
+    };
+
+    if !allowed_types.contains(&message_type) {
+        let type_name = match message_type {
+            MessageType::Message => "message",
+            MessageType::Memo => "memo",
+            MessageType::Article => "article",
+        };
+        let context = if is_reply { "replies" } else { "root messages" };
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("Message type '{}' is not allowed for {} in this channel", type_name, context),
+        ));
+    }
+
+    // If this is a reply, verify parent exists
+    if let Some(ref parent_id) = payload.parent_id {
+        let parent_exists = state.db
+            .query("messages")
+            .filter(|f| f.eq("id", parent_id.clone()) & f.eq("channel_id", channel_id.clone()))
+            .collect()
+            .await
+            .map(|docs| !docs.is_empty())
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {e}")))?;
+
+        if !parent_exists {
+            return Err((StatusCode::NOT_FOUND, "Parent message not found".to_string()));
+        }
     }
 
     let message_id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
 
+    // Serialize message type to store in DB
+    let message_type_str = match message_type {
+        MessageType::Message => "message",
+        MessageType::Memo => "memo",
+        MessageType::Article => "article",
+    };
+
+    // Build insert fields, conditionally including title
+    let mut fields = vec![
+        ("id", message_id.clone().into()),
+        ("channel_id", channel_id.clone().into()),
+        ("sender_user_id", user_id.clone().into()),
+        ("body", payload.body.clone().into()),
+        ("message_type", message_type_str.into()),
+        ("created_at", now.clone().into()),
+    ];
+
+    if let Some(ref title) = payload.title {
+        fields.push(("title", title.clone().into()));
+    }
+
     state.db
-        .insert_into(
-            "messages",
-            vec![
-                ("id", message_id.clone().into()),
-                ("channel_id", channel_id.clone().into()),
-                ("sender_user_id", user_id.clone().into()),
-                ("body", payload.body.clone().into()),
-                ("created_at", now.clone().into()),
-            ],
-        )
+        .insert_into("messages", fields)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {e}")))?;
 
@@ -103,7 +166,9 @@ pub async fn send_message(
             id: message_id,
             channel_id,
             sender_user_id: user_id,
+            title: payload.title,
             body: payload.body,
+            message_type: Some(message_type),
             created_at: now,
         },
     }))
@@ -121,19 +186,6 @@ pub async fn list_messages(
 
     if direction != "backward" && direction != "forward" {
         return Err((StatusCode::BAD_REQUEST, "Unsupported direction".to_string()));
-    }
-
-    // Check membership
-    let is_member = state.db
-        .query("group_members")
-        .filter(|f| f.eq("group_id", group_id.clone()) & f.eq("user_id", signed.user_id.clone()))
-        .collect()
-        .await
-        .map(|docs| !docs.is_empty())
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {e}")))?;
-
-    if !is_member {
-        return Err((StatusCode::FORBIDDEN, "Not a member of that group".to_string()));
     }
 
     // Verify channel belongs to group
@@ -154,6 +206,21 @@ pub async fn list_messages(
 
     if channel_group_id != group_id {
         return Err((StatusCode::NOT_FOUND, "Channel not found in group".to_string()));
+    }
+
+    // Check view permission
+    let channel_settings = get_settings_from_doc(&channel_match);
+    let can_view = check_channel_permission(
+        &state,
+        &signed.user_id,
+        &group_id,
+        &channel_settings,
+        ChannelPermission::View,
+    )
+    .await?;
+
+    if !can_view {
+        return Err((StatusCode::FORBIDDEN, "You don't have permission to view this channel".to_string()));
     }
 
     // Cursor helpers
@@ -221,11 +288,22 @@ pub async fn list_messages(
     let mut items: Vec<ChannelMessage> = page_items
         .into_iter()
         .map(|m| {
+            // Parse message_type from string
+            let message_type = m.data.get("message_type")
+                .and_then(|v| v.as_str())
+                .map(|s| match s {
+                    "memo" => MessageType::Memo,
+                    "article" => MessageType::Article,
+                    _ => MessageType::Message,
+                });
+
             ChannelMessage {
                 id: m.data.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
                 channel_id: m.data.get("channel_id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
                 sender_user_id: m.data.get("sender_user_id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                title: m.data.get("title").and_then(|v| v.as_str()).map(|s| s.to_string()),
                 body: m.data.get("body").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                message_type,
                 created_at: m.data.get("created_at").and_then(|v| v.as_str()).unwrap_or("").to_string(),
             }
         })

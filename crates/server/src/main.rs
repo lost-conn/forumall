@@ -65,6 +65,10 @@ async fn main() {
         // Channels
         .route("/api/groups/{group_id}/channels", get(routes::channels::list_channels))
         .route("/api/groups/{group_id}/channels", post(routes::channels::create_channel))
+        .route("/api/groups/{group_id}/channels/{channel_id}", get(routes::channels::get_channel))
+        .route("/api/groups/{group_id}/channels/{channel_id}", put(routes::channels::update_channel))
+        .route("/api/groups/{group_id}/channels/{channel_id}/settings", get(routes::channels::get_channel_settings))
+        .route("/api/groups/{group_id}/channels/{channel_id}/settings", put(routes::channels::update_channel_settings))
         // Messages
         .route("/api/groups/{group_id}/channels/{channel_id}/messages", get(routes::messages::list_messages))
         .route("/api/groups/{group_id}/channels/{channel_id}/messages", post(routes::messages::send_message))

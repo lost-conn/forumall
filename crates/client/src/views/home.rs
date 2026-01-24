@@ -7,8 +7,9 @@ use crate::Route;
 use dioxus::prelude::*;
 use forumall_shared::{
     try_problem_detail, validate_resource_name, AddJoinedGroupRequest, ApiError,
-    Channel, CreateChannelRequest, CreateGroupRequest, Group, UpdateGroupRequest,
-    UserJoinedGroup, AddMemberRequest,
+    Channel, ChannelPermissions, ChannelSettings, ChannelType, CreateChannelRequest,
+    CreateGroupRequest, Group, MessageType, MessageTypeSettings, UpdateChannelRequest,
+    UpdateGroupRequest, UserJoinedGroup, AddMemberRequest,
 };
 
 /// Home component that redirects to /home
@@ -82,6 +83,85 @@ pub fn NoChannel(group_host: String, group: String) -> Element {
     }
 }
 
+/// Individual channel list item with hover-based settings button
+#[component]
+fn ChannelListItem(
+    channel: Channel,
+    group_name: String,
+    group_host: String,
+    is_selected: bool,
+    on_select: EventHandler<Channel>,
+    on_settings: EventHandler<Channel>,
+) -> Element {
+    let mut is_hovered = use_signal(|| false);
+
+    rsx! {
+        div {
+            class: format!(
+                "flex items-center justify-between px-2 py-1.5 mx-2 rounded transition-colors {}",
+                if is_selected {
+                    "bg-[#404249] text-white"
+                } else {
+                    "text-[#949ba4] hover:bg-[#35373c] hover:text-[#dbdee1]"
+                },
+            ),
+            onmouseenter: move |_| is_hovered.set(true),
+            onmouseleave: move |_| is_hovered.set(false),
+            // Channel name link
+            div {
+                class: "flex items-center flex-1 min-w-0 cursor-pointer",
+                onclick: {
+                    let channel = channel.clone();
+                    let group_name = group_name.clone();
+                    let group_host = group_host.clone();
+                    move |_| {
+                        let nav = use_navigator();
+                        nav.push(Route::ChannelView {
+                            group_host: group_host.clone(),
+                            group: group_name.clone(),
+                            channel: channel.name.clone(),
+                        });
+                        on_select.call(channel.clone());
+                    }
+                },
+                span { class: "text-lg mr-1.5 opacity-60", "#" }
+                span { class: "text-sm font-medium truncate", "{channel.name}" }
+            }
+            // Settings gear (visible on hover)
+            if *is_hovered.read() {
+                button {
+                    class: "p-1 rounded hover:bg-[#4e5058] transition-colors",
+                    onclick: {
+                        let channel = channel.clone();
+                        move |e: MouseEvent| {
+                            e.stop_propagation();
+                            on_settings.call(channel.clone());
+                        }
+                    },
+                    svg {
+                        class: "w-4 h-4",
+                        fill: "none",
+                        stroke: "currentColor",
+                        view_box: "0 0 24 24",
+                        path {
+                            stroke_linecap: "round",
+                            stroke_linejoin: "round",
+                            stroke_width: "2",
+                            d: "M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z",
+                        }
+                        path {
+                            stroke_linecap: "round",
+                            stroke_linejoin: "round",
+                            stroke_width: "2",
+                            d: "M15 12a3 3 0 11-6 0 3 3 0 016 0z",
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Channel list component for displaying channels in a group
 #[component]
 pub fn ChannelList(
@@ -93,6 +173,7 @@ pub fn ChannelList(
     on_add_channel: EventHandler<()>,
 ) -> Element {
     let auth = use_context::<AuthContext>();
+    let mut show_channel_settings = use_signal(|| None::<Channel>);
 
     // Create signals to track props, ensuring the resource re-runs when they change
     let mut track_group_id = use_signal(|| group_id.clone());
@@ -104,7 +185,7 @@ pub fn ChannelList(
         track_group_host.set(group_host.clone());
     }
 
-    let channels = use_resource(move || {
+    let mut channels = use_resource(move || {
         let gid = track_group_id();
         let host = track_group_host();
         let auth = auth.clone();
@@ -130,34 +211,16 @@ pub fn ChannelList(
                         div { class: "px-4 py-2 text-gray-500 text-xs italic", "No channels yet" }
                     } else {
                         for channel in channels.iter() {
-                            div {
+                            ChannelListItem {
                                 key: "{channel.id}",
-                                class: format!(
-                                    "group flex items-center px-2 py-1.5 mx-2 rounded cursor-pointer transition-colors {}",
-                                    if selected_channel_name.as_ref() == Some(&channel.name) {
-                                        "bg-[#404249] text-white"
-                                    } else {
-                                        "text-[#949ba4] hover:bg-[#35373c] hover:text-[#dbdee1]"
-                                    },
-                                ),
-                                onclick: {
-                                    let channel = channel.clone();
-                                    let group_name = group_name.clone();
-                                    let group_host = group_host.clone();
-                                    move |_| {
-                                        // Navigate to the channel route
-                                        let nav = use_navigator();
-                                        nav.push(Route::ChannelView {
-                                            group_host: group_host.clone(),
-                                            group: group_name.clone(),
-                                            channel: channel.name.clone(),
-                                        });
-                                        // Also call the on_select handler
-                                        on_select.call(channel.clone());
-                                    }
+                                channel: channel.clone(),
+                                group_name: group_name.clone(),
+                                group_host: group_host.clone(),
+                                is_selected: selected_channel_name.as_ref() == Some(&channel.name),
+                                on_select: on_select.clone(),
+                                on_settings: move |ch: Channel| {
+                                    show_channel_settings.set(Some(ch));
                                 },
-                                span { class: "text-lg mr-1.5 opacity-60", "#" }
-                                span { class: "text-sm font-medium truncate", "{channel.name}" }
                             }
                         }
                     }
@@ -186,6 +249,19 @@ pub fn ChannelList(
                     }
                 }
                 span { class: "text-sm", "Add Channel" }
+            }
+        }
+        // Channel Settings Modal
+        if let Some(channel) = show_channel_settings.read().clone() {
+            ChannelSettingsModal {
+                channel: channel.clone(),
+                group_id: group_id.clone(),
+                host: Some(group_host.clone()),
+                on_close: move |_| show_channel_settings.set(None),
+                on_updated: move |_updated_channel| {
+                    show_channel_settings.set(None);
+                    channels.restart();
+                },
             }
         }
     }
@@ -352,6 +428,10 @@ pub fn CreateChannelModal(
                         } else {
                             Some(topic_value)
                         },
+                        channel_type: None,
+                        discoverability: None,
+                        settings: None,
+                        tags: None,
                     },
                 )
                 .await
@@ -897,6 +977,482 @@ pub fn GroupSettingsModal(
                             class: "px-4 py-2 bg-[#404249] hover:bg-[#4e5058] text-white rounded font-medium",
                             onclick: move |_| on_close.call(()),
                             "Done"
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Modal for Channel Settings
+#[component]
+pub fn ChannelSettingsModal(
+    channel: Channel,
+    group_id: String,
+    host: Option<String>,
+    on_close: EventHandler<()>,
+    on_updated: EventHandler<Channel>,
+) -> Element {
+    let auth = use_context::<AuthContext>();
+    let mut current_tab = use_signal(|| "overview"); // "overview" or "permissions"
+
+    // Overview tab state
+    let mut name = use_signal(|| channel.name.clone());
+    let mut topic = use_signal(|| channel.topic.clone().unwrap_or_default());
+    let mut channel_type = use_signal(|| channel.channel_type.clone());
+
+    // Permissions tab state
+    let mut view_permissions = use_signal(|| channel.settings.permissions.view.clone());
+    let mut send_permissions = use_signal(|| channel.settings.permissions.send.clone());
+    let mut root_types = use_signal(|| channel.settings.message_types.root_types.clone());
+    let mut reply_types = use_signal(|| channel.settings.message_types.reply_types.clone());
+
+    // UI state
+    let mut is_saving = use_signal(|| false);
+    let mut error = use_signal(|| None::<String>);
+
+    let channel_id = channel.id.clone();
+    let group_id_for_save = group_id.clone();
+    let host_for_save = host.clone();
+
+    let handle_save = move |e: FormEvent| {
+        e.prevent_default();
+        is_saving.set(true);
+        error.set(None);
+
+        let channel_id = channel_id.clone();
+        let gid = group_id_for_save.clone();
+        let host = host_for_save.clone();
+        let new_name = name.read().trim().to_string();
+        let new_topic = topic.read().trim().to_string();
+        let _new_channel_type = channel_type.read().clone();
+        let new_view = view_permissions.read().clone();
+        let new_send = send_permissions.read().clone();
+        let new_root_types = root_types.read().clone();
+        let new_reply_types = reply_types.read().clone();
+
+        if !validate_resource_name(&new_name) {
+            error.set(Some("Invalid channel name. Must be lowercase alphanumeric, periods, underscores, or dashes.".to_string()));
+            is_saving.set(false);
+            return;
+        }
+
+        let auth = auth.clone();
+        let on_updated = on_updated.clone();
+
+        spawn(async move {
+            let client = auth.client();
+            let url = auth.api_url_for_host(host.as_deref(), &format!("/api/groups/{gid}/channels/{channel_id}"));
+
+            let request = UpdateChannelRequest {
+                name: Some(new_name.clone()),
+                topic: if new_topic.is_empty() { None } else { Some(new_topic.clone()) },
+                discoverability: None,
+                settings: Some(ChannelSettings {
+                    permissions: ChannelPermissions {
+                        view: new_view,
+                        send: new_send,
+                    },
+                    message_types: MessageTypeSettings {
+                        root_types: new_root_types,
+                        reply_types: new_reply_types,
+                    },
+                }),
+                tags: None,
+            };
+
+            match client.put_json::<_, Channel>(&url, &request).await {
+                Ok(updated_channel) => {
+                    on_updated.call(updated_channel);
+                }
+                Err(err) => {
+                    let msg = if let ApiError::Http { body, .. } = &err {
+                        try_problem_detail(body).unwrap_or_else(|| format!("{}", err))
+                    } else {
+                        format!("{}", err)
+                    };
+                    error.set(Some(msg));
+                    is_saving.set(false);
+                }
+            }
+        });
+    };
+
+    // Available permission targets
+    let permission_targets = ["@everyone", "@admin", "@owner"];
+
+    rsx! {
+        div { class: "fixed inset-0 bg-black/70 flex items-center justify-center z-50",
+            onclick: move |_| on_close.call(()),
+            div {
+                class: "bg-[#313338] rounded-lg shadow-2xl w-full max-w-2xl h-[600px] flex overflow-hidden",
+                onclick: move |e: MouseEvent| e.stop_propagation(),
+                // Sidebar
+                div { class: "w-[140px] bg-[#2b2d31] p-3 flex flex-col gap-1",
+                    div {
+                        class: format!(
+                            "px-3 py-2 rounded cursor-pointer text-sm font-medium {}",
+                            if *current_tab.read() == "overview" {
+                                "bg-[#404249] text-white"
+                            } else {
+                                "text-[#b5bac1] hover:bg-[#35373c] hover:text-[#dbdee1]"
+                            },
+                        ),
+                        onclick: move |_| current_tab.set("overview"),
+                        "Overview"
+                    }
+                    div {
+                        class: format!(
+                            "px-3 py-2 rounded cursor-pointer text-sm font-medium {}",
+                            if *current_tab.read() == "permissions" {
+                                "bg-[#404249] text-white"
+                            } else {
+                                "text-[#b5bac1] hover:bg-[#35373c] hover:text-[#dbdee1]"
+                            },
+                        ),
+                        onclick: move |_| current_tab.set("permissions"),
+                        "Permissions"
+                    }
+                    div { class: "flex-1" }
+                    div { class: "px-3 py-2 rounded cursor-pointer text-sm font-medium text-red-400 hover:bg-[#35373c]",
+                        "Delete Channel"
+                    }
+                }
+                // Content
+                div { class: "flex-1 flex flex-col bg-[#313338]",
+                    // Header
+                    div { class: "px-6 py-4 border-b border-[#3f4147]",
+                        div { class: "flex items-center gap-2",
+                            span { class: "text-xl text-gray-500", "#" }
+                            h2 { class: "text-xl font-bold text-white", "{channel.name}" }
+                        }
+                        p { class: "text-sm text-gray-400 mt-1",
+                            if *current_tab.read() == "overview" {
+                                "Edit channel details"
+                            } else {
+                                "Configure channel permissions"
+                            }
+                        }
+                    }
+                    // Body
+                    form { onsubmit: handle_save, class: "flex-1 flex flex-col overflow-hidden",
+                        div { class: "flex-1 px-6 py-4 overflow-y-auto",
+                            if *current_tab.read() == "overview" {
+                                // Overview Tab
+                                div { class: "space-y-6",
+                                    // Channel Name
+                                    div {
+                                        label { class: "block text-xs font-bold text-[#b5bac1] uppercase mb-2",
+                                            "Channel Name"
+                                        }
+                                        div { class: "relative",
+                                            span { class: "absolute left-3 top-1/2 -translate-y-1/2 text-gray-500",
+                                                "#"
+                                            }
+                                            input {
+                                                class: "w-full bg-[#1e1f22] border-none rounded p-2.5 pl-7 text-white focus:ring-0",
+                                                value: "{name}",
+                                                oninput: move |e: FormEvent| {
+                                                    name.set(e.value());
+                                                    error.set(None);
+                                                },
+                                            }
+                                        }
+                                    }
+                                    // Topic
+                                    div {
+                                        label { class: "block text-xs font-bold text-[#b5bac1] uppercase mb-2",
+                                            "Topic"
+                                        }
+                                        input {
+                                            class: "w-full bg-[#1e1f22] border-none rounded p-2.5 text-white placeholder-[#949ba4] focus:ring-0",
+                                            placeholder: "What's this channel about?",
+                                            value: "{topic}",
+                                            oninput: move |e: FormEvent| topic.set(e.value()),
+                                        }
+                                    }
+                                    // Channel Type
+                                    div {
+                                        label { class: "block text-xs font-bold text-[#b5bac1] uppercase mb-2",
+                                            "Channel Type"
+                                        }
+                                        div { class: "flex flex-col gap-2",
+                                            label { class: "flex items-center gap-3 p-3 rounded bg-[#2b2d31] cursor-pointer hover:bg-[#404249]",
+                                                input {
+                                                    r#type: "radio",
+                                                    name: "channel_type",
+                                                    checked: matches!(*channel_type.read(), ChannelType::Text),
+                                                    onchange: move |_| channel_type.set(ChannelType::Text),
+                                                    class: "text-indigo-500 focus:ring-indigo-500 bg-[#1e1f22] border-none",
+                                                }
+                                                div {
+                                                    div { class: "text-white font-medium", "Text Channel" }
+                                                    div { class: "text-xs text-[#b5bac1]",
+                                                        "Send messages, share files, and have conversations."
+                                                    }
+                                                }
+                                            }
+                                            label { class: "flex items-center gap-3 p-3 rounded bg-[#2b2d31] cursor-pointer hover:bg-[#404249]",
+                                                input {
+                                                    r#type: "radio",
+                                                    name: "channel_type",
+                                                    checked: matches!(*channel_type.read(), ChannelType::Call),
+                                                    onchange: move |_| channel_type.set(ChannelType::Call),
+                                                    class: "text-indigo-500 focus:ring-indigo-500 bg-[#1e1f22] border-none",
+                                                }
+                                                div {
+                                                    div { class: "text-white font-medium", "Voice Channel" }
+                                                    div { class: "text-xs text-[#b5bac1]",
+                                                        "Hang out with voice and video."
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            } else {
+                                // Permissions Tab
+                                div { class: "space-y-6",
+                                    // View Permissions
+                                    div {
+                                        label { class: "block text-xs font-bold text-[#b5bac1] uppercase mb-2",
+                                            "Who Can View This Channel"
+                                        }
+                                        div { class: "space-y-2",
+                                            for target in permission_targets.iter() {
+                                                {
+                                                    let target_str = target.to_string();
+                                                    let is_checked = view_permissions.read().contains(&target_str);
+                                                    let description = match *target {
+                                                        "@everyone" => "All group members",
+                                                        "@admin" => "Group administrators",
+                                                        "@owner" => "Group owner only",
+                                                        _ => "",
+                                                    };
+                                                    rsx! {
+                                                        label {
+                                                            key: "view-{target}",
+                                                            class: "flex items-center gap-3 p-3 rounded bg-[#2b2d31] cursor-pointer hover:bg-[#404249] transition-colors",
+                                                            input {
+                                                                r#type: "checkbox",
+                                                                checked: is_checked,
+                                                                onchange: {
+                                                                    let target_str = target_str.clone();
+                                                                    move |e: Event<FormData>| {
+                                                                        let mut perms = view_permissions.read().clone();
+                                                                        if e.checked() {
+                                                                            if !perms.contains(&target_str) {
+                                                                                perms.push(target_str.clone());
+                                                                            }
+                                                                        } else {
+                                                                            perms.retain(|p| p != &target_str);
+                                                                        }
+                                                                        view_permissions.set(perms);
+                                                                    }
+                                                                },
+                                                                class: "w-5 h-5 rounded border-none bg-[#1e1f22] text-indigo-500 focus:ring-0 focus:ring-offset-0 cursor-pointer",
+                                                            }
+                                                            div { class: "flex-1",
+                                                                div { class: "text-white font-medium text-sm", "{target}" }
+                                                                div { class: "text-xs text-[#b5bac1] mt-0.5", "{description}" }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    // Send Permissions
+                                    div {
+                                        label { class: "block text-xs font-bold text-[#b5bac1] uppercase mb-2",
+                                            "Who Can Send Messages"
+                                        }
+                                        div { class: "space-y-2",
+                                            for target in permission_targets.iter() {
+                                                {
+                                                    let target_str = target.to_string();
+                                                    let is_checked = send_permissions.read().contains(&target_str);
+                                                    let description = match *target {
+                                                        "@everyone" => "All group members",
+                                                        "@admin" => "Group administrators",
+                                                        "@owner" => "Group owner only",
+                                                        _ => "",
+                                                    };
+                                                    rsx! {
+                                                        label {
+                                                            key: "send-{target}",
+                                                            class: "flex items-center gap-3 p-3 rounded bg-[#2b2d31] cursor-pointer hover:bg-[#404249] transition-colors",
+                                                            input {
+                                                                r#type: "checkbox",
+                                                                checked: is_checked,
+                                                                onchange: {
+                                                                    let target_str = target_str.clone();
+                                                                    move |e: Event<FormData>| {
+                                                                        let mut perms = send_permissions.read().clone();
+                                                                        if e.checked() {
+                                                                            if !perms.contains(&target_str) {
+                                                                                perms.push(target_str.clone());
+                                                                            }
+                                                                        } else {
+                                                                            perms.retain(|p| p != &target_str);
+                                                                        }
+                                                                        send_permissions.set(perms);
+                                                                    }
+                                                                },
+                                                                class: "w-5 h-5 rounded border-none bg-[#1e1f22] text-indigo-500 focus:ring-0 focus:ring-offset-0 cursor-pointer",
+                                                            }
+                                                            div { class: "flex-1",
+                                                                div { class: "text-white font-medium text-sm", "{target}" }
+                                                                div { class: "text-xs text-[#b5bac1] mt-0.5", "{description}" }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    // Message Types
+                                    div {
+                                        label { class: "block text-xs font-bold text-[#b5bac1] uppercase mb-4",
+                                            "Allowed Message Types"
+                                        }
+                                        div { class: "space-y-4",
+                                            // Root types
+                                            div {
+                                                div { class: "text-sm text-white mb-2", "Root Messages (new posts):" }
+                                                div { class: "flex flex-wrap gap-2",
+                                                    {
+                                                        let all_types = [MessageType::Message, MessageType::Memo, MessageType::Article];
+                                                        rsx! {
+                                                            for msg_type in all_types.iter() {
+                                                                {
+                                                                    let msg_type_clone = msg_type.clone();
+                                                                    let is_checked = root_types.read().contains(msg_type);
+                                                                    let type_name = match msg_type {
+                                                                        MessageType::Message => "Message",
+                                                                        MessageType::Memo => "Memo",
+                                                                        MessageType::Article => "Article",
+                                                                    };
+                                                                    rsx! {
+                                                                        label {
+                                                                            key: "root-{type_name}",
+                                                                            class: format!(
+                                                                                "flex items-center gap-2 px-3 py-2 rounded cursor-pointer transition-colors {}",
+                                                                                if is_checked {
+                                                                                    "bg-indigo-500/20 border border-indigo-500"
+                                                                                } else {
+                                                                                    "bg-[#2b2d31] border border-transparent hover:bg-[#404249]"
+                                                                                }
+                                                                            ),
+                                                                            input {
+                                                                                r#type: "checkbox",
+                                                                                checked: is_checked,
+                                                                                onchange: {
+                                                                                    let msg_type_clone = msg_type_clone.clone();
+                                                                                    move |_| {
+                                                                                        let mut types = root_types.read().clone();
+                                                                                        if types.contains(&msg_type_clone) {
+                                                                                            types.retain(|t| t != &msg_type_clone);
+                                                                                        } else {
+                                                                                            types.push(msg_type_clone.clone());
+                                                                                        }
+                                                                                        root_types.set(types);
+                                                                                    }
+                                                                                },
+                                                                                class: "w-4 h-4 rounded border-none bg-[#1e1f22] text-indigo-500 focus:ring-0 focus:ring-offset-0 cursor-pointer",
+                                                                            }
+                                                                            span { class: "text-sm text-white", "{type_name}" }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            // Reply types
+                                            div {
+                                                div { class: "text-sm text-white mb-2", "Replies:" }
+                                                div { class: "flex flex-wrap gap-2",
+                                                    {
+                                                        let all_types = [MessageType::Message, MessageType::Memo, MessageType::Article];
+                                                        rsx! {
+                                                            for msg_type in all_types.iter() {
+                                                                {
+                                                                    let msg_type_clone = msg_type.clone();
+                                                                    let is_checked = reply_types.read().contains(msg_type);
+                                                                    let type_name = match msg_type {
+                                                                        MessageType::Message => "Message",
+                                                                        MessageType::Memo => "Memo",
+                                                                        MessageType::Article => "Article",
+                                                                    };
+                                                                    rsx! {
+                                                                        label {
+                                                                            key: "reply-{type_name}",
+                                                                            class: format!(
+                                                                                "flex items-center gap-2 px-3 py-2 rounded cursor-pointer transition-colors {}",
+                                                                                if is_checked {
+                                                                                    "bg-indigo-500/20 border border-indigo-500"
+                                                                                } else {
+                                                                                    "bg-[#2b2d31] border border-transparent hover:bg-[#404249]"
+                                                                                }
+                                                                            ),
+                                                                            input {
+                                                                                r#type: "checkbox",
+                                                                                checked: is_checked,
+                                                                                onchange: {
+                                                                                    let msg_type_clone = msg_type_clone.clone();
+                                                                                    move |_| {
+                                                                                        let mut types = reply_types.read().clone();
+                                                                                        if types.contains(&msg_type_clone) {
+                                                                                            types.retain(|t| t != &msg_type_clone);
+                                                                                        } else {
+                                                                                            types.push(msg_type_clone.clone());
+                                                                                        }
+                                                                                        reply_types.set(types);
+                                                                                    }
+                                                                                },
+                                                                                class: "w-4 h-4 rounded border-none bg-[#1e1f22] text-indigo-500 focus:ring-0 focus:ring-offset-0 cursor-pointer",
+                                                                            }
+                                                                            span { class: "text-sm text-white", "{type_name}" }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            // Error display
+                            if let Some(err) = error.read().as_ref() {
+                                div { class: "mt-4 p-3 bg-red-500/10 border border-red-500/30 rounded text-red-400 text-sm",
+                                    "{err}"
+                                }
+                            }
+                        }
+                        // Footer
+                        div { class: "px-6 py-4 border-t border-[#3f4147] flex justify-end gap-3",
+                            button {
+                                r#type: "button",
+                                class: "px-4 py-2 text-gray-300 hover:text-white transition-colors",
+                                onclick: move |_| on_close.call(()),
+                                "Cancel"
+                            }
+                            button {
+                                r#type: "submit",
+                                class: "px-4 py-2 bg-indigo-500 hover:bg-indigo-600 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed",
+                                disabled: *is_saving.read(),
+                                if *is_saving.read() {
+                                    "Saving..."
+                                } else {
+                                    "Save Changes"
+                                }
+                            }
                         }
                     }
                 }

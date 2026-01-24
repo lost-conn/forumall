@@ -21,6 +21,7 @@ pub mod ws;
 pub mod components;
 pub mod hooks;
 pub mod routes;
+pub mod stores;
 pub mod views;
 
 pub use api_client::ApiClient;

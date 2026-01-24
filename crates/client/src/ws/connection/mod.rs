@@ -5,7 +5,7 @@
 
 use chrono::Utc;
 use dioxus::prelude::*;
-use forumall_shared::{ClientCommand, WsEnvelope};
+use forumall_shared::{ClientCommand, MessageType, WsEnvelope};
 use futures_channel::mpsc::UnboundedSender;
 
 /// Connection state for a WebSocket
@@ -126,6 +126,26 @@ impl WsHandle {
             channel_id: channel_id.to_string(),
             body: body.to_string(),
             nonce: nonce.to_string(),
+            title: None,
+            message_type: None,
+        })
+    }
+
+    /// Send a message with optional title and message type (for Article messages)
+    pub fn send_message_with_options(
+        &self,
+        channel_id: &str,
+        body: &str,
+        nonce: &str,
+        title: Option<String>,
+        message_type: Option<MessageType>,
+    ) -> Result<(), String> {
+        self.send(ClientCommand::MessageCreate {
+            channel_id: channel_id.to_string(),
+            body: body.to_string(),
+            nonce: nonce.to_string(),
+            title,
+            message_type,
         })
     }
 }

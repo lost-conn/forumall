@@ -93,6 +93,41 @@ cargo test -p forumall-shared -p forumall-server
 - **ApiClient** for HTTP requests with OFSCP signing
 - **Provider URL** configurable to connect to any OFSCP server
 - **WsManager** for WebSocket connections
+- **Global Stores** for shared state (`crates/client/src/stores/`)
+
+#### Important Client Patterns
+
+**1. Never use `use_effect` for data flow**
+
+Avoid `use_effect` in components. It creates complex, hard-to-debug data flows. Instead:
+- Use `use_resource` for async data fetching that writes to stores
+- Use reactive reads from `GlobalStore` for UI updates
+- The only acceptable use of `use_effect` is for side effects like WebSocket subscription management
+
+**2. WebSocket → Store → Component pattern**
+
+Components should NEVER read from WebSocket events directly. Instead:
+
+```
+WebSocket Event
+      ↓
+ws/manager.rs processes event
+      ↓
+Writes to GlobalStore (e.g., MESSAGES)
+      ↓
+Components read from store reactively
+```
+
+This ensures:
+- Single source of truth (the store)
+- Clean separation between network and UI layers
+- No event re-processing or deduplication bugs
+- Predictable, reactive data flow
+
+**3. Store structure**
+
+Use `GlobalStore<HashMap<K, T>>` for collections keyed by ID (e.g., messages by channel_id).
+Use `#[derive(Store)]` on inner types for fine-grained reactivity.
 
 ### OFSCP Protocol
 

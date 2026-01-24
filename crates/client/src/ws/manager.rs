@@ -4,11 +4,12 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use dioxus::prelude::*;
-use forumall_shared::{BaseMessage, ServerEvent, WsEnvelope};
+use forumall_shared::{BaseMessage, ServerEvent, UserRef, WsEnvelope};
 
 use super::connection::{ConnectionState, WsConnection, WsHandle};
 use crate::auth_session::AuthContext;
 use crate::client_keys::sign_ws_request;
+use crate::stores::{ChannelMessages, StoredMessage, MESSAGES};
 
 /// Normalize a host string for use as a key (strips protocol prefix)
 pub fn normalize_host(host: &str) -> String {
@@ -18,12 +19,21 @@ pub fn normalize_host(host: &str) -> String {
         .to_string()
 }
 
+/// Extract user ID from UserRef
+fn extract_user_id(user_ref: &UserRef) -> String {
+    match user_ref {
+        UserRef::Handle(h) => h.split('/').last().unwrap_or("Unknown").to_string(),
+        UserRef::Uri(u) => u.split('/').last().unwrap_or("Unknown").to_string(),
+    }
+}
+
 /// Event types that can be dispatched to listeners
 #[derive(Debug, Clone)]
 pub enum WsEvent {
     /// A new message was received
     NewMessage {
         host: String,
+        channel_id: String,
         message: BaseMessage,
     },
     /// Message send acknowledged
@@ -166,10 +176,31 @@ pub fn WsManager(children: Element) -> Element {
             // Event handler closure
             let on_event = move |envelope: WsEnvelope<ServerEvent>| {
                 let event = match envelope.payload {
-                    ServerEvent::MessageNew { message } => WsEvent::NewMessage {
-                        host: host_for_event.clone(),
-                        message,
-                    },
+                    ServerEvent::MessageNew { channel_id, message } => {
+                        // Convert BaseMessage to StoredMessage and add directly to store
+                        let stored = StoredMessage {
+                            id: message.id.clone(),
+                            user_id: extract_user_id(&message.author),
+                            title: message.title.clone(),
+                            content: message.content.text.clone(),
+                            message_type: message.r#type.clone(),
+                            created_at: message.created_at,
+                        };
+
+                        // Add to message store
+                        let mut store = MESSAGES.resolve();
+                        store
+                            .write()
+                            .entry(channel_id.clone())
+                            .or_insert_with(ChannelMessages::default)
+                            .add_message(stored);
+
+                        WsEvent::NewMessage {
+                            host: host_for_event.clone(),
+                            channel_id,
+                            message,
+                        }
+                    }
                     ServerEvent::Ack { nonce, message_id } => WsEvent::Ack {
                         host: host_for_event.clone(),
                         nonce,

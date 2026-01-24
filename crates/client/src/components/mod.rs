@@ -2,4 +2,5 @@
 //!
 //! TODO: Copy from src/components/
 
+pub mod messages;
 pub mod ui;

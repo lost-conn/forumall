@@ -48,7 +48,12 @@ pub fn init_database() -> Aurora {
             ("id", FieldType::String, true),
             ("group_id", FieldType::String, false),
             ("name", FieldType::String, false),
+            ("channel_type", FieldType::String, false),
             ("topic", FieldType::String, false),
+            ("discoverability", FieldType::String, false),
+            ("settings", FieldType::String, false), // JSON serialized
+            ("tags", FieldType::String, false),     // JSON serialized
+            ("metadata", FieldType::String, false), // JSON serialized
             ("created_at", FieldType::String, false),
             ("updated_at", FieldType::String, false),
         ],
