@@ -2,7 +2,7 @@
 # Run development environment with backend and frontend
 
 npx concurrently \
-  --names "server,client" \
+  --names "srv,cli" \
   --prefix-colors "blue,green" \
-  "PORT=8080 FORUMALL_DB_PATH=db0 FORUMALL_FRONTEND_MODE=proxy FORUMALL_PROXY_TARGET=http://localhost:5173 cargo run -p forumall-server" \
-  "cd crates/client && dx serve --port 5173 --platform ${PLATFORM:-'web'}"
+  "./scripts/run-dev-server" \
+  "./scripts/run-dev-client"
