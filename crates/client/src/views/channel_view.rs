@@ -559,7 +559,7 @@ fn ChatBubble(
                     "{initial}"
                 }
                 // Message bubble container - using inline-block for variable width
-                div { class: "flex flex-col max-w-[85%]",
+                div { class: "flex flex-col items-start max-w-[85%]",
                     div { class: "flex items-baseline gap-2 mb-1",
                         span { class: "font-semibold text-white hover:underline cursor-pointer text-sm",
                             "{handle}"
