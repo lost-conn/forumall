@@ -3,6 +3,6 @@
 
 npx concurrently \
   --names "srv,cli" \
-  --prefix-colors "blue,green" \
+  --prefix-colors "green,magenta" \
   "./scripts/run-dev-server" \
   "./scripts/run-dev-client"

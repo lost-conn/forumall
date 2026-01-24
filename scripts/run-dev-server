@@ -2,4 +2,8 @@
 
 export SRV_ID=${SRV_ID:-0}
 
-PORT=$((8080 + SRV_ID)) FORUMALL_DB_PATH="db${SRV_ID}" FORUMALL_FRONTEND_MODE=proxy FORUMALL_PROXY_TARGET=http://localhost:5173 cargo run -p forumall-server
+PORT=$((${SRV_PORT:-8080} + SRV_ID)) \
+    FORUMALL_DB_PATH="db${SRV_ID}" \
+    FORUMALL_FRONTEND_MODE=proxy \
+    FORUMALL_PROXY_TARGET=http://localhost:${CLI_PORT:-5173} \
+    cargo run -p forumall-server

@@ -2,8 +2,8 @@
 # Run development environment with two backends and frontend
 
 npx concurrently \
-  --names "srv,cl0,cl1" \
-  --prefix-colors "blue,green,magenta" \
-  "./scripts/run-dev-server" \
+  --names "clnt,srv0,srv1" \
+  --prefix-colors "magenta,green,blue" \
   "./scripts/run-dev-client" \
-  "SRV_ID=1 ./scripts/run-dev-client"
+  "./scripts/run-dev-server" \
+  "SRV_ID=1 ./scripts/run-dev-server"

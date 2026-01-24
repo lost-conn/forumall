@@ -1,3 +1,3 @@
 #!/bin/bash
 
-cd crates/client && dx serve --port 5173 --platform ${PLATFORM:-'web'}
+cd crates/client && dx serve --port ${CLI_PORT:-5173} --platform ${PLATFORM:-'web'}
