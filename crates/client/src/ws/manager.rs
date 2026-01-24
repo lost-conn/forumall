@@ -145,6 +145,7 @@ pub fn WsManager(children: Element) -> Element {
             let host_for_event = host.clone();
             let domain = auth.provider_domain.read().clone();
             let user_id = sess.user_id.clone();
+            let user_id_for_event = user_id.clone();
             let keys_clone = keys.clone();
             let auth_clone = auth.clone();
 
@@ -187,6 +188,9 @@ pub fn WsManager(children: Element) -> Element {
                             created_at: message.created_at,
                         };
 
+                        // Play notification sound for new messages from other users
+                        let is_own_message = stored.user_id == user_id_for_event;
+
                         // Add to message store
                         let mut store = MESSAGES.resolve();
                         store
@@ -194,6 +198,10 @@ pub fn WsManager(children: Element) -> Element {
                             .entry(channel_id.clone())
                             .or_insert_with(ChannelMessages::default)
                             .add_message(stored);
+
+                        if !is_own_message {
+                            crate::audio::play_notification();
+                        }
 
                         WsEvent::NewMessage {
                             host: host_for_event.clone(),

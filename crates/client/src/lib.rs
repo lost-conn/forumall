@@ -11,6 +11,7 @@
 // Cross-platform modules (must be declared first for macro availability)
 #[macro_use]
 pub mod logging;
+pub mod audio;
 pub mod storage;
 
 pub mod api_client;
