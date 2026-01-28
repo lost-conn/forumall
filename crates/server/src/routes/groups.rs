@@ -80,12 +80,14 @@ pub async fn create_group(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)))?;
 
     // Add to user_joined_groups
+    let host = state.domain();
     state.db
         .insert_into(
             "user_joined_groups",
             vec![
                 ("user_id", user_id.into()),
                 ("group_id", id.into()),
+                ("host", host.into()),
                 ("name", group.name.clone().into()),
                 ("joined_at", now.into()),
             ],
@@ -281,12 +283,14 @@ pub async fn join_group(
             .unwrap_or("Unknown")
             .to_string();
 
+        let host = state.domain();
         state.db
             .insert_into(
                 "user_joined_groups",
                 vec![
                     ("user_id", user_id.into()),
                     ("group_id", group_id.into()),
+                    ("host", host.into()),
                     ("name", group_name.into()),
                     ("joined_at", now.into()),
                 ],
@@ -514,12 +518,14 @@ pub async fn add_member(
         .unwrap_or("Unknown Group")
         .to_string();
 
+    let host = state.domain();
     state.db
         .insert_into(
             "user_joined_groups",
             vec![
                 ("user_id", target_user_id.into()),
                 ("group_id", group_id.into()),
+                ("host", host.into()),
                 ("name", group_name.into()),
                 ("joined_at", now.into()),
             ],

@@ -20,6 +20,7 @@ pub async fn get_user_groups(
         return Err((StatusCode::FORBIDDEN, "You can only view your own joined groups".to_string()));
     }
 
+    let default_host = state.domain();
     let groups = state.db
         .query("user_joined_groups")
         .filter(|f| f.eq("user_id", user_id.clone()))
@@ -28,9 +29,14 @@ pub async fn get_user_groups(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)))?
         .into_iter()
         .map(|doc| {
+            let host = doc.data.get("host")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .or_else(|| Some(default_host.clone()));
             UserJoinedGroup {
                 group_id: doc.data.get("group_id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                host: doc.data.get("host").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                host,
                 name: doc.data.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
                 joined_at: doc.data.get("joined_at").and_then(|v| v.as_str()).unwrap_or("").to_string(),
             }
@@ -84,8 +90,31 @@ pub async fn add_user_joined_group(
     }
 
     let now = chrono::Utc::now().to_rfc3339();
-    let host = payload.host.clone().unwrap_or_else(|| "localhost".to_string());
+    let host = payload.host.clone()
+        .filter(|h| !h.is_empty())
+        .unwrap_or_else(|| state.domain());
 
+    // Check for existing entry with same user_id + group_id
+    let existing = state.db
+        .query("user_joined_groups")
+        .filter(|f| f.eq("user_id", user_id.clone()) & f.eq("group_id", payload.group_id.clone()))
+        .collect()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)))?;
+
+    // Delete existing entry if found (we'll re-insert with updated values)
+    let joined_at = if let Some(doc) = existing.into_iter().next() {
+        let original_joined_at = doc.data.get("joined_at").and_then(|v| v.as_str()).unwrap_or(&now).to_string();
+        state.db
+            .delete(&format!("user_joined_groups:{}", doc.id))
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)))?;
+        original_joined_at
+    } else {
+        now.clone()
+    };
+
+    // Insert entry (new or replacement)
     state.db
         .insert_into(
             "user_joined_groups",
@@ -94,7 +123,7 @@ pub async fn add_user_joined_group(
                 ("group_id", payload.group_id.clone().into()),
                 ("host", host.clone().into()),
                 ("name", payload.name.clone().into()),
-                ("joined_at", now.clone().into()),
+                ("joined_at", joined_at.clone().into()),
             ],
         )
         .await
@@ -104,7 +133,7 @@ pub async fn add_user_joined_group(
         group_id: payload.group_id,
         host: Some(host),
         name: payload.name,
-        joined_at: now,
+        joined_at,
     }))
 }
 
@@ -114,8 +143,31 @@ pub async fn add_self_joined_group(
     SignedJson { value: payload, user_id, .. }: SignedJson<AddJoinedGroupRequest>,
 ) -> Result<Json<UserJoinedGroup>, (StatusCode, String)> {
     let now = chrono::Utc::now().to_rfc3339();
-    let host = payload.host.clone().unwrap_or_else(|| "localhost".to_string());
+    let host = payload.host.clone()
+        .filter(|h| !h.is_empty())
+        .unwrap_or_else(|| state.domain());
 
+    // Check for existing entry with same user_id + group_id
+    let existing = state.db
+        .query("user_joined_groups")
+        .filter(|f| f.eq("user_id", user_id.clone()) & f.eq("group_id", payload.group_id.clone()))
+        .collect()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)))?;
+
+    // Delete existing entry if found (we'll re-insert with updated values)
+    let joined_at = if let Some(doc) = existing.into_iter().next() {
+        let original_joined_at = doc.data.get("joined_at").and_then(|v| v.as_str()).unwrap_or(&now).to_string();
+        state.db
+            .delete(&format!("user_joined_groups:{}", doc.id))
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)))?;
+        original_joined_at
+    } else {
+        now.clone()
+    };
+
+    // Insert entry (new or replacement)
     state.db
         .insert_into(
             "user_joined_groups",
@@ -124,7 +176,7 @@ pub async fn add_self_joined_group(
                 ("group_id", payload.group_id.clone().into()),
                 ("host", host.clone().into()),
                 ("name", payload.name.clone().into()),
-                ("joined_at", now.clone().into()),
+                ("joined_at", joined_at.clone().into()),
             ],
         )
         .await
@@ -134,7 +186,7 @@ pub async fn add_self_joined_group(
         group_id: payload.group_id,
         host: Some(host),
         name: payload.name,
-        joined_at: now,
+        joined_at,
     }))
 }
 
