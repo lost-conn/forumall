@@ -14,6 +14,10 @@ pub fn init_database() -> Aurora {
             ("handle", FieldType::String, true),
             ("domain", FieldType::String, false),
             ("password_hash", FieldType::String, false),
+            ("display_name", FieldType::String, false),
+            ("avatar", FieldType::String, false),
+            ("bio", FieldType::String, false),
+            ("metadata", FieldType::String, false), // JSON serialized
             ("created_at", FieldType::String, false),
             ("updated_at", FieldType::String, false),
         ],
@@ -100,6 +104,31 @@ pub fn init_database() -> Aurora {
             ("created_at", FieldType::String, false),
             ("last_used_at", FieldType::String, false),
             ("revoked", FieldType::String, false),
+        ],
+    );
+
+    // Presence collection - stores user availability and status
+    let _ = db.new_collection(
+        "presence",
+        vec![
+            ("user_handle", FieldType::String, true),
+            ("availability", FieldType::String, false),
+            ("status", FieldType::String, false),
+            ("last_seen", FieldType::String, false),
+            ("metadata", FieldType::String, false), // JSON serialized
+            ("updated_at", FieldType::String, false),
+        ],
+    );
+
+    // Privacy settings collection
+    let _ = db.new_collection(
+        "privacy_settings",
+        vec![
+            ("user_handle", FieldType::String, true),
+            ("presence_visibility", FieldType::String, false),
+            ("profile_visibility", FieldType::String, false),
+            ("membership_visibility", FieldType::String, false),
+            ("updated_at", FieldType::String, false),
         ],
     );
 

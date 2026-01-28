@@ -1,6 +1,7 @@
 //! API route handlers.
 
 pub mod auth;
+pub mod avatar;
 pub mod channels;
 pub mod device_keys;
 pub mod discovery;

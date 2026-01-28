@@ -57,6 +57,7 @@ pub struct UserProfile {
     pub domain: String,
     pub display_name: Option<String>,
     pub avatar: Option<String>,
+    pub bio: Option<String>,
     pub updated_at: DateTime<Utc>,
     pub metadata: Metadata,
 }
@@ -66,6 +67,95 @@ pub struct UserProfile {
 pub struct UserAccount {
     pub profile: UserProfile,
     pub settings: serde_json::Value,
+}
+
+// --- Profile Management ---
+
+/// Request to update user profile
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateProfileRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub avatar: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bio: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Metadata>,
+}
+
+/// Response from avatar upload
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AvatarResponse {
+    pub url: String,
+}
+
+// --- Presence ---
+
+/// User availability status
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Availability {
+    #[default]
+    Online,
+    Away,
+    Dnd,
+    Offline,
+}
+
+/// User presence information
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Presence {
+    pub availability: Availability,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_seen: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub metadata: Metadata,
+}
+
+impl Default for Presence {
+    fn default() -> Self {
+        Self {
+            availability: Availability::Offline,
+            status: None,
+            last_seen: None,
+            metadata: vec![],
+        }
+    }
+}
+
+/// Request to update presence
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdatePresenceRequest {
+    pub availability: Availability,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+}
+
+// --- Privacy Settings ---
+
+/// Privacy settings for a user
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PrivacySettings {
+    #[serde(default)]
+    pub presence_visibility: VisibilityPolicy,
+    #[serde(default)]
+    pub profile_visibility: VisibilityPolicy,
+    #[serde(default)]
+    pub membership_visibility: VisibilityPolicy,
+}
+
+impl Default for VisibilityPolicy {
+    fn default() -> Self {
+        Self::Public
+    }
 }
 
 // --- Objects ---
@@ -281,6 +371,12 @@ pub enum ServerEvent {
     MessageNew {
         channel_id: String,
         message: BaseMessage,
+    },
+    #[serde(rename = "presence.update")]
+    PresenceUpdate {
+        user_handle: String,
+        user_domain: String,
+        presence: Presence,
     },
     Ack {
         nonce: String,

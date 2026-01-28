@@ -236,6 +236,102 @@ impl ApiClient {
 
         Ok(())
     }
+
+    /// Make a signed PATCH request with JSON body
+    pub async fn patch_json<TReq: Serialize, TRes: DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &TReq,
+    ) -> Result<TRes, ApiError> {
+        let url = self.url(path);
+        let mut rb = self.client.patch(&url);
+
+        let body_bytes = serde_json::to_vec(body).map_err(|e| ApiError::Deserialize(e.to_string()))?;
+
+        if let (Some(keys), Some(handle), Some(domain)) = (&self.keys, &self.handle, &self.domain) {
+            let path_only = if let Ok(u) = reqwest::Url::parse(&url) {
+                u.path().to_string()
+            } else {
+                path.split('?').next().unwrap_or(path).to_string()
+            };
+
+            if let Some(headers) = sign_request("PATCH", &path_only, &body_bytes, keys, handle, domain) {
+                rb = rb.header("X-OFSCP-Actor", headers.actor);
+                rb = rb.header("X-OFSCP-Timestamp", headers.timestamp);
+                rb = rb.header(
+                    "X-OFSCP-Signature",
+                    format!("keyId=\"{}\", signature=\"{}\"", headers.key_id, headers.signature),
+                );
+            }
+        }
+
+        let resp = rb
+            .body(body_bytes)
+            .header("Content-Type", "application/json")
+            .send()
+            .await
+            .map_err(|e| ApiError::Network(e.to_string()))?;
+
+        let status = resp.status().as_u16();
+        let is_success = resp.status().is_success();
+        let text = resp.text().await.map_err(|e| ApiError::Network(e.to_string()))?;
+
+        if !is_success {
+            return Err(ApiError::Http { status, body: text });
+        }
+
+        if text.is_empty() {
+            serde_json::from_str("null").map_err(|e| ApiError::Deserialize(e.to_string()))
+        } else {
+            serde_json::from_str(&text).map_err(|e| ApiError::Deserialize(e.to_string()))
+        }
+    }
+
+    // --- Profile/Presence/Privacy API methods ---
+
+    /// Update the current user's profile
+    pub async fn update_profile(
+        &self,
+        update: &forumall_shared::UpdateProfileRequest,
+    ) -> Result<forumall_shared::UserProfile, ApiError> {
+        self.patch_json("/api/me/profile", update).await
+    }
+
+    /// Get the current user's presence
+    pub async fn get_own_presence(&self) -> Result<forumall_shared::Presence, ApiError> {
+        self.get_json("/api/me/presence").await
+    }
+
+    /// Update the current user's presence
+    pub async fn update_presence(
+        &self,
+        update: &forumall_shared::UpdatePresenceRequest,
+    ) -> Result<forumall_shared::Presence, ApiError> {
+        self.put_json("/api/me/presence", update).await
+    }
+
+    /// Get another user's presence
+    pub async fn get_user_presence(&self, handle: &str) -> Result<forumall_shared::Presence, ApiError> {
+        self.get_json(&format!("/api/users/{}/presence", handle)).await
+    }
+
+    /// Get the current user's privacy settings
+    pub async fn get_privacy_settings(&self) -> Result<forumall_shared::PrivacySettings, ApiError> {
+        self.get_json("/api/me/privacy").await
+    }
+
+    /// Update the current user's privacy settings
+    pub async fn update_privacy_settings(
+        &self,
+        settings: &forumall_shared::PrivacySettings,
+    ) -> Result<forumall_shared::PrivacySettings, ApiError> {
+        self.put_json("/api/me/privacy", settings).await
+    }
+
+    /// Get a user's profile
+    pub async fn get_user_profile(&self, handle: &str) -> Result<forumall_shared::UserProfile, ApiError> {
+        self.get_json(&format!("/api/users/{}/profile", handle)).await
+    }
 }
 
 impl Default for ApiClient {

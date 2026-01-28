@@ -4,12 +4,12 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use dioxus::prelude::*;
-use forumall_shared::{BaseMessage, ServerEvent, UserRef, WsEnvelope};
+use forumall_shared::{BaseMessage, Presence, ServerEvent, UserRef, WsEnvelope};
 
 use super::connection::{ConnectionState, WsConnection, WsHandle};
 use crate::auth_session::AuthContext;
 use crate::client_keys::sign_ws_request;
-use crate::stores::{ChannelMessages, StoredMessage, MESSAGES};
+use crate::stores::{update_user_presence, ChannelMessages, StoredMessage, MESSAGES};
 
 /// Normalize a host string for use as a key (strips protocol prefix)
 pub fn normalize_host(host: &str) -> String {
@@ -35,6 +35,13 @@ pub enum WsEvent {
         host: String,
         channel_id: String,
         message: BaseMessage,
+    },
+    /// Presence update received
+    PresenceUpdate {
+        host: String,
+        user_handle: String,
+        user_domain: String,
+        presence: Presence,
     },
     /// Message send acknowledged
     Ack {
@@ -207,6 +214,21 @@ pub fn WsManager(children: Element) -> Element {
                             host: host_for_event.clone(),
                             channel_id,
                             message,
+                        }
+                    }
+                    ServerEvent::PresenceUpdate {
+                        user_handle,
+                        user_domain,
+                        presence,
+                    } => {
+                        // Update presence store
+                        update_user_presence(&user_handle, &user_domain, presence.clone());
+
+                        WsEvent::PresenceUpdate {
+                            host: host_for_event.clone(),
+                            user_handle,
+                            user_domain,
+                            presence,
                         }
                     }
                     ServerEvent::Ack { nonce, message_id } => WsEvent::Ack {

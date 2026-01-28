@@ -20,6 +20,10 @@ pub struct SignedRequest {
     pub key_id: String,
 }
 
+/// Optional signed request - returns None instead of error if auth headers missing
+#[derive(Debug, Clone)]
+pub struct OptionalSignedRequest(pub Option<SignedRequest>);
+
 /// Rejection type for signature verification failures
 pub struct SignatureRejection(pub StatusCode, pub String);
 
@@ -91,6 +95,36 @@ where
                 })?;
 
             Ok(SignedRequest { user_id, key_id })
+        }
+    }
+}
+
+/// Extractor for optional OFSCP signature verification
+/// Returns None if auth headers are missing, Some(SignedRequest) if valid
+impl<S> FromRequestParts<S> for OptionalSignedRequest
+where
+    S: Send + Sync,
+    AppState: FromRef<S>,
+{
+    type Rejection = std::convert::Infallible;
+
+    fn from_request_parts(parts: &mut Parts, state: &S) -> impl std::future::Future<Output = Result<Self, Self::Rejection>> + Send {
+        let app_state = AppState::from_ref(state);
+        let method = parts.method.clone();
+        let uri = parts.uri.clone();
+        let headers = parts.headers.clone();
+
+        async move {
+            // Check if auth headers are present
+            if headers.get(HEADER_SIGNATURE).is_none() {
+                return Ok(OptionalSignedRequest(None));
+            }
+
+            // Try to verify signature
+            match verify_ofscp_signature(&app_state, &method, &uri, &headers, &[]).await {
+                Ok((user_id, key_id)) => Ok(OptionalSignedRequest(Some(SignedRequest { user_id, key_id }))),
+                Err(_) => Ok(OptionalSignedRequest(None)),
+            }
         }
     }
 }

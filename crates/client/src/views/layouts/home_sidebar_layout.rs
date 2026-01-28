@@ -72,6 +72,27 @@ pub fn HomeSidebarLayout() -> Element {
         div { class: "flex h-screen overflow-hidden",
             // Sidebar for Groups - hidden on mobile when viewing a channel
             div { class: "{sidebar_classes}",
+                // Profile button
+                Link {
+                    to: crate::Route::ProfileView {},
+                    class: "group relative w-12 h-12 bg-[#313338] rounded-[24px] flex items-center justify-center text-indigo-400 font-bold cursor-pointer hover:rounded-[16px] hover:bg-indigo-500 hover:text-white transition-all duration-200",
+                    div { class: "absolute left-full ml-4 px-3 py-2 bg-[#111214] text-white text-sm font-medium rounded-md whitespace-nowrap opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-150 z-50 shadow-lg",
+                        "Your Profile"
+                    }
+                    svg {
+                        class: "w-5 h-5",
+                        fill: "none",
+                        stroke: "currentColor",
+                        view_box: "0 0 24 24",
+                        path {
+                            stroke_linecap: "round",
+                            stroke_linejoin: "round",
+                            stroke_width: "2",
+                            d: "M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z",
+                        }
+                    }
+                }
+
                 // Logout button
                 button {
                     class: "group relative w-12 h-12 bg-[#313338] rounded-[24px] flex items-center justify-center text-red-400 font-bold cursor-pointer hover:rounded-[16px] hover:bg-red-500 hover:text-white transition-all duration-200",
@@ -94,6 +115,9 @@ pub fn HomeSidebarLayout() -> Element {
                         }
                     }
                 }
+
+                // Separator
+                div { class: "w-8 h-[2px] bg-[#35363c] rounded-full my-1" }
 
                 // Groups list
                 match groups.read().as_ref() {

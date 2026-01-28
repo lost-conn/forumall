@@ -9,12 +9,14 @@ use axum::{
     response::Response,
 };
 use forumall_shared::{
-    BaseMessage, ClientCommand, Content, MessageType, ServerEvent, UserRef, WsEnvelope,
+    Availability, BaseMessage, ClientCommand, Content, MessageType, Presence, ServerEvent,
+    UserRef, WsEnvelope,
 };
 use futures_util::{SinkExt, StreamExt};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, RwLock};
+use uuid::Uuid;
 
 use crate::middleware::signature::verify_ofscp_signature_from_query;
 use crate::state::AppState;
@@ -23,6 +25,14 @@ use crate::state::AppState;
 static CHANNELS: once_cell::sync::Lazy<
     Arc<RwLock<HashMap<String, broadcast::Sender<WsEnvelope<ServerEvent>>>>>,
 > = once_cell::sync::Lazy::new(|| Arc::new(RwLock::new(HashMap::new())));
+
+/// Global connection tracker - maps user_handle to set of connection IDs
+static CONNECTIONS: once_cell::sync::Lazy<Arc<RwLock<HashMap<String, HashSet<Uuid>>>>> =
+    once_cell::sync::Lazy::new(|| Arc::new(RwLock::new(HashMap::new())));
+
+/// Global presence broadcast channel - for presence updates
+static PRESENCE_CHANNEL: once_cell::sync::Lazy<broadcast::Sender<WsEnvelope<ServerEvent>>> =
+    once_cell::sync::Lazy::new(|| broadcast::channel(100).0);
 
 const CHANNEL_CAPACITY: usize = 100;
 
@@ -43,6 +53,104 @@ async fn get_or_create_channel(channel_id: &str) -> broadcast::Sender<WsEnvelope
     let (tx, _rx) = broadcast::channel(CHANNEL_CAPACITY);
     channels.insert(channel_id.to_string(), tx.clone());
     tx
+}
+
+/// Track a new connection for a user
+async fn track_connection(user_handle: &str, conn_id: Uuid) -> bool {
+    let mut connections = CONNECTIONS.write().await;
+    let user_connections = connections.entry(user_handle.to_string()).or_default();
+    let was_first = user_connections.is_empty();
+    user_connections.insert(conn_id);
+    was_first
+}
+
+/// Remove a connection for a user
+async fn untrack_connection(user_handle: &str, conn_id: Uuid) -> bool {
+    let mut connections = CONNECTIONS.write().await;
+    if let Some(user_connections) = connections.get_mut(user_handle) {
+        user_connections.remove(&conn_id);
+        if user_connections.is_empty() {
+            connections.remove(user_handle);
+            return true; // Was last connection
+        }
+    }
+    false
+}
+
+/// Update user presence in database
+async fn update_user_presence_db(
+    state: &AppState,
+    handle: &str,
+    availability: Availability,
+) -> Result<(), String> {
+    let now = chrono::Utc::now();
+    let availability_str = match availability {
+        Availability::Online => "online",
+        Availability::Away => "away",
+        Availability::Dnd => "dnd",
+        Availability::Offline => "offline",
+    };
+
+    // Check if presence record exists
+    let existing: Vec<_> = state
+        .db
+        .query("presence")
+        .filter(|f| f.eq("user_handle", handle.to_string()))
+        .collect()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if let Some(doc) = existing.into_iter().next() {
+        state
+            .db
+            .update_document("presence", &doc.id, vec![
+                ("availability", availability_str.into()),
+                ("last_seen", now.to_rfc3339().into()),
+                ("updated_at", now.to_rfc3339().into()),
+            ])
+            .await
+            .map_err(|e| e.to_string())?;
+    } else {
+        state
+            .db
+            .insert_into(
+                "presence",
+                vec![
+                    ("user_handle", handle.to_string().into()),
+                    ("availability", availability_str.into()),
+                    ("status", "".into()),
+                    ("last_seen", now.to_rfc3339().into()),
+                    ("metadata", "[]".into()),
+                    ("updated_at", now.to_rfc3339().into()),
+                ],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
+/// Broadcast presence update to all connected clients
+fn broadcast_presence(user_handle: &str, domain: &str, availability: Availability) {
+    let event = WsEnvelope {
+        id: Uuid::new_v4().to_string(),
+        payload: ServerEvent::PresenceUpdate {
+            user_handle: user_handle.to_string(),
+            user_domain: domain.to_string(),
+            presence: Presence {
+                availability,
+                status: None,
+                last_seen: Some(chrono::Utc::now()),
+                metadata: vec![],
+            },
+        },
+        ts: chrono::Utc::now(),
+        correlation_id: None,
+    };
+
+    // Broadcast to all presence subscribers
+    let _ = PRESENCE_CHANNEL.send(event);
 }
 
 /// WebSocket upgrade handler
@@ -68,9 +176,36 @@ pub async fn ws_handler(
 async fn handle_socket(socket: WebSocket, user_id: String, state: AppState) {
     let (mut sender, mut receiver) = socket.split();
 
+    // Extract handle from user_id (format: handle@domain)
+    let user_handle = user_id.split('@').next().unwrap_or(&user_id).to_string();
+    let conn_id = Uuid::new_v4();
+    let domain = state.domain();
+
+    // Track this connection
+    let is_first_connection = track_connection(&user_handle, conn_id).await;
+
+    // If this is the user's first connection, set them online
+    if is_first_connection {
+        if let Err(e) = update_user_presence_db(&state, &user_handle, Availability::Online).await {
+            tracing::error!("Failed to update presence on connect: {}", e);
+        }
+        broadcast_presence(&user_handle, &domain, Availability::Online);
+    }
+
     let mut subscribed_channels: HashSet<String> = HashSet::new();
     let (forward_tx, mut forward_rx) = mpsc::unbounded_channel::<WsEnvelope<ServerEvent>>();
     let mut subscription_handles: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
+
+    // Subscribe to presence updates
+    let mut presence_rx = PRESENCE_CHANNEL.subscribe();
+    let forward_tx_presence = forward_tx.clone();
+    let presence_handle = tokio::spawn(async move {
+        while let Ok(event) = presence_rx.recv().await {
+            if forward_tx_presence.send(event).is_err() {
+                break;
+            }
+        }
+    });
 
     // Task to forward messages to the WebSocket
     let send_task = tokio::spawn(async move {
@@ -105,10 +240,22 @@ async fn handle_socket(socket: WebSocket, user_id: String, state: AppState) {
     }
 
     // Cleanup
+    presence_handle.abort();
     for (_, handle) in subscription_handles {
         handle.abort();
     }
     send_task.abort();
+
+    // Untrack this connection
+    let was_last_connection = untrack_connection(&user_handle, conn_id).await;
+
+    // If this was the user's last connection, set them offline
+    if was_last_connection {
+        if let Err(e) = update_user_presence_db(&state, &user_handle, Availability::Offline).await {
+            tracing::error!("Failed to update presence on disconnect: {}", e);
+        }
+        broadcast_presence(&user_handle, &domain, Availability::Offline);
+    }
 
     tracing::info!("WebSocket connection closed for user: {}", user_id);
 }

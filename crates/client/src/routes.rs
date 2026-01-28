@@ -4,7 +4,7 @@ use dioxus::prelude::*;
 
 use crate::views::{
     ChannelView, GroupSidebarLayout, Home, HomeSidebarLayout, Login,
-    NoChannel, NoGroup, Register,
+    NoChannel, NoGroup, ProfileView, Register,
 };
 
 // Router configuration
@@ -26,6 +26,9 @@ pub enum Route {
         #[layout(HomeSidebarLayout)]
             #[route("/")]
             NoGroup {},
+            // Profile route (keeps sidebar visible)
+            #[route("/profile")]
+            ProfileView {},
             #[nest("/:group_host/:group")]
                 #[layout(GroupSidebarLayout)]
                     #[route("/")]

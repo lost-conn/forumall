@@ -3,11 +3,12 @@
 //! A pure Axum server implementing the OFSCP (Open Federated Social Communications Protocol).
 
 use axum::{
-    routing::{delete, get, post, put},
+    routing::{delete, get, patch, post, put},
     Router,
 };
 use std::net::SocketAddr;
 use tower_http::cors::{Any, CorsLayer};
+use tower_http::services::ServeDir;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod config;
@@ -77,12 +78,23 @@ async fn main() {
         .route("/api/groups/{group_id}/channels/{channel_id}/messages", post(routes::messages::send_message))
         // Users
         .route("/api/users/{handle}/profile", get(routes::users::get_user_profile))
+        .route("/api/users/{handle}/presence", get(routes::users::get_user_presence))
         .route("/api/users/{user_id}/groups", get(routes::users::get_user_groups))
         .route("/api/users/{user_id}/groups", post(routes::users::add_user_joined_group))
         .route("/api/me/groups", post(routes::users::add_self_joined_group))
         .route("/api/me/groups/{group_id}", delete(routes::users::remove_self_joined_group))
+        .route("/api/me/profile", patch(routes::users::update_profile))
+        .route("/api/me/presence", get(routes::users::get_own_presence))
+        .route("/api/me/presence", put(routes::users::update_presence))
+        .route("/api/me/privacy", get(routes::users::get_privacy_settings))
+        .route("/api/me/privacy", put(routes::users::update_privacy_settings))
+        .route("/api/me/avatar", post(routes::avatar::upload_avatar))
         // WebSocket
         .route("/api/ws", get(ws::ws_handler))
+        // Static file serving for uploads
+        .nest_service("/uploads/avatars", ServeDir::new(
+            std::env::var("FORUMALL_UPLOADS_DIR").unwrap_or_else(|_| "./uploads/avatars".to_string())
+        ))
         // Apply middleware
         .layer(cors)
         .with_state(state);
