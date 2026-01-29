@@ -1,8 +1,10 @@
 #!/bin/bash
 
 export SRV_ID=${SRV_ID:-0}
+export PORT=$((${SRV_PORT:-8080} + SRV_ID))
 
-PORT=$((${SRV_PORT:-8080} + SRV_ID)) \
+PORT=$PORT \
+    FORUMALL_BASE_URL=http://localhost:${PORT} \
     FORUMALL_DB_PATH="db${SRV_ID}" \
     FORUMALL_FRONTEND_MODE=proxy \
     FORUMALL_PROXY_TARGET=http://localhost:${CLI_PORT:-5173} \
