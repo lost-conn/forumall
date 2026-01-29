@@ -55,8 +55,13 @@ pub fn ArticleModal(
         let uid = user_id_sig();
         let auth = auth;
         async move {
+            // Extract handle and domain from user_id (format: "handle" or "handle@domain")
+            let parts: Vec<&str> = uid.split('@').collect();
+            let handle = parts.first().copied().unwrap_or(&uid);
+            let domain = parts.get(1).copied();
+
             let client = auth.client();
-            let url = auth.api_url(&format!("/api/users/{uid}/profile"));
+            let url = auth.api_url_for_host(domain, &format!("/api/users/{handle}/profile"));
             client
                 .get_json::<UserProfile>(&url)
                 .await
@@ -64,24 +69,17 @@ pub fn ArticleModal(
         }
     });
 
-    let (handle, initial) = match profile.read().as_ref() {
-        Some(Ok(p)) => (
-            p.handle.clone(),
-            p.handle
-                .chars()
-                .next()
-                .unwrap_or('U')
-                .to_uppercase()
-                .to_string(),
-        ),
+    let (display_name, handle, initial, avatar) = match profile.read().as_ref() {
+        Some(Ok(p)) => {
+            let name = p.display_name.clone().unwrap_or_else(|| p.handle.clone());
+            let init = name.chars().next().unwrap_or('U').to_uppercase().to_string();
+            (name, p.handle.clone(), init, p.avatar.clone())
+        }
         _ => (
             user_id.clone(),
-            user_id
-                .chars()
-                .last()
-                .unwrap_or('U')
-                .to_uppercase()
-                .to_string(),
+            user_id.clone(),
+            user_id.chars().last().unwrap_or('U').to_uppercase().to_string(),
+            None,
         ),
     };
 
@@ -138,13 +136,21 @@ pub fn ArticleModal(
                 div { class: "px-6 py-4 border-b border-[#3f4147]",
                     h1 { class: "text-2xl font-bold text-white mb-3", "{display_title}" }
                     div { class: "flex items-center gap-3",
-                        // Avatar
-                        div { class: "w-10 h-10 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white font-semibold flex-shrink-0 shadow-lg",
-                            "{initial}"
+                        // Avatar with image or gradient fallback
+                        if let Some(ref avatar_url) = avatar {
+                            img {
+                                class: "w-10 h-10 rounded-full object-cover flex-shrink-0 shadow-lg",
+                                src: "{avatar_url}",
+                                alt: "{display_name}",
+                            }
+                        } else {
+                            div { class: "w-10 h-10 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white font-semibold flex-shrink-0 shadow-lg",
+                                "{initial}"
+                            }
                         }
                         div { class: "flex flex-col",
                             div { class: "flex items-baseline gap-2",
-                                span { class: "font-semibold text-white", "{handle}" }
+                                span { class: "font-semibold text-white", "{display_name}" }
                                 span { class: "text-sm text-[#b5bac1]", "@{handle}" }
                             }
                             span { class: "text-xs text-[#b5bac1]", "{formatted_time}" }

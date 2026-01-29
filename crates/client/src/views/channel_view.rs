@@ -2,6 +2,7 @@
 
 use crate::auth_session::AuthContext;
 use crate::components::messages::{ArticleItem, ArticleModal, MemoItem};
+use crate::components::profile::ProfilePopup;
 use crate::hooks::use_refreshable_resource;
 use crate::stores::{ChannelMessages, StoredMessage, MESSAGES};
 use crate::ws::{get_handle, normalize_host};
@@ -198,6 +199,9 @@ fn MessageList(group_id: String, channel_id: String, group_host: String) -> Elem
     // State for expanded article modal
     let mut expanded_article = use_signal(|| None::<ExpandedArticle>);
 
+    // State for profile popup
+    let mut profile_popup_user = use_signal(|| None::<String>);
+
     // Track subscribed channel to manage WebSocket subscriptions
     let mut subscribed_channel = use_signal(|| None::<String>);
 
@@ -333,8 +337,12 @@ fn MessageList(group_id: String, channel_id: String, group_host: String) -> Elem
                                 title: msg.title.clone(),
                                 content: msg.content.clone(),
                                 message_type: msg.message_type.clone(),
+                                group_host: group_host.clone(),
                                 on_expand_article: move |article: ExpandedArticle| {
                                     expanded_article.set(Some(article));
+                                },
+                                on_user_click: move |uid: String| {
+                                    profile_popup_user.set(Some(uid));
                                 },
                             }
                         }
@@ -379,6 +387,15 @@ fn MessageList(group_id: String, channel_id: String, group_host: String) -> Elem
                 },
             }
         }
+        // Profile popup overlay
+        if let Some(ref uid) = *profile_popup_user.read() {
+            ProfilePopup {
+                user_id: uid.clone(),
+                on_close: move |_| {
+                    profile_popup_user.set(None);
+                },
+            }
+        }
     }
 }
 
@@ -412,7 +429,9 @@ fn MessageItem(
     title: Option<String>,
     content: String,
     message_type: MessageType,
+    group_host: String,
     on_expand_article: EventHandler<ExpandedArticle>,
+    on_user_click: EventHandler<String>,
 ) -> Element {
     let auth = use_context::<AuthContext>();
 
@@ -428,6 +447,7 @@ fn MessageItem(
                     created_at,
                     content: content.clone(),
                     is_own_message,
+                    on_user_click: move |uid: String| on_user_click.call(uid),
                 }
             }
         }
@@ -450,6 +470,7 @@ fn MessageItem(
                             content: content_for_expand.clone(),
                         });
                     },
+                    on_user_click: move |uid: String| on_user_click.call(uid),
                 }
             }
         }
@@ -462,6 +483,7 @@ fn MessageItem(
                     title,
                     content,
                     is_own_message,
+                    on_user_click: move |uid: String| on_user_click.call(uid),
                 }
             }
         }
@@ -476,6 +498,7 @@ fn ChatBubble(
     title: Option<String>,
     content: String,
     is_own_message: bool,
+    on_user_click: EventHandler<String>,
 ) -> Element {
     let auth = use_context::<AuthContext>();
     let user_id_sig = use_signal(|| user_id.clone());
@@ -484,8 +507,13 @@ fn ChatBubble(
         let uid = user_id_sig();
         let auth = auth;
         async move {
+            // Extract handle and domain from user_id (format: "handle" or "handle@domain")
+            let parts: Vec<&str> = uid.split('@').collect();
+            let handle = parts.first().copied().unwrap_or(&uid);
+            let domain = parts.get(1).copied();
+
             let client = auth.client();
-            let url = auth.api_url(&format!("/api/users/{uid}/profile"));
+            let url = auth.api_url_for_host(domain, &format!("/api/users/{handle}/profile"));
             client
                 .get_json::<UserProfile>(&url)
                 .await
@@ -493,44 +521,61 @@ fn ChatBubble(
         }
     });
 
-    let (handle, initial) = match profile.read().as_ref() {
-        Some(Ok(p)) => (
-            p.handle.clone(),
-            p.handle
-                .chars()
-                .next()
-                .unwrap_or('U')
-                .to_uppercase()
-                .to_string(),
-        ),
+    let (display_name, _handle, initial, avatar) = match profile.read().as_ref() {
+        Some(Ok(p)) => {
+            let name = p.display_name.clone().unwrap_or_else(|| p.handle.clone());
+            let init = name.chars().next().unwrap_or('U').to_uppercase().to_string();
+            (name, p.handle.clone(), init, p.avatar.clone())
+        }
         _ => (
             user_id.clone(),
-            user_id
-                .chars()
-                .last()
-                .unwrap_or('U')
-                .to_uppercase()
-                .to_string(),
+            user_id.clone(),
+            user_id.chars().last().unwrap_or('U').to_uppercase().to_string(),
+            None,
         ),
     };
 
     let formatted_time = format_timestamp(created_at);
+
+    let user_id_for_click = user_id.clone();
+    let user_id_for_click2 = user_id.clone();
 
     if is_own_message {
         // Own message: right-aligned on mobile, left-aligned on desktop, with distinct color
         rsx! {
             // Container: flex-row-reverse on mobile, normal row on md+
             div { class: "flex items-start gap-3 group flex-row-reverse md:flex-row",
-                // Avatar with gradient (teal/emerald for own messages)
-                div { class: "w-10 h-10 rounded-full bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center text-white font-semibold flex-shrink-0 shadow-lg",
-                    "{initial}"
+                // Clickable avatar container
+                div {
+                    class: "cursor-pointer flex-shrink-0",
+                    onclick: {
+                        let uid = user_id_for_click.clone();
+                        move |_| on_user_click.call(uid.clone())
+                    },
+                    // Avatar with image or gradient fallback (teal/emerald for own messages)
+                    if let Some(ref avatar_url) = avatar {
+                        img {
+                            class: "w-10 h-10 rounded-full object-cover shadow-lg hover:opacity-80 transition-opacity",
+                            src: "{avatar_url}",
+                            alt: "{display_name}",
+                        }
+                    } else {
+                        div { class: "w-10 h-10 rounded-full bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center text-white font-semibold shadow-lg hover:opacity-80 transition-opacity",
+                            "{initial}"
+                        }
+                    }
                 }
                 // Message bubble container
                 div { class: "flex flex-col items-end md:items-start max-w-[85%]",
                     // Header: reversed on mobile, normal on md+
                     div { class: "flex items-baseline gap-2 mb-1 flex-row-reverse md:flex-row",
-                        span { class: "font-semibold text-white hover:underline cursor-pointer text-sm",
-                            "{handle}"
+                        span {
+                            class: "font-semibold text-white hover:underline cursor-pointer text-sm",
+                            onclick: {
+                                let uid = user_id_for_click2.clone();
+                                move |_| on_user_click.call(uid.clone())
+                            },
+                            "{display_name}"
                         }
                         span { class: "text-xs text-gray-500 opacity-0 group-hover:opacity-100 transition-opacity",
                             "{formatted_time}"
@@ -554,15 +599,36 @@ fn ChatBubble(
         // Other users: always left-aligned with standard color
         rsx! {
             div { class: "flex items-start gap-3 group",
-                // Avatar with gradient
-                div { class: "w-10 h-10 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white font-semibold flex-shrink-0 shadow-lg",
-                    "{initial}"
+                // Clickable avatar container
+                div {
+                    class: "cursor-pointer flex-shrink-0",
+                    onclick: {
+                        let uid = user_id_for_click.clone();
+                        move |_| on_user_click.call(uid.clone())
+                    },
+                    // Avatar with image or gradient fallback
+                    if let Some(ref avatar_url) = avatar {
+                        img {
+                            class: "w-10 h-10 rounded-full object-cover shadow-lg hover:opacity-80 transition-opacity",
+                            src: "{avatar_url}",
+                            alt: "{display_name}",
+                        }
+                    } else {
+                        div { class: "w-10 h-10 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white font-semibold shadow-lg hover:opacity-80 transition-opacity",
+                            "{initial}"
+                        }
+                    }
                 }
                 // Message bubble container - using inline-block for variable width
                 div { class: "flex flex-col items-start max-w-[85%]",
                     div { class: "flex items-baseline gap-2 mb-1",
-                        span { class: "font-semibold text-white hover:underline cursor-pointer text-sm",
-                            "{handle}"
+                        span {
+                            class: "font-semibold text-white hover:underline cursor-pointer text-sm",
+                            onclick: {
+                                let uid = user_id_for_click2.clone();
+                                move |_| on_user_click.call(uid.clone())
+                            },
+                            "{display_name}"
                         }
                         span { class: "text-xs text-gray-500 opacity-0 group-hover:opacity-100 transition-opacity",
                             "{formatted_time}"

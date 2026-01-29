@@ -19,11 +19,23 @@ pub fn normalize_host(host: &str) -> String {
         .to_string()
 }
 
-/// Extract user ID from UserRef
+/// Extract user ID from UserRef, preserving the domain
 fn extract_user_id(user_ref: &UserRef) -> String {
     match user_ref {
-        UserRef::Handle(h) => h.split('/').last().unwrap_or("Unknown").to_string(),
-        UserRef::Uri(u) => u.split('/').last().unwrap_or("Unknown").to_string(),
+        // Handle format is now "handle@domain" - return as-is
+        UserRef::Handle(h) => h.to_string(),
+        // URI format: "ofscp://domain/users/handle" - extract handle@domain
+        UserRef::Uri(u) => {
+            if let Some(rest) = u.strip_prefix("ofscp://") {
+                if let Some(idx) = rest.find("/users/") {
+                    let domain = &rest[..idx];
+                    let handle = &rest[idx + 7..];
+                    return format!("{}@{}", handle, domain);
+                }
+            }
+            // Fallback: just return the URI as-is
+            u.to_string()
+        }
     }
 }
 
@@ -124,10 +136,25 @@ pub fn WsManager(children: Element) -> Element {
     // Track active connections to avoid re-creating
     let mut active_connections = use_signal(|| HashMap::<String, Rc<WsConnection>>::new());
 
+    // Track the current user_id to detect session changes
+    let mut last_user_id = use_signal(|| None::<String>);
+
     // Effect to establish connections when hosts are added
     use_effect(move || {
         let hosts = WS_HOSTS.read().clone();
         let session = auth.session.read().clone();
+
+        // Get current user_id
+        let current_user_id = session.as_ref().map(|s| s.user_id.clone());
+
+        // If session changed (different user or logged out), clear old connections
+        if *last_user_id.read() != current_user_id {
+            crate::log_info!("WsManager: session changed, clearing old connections");
+            active_connections.write().clear();
+            last_user_id.set(current_user_id.clone());
+        }
+
+        crate::log_info!("WsManager: effect running with hosts: {:?}", hosts);
 
         for raw_host in hosts {
             // Normalize the host for consistent key lookup
@@ -135,8 +162,11 @@ pub fn WsManager(children: Element) -> Element {
 
             // Skip if already connected
             if active_connections.read().contains_key(&host) {
+                crate::log_info!("WsManager: already connected to host: {}", host);
                 continue;
             }
+
+            crate::log_info!("WsManager: creating connection to host: {}", host);
 
             // Need auth to connect
             let Some(sess) = session.as_ref() else {
@@ -153,6 +183,8 @@ pub fn WsManager(children: Element) -> Element {
             let domain = auth.provider_domain.read().clone();
             let user_id = sess.user_id.clone();
             let user_id_for_event = user_id.clone();
+            // Extract just the handle from user_id (format: "handle@domain" or just "handle")
+            let handle = user_id.split('@').next().unwrap_or(&user_id).to_string();
             let keys_clone = keys.clone();
             let auth_clone = auth.clone();
 
@@ -162,7 +194,7 @@ pub fn WsManager(children: Element) -> Element {
                 let ws_path = "/api/ws";
 
                 // Sign the WebSocket request
-                let auth_params = sign_ws_request(ws_path, &keys_clone, &user_id, &domain)?;
+                let auth_params = sign_ws_request(ws_path, &keys_clone, &handle, &domain)?;
 
                 // Build WebSocket URL for the specific host
                 // Empty host means local provider, otherwise connect to remote provider

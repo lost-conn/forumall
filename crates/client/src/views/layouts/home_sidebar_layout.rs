@@ -1,11 +1,13 @@
 //! Home sidebar layout with group selection.
 
 use crate::auth_session::AuthContext;
+use crate::stores::profile::CURRENT_PROFILE;
+use crate::stores::set_current_profile;
 use crate::views::{CreateGroupModal, JoinGroupModal};
 use crate::ws::{normalize_host, WS_HOSTS};
 use crate::Route;
 use dioxus::prelude::*;
-use forumall_shared::UserJoinedGroup;
+use forumall_shared::{UserJoinedGroup, UserProfile};
 use std::collections::HashSet;
 
 /// Sidebar layout component that contains the group selection and logout button
@@ -41,6 +43,23 @@ pub fn HomeSidebarLayout() -> Element {
         }
     });
 
+    // Fetch current user's profile on load (for sidebar avatar)
+    let _profile = use_resource(move || {
+        let auth = auth.clone();
+        async move {
+            let user_id = auth.user_id();
+            if let Some(uid) = user_id {
+                // Extract handle from user_id
+                let handle = uid.split('@').next().unwrap_or(&uid);
+                let client = auth.client();
+                let url = auth.api_url(&format!("/api/users/{}/profile", handle));
+                if let Ok(profile) = client.get_json::<UserProfile>(&url).await {
+                    set_current_profile(profile);
+                }
+            }
+        }
+    });
+
     // When groups load, extract unique hosts and request WebSocket connections
     use_effect(move || {
         if let Some(Ok(groups_data)) = groups.read().as_ref() {
@@ -68,28 +87,36 @@ pub fn HomeSidebarLayout() -> Element {
         "flex w-[72px] bg-[#1e1f22] flex-col items-center py-3 gap-2 overflow-y-auto"
     };
 
+    // Read profile at top level for proper reactivity
+    let current_profile = CURRENT_PROFILE.read();
+    let (avatar_url, initial) = match current_profile.as_ref() {
+        Some(p) => {
+            let name = p.display_name.as_ref().unwrap_or(&p.handle);
+            let init = name.chars().next().unwrap_or('U').to_uppercase().to_string();
+            (p.avatar.clone(), init)
+        }
+        None => (None, "?".to_string()),
+    };
+
     rsx! {
         div { class: "flex h-screen overflow-hidden",
             // Sidebar for Groups - hidden on mobile when viewing a channel
             div { class: "{sidebar_classes}",
-                // Profile button
+                // Profile button with avatar
                 Link {
                     to: crate::Route::ProfileView {},
-                    class: "group relative w-12 h-12 bg-[#313338] rounded-[24px] flex items-center justify-center text-indigo-400 font-bold cursor-pointer hover:rounded-[16px] hover:bg-indigo-500 hover:text-white transition-all duration-200",
+                    class: "group relative w-12 h-12 bg-[#313338] rounded-[24px] flex items-center justify-center text-indigo-400 font-bold cursor-pointer hover:rounded-[16px] hover:bg-indigo-500 hover:text-white transition-all duration-200 overflow-hidden",
                     div { class: "absolute left-full ml-4 px-3 py-2 bg-[#111214] text-white text-sm font-medium rounded-md whitespace-nowrap opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-150 z-50 shadow-lg",
                         "Your Profile"
                     }
-                    svg {
-                        class: "w-5 h-5",
-                        fill: "none",
-                        stroke: "currentColor",
-                        view_box: "0 0 24 24",
-                        path {
-                            stroke_linecap: "round",
-                            stroke_linejoin: "round",
-                            stroke_width: "2",
-                            d: "M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z",
+                    if let Some(ref url) = avatar_url {
+                        img {
+                            class: "w-full h-full object-cover",
+                            src: "{url}",
+                            alt: "Profile",
                         }
+                    } else {
+                        div { class: "text-lg", "{initial}" }
                     }
                 }
 

@@ -40,7 +40,7 @@ pub async fn register(
             "users",
             vec![
                 ("handle", payload.handle.clone().into()),
-                ("domain", domain.into()),
+                ("domain", domain.clone().into()),
                 ("password_hash", password_hash.into()),
                 ("updated_at", now.clone().into()),
                 ("created_at", now.clone().into()),
@@ -79,7 +79,7 @@ pub async fn register(
     };
 
     Ok(Json(LoginResponse {
-        user_id: payload.handle,
+        user_id: format!("{}@{}", payload.handle, domain),
         key_id,
     }))
 }
@@ -90,6 +90,8 @@ pub async fn login(
     Json(payload): Json<LoginRequest>,
 ) -> Result<Json<LoginResponse>, (StatusCode, String)> {
     tracing::info!("Logging in user: {}", payload.handle);
+
+    let domain = state.domain();
 
     // Find user
     let user = state.db
@@ -149,7 +151,7 @@ pub async fn login(
     };
 
     Ok(Json(LoginResponse {
-        user_id: user_handle,
+        user_id: format!("{}@{}", user_handle, domain),
         key_id,
     }))
 }

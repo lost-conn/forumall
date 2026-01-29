@@ -80,11 +80,16 @@ impl AuthContext {
         let session = self.session.read();
         let domain = self.provider_domain.read().clone();
 
+        // Extract just the handle from user_id (format: "handle@domain" or just "handle")
+        let handle = session.as_ref().map(|s| {
+            s.user_id.split('@').next().unwrap_or(&s.user_id).to_string()
+        });
+
         ApiClient::new()
             .with_base_url(self.api_base_url())
             .with_signing(
                 session.as_ref().and_then(|s| s.keys.clone()),
-                session.as_ref().map(|s| s.user_id.clone()),
+                handle,
                 Some(domain),
             )
     }

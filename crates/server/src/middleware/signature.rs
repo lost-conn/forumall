@@ -6,12 +6,26 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use forumall_shared::{
-    construct_signature_base, is_local_address, normalize_actor_id, verify_signature,
-    OFSCPSignature, PublicKeyDiscoveryResponse, HEADER_ACTOR, HEADER_SIGNATURE, HEADER_TIMESTAMP,
+    construct_signature_base, is_local_address, verify_signature, OFSCPSignature,
+    PublicKeyDiscoveryResponse, HEADER_ACTOR, HEADER_SIGNATURE, HEADER_TIMESTAMP,
 };
 use serde::de::DeserializeOwned;
 
 use crate::state::AppState;
+
+/// Parse an actor handle and return a full user ID with domain.
+/// Input formats: "@handle@domain", "handle@domain", or just "handle"
+/// Output format: "handle@domain" (or just "handle" if no domain)
+fn parse_actor_to_user_id(actor: &str) -> String {
+    let stripped = actor.strip_prefix('@').unwrap_or(actor);
+    if stripped.contains('@') {
+        // Already has domain: "handle@domain"
+        stripped.to_string()
+    } else {
+        // Just handle, no domain
+        stripped.to_string()
+    }
+}
 
 /// Verified user identity from OFSCP signature
 #[derive(Debug, Clone)]
@@ -167,8 +181,8 @@ pub async fn verify_ofscp_signature(
 
     verify_signature(&public_key_str, &sig_header.signature, base.as_bytes())?;
 
-    // Return normalized user ID
-    let final_id = normalize_actor_id(actor_handle);
+    // Return full user ID with domain (e.g., "alice@localhost:8080")
+    let final_id = parse_actor_to_user_id(actor_handle);
     Ok((final_id, sig_header.key_id))
 }
 
@@ -207,7 +221,8 @@ pub async fn verify_ofscp_signature_from_query(
 
     verify_signature(&public_key_str, signature, base.as_bytes())?;
 
-    let final_id = normalize_actor_id(actor);
+    // Return full user ID with domain
+    let final_id = parse_actor_to_user_id(actor);
     Ok((final_id, key_id.clone()))
 }
 

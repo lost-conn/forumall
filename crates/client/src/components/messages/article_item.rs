@@ -55,6 +55,7 @@ pub fn ArticleItem(
     content: String,
     on_expand: EventHandler<()>,
     is_own_message: bool,
+    on_user_click: EventHandler<String>,
 ) -> Element {
     let auth = use_context::<AuthContext>();
     let user_id_sig = use_signal(|| user_id.clone());
@@ -63,8 +64,13 @@ pub fn ArticleItem(
         let uid = user_id_sig();
         let auth = auth;
         async move {
+            // Extract handle and domain from user_id (format: "handle" or "handle@domain")
+            let parts: Vec<&str> = uid.split('@').collect();
+            let handle = parts.first().copied().unwrap_or(&uid);
+            let domain = parts.get(1).copied();
+
             let client = auth.client();
-            let url = auth.api_url(&format!("/api/users/{uid}/profile"));
+            let url = auth.api_url_for_host(domain, &format!("/api/users/{handle}/profile"));
             client
                 .get_json::<UserProfile>(&url)
                 .await
@@ -72,24 +78,17 @@ pub fn ArticleItem(
         }
     });
 
-    let (handle, initial) = match profile.read().as_ref() {
-        Some(Ok(p)) => (
-            p.handle.clone(),
-            p.handle
-                .chars()
-                .next()
-                .unwrap_or('U')
-                .to_uppercase()
-                .to_string(),
-        ),
+    let (display_name, _handle, initial, avatar) = match profile.read().as_ref() {
+        Some(Ok(p)) => {
+            let name = p.display_name.clone().unwrap_or_else(|| p.handle.clone());
+            let init = name.chars().next().unwrap_or('U').to_uppercase().to_string();
+            (name, p.handle.clone(), init, p.avatar.clone())
+        }
         _ => (
             user_id.clone(),
-            user_id
-                .chars()
-                .last()
-                .unwrap_or('U')
-                .to_uppercase()
-                .to_string(),
+            user_id.clone(),
+            user_id.chars().last().unwrap_or('U').to_uppercase().to_string(),
+            None,
         ),
     };
 
@@ -140,19 +139,48 @@ pub fn ArticleItem(
                 div { class: "flex items-center justify-between px-4 py-3 border-t border-[#3f4147] bg-[#232428]",
                     // Author info
                     div { class: "flex items-center gap-2",
-                        // Small avatar
+                        // Clickable avatar container
                         div {
-                            class: format!(
-                                "w-6 h-6 rounded-full flex items-center justify-center text-white text-xs font-semibold {}",
-                                if is_own_message {
-                                    "bg-gradient-to-br from-emerald-500 to-teal-600"
-                                } else {
-                                    "bg-gradient-to-br from-indigo-500 to-purple-600"
+                            class: "cursor-pointer flex-shrink-0",
+                            onclick: {
+                                let uid = user_id.clone();
+                                move |e: Event<MouseData>| {
+                                    e.stop_propagation();
+                                    on_user_click.call(uid.clone());
                                 }
-                            ),
-                            "{initial}"
+                            },
+                            // Small avatar with image or gradient fallback
+                            if let Some(ref avatar_url) = avatar {
+                                img {
+                                    class: "w-6 h-6 rounded-full object-cover hover:opacity-80 transition-opacity",
+                                    src: "{avatar_url}",
+                                    alt: "{display_name}",
+                                }
+                            } else {
+                                div {
+                                    class: format!(
+                                        "w-6 h-6 rounded-full flex items-center justify-center text-white text-xs font-semibold hover:opacity-80 transition-opacity {}",
+                                        if is_own_message {
+                                            "bg-gradient-to-br from-emerald-500 to-teal-600"
+                                        } else {
+                                            "bg-gradient-to-br from-indigo-500 to-purple-600"
+                                        }
+                                    ),
+                                    "{initial}"
+                                }
+                            }
                         }
-                        span { class: "text-sm text-[#dbdee1]", "{handle}" }
+                        span {
+                            class: "text-sm text-[#dbdee1] hover:underline cursor-pointer",
+                            onclick: {
+                                let uid = user_id.clone();
+                                move |e: Event<MouseData>| {
+                                    e.stop_propagation();
+                                    on_user_click.call(uid.clone());
+                                }
+                            },
+                            "{display_name}"
+                        }
                         span { class: "text-xs text-[#b5bac1]", "{formatted_time}" }
                     }
                     // Expand button
