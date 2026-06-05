@@ -33,10 +33,15 @@ import {
   WsEnvelopeSchema,
   WsMessageCreateSchema,
   WsMessageCreatedSchema,
+  WsMessageDeleteSchema,
+  WsMessageDeletedSchema,
+  WsMessageUpdateSchema,
+  WsMessageUpdatedSchema,
   WsSubscribeSchema,
   WsUnsubscribeSchema,
   canonicalAuthority,
   isKnownWsType,
+  rfc3339Timestamp,
   verifyWsAuthenticate,
 } from "@forumall/shared";
 import { z } from "zod";
@@ -44,9 +49,16 @@ import type { Config } from "../config.ts";
 import type { Db } from "../db/index.ts";
 import { channelVisibleTo, getChannelRow } from "../provider/channels.ts";
 import { resolveActorKeys } from "../provider/device-keys.ts";
-import { type MessageRecord, createMessage, getMessageByClientId } from "../provider/messages.ts";
+import {
+  type MessageRecord,
+  createMessage,
+  getMessageByClientId,
+  tombstoneMessage,
+  updateMessageContent,
+} from "../provider/messages.ts";
 import { canActor } from "../provider/permissions.ts";
 import type { Hub, HubConnection, HubSocket, OutboundEvent } from "../provider/ws-hub.ts";
+import { authorizeMessageDelete, authorizeMessageEdit } from "./message-mutations.ts";
 
 /** Application close code for an authentication failure (§7.1). */
 export const WS_CLOSE_AUTH_FAILED = 4001;
@@ -301,6 +313,12 @@ export function createWsHandlers(deps: WsHandlerDeps) {
           return;
         case "message.create":
           handleMessageCreate(ws, state, raw_json, envelope.id);
+          return;
+        case "message.update":
+          handleMessageUpdate(ws, state, raw_json, envelope.id);
+          return;
+        case "message.delete":
+          handleMessageDelete(ws, state, raw_json, envelope.id);
           return;
         default:
           // Known-but-not-yet-implemented (message.create, reaction.*, …) and
@@ -577,6 +595,80 @@ export function createWsHandlers(deps: WsHandlerDeps) {
     // connection. The author's copy correlates to the request id (§7.1).
     hub.publishToChannel(channelId, createdEvent(groupId, channelId, record, frameId));
   }
+
+  /**
+   * §7.1 Editing messages: replace a message's `content`. Only the **author** may
+   * edit, and only while `permissions.editUntil` is in the future; otherwise
+   * reject with 403. On success stamp `edited_at` and fan out `message.updated`
+   * to every channel subscriber (the author's own copy correlates to the request
+   * id). Missing message / wrong channel/group → 404; not author or window passed
+   * → 403.
+   */
+  function handleMessageUpdate(
+    ws: WsContext,
+    state: ConnState,
+    rawFrame: unknown,
+    frameId: string,
+  ): void {
+    const parsed = WsMessageUpdateSchema.safeParse(rawFrame);
+    if (!parsed.success) {
+      send(ws, errorEvent("bad_request", "malformed message.update command", 400, frameId));
+      return;
+    }
+    const actor = state.actor;
+    if (!actor) return; // unreachable: only authenticated connections reach here
+
+    const { groupId, channelId, messageId, content } = parsed.data.data;
+    const outcome = authorizeMessageEdit(db, groupId, channelId, messageId, actor);
+    if (outcome.error) {
+      send(
+        ws,
+        errorEvent(outcome.error.code, outcome.error.message, outcome.error.status, frameId),
+      );
+      return;
+    }
+
+    const record = updateMessageContent(db, channelId, messageId, content);
+    hub.publishToChannel(channelId, updatedEvent(groupId, channelId, record, frameId));
+  }
+
+  /**
+   * §7.1 Deleting messages: tombstone (soft-delete) a message — keep `id`/`seq`,
+   * clear `content`, set `deleted_at`. The **author** OR a member with the
+   * `moderate` role may delete. On success fan out `message.deleted`. Missing
+   * message / wrong channel/group → 404; not permitted → 403.
+   */
+  function handleMessageDelete(
+    ws: WsContext,
+    state: ConnState,
+    rawFrame: unknown,
+    frameId: string,
+  ): void {
+    const parsed = WsMessageDeleteSchema.safeParse(rawFrame);
+    if (!parsed.success) {
+      send(ws, errorEvent("bad_request", "malformed message.delete command", 400, frameId));
+      return;
+    }
+    const actor = state.actor;
+    if (!actor) return; // unreachable: only authenticated connections reach here
+
+    const { groupId, channelId, messageId } = parsed.data.data;
+    const outcome = authorizeMessageDelete(db, groupId, channelId, messageId, actor);
+    if (outcome.error) {
+      send(
+        ws,
+        errorEvent(outcome.error.code, outcome.error.message, outcome.error.status, frameId),
+      );
+      return;
+    }
+
+    const record = tombstoneMessage(db, channelId, messageId);
+    const deletedAt = record.message.deletedAt ?? rfc3339Timestamp();
+    hub.publishToChannel(channelId, {
+      type: "message.deleted",
+      data: WsMessageDeletedSchema.shape.data.parse({ groupId, channelId, messageId, deletedAt }),
+    });
+  }
 }
 
 /** Validates the optional `attachments` array on a `message.create` command. */
@@ -603,6 +695,22 @@ function createdEvent(
     message,
   });
   return { type: "message.created", correlationId, data };
+}
+
+/**
+ * Build a validated `message.updated` event for an edited `record` (§7.1). Mirrors
+ * {@link createdEvent}: the editor's own copy correlates to the request id and the
+ * payload is re-validated against the shared `WsMessageUpdated` schema.
+ */
+function updatedEvent(
+  groupId: string,
+  channelId: string,
+  record: MessageRecord,
+  correlationId: string,
+): OutboundEvent {
+  const message = record.message satisfies Message;
+  const data = WsMessageUpdatedSchema.shape.data.parse({ groupId, channelId, message });
+  return { type: "message.updated", correlationId, data };
 }
 
 /** Whether `err` is a SQLite UNIQUE-constraint violation (idempotency race). */

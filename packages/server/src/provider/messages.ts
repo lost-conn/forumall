@@ -251,6 +251,58 @@ export function createMessage(db: Db, config: Config, input: CreateMessageInput)
   return { message: rowToMessage(row), seq: row.seq, cursor: encodeMessageCursor(row.seq) };
 }
 
+/**
+ * The cleared content a tombstone carries. A tombstoned message (§7.1) keeps its
+ * `id`/`seq` but its body is wiped; the canonical `Message` still REQUIRES a
+ * `content`, so we store a minimal, schema-valid empty body. `deletedAt` (set by
+ * {@link tombstoneMessage}) is the real "this is deleted" signal clients render.
+ */
+const TOMBSTONE_CONTENT: Content = { text: "", mime: "text/plain" };
+
+/**
+ * Replace a message's `content` and stamp `edited_at = now` (§7.1 edit). The
+ * caller is responsible for authorization (author-only) and the edit-window check
+ * (`permissions.editUntil` in the future) BEFORE calling this. Returns the
+ * updated canonical {@link MessageRecord} (message + seq + cursor). Throws if the
+ * row does not exist (callers check existence first).
+ */
+export function updateMessageContent(
+  db: Db,
+  channelId: string,
+  messageId: string,
+  content: Content,
+): MessageRecord {
+  const now = Date.now();
+  db.drizzle
+    .update(messages)
+    .set({ content: JSON.stringify(content), editedAt: now })
+    .where(and(eq(messages.channelId, channelId), eq(messages.id, messageId)))
+    .run();
+  const row = getMessageRow(db, channelId, messageId);
+  if (!row) throw new Error(`updateMessageContent: no such message ${messageId}`);
+  return { message: rowToMessage(row), seq: row.seq, cursor: encodeMessageCursor(row.seq) };
+}
+
+/**
+ * Soft-delete (tombstone) a message (§7.1): keep its `id` and `seq` so reply
+ * references and resume cursors stay valid, clear `content`, and stamp
+ * `deleted_at = now`. The row is NOT removed and still appears in history as a
+ * tombstone. The caller is responsible for authorization (author or `moderate`)
+ * BEFORE calling. Returns the tombstoned canonical {@link MessageRecord}. Throws
+ * if the row does not exist (callers check existence first).
+ */
+export function tombstoneMessage(db: Db, channelId: string, messageId: string): MessageRecord {
+  const now = Date.now();
+  db.drizzle
+    .update(messages)
+    .set({ content: JSON.stringify(TOMBSTONE_CONTENT), deletedAt: now })
+    .where(and(eq(messages.channelId, channelId), eq(messages.id, messageId)))
+    .run();
+  const row = getMessageRow(db, channelId, messageId);
+  if (!row) throw new Error(`tombstoneMessage: no such message ${messageId}`);
+  return { message: rowToMessage(row), seq: row.seq, cursor: encodeMessageCursor(row.seq) };
+}
+
 /** Options for {@link listMessages}. */
 export interface ListMessagesOptions {
   /** Opaque cursor to page from (exclusive); omit for the first page. */

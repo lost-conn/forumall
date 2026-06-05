@@ -15,15 +15,30 @@
  * deletes, and reactions are later WS cards that reuse `provider/messages.ts`
  * (the seq/cursor contract documented there).
  */
-import { MessagesPageSchema } from "@forumall/shared";
+import {
+  MessageSchema,
+  MessageUpdateRequestSchema,
+  MessagesPageSchema,
+  WsMessageDeletedSchema,
+  WsMessageUpdatedSchema,
+  rfc3339Timestamp,
+} from "@forumall/shared";
 import { type Context, Hono } from "hono";
 
 import { channelVisibleTo, getChannelRow } from "../provider/channels.ts";
 import { getGroupRow } from "../provider/groups.ts";
-import { listMessages } from "../provider/messages.ts";
+import { listMessages, tombstoneMessage, updateMessageContent } from "../provider/messages.ts";
 import { AppError } from "./errors.ts";
-import { optionalSignature } from "./signature.ts";
+import { authorizeMessageDelete, authorizeMessageEdit } from "./message-mutations.ts";
+import { optionalSignature, requireSignature } from "./signature.ts";
 import type { AppBindings } from "./types.ts";
+
+/** Turn a {@link MutationError} status into the matching {@link AppError}. */
+function toAppError(error: { code: string; message: string; status: number }): AppError {
+  return error.status === 404
+    ? AppError.notFound({ detail: error.message })
+    : AppError.forbidden({ detail: error.message });
+}
 
 /**
  * Read a path param guaranteed present by the mounted route (`:groupId` /
@@ -38,6 +53,7 @@ export function createMessagesRouter() {
   // Parent supplies `/api/groups/:groupId/channels/:channelId/messages`.
   const router = new Hono<AppBindings>();
   const optional = optionalSignature();
+  const signed = requireSignature();
 
   // -- GET .../messages (§7.2, optional auth) ------------------------------
   router.get("/", optional, (c) => {
@@ -72,6 +88,62 @@ export function createMessagesRouter() {
 
     // Validate the response shape (§7.2 `messages-page`) before returning.
     return c.json(MessagesPageSchema.parse(page));
+  });
+
+  // -- PATCH .../messages/:messageId (§7.1 edit, signed) -------------------
+  // Author-only + edit window; returns the updated Message (with `editedAt`).
+  // Fans out `message.updated` to WS subscribers via the shared hub.
+  router.patch("/:messageId", signed, async (c) => {
+    const { db, hub } = c.var;
+    const actor = c.var.actor;
+    if (!actor) throw AppError.unauthorized();
+    const groupId = requireParam(c, "groupId");
+    const channelId = requireParam(c, "channelId");
+    const messageId = requireParam(c, "messageId");
+
+    const body = MessageUpdateRequestSchema.parse(await c.req.json());
+
+    const outcome = authorizeMessageEdit(db, groupId, channelId, messageId, actor.actor);
+    if (outcome.error) throw toAppError(outcome.error);
+
+    const record = updateMessageContent(db, channelId, messageId, body.content);
+
+    // Reach WS subscribers exactly as the WS path does (REST/WS parity).
+    hub.publishToChannel(channelId, {
+      type: "message.updated",
+      data: WsMessageUpdatedSchema.shape.data.parse({
+        groupId,
+        channelId,
+        message: record.message,
+      }),
+    });
+
+    return c.json(MessageSchema.parse(record.message));
+  });
+
+  // -- DELETE .../messages/:messageId (§7.1 tombstone, signed) ------------
+  // Author OR a `moderate` member; soft-delete → 204. Fans out
+  // `message.deleted` to WS subscribers via the shared hub.
+  router.delete("/:messageId", signed, (c) => {
+    const { db, hub } = c.var;
+    const actor = c.var.actor;
+    if (!actor) throw AppError.unauthorized();
+    const groupId = requireParam(c, "groupId");
+    const channelId = requireParam(c, "channelId");
+    const messageId = requireParam(c, "messageId");
+
+    const outcome = authorizeMessageDelete(db, groupId, channelId, messageId, actor.actor);
+    if (outcome.error) throw toAppError(outcome.error);
+
+    const record = tombstoneMessage(db, channelId, messageId);
+    const deletedAt = record.message.deletedAt ?? rfc3339Timestamp();
+
+    hub.publishToChannel(channelId, {
+      type: "message.deleted",
+      data: WsMessageDeletedSchema.shape.data.parse({ groupId, channelId, messageId, deletedAt }),
+    });
+
+    return c.body(null, 204);
   });
 
   return router;
