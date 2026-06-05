@@ -55,6 +55,31 @@ const migrations: readonly Migration[] = [
       `);
     },
   },
+  {
+    id: "0003_users_and_bootstrap_tokens",
+    up: (sqlite) => {
+      sqlite.exec(`
+        CREATE TABLE IF NOT EXISTS users (
+          handle         TEXT PRIMARY KEY,
+          password_hash  TEXT NOT NULL,
+          recovery_email TEXT,
+          created_at     INTEGER NOT NULL
+        ) STRICT;
+      `);
+      sqlite.exec(`
+        CREATE TABLE IF NOT EXISTS bootstrap_tokens (
+          token_hash TEXT PRIMARY KEY,
+          handle     TEXT NOT NULL,
+          expires_at INTEGER NOT NULL,
+          created_at INTEGER NOT NULL,
+          used_at    INTEGER
+        ) STRICT;
+      `);
+      sqlite.exec(
+        "CREATE INDEX IF NOT EXISTS idx_bootstrap_tokens_handle ON bootstrap_tokens (handle);",
+      );
+    },
+  },
 ];
 
 const LEDGER_DDL = `

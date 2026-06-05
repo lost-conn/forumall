@@ -36,7 +36,33 @@ const RawEnvSchema = z.object({
    * `mailto:admin@example.social`. Omitted from the document if unset.
    */
   CONTACT: z.string().min(1).optional(),
+
+  // --- Argon2id password-hashing cost (§4.1.4) ----------------------------
+  // Secure-by-default: the defaults equal the spec MINIMUMS, and the schema
+  // refuses to go below them. Operators may raise (never lower) the cost.
+  /** Argon2id memory cost in KiB. Default + minimum 65536 (= 64 MiB, §4.1.4). */
+  ARGON2_MEMORY_KIB: z.coerce.number().int().min(65_536).default(65_536),
+  /** Argon2id iterations (time cost). Default + minimum 3 (§4.1.4). */
+  ARGON2_ITERATIONS: z.coerce.number().int().min(3).default(3),
+  /** Argon2id parallelism. Default + minimum 4 (§4.1.4). */
+  ARGON2_PARALLELISM: z.coerce.number().int().min(4).default(4),
+
+  /**
+   * Bootstrap-token TTL in seconds (§4.2). RECOMMENDED 300. Configurable so
+   * tests can use a tiny TTL to exercise expiry; defaults to 300.
+   */
+  BOOTSTRAP_TTL_SECONDS: z.coerce.number().int().min(1).default(300),
 });
+
+/** Argon2id cost parameters (§4.1.4). */
+export interface Argon2Params {
+  /** Memory cost in KiB. */
+  readonly memoryKib: number;
+  /** Iterations (time cost). */
+  readonly iterations: number;
+  /** Parallelism (lanes). */
+  readonly parallelism: number;
+}
 
 /** Fully-resolved, validated server configuration. */
 export interface Config {
@@ -55,6 +81,10 @@ export interface Config {
   readonly maxUploadBytes: number;
   /** Optional admin contact for discovery; omitted when unset. */
   readonly contact?: string;
+  /** Argon2id password-hashing cost (§4.1.4); env-validated to spec minimums. */
+  readonly argon2: Argon2Params;
+  /** Bootstrap-token TTL in seconds (§4.2). */
+  readonly bootstrapTtlSeconds: number;
 }
 
 /** A loosely-typed environment bag (process.env shape). */
@@ -85,6 +115,12 @@ export function loadConfig(env: Env = process.env): Config {
     dbPath,
     webDir,
     maxUploadBytes: raw.MAX_UPLOAD_BYTES,
+    argon2: Object.freeze({
+      memoryKib: raw.ARGON2_MEMORY_KIB,
+      iterations: raw.ARGON2_ITERATIONS,
+      parallelism: raw.ARGON2_PARALLELISM,
+    }),
+    bootstrapTtlSeconds: raw.BOOTSTRAP_TTL_SECONDS,
     ...(raw.CONTACT !== undefined ? { contact: raw.CONTACT } : {}),
   });
 }

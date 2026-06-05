@@ -12,6 +12,7 @@ import { OFSCP_VERSION } from "@forumall/shared";
 import { Hono } from "hono";
 
 import { TIERS } from "../provider/tiers.ts";
+import { createAuthRouter } from "./auth.ts";
 import type { AppBindings } from "./types.ts";
 
 export function createApiRouter() {
@@ -30,7 +31,10 @@ export function createApiRouter() {
   /** Tier discovery (§11.1): canonical access/discoverability levels. */
   api.get("/tiers", (c) => c.json(TIERS));
 
-  // Later: api.route("/auth", authRouter); api.route("/groups", groupsRouter); …
+  /** Local auth: register + login → bootstrap tokens (§4.1, §4.2). */
+  api.route("/auth", createAuthRouter());
+
+  // Later: api.route("/groups", groupsRouter); api.route("/channels", …); …
 
   return api;
 }

@@ -45,3 +45,57 @@ export const providerKeys = sqliteTable("provider_keys", {
 
 export type ProviderKeyRow = typeof providerKeys.$inferSelect;
 export type NewProviderKeyRow = typeof providerKeys.$inferInsert;
+
+/**
+ * Local user accounts (spec §4.1). The canonical users table that later cards
+ * (device keys, profiles, …) extend or reference via `handle`.
+ *
+ * `handle` is the primary key and the stable, provider-scoped identifier
+ * (lowercase alnum / `_` / `-`). `password_hash` is an Argon2id PHC string
+ * (§4.1.4) — verification is fully self-contained (salt + params embedded), so
+ * no separate salt/params columns are needed. The hash is internal-only and
+ * MUST never appear in an HTTP response.
+ */
+export const users = sqliteTable("users", {
+  /** Provider-scoped handle, e.g. `alice`. Primary key + unique identity. */
+  handle: text("handle").primaryKey(),
+  /** Argon2id PHC string (`$argon2id$v=19$m=…,t=…,p=…$salt$hash`). Secret. */
+  passwordHash: text("password_hash").notNull(),
+  /** Optional recovery email for account recovery (§4.1.3). */
+  recoveryEmail: text("recovery_email"),
+  /** Creation time (epoch millis). */
+  createdAt: integer("created_at", { mode: "number" })
+    .notNull()
+    .$defaultFn(() => Date.now()),
+});
+
+export type UserRow = typeof users.$inferSelect;
+export type NewUserRow = typeof users.$inferInsert;
+
+/**
+ * Bootstrap tokens (spec §4.2). Short-lived, single-use bearer credentials that
+ * authorize ONLY `POST /api/auth/device-keys` for the bound `handle`.
+ *
+ * Only a SHA-256 **hash** of the opaque token is stored (never the plaintext),
+ * so a database leak cannot be replayed. The bound `handle` is captured at issue
+ * time and is the sole source of truth for which account a device key binds to —
+ * clients can never override it. `used_at` is nullable; a non-null value marks
+ * the token consumed (single-use).
+ */
+export const bootstrapTokens = sqliteTable("bootstrap_tokens", {
+  /** SHA-256 hash (hex) of the opaque token. Primary key (lookup by hash). */
+  tokenHash: text("token_hash").primaryKey(),
+  /** The handle that authenticated; the only valid binding for this token. */
+  handle: text("handle").notNull(),
+  /** Expiry time (epoch millis). Rejected once `now >= expires_at`. */
+  expiresAt: integer("expires_at", { mode: "number" }).notNull(),
+  /** Issue time (epoch millis). */
+  createdAt: integer("created_at", { mode: "number" })
+    .notNull()
+    .$defaultFn(() => Date.now()),
+  /** Consumption time (epoch millis); null while unused. Single-use marker. */
+  usedAt: integer("used_at", { mode: "number" }),
+});
+
+export type BootstrapTokenRow = typeof bootstrapTokens.$inferSelect;
+export type NewBootstrapTokenRow = typeof bootstrapTokens.$inferInsert;
