@@ -221,6 +221,38 @@ const migrations: readonly Migration[] = [
       sqlite.exec("CREATE INDEX IF NOT EXISTS idx_invites_group_id ON invites (group_id);");
     },
   },
+  {
+    // Messages (§5.3, §7.2). `seq` is the globally-monotonic timeline position
+    // and basis of the §7.2 opaque cursor (shared with §7.1 WS resume). The
+    // (channel_id, seq) index backs per-channel keyset paging; the unique seq
+    // index keeps the cursor globally unambiguous.
+    id: "0010_messages",
+    up: (sqlite) => {
+      sqlite.exec(`
+        CREATE TABLE IF NOT EXISTS messages (
+          id                TEXT PRIMARY KEY,
+          channel_id        TEXT NOT NULL,
+          group_id          TEXT NOT NULL,
+          author            TEXT NOT NULL,
+          type              TEXT NOT NULL,
+          content           TEXT NOT NULL,
+          attachments       TEXT NOT NULL,
+          reference         TEXT,
+          tags              TEXT NOT NULL,
+          seq               INTEGER NOT NULL,
+          created_at        INTEGER NOT NULL,
+          edited_at         INTEGER,
+          deleted_at        INTEGER,
+          edit_until        INTEGER NOT NULL,
+          client_message_id TEXT
+        ) STRICT;
+      `);
+      sqlite.exec(
+        "CREATE INDEX IF NOT EXISTS idx_messages_channel_seq ON messages (channel_id, seq);",
+      );
+      sqlite.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_seq ON messages (seq);");
+    },
+  },
 ];
 
 const LEDGER_DDL = `

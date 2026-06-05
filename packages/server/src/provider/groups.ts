@@ -28,6 +28,7 @@ import {
   groups,
   invites,
   joinRequests,
+  messages,
 } from "../db/schema.ts";
 
 /** `id` prefix per the §5.2 wire examples (`grp_…`). */
@@ -143,6 +144,7 @@ export function deleteGroup(db: Db, groupId: string): boolean {
   const existing = getGroupRow(db, groupId);
   if (!existing) return false;
   db.sqlite.transaction(() => {
+    db.drizzle.delete(messages).where(eq(messages.groupId, groupId)).run();
     db.drizzle.delete(channels).where(eq(channels.groupId, groupId)).run();
     db.drizzle.delete(groupMembers).where(eq(groupMembers.groupId, groupId)).run();
     db.drizzle.delete(joinRequests).where(eq(joinRequests.groupId, groupId)).run();

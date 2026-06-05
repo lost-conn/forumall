@@ -60,6 +60,14 @@ const RawEnvSchema = z.object({
    * make stale revocations linger.
    */
   USER_KEYS_CACHE_SECONDS: z.coerce.number().int().min(1).max(3600).default(3600),
+
+  /**
+   * Message edit window in seconds (§5.3, §7.1): how long after creation a
+   * message remains editable, surfaced as `permissions.editUntil`. The WS
+   * edit card enforces this; the store stamps `edit_until` at create time.
+   * Default 900 (15 min); configurable so tests can use a tiny/large window.
+   */
+  MESSAGE_EDIT_WINDOW_SECONDS: z.coerce.number().int().min(0).default(900),
 });
 
 /** Argon2id cost parameters (§4.1.4). */
@@ -95,6 +103,8 @@ export interface Config {
   readonly bootstrapTtlSeconds: number;
   /** `cache_until` window for the public keys endpoint in seconds (§4.6). */
   readonly userKeysCacheSeconds: number;
+  /** Message edit window in seconds (§5.3); basis of `permissions.editUntil`. */
+  readonly messageEditWindowSeconds: number;
 }
 
 /** A loosely-typed environment bag (process.env shape). */
@@ -132,6 +142,7 @@ export function loadConfig(env: Env = process.env): Config {
     }),
     bootstrapTtlSeconds: raw.BOOTSTRAP_TTL_SECONDS,
     userKeysCacheSeconds: raw.USER_KEYS_CACHE_SECONDS,
+    messageEditWindowSeconds: raw.MESSAGE_EDIT_WINDOW_SECONDS,
     ...(raw.CONTACT !== undefined ? { contact: raw.CONTACT } : {}),
   });
 }

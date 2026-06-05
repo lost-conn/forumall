@@ -24,7 +24,7 @@ import {
 import { eq } from "drizzle-orm";
 
 import type { Db } from "../db/index.ts";
-import { type ChannelRow, channels } from "../db/schema.ts";
+import { type ChannelRow, channels, messages } from "../db/schema.ts";
 import { isMember } from "./permissions.ts";
 
 /** `id` prefix per the §5.2 wire examples (`chn_…`). */
@@ -163,6 +163,9 @@ export function updateChannel(
 export function deleteChannel(db: Db, channelId: string): boolean {
   const existing = getChannelRow(db, channelId);
   if (!existing) return false;
-  db.drizzle.delete(channels).where(eq(channels.id, channelId)).run();
+  db.sqlite.transaction(() => {
+    db.drizzle.delete(messages).where(eq(messages.channelId, channelId)).run();
+    db.drizzle.delete(channels).where(eq(channels.id, channelId)).run();
+  })();
   return true;
 }

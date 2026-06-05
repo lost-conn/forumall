@@ -7,7 +7,14 @@
  * groups, …) are added by their respective feature cards — do NOT add them
  * here, to avoid overlap.
  */
-import { index, integer, primaryKey, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import {
+  index,
+  integer,
+  primaryKey,
+  sqliteTable,
+  text,
+  uniqueIndex,
+} from "drizzle-orm/sqlite-core";
 
 /** Provider-level key/value metadata. */
 export const appMeta = sqliteTable("app_meta", {
@@ -351,3 +358,76 @@ export const invites = sqliteTable(
 
 export type InviteRow = typeof invites.$inferSelect;
 export type NewInviteRow = typeof invites.$inferInsert;
+
+/**
+ * Messages (spec §5.3, §7.2). One row per chat/memo/article message in a
+ * channel. Reactions are a separate object/table (later card), so `type` here
+ * is `message|memo|article` only.
+ *
+ * `content`, `attachments`, `reference`, and `tags` are stored as JSON text and
+ * mapped to the shared `Message` shape at the read boundary
+ * (`provider/messages.ts`). `reference`/`edited_at`/`deleted_at`/`client_message_id`
+ * are nullable.
+ *
+ * ## Timeline position (`seq`)
+ * `seq` is a globally-monotonic integer (assigned `MAX(seq)+1` within the
+ * insert transaction) that defines a message's absolute timeline position and
+ * is the **basis of the opaque history cursor** (§7.2) — REST history and the
+ * WS resume `since` cursor (§7.1) share this one cursor space. The
+ * `(channel_id, seq)` index makes per-channel keyset paging over `seq` a range
+ * scan. `seq` is globally unique (a UNIQUE index enforces it), so a cursor
+ * never collides across channels.
+ *
+ * `edit_until` is the absolute time (epoch millis) after which the message may
+ * no longer be edited (§5.3 `permissions.editUntil`); the WS edit card enforces
+ * it. `deleted_at` (nullable) is the tombstone marker (§7.1): a tombstoned
+ * message is retained and still returned by history so reply references and
+ * resume cursors stay valid — delete itself is a later card.
+ *
+ * `client_message_id` is reserved for the WS create card's idempotency
+ * (`(author, channel_id, client_message_id)` uniqueness); it is nullable and
+ * unused by the REST read path. Deleting the owning group/channel cascades to
+ * its messages.
+ */
+export const messages = sqliteTable(
+  "messages",
+  {
+    /** Stable message id, e.g. `msg_<base64url>`. Primary key. */
+    id: text("id").primaryKey(),
+    /** FK to `channels.id`. */
+    channelId: text("channel_id").notNull(),
+    /** FK to `groups.id` (denormalized for cascade + group-scoped reads). */
+    groupId: text("group_id").notNull(),
+    /** Author actor (`handle@domain`). */
+    author: text("author").notNull(),
+    /** Message kind: `message` | `memo` | `article`. */
+    type: text("type").notNull(),
+    /** Body, stored as JSON (`{ text, mime }`). */
+    content: text("content").notNull(),
+    /** Attachment list, stored as JSON (`Attachment[]`). */
+    attachments: text("attachments").notNull(),
+    /** Optional typed reference (reply etc.), stored as JSON `{ type, id }`. */
+    reference: text("reference"),
+    /** Tag list, stored as JSON (`string[]`). */
+    tags: text("tags").notNull(),
+    /** Globally-monotonic timeline position; basis of the §7.2 cursor. */
+    seq: integer("seq", { mode: "number" }).notNull(),
+    /** Creation time (epoch millis); rendered as RFC 3339 `createdAt`. */
+    createdAt: integer("created_at", { mode: "number" }).notNull(),
+    /** Last-edit time (epoch millis); null until edited. `editedAt`. */
+    editedAt: integer("edited_at", { mode: "number" }),
+    /** Tombstone time (epoch millis); null unless deleted. `deletedAt` (§7.1). */
+    deletedAt: integer("deleted_at", { mode: "number" }),
+    /** Edit-window end (epoch millis); `permissions.editUntil` (§5.3). */
+    editUntil: integer("edit_until", { mode: "number" }).notNull(),
+    /** Client-supplied idempotency key (WS create card); nullable + unused here. */
+    clientMessageId: text("client_message_id"),
+  },
+  (t) => ({
+    channelSeqIdx: index("idx_messages_channel_seq").on(t.channelId, t.seq),
+    seqIdx: uniqueIndex("idx_messages_seq").on(t.seq),
+  }),
+);
+
+export type MessageRow = typeof messages.$inferSelect;
+export type NewMessageRow = typeof messages.$inferInsert;

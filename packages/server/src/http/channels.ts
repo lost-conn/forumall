@@ -37,6 +37,7 @@ import {
 import { getGroupRow } from "../provider/groups.ts";
 import { canActor, isMember } from "../provider/permissions.ts";
 import { AppError } from "./errors.ts";
+import { createMessagesRouter } from "./messages.ts";
 import { optionalSignature, requireSignature } from "./signature.ts";
 import type { AppBindings } from "./types.ts";
 
@@ -191,6 +192,10 @@ export function createChannelsRouter() {
     deleteChannel(db, channelId);
     return c.body(null, 204);
   });
+
+  // -- Message history nested under the channel (§7.2). Mounted here so
+  // `:groupId` + `:channelId` are in scope via merged request params.
+  router.route("/:channelId/messages", createMessagesRouter());
 
   return router;
 }
