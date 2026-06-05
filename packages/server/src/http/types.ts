@@ -7,6 +7,8 @@
  */
 import type { Config } from "../config.ts";
 import type { Db } from "../db/index.ts";
+import type { RemoteDiscoveryCache } from "../provider/federation/discovery-cache.ts";
+import type { FederationFetch } from "../provider/federation/http.ts";
 import type { PresenceRegistry } from "../provider/presence.ts";
 import type { Hub } from "../provider/ws-hub.ts";
 
@@ -42,6 +44,19 @@ export interface AppVariables {
    * the WS `presence.set` would, keeping the two surfaces consistent.
    */
   readonly presenceRegistry: PresenceRegistry;
+  /**
+   * Injectable outbound federation fetch (§8). Routes a logical provider domain
+   * to its transport; the default hits `https://{domain}/...` via global `fetch`,
+   * the test harness maps `*.test` → localhost ports. Used by
+   * `signedProviderFetch` and the discovery cache to reach remote providers.
+   */
+  readonly federationFetch: FederationFetch;
+  /**
+   * Remote provider discovery cache (§8.1): fetches + caches peers'
+   * `provider.publicKeys` so the signature middleware can verify provider-signed
+   * requests from remote providers (with a forced re-fetch on a verify miss).
+   */
+  readonly discoveryCache: RemoteDiscoveryCache;
   /** Set by `requireSignature` on success; undefined on unauthenticated routes. */
   actor?: AuthenticatedActor;
 }

@@ -18,15 +18,16 @@
  * The verifier reconstructs the canonical string using **`config.domain`** as the
  * authority — never a client-supplied Host/authority header. The client signs
  * for the authority it is sending to; if that authority is not the one this
- * provider serves, the signature simply won't validate. We additionally reject
- * up front if the actor/provider domain is not this provider's host, which both
- * gives a clear 401 and marks where P7 remote resolution plugs in.
+ * provider serves, the signature simply won't validate. The signer's *identity*
+ * domain (the actor/provider domain) is resolved separately: a non-local actor
+ * fails closed (P7), while a non-local provider is resolved via discovery (§8.1).
  *
  * ## P7 hooks
- * Remote actor key resolution (a non-local actor domain) and remote provider
- * discovery resolution are out of scope here: both **fail closed** with a 401
- * and a marked comment so P7 can drop in the remote resolver behind the same
- * function boundary.
+ * Remote **actor** key resolution (a non-local actor domain) is still out of
+ * scope here and **fails closed** with a 401 behind a marked boundary. Remote
+ * **provider** resolution is now implemented (§8.1): a provider-signed request
+ * from another provider resolves its key via the discovery cache and verifies it
+ * (re-fetching once on a verification miss to pick up key rotation).
  */
 import {
   HEADER,
@@ -39,6 +40,7 @@ import type { Context, MiddlewareHandler } from "hono";
 
 import type { Db } from "../db/index.ts";
 import { resolveActorKeys } from "../provider/device-keys.ts";
+import type { RemoteDiscoveryCache } from "../provider/federation/discovery-cache.ts";
 import {
   DEFAULT_NONCE_RETENTION_MS,
   InMemoryNonceStore,
@@ -71,6 +73,25 @@ interface ResolvedSigner {
   readonly publicKey: string;
   /** Authenticated identity to expose on `c.var.actor`. */
   readonly actor: AuthenticatedActor;
+  /**
+   * Set by resolvers that must verify internally to decide *which* key resolves
+   * (the remote-provider path verifies during discovery-cache resolution so it
+   * can re-fetch on a miss). When true the pipeline trusts that result and skips
+   * the generic step-7 verify; when false/absent step 7 performs the check.
+   */
+  readonly verified?: boolean;
+}
+
+/** The §4.4.2 inputs a resolver needs to (re)verify a candidate key (§8.1 re-fetch). */
+interface VerifyTarget {
+  readonly authority: string;
+  readonly method: string;
+  readonly path: string;
+  readonly query: string;
+  readonly timestamp: string;
+  readonly nonce: string;
+  readonly contentDigest: string;
+  readonly signature: string;
 }
 
 /** The local-only resolvers, isolated so P7 can extend each behind one boundary. */
@@ -111,34 +132,63 @@ function resolveActorSigner(
 /**
  * Resolve a **provider** signer's verification key (§8.1).
  *
- * A request signed by **this** provider resolves via
- * {@link getProviderSigningKeyById}. A remote provider's key requires fetching
- * its discovery document (`provider.publicKeys`) — that is **P7** and fails
- * closed here.
+ * - A request signed by **this** provider resolves locally via
+ *   {@link getProviderSigningKeyById}; step 7 of the pipeline does the verify.
+ * - A **remote** provider's key is fetched from its discovery document
+ *   (`provider.publicKeys`) via the {@link RemoteDiscoveryCache}. Because §8.1
+ *   requires a re-fetch on a verification miss (to pick up key rotation), the
+ *   verify is performed *here*: we try the cached key, and on a miss force a
+ *   discovery refresh and try once more. A signer is returned only if the
+ *   signature verifies, and it is flagged `verified` so the pipeline does not
+ *   redundantly re-check it.
  */
-function resolveProviderSigner(
+async function resolveProviderSigner(
   db: Db,
   domainHost: string,
   providerHeader: string,
   keyId: string,
-): ResolvedSigner | null {
+  cache: RemoteDiscoveryCache,
+  target: VerifyTarget,
+): Promise<ResolvedSigner | null> {
   const providerDomain = canonicalAuthority(providerHeader);
 
-  if (providerDomain !== domainHost) {
-    // P7: remote provider resolution fetches the signer's discovery document
-    // and selects the matching `provider.publicKeys` entry. Fail closed now.
-    return null;
+  if (providerDomain === domainHost) {
+    const key = getProviderSigningKeyById(db, keyId);
+    if (!key) return null;
+    return {
+      publicKey: key.publicKey,
+      // For a provider identity there is no user handle; expose the domain as
+      // both the actor string and the domain, with an empty handle.
+      actor: { actor: providerHeader, handle: "", keyId, domain: providerDomain },
+    };
   }
 
-  const key = getProviderSigningKeyById(db, keyId);
-  if (!key) return null;
+  // --- Remote provider (§8.1) ----------------------------------------------
+  // Resolve the published key, verifying against it; on a miss (unknown key id
+  // *or* a key that fails to verify) force one discovery re-fetch and retry,
+  // mirroring §4.6 so rotation is picked up promptly.
+  const verifyWith = (publicKey: string) => verify({ publicKey, ...target });
 
-  return {
-    publicKey: key.publicKey,
-    // For a provider identity there is no user handle; expose the domain as both
-    // the actor string and the domain, with an empty handle.
-    actor: { actor: providerHeader, handle: "", keyId, domain: providerDomain },
-  };
+  const cached = await cache.getProviderKey(providerDomain, keyId);
+  if (cached && verifyWith(cached.publicKey)) {
+    return {
+      publicKey: cached.publicKey,
+      actor: { actor: providerHeader, handle: "", keyId, domain: providerDomain },
+      verified: true,
+    };
+  }
+
+  // Cached key missing or did not verify → force-refresh discovery once.
+  const fresh = await cache.getProviderKey(providerDomain, keyId, { forceRefresh: true });
+  if (fresh && verifyWith(fresh.publicKey)) {
+    return {
+      publicKey: fresh.publicKey,
+      actor: { actor: providerHeader, handle: "", keyId, domain: providerDomain },
+      verified: true,
+    };
+  }
+
+  return null;
 }
 
 /**
@@ -262,24 +312,10 @@ async function verifyAndSetActor(c: Context, vctx: VerifyContext): Promise<void>
       });
     }
 
-    // --- §4.5 step 6: resolve the signer's key (not revoked) → 401 ----------
-    const signer =
-      mode === "provider"
-        ? resolveProviderSigner(db, authority, identity, keyId)
-        : resolveActorSigner(db, authority, identity, keyId);
-    if (!signer) {
-      throw AppError.unauthorized({
-        detail:
-          mode === "provider"
-            ? "no provider signing key matches X-OFSCP-Key-ID (remote provider resolution is P7)"
-            : "no active device key matches X-OFSCP-Actor/Key-ID (remote actor resolution is P7)",
-      });
-    }
-
-    // --- §4.5 step 7: reconstruct canonical string + verify signature → 401 -
+    // The §4.4.2 request target, reconstructed for both key resolution (the
+    // remote-provider path verifies during resolution) and step 7.
     const { path, query } = rawTarget(c);
-    const ok = verify({
-      publicKey: signer.publicKey,
+    const target: VerifyTarget = {
       authority,
       method: c.req.method,
       path,
@@ -288,7 +324,27 @@ async function verifyAndSetActor(c: Context, vctx: VerifyContext): Promise<void>
       nonce,
       contentDigest: digest,
       signature,
-    });
+    };
+
+    // --- §4.5 step 6: resolve the signer's key (not revoked) → 401 ----------
+    // The remote-provider path (§8.1) verifies internally so it can re-fetch
+    // discovery on a verification miss; it flags `verified` to skip step 7.
+    const signer =
+      mode === "provider"
+        ? await resolveProviderSigner(db, authority, identity, keyId, c.var.discoveryCache, target)
+        : resolveActorSigner(db, authority, identity, keyId);
+    if (!signer) {
+      throw AppError.unauthorized({
+        detail:
+          mode === "provider"
+            ? "no provider signing key matches X-OFSCP-Key-ID (unknown key or unresolvable provider)"
+            : "no active device key matches X-OFSCP-Actor/Key-ID (remote actor resolution is P7)",
+      });
+    }
+
+    // --- §4.5 step 7: reconstruct canonical string + verify signature → 401 -
+    // Skip when the resolver already verified (remote provider via §8.1).
+    const ok = signer.verified ?? verify({ publicKey: signer.publicKey, ...target });
     if (!ok) {
       throw AppError.unauthorized({ detail: "invalid request signature" });
     }

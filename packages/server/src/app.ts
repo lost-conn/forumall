@@ -35,6 +35,8 @@ import { createStaticHandler } from "./http/static.ts";
 import type { AppBindings } from "./http/types.ts";
 import { createUserKeysRouter } from "./http/user-keys.ts";
 import { type WsTimings, createWsHandlers } from "./http/ws.ts";
+import { RemoteDiscoveryCache } from "./provider/federation/discovery-cache.ts";
+import { type FederationFetch, defaultFederationFetch } from "./provider/federation/http.ts";
 import { PresenceRegistry } from "./provider/presence.ts";
 import { Hub } from "./provider/ws-hub.ts";
 
@@ -46,6 +48,15 @@ export interface AppDeps {
   readonly presenceRegistry?: PresenceRegistry;
   /** Heartbeat / handshake timings (§7.1); tests pass short values. */
   readonly wsTimings?: Partial<WsTimings>;
+  /**
+   * Injectable outbound federation fetch (§8). Defaults to the global-`fetch`
+   * transport (`https://{domain}/...`). The two-provider test harness injects a
+   * fetcher mapping `*.test` domains to localhost ports while preserving the
+   * authority, so peer signature verification still binds the real domain.
+   */
+  readonly federationFetch?: FederationFetch;
+  /** Shared remote-discovery cache (§8.1); one is created if not injected. */
+  readonly discoveryCache?: RemoteDiscoveryCache;
 }
 
 /** A Hono app augmented with the Bun `websocket` handler object it requires. */
@@ -56,21 +67,30 @@ export type AppWithWebSocket = Hono<AppBindings> & {
   readonly __hub: Hub;
   /** The shared presence-subscription registry (for tests / later wiring). */
   readonly __presenceRegistry: PresenceRegistry;
+  /** The shared remote-discovery cache (for tests / later wiring). */
+  readonly __discoveryCache: RemoteDiscoveryCache;
 };
 
 export function createApp(config: Config, deps: AppDeps): AppWithWebSocket {
   const app = new Hono<AppBindings>();
   const hub = deps.hub ?? new Hub();
   const presenceRegistry = deps.presenceRegistry ?? new PresenceRegistry();
+  const federationFetch = deps.federationFetch ?? defaultFederationFetch;
+  // The discovery cache shares the injected federation fetch so it reaches the
+  // same (real or in-process-peer) transport the rest of federation uses.
+  const discoveryCache = deps.discoveryCache ?? new RemoteDiscoveryCache({ federationFetch });
 
   const { upgradeWebSocket, websocket } = createBunWebSocket();
 
-  // Make config + db + hub + presence registry available to every handler.
+  // Make config + db + hub + presence registry + federation deps available to
+  // every handler.
   app.use("*", async (c, next) => {
     c.set("config", config);
     c.set("db", deps.db);
     c.set("hub", hub);
     c.set("presenceRegistry", presenceRegistry);
+    c.set("federationFetch", federationFetch);
+    c.set("discoveryCache", discoveryCache);
     await next();
   });
 
@@ -123,5 +143,6 @@ export function createApp(config: Config, deps: AppDeps): AppWithWebSocket {
     __websocket: websocket,
     __hub: hub,
     __presenceRegistry: presenceRegistry,
+    __discoveryCache: discoveryCache,
   });
 }
