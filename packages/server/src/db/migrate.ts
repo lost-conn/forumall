@@ -386,6 +386,41 @@ const migrations: readonly Migration[] = [
       sqlite.exec("CREATE INDEX IF NOT EXISTS idx_contacts_owner ON contacts (owner);");
     },
   },
+  {
+    // Profile extras (§5.1, §6.2): add `avatar`, `bio`, `metadata`, and
+    // `updated_at` to `users`. All nullable, so a plain ADD COLUMN suffices (no
+    // table rebuild). `metadata` holds a JSON `MetadataList`; `updated_at` is the
+    // profile-update timestamp surfaced as `UserProfile.updatedAt` once set
+    // (otherwise the read path falls back to `created_at`).
+    id: "0016_users_profile_columns",
+    up: (sqlite) => {
+      sqlite.exec("ALTER TABLE users ADD COLUMN avatar TEXT;");
+      sqlite.exec("ALTER TABLE users ADD COLUMN bio TEXT;");
+      sqlite.exec("ALTER TABLE users ADD COLUMN metadata TEXT;");
+      sqlite.exec("ALTER TABLE users ADD COLUMN updated_at INTEGER;");
+    },
+  },
+  {
+    // Privacy settings (§6.6). One row per local user; each `*_visibility`
+    // column is a §6.1 `VisibilityPolicy` enum string. `allow_list` / `deny_list`
+    // are JSON arrays of actors. A missing row means "use the documented
+    // defaults" (resolved in `provider/privacy.ts`), so rows are only written on
+    // an explicit `PUT /api/me/privacy`.
+    id: "0017_privacy_settings",
+    up: (sqlite) => {
+      sqlite.exec(`
+        CREATE TABLE IF NOT EXISTS privacy_settings (
+          handle                TEXT PRIMARY KEY,
+          presence_visibility   TEXT NOT NULL,
+          profile_visibility    TEXT NOT NULL,
+          membership_visibility TEXT NOT NULL,
+          allow_list            TEXT NOT NULL,
+          deny_list             TEXT NOT NULL,
+          updated_at            INTEGER NOT NULL
+        ) STRICT;
+      `);
+    },
+  },
 ];
 
 const LEDGER_DDL = `

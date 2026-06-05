@@ -15,7 +15,13 @@
  * which falls out for free because guest keys live in the same `device_keys`
  * table resolved by {@link resolveActorKeys}.
  */
-import { type UserProfile, UserProfileSchema, rfc3339Timestamp } from "@forumall/shared";
+import {
+  type MetadataList,
+  MetadataListSchema,
+  type UserProfile,
+  UserProfileSchema,
+  rfc3339Timestamp,
+} from "@forumall/shared";
 import { eq } from "drizzle-orm";
 
 import type { Db } from "../db/index.ts";
@@ -38,15 +44,30 @@ export function getUserRow(db: Db, handle: string): UserRow | null {
   return db.drizzle.select().from(users).where(eq(users.handle, handle)).limit(1).all()[0] ?? null;
 }
 
+/** Parse a stored JSON `MetadataList` column, tolerating null/garbage. */
+function parseProfileMetadata(json: string | null): MetadataList {
+  if (json == null) return [];
+  try {
+    const v = JSON.parse(json);
+    const parsed = MetadataListSchema.safeParse(v);
+    return parsed.success ? parsed.data : [];
+  } catch {
+    return [];
+  }
+}
+
 /**
  * Build the canonical, schema-valid `UserProfile` for a local `handle` (§4.8,
- * §6). Minimal by design — the **P6 profile card extends this** (avatar, bio,
- * richer metadata, visibility). Returns `null` if no such user exists.
+ * §5.1, §6). This is the single profile builder; the profile "extra" `bio` is
+ * NOT part of `UserProfile` (it is gated by `profileVisibility` and surfaced
+ * only on the §6.2 response — see `provider/profile.ts`). Returns `null` if no
+ * such user exists.
  *
  * The profile `id` is the user's canonical HTTPS URI
  * (`https://{domain}/api/users/{handle}`); `domain` is this provider's host.
- * `guest` and `expiresAt` are surfaced only when set, so a full account's
- * profile omits them.
+ * `displayName` / `avatar` are surfaced when set. `updatedAt` is the
+ * profile-update time once a profile has been edited, otherwise `createdAt`.
+ * `guest` and `expiresAt` are surfaced only when set.
  *
  * @param domain This provider's host (canonicalized, e.g. `a.com`).
  */
@@ -58,11 +79,34 @@ export function buildUserProfile(db: Db, domain: string, handle: string): UserPr
     handle,
     domain,
     ...(row.displayName != null ? { displayName: row.displayName } : {}),
+    ...(row.avatar != null ? { avatar: row.avatar } : {}),
     ...(row.guest ? { guest: true } : {}),
     ...(row.expiresAt != null ? { expiresAt: rfc3339Timestamp(new Date(row.expiresAt)) } : {}),
-    updatedAt: rfc3339Timestamp(new Date(row.createdAt)),
-    metadata: [],
+    updatedAt: rfc3339Timestamp(new Date(row.updatedAt ?? row.createdAt)),
+    metadata: parseProfileMetadata(row.metadata),
   });
+}
+
+/** Fields settable via `PATCH /api/me/profile` (§6.3). All optional. */
+export interface ProfileUpdate {
+  readonly displayName?: string | undefined;
+  readonly avatar?: string | undefined;
+  readonly bio?: string | undefined;
+  readonly metadata?: MetadataList | undefined;
+}
+
+/**
+ * Apply a partial profile update for `handle`, bumping `updatedAt`. Only the
+ * provided fields are changed (omitted fields are untouched). Caller guarantees
+ * the user exists.
+ */
+export function updateUserProfile(db: Db, handle: string, update: ProfileUpdate): void {
+  const patch: Partial<UserRow> = { updatedAt: Date.now() };
+  if (update.displayName !== undefined) patch.displayName = update.displayName;
+  if (update.avatar !== undefined) patch.avatar = update.avatar;
+  if (update.bio !== undefined) patch.bio = update.bio;
+  if (update.metadata !== undefined) patch.metadata = JSON.stringify(update.metadata);
+  db.drizzle.update(users).set(patch).where(eq(users.handle, handle)).run();
 }
 
 /** Input to {@link createGuestUser}. */
@@ -88,8 +132,12 @@ export function createGuestUser(db: Db, input: CreateGuestInput): UserRow {
       recoveryEmail: null,
       guest: true,
       displayName: input.displayName ?? null,
+      avatar: null,
+      bio: null,
+      metadata: null,
       expiresAt: input.expiresAt ?? null,
       createdAt: Date.now(),
+      updatedAt: null,
     };
     try {
       db.drizzle.insert(users).values(row).run();

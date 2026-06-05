@@ -19,6 +19,7 @@ import { createGroupsRouter } from "./groups.ts";
 import { createInvitesRouter } from "./invites.ts";
 import { createMediaRouter } from "./media.ts";
 import type { AppBindings } from "./types.ts";
+import { createMeUserRouter, createUsersRouter } from "./users.ts";
 
 export function createApiRouter() {
   const api = new Hono<AppBindings>();
@@ -59,6 +60,12 @@ export function createApiRouter() {
 
   /** Contacts request/accept/remove/list (§6.7): `/api/me/contacts`. */
   api.route("/me", createMeContactsRouter());
+
+  /** Caller's account + profile + privacy (§5.1, §6.3, §6.6): `/api/me`. */
+  api.route("/me", createMeUserRouter());
+
+  /** Viewer-facing profile + membership listing (§6.2, §6.5): `/api/users`. */
+  api.route("/users", createUsersRouter());
 
   /** DM history reads + edit/delete on the stored copy (§7.4, §7.1). */
   api.route("/dms", createDmsRouter());

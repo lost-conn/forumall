@@ -83,12 +83,20 @@ export const users = sqliteTable("users", {
   guest: integer("guest", { mode: "boolean" }).notNull().default(false),
   /** Optional human display name; surfaced on the `UserProfile` (§4.8, §6). */
   displayName: text("display_name"),
+  /** Optional avatar HTTPS URI; surfaced on the `UserProfile` (§5.1, §6.2). */
+  avatar: text("avatar"),
+  /** Optional bio — a profile "extra" gated by `profileVisibility` (§6.2). */
+  bio: text("bio"),
+  /** Profile extension metadata, stored as JSON (`MetadataList`). */
+  metadata: text("metadata"),
   /** Optional account expiry (epoch millis); guests MAY carry one (§4.8). */
   expiresAt: integer("expires_at", { mode: "number" }),
   /** Creation time (epoch millis). */
   createdAt: integer("created_at", { mode: "number" })
     .notNull()
     .$defaultFn(() => Date.now()),
+  /** Last profile-update time (epoch millis); rendered as RFC 3339 `updatedAt`. */
+  updatedAt: integer("updated_at", { mode: "number" }),
 });
 
 export type UserRow = typeof users.$inferSelect;
@@ -665,3 +673,37 @@ export const contacts = sqliteTable(
 
 export type ContactRow = typeof contacts.$inferSelect;
 export type NewContactRow = typeof contacts.$inferInsert;
+
+/**
+ * Per-user privacy settings (spec §6.6). One row per LOCAL user `handle`. Each
+ * `*_visibility` column is a §6.1 `VisibilityPolicy` enum string governing the
+ * corresponding data: presence (§6.4), profile extras / bio (§6.2), and group
+ * membership listing (§6.5). `allow_list` / `deny_list` are JSON arrays of
+ * actors (`handle@domain`) that override the policy per §6.1 (deny wins, then
+ * allow, then the policy).
+ *
+ * A row is created/updated lazily on `PUT /api/me/privacy`. When no row exists
+ * the provider serves documented defaults (presence `sharedGroups`, profile
+ * `public`, membership `authenticated`) — see `provider/privacy.ts`.
+ */
+export const privacySettings = sqliteTable("privacy_settings", {
+  /** The LOCAL user handle these settings belong to. Primary key. */
+  handle: text("handle").primaryKey(),
+  /** Presence visibility (§6.4) — a `VisibilityPolicy` enum string. */
+  presenceVisibility: text("presence_visibility").notNull(),
+  /** Profile-extras (bio) visibility (§6.2) — a `VisibilityPolicy` enum string. */
+  profileVisibility: text("profile_visibility").notNull(),
+  /** Membership-listing visibility (§6.5) — a `VisibilityPolicy` enum string. */
+  membershipVisibility: text("membership_visibility").notNull(),
+  /** Override allow-list of actors, stored as a JSON `string[]`. */
+  allowList: text("allow_list").notNull(),
+  /** Override deny-list of actors, stored as a JSON `string[]`. */
+  denyList: text("deny_list").notNull(),
+  /** Last-update time (epoch millis). */
+  updatedAt: integer("updated_at", { mode: "number" })
+    .notNull()
+    .$defaultFn(() => Date.now()),
+});
+
+export type PrivacySettingsRow = typeof privacySettings.$inferSelect;
+export type NewPrivacySettingsRow = typeof privacySettings.$inferInsert;

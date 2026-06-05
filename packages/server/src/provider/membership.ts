@@ -182,6 +182,32 @@ export function listMembersPage(
   return { items: pageRows.map(rowToMember), nextCursor };
 }
 
+/** Every group id `user` is a member of (any role), as a `Set` for fast lookup. */
+export function groupIdsOf(db: Db, user: string): Set<string> {
+  const rows = db.drizzle
+    .select({ groupId: groupMembers.groupId })
+    .from(groupMembers)
+    .where(eq(groupMembers.user, user))
+    .all();
+  return new Set(rows.map((r) => r.groupId));
+}
+
+/**
+ * Whether `a` and `b` share at least one group (the §6.1 `sharedGroups` tier).
+ * Side-effect-free; both arguments are canonical `handle@domain` actors.
+ */
+export function sharesGroupWith(db: Db, a: string, b: string): boolean {
+  if (a === b) return true;
+  const aGroups = groupIdsOf(db, a);
+  if (aGroups.size === 0) return false;
+  const bRows = db.drizzle
+    .select({ groupId: groupMembers.groupId })
+    .from(groupMembers)
+    .where(eq(groupMembers.user, b))
+    .all();
+  return bRows.some((r) => aGroups.has(r.groupId));
+}
+
 // ---------------------------------------------------------------------------
 // Membership mutations
 // ---------------------------------------------------------------------------
