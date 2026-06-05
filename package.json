@@ -1,0 +1,19 @@
+{
+  "name": "forumall",
+  "private": true,
+  "type": "module",
+  "workspaces": ["packages/*", "e2e"],
+  "scripts": {
+    "dev": "bun run --filter '*' dev",
+    "build": "bun run --filter '@forumall/web' build",
+    "typecheck": "bun run --filter '*' typecheck",
+    "test": "bun test",
+    "lint": "biome check .",
+    "format": "biome format --write ."
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "@types/bun": "^1.2.0",
+    "typescript": "^5.7.3"
+  }
+}

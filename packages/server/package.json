@@ -1,0 +1,21 @@
+{
+  "name": "@forumall/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun run --hot src/index.ts",
+    "start": "bun run src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@forumall/shared": "workspace:*",
+    "drizzle-orm": "^0.38.4",
+    "hono": "^4.6.20",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "drizzle-kit": "^0.30.4"
+  }
+}
