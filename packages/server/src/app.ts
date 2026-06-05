@@ -121,6 +121,9 @@ export function createApp(config: Config, deps: AppDeps): AppWithWebSocket {
     db: deps.db,
     hub,
     presenceRegistry,
+    // §8.5 step 3: the WS handshake resolves a REMOTE actor's `authenticate` key
+    // via this same user-keys cache the HTTP signature path uses.
+    userKeysCache,
     ...(deps.wsTimings !== undefined ? { timings: deps.wsTimings } : {}),
   });
   app.get(

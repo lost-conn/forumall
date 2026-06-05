@@ -17,10 +17,12 @@
  *     before auth closes the connection. No valid `authenticate` within ~10s
  *     closes the connection.
  *  3. `authenticate` is verified with the shared {@link verifyWsAuthenticate}
- *     over the challenge nonce we issued (timestamp skew ±300s, local key
- *     resolution; remote actors are P7 and fail closed). On success →
- *     `authenticated { actor }` + register in the hub. On failure → an `error`
- *     event then close code 4001.
+ *     over the challenge nonce we issued (timestamp skew ±300s). Key resolution
+ *     splits on the actor's home domain: a LOCAL actor resolves a device key
+ *     locally; a REMOTE actor (§8.5 step 3) resolves its key from its home
+ *     provider via the §4.6 user-keys cache (with the §8 connect-time federation
+ *     policy applied first). On success → `authenticated { actor }` + register in
+ *     the hub. On failure → an `error` event then close code 4001.
  *
  * After auth, unknown command types are ignored (open-world, §2.3); malformed
  * frames get an `error` event.
@@ -62,6 +64,8 @@ import type { Db } from "../db/index.ts";
 import { channelVisibleTo, getChannelRow } from "../provider/channels.ts";
 import { resolveActorKeys } from "../provider/device-keys.ts";
 import { isDmParticipant } from "../provider/dms.ts";
+import { isProviderAllowed } from "../provider/federation/policy.ts";
+import type { RemoteUserKeysCache } from "../provider/federation/user-keys-cache.ts";
 import {
   type MessageRecord,
   createMessage,
@@ -217,6 +221,12 @@ export interface WsHandlerDeps {
   readonly hub: Hub;
   /** Shared presence-subscription registry (§7.5). */
   readonly presenceRegistry: PresenceRegistry;
+  /**
+   * Shared remote user-keys cache (§4.6). Used by the WS handshake to resolve a
+   * **remote** actor's `authenticate` key from the actor's home provider (§8.5
+   * step 3), with a forced re-fetch on a verify miss for key rotation/revocation.
+   */
+  readonly userKeysCache: RemoteUserKeysCache;
   /** Heartbeat/handshake timings; defaults to {@link DEFAULT_WS_TIMINGS}. */
   readonly timings?: Partial<WsTimings>;
 }
@@ -227,7 +237,7 @@ export interface WsHandlerDeps {
  * straight to the route, while the closure captures `deps` + per-socket state.
  */
 export function createWsHandlers(deps: WsHandlerDeps) {
-  const { config, db, hub, presenceRegistry } = deps;
+  const { config, db, hub, presenceRegistry, userKeysCache } = deps;
   const timings: WsTimings = { ...DEFAULT_WS_TIMINGS, ...deps.timings };
   const authority = canonicalAuthority(config.domain);
 
@@ -390,7 +400,13 @@ export function createWsHandlers(deps: WsHandlerDeps) {
           ws.close(WS_CLOSE_AUTH_FAILED, "expected authenticate first");
           return;
         }
-        handleAuthenticate(ws, state, raw_json, envelope.id);
+        // Remote key resolution (§8.5 step 3) makes the handshake async; this is
+        // a fire-and-forget event handler, so we don't await — `handleAuthenticate`
+        // reports every outcome (ack or `error`+close) on the socket itself. A
+        // thrown rejection (unexpected) falls back to an auth-failed close.
+        void handleAuthenticate(ws, state, raw_json, envelope.id).catch(() => {
+          if (!state.authenticated) ws.close(WS_CLOSE_AUTH_FAILED, "authentication failed");
+        });
         return;
       }
 
@@ -464,13 +480,41 @@ export function createWsHandlers(deps: WsHandlerDeps) {
   // Command handlers
   // -------------------------------------------------------------------------
 
-  /** §7.1 Authentication: verify the signed challenge and register the connection. */
-  function handleAuthenticate(
+  /**
+   * §7.1 + §8.5 Authentication: verify the signed challenge and register the
+   * connection.
+   *
+   * ## Local vs remote key resolution (§8.5 step 3)
+   * The `authenticate` canonical string binds the **home provider being connected
+   * to** — i.e. THIS provider's `config.domain` (`authority`) — regardless of the
+   * actor's origin (§8.5). Key resolution splits on the actor's home domain:
+   *  - **Local** actor (`handle@<this host>`) → {@link resolveActorKeys} as before.
+   *  - **Remote** actor (a different home provider) → resolve the device key from
+   *    the actor's home provider via {@link RemoteUserKeysCache} (§4.6); on a
+   *    verify miss for a key believed valid, force one cache re-fetch and retry,
+   *    so rotation/revocation is picked up promptly (§4.6, §8.5 step 3).
+   *
+   * ## Connect-time federation policy (§8.5 connection notes)
+   * For a remote actor the §8 allow/deny policy ({@link isProviderAllowed}) is
+   * applied at the handshake BEFORE any key fetch; a disallowed peer gets an
+   * `error` then close 4001. Local actors are unaffected.
+   *
+   * ## Guests (§4.8)
+   * Guest accounts are NOT federated and MUST NOT open a remote WS connection. In
+   * this implementation guests are provider-LOCAL only (provisioned via invites,
+   * §5.6/§4.8) — there is no notion of a remote guest, and the §4.6 keys-response
+   * carries no guest flag, so a *remote* actor reaching this path can never be a
+   * local guest. We therefore cannot cheaply detect (and so do not separately
+   * refuse) a remote actor that is flagged guest at its home provider; that
+   * refusal is the remote provider's MAY per §4.8. A local guest authenticating
+   * here is a normal local actor and is allowed (the WS is to its own home).
+   */
+  async function handleAuthenticate(
     ws: WsContext,
     state: ConnState,
     rawFrame: unknown,
     frameId: string,
-  ): void {
+  ): Promise<void> {
     const fail = (message: string): void => {
       send(ws, errorEvent("unauthorized", message, 401, frameId));
       ws.close(WS_CLOSE_AUTH_FAILED, "authentication failed");
@@ -502,9 +546,7 @@ export function createWsHandlers(deps: WsHandlerDeps) {
       return;
     }
 
-    // Resolve the actor's verification key (§4.5 step 6). Local actors only;
-    // a non-local actor domain is P7 (remote key resolution via the §4.6 keys
-    // endpoint) and fails closed here, exactly like the HTTP signature path.
+    // Parse the actor identity (§4.5 step 6 split).
     const at = actor.lastIndexOf("@");
     if (at <= 0 || at === actor.length - 1) {
       fail("malformed actor");
@@ -512,27 +554,57 @@ export function createWsHandlers(deps: WsHandlerDeps) {
     }
     const handle = actor.slice(0, at);
     const actorDomain = canonicalAuthority(actor.slice(at + 1));
-    if (actorDomain !== authority) {
-      // P7: fetch the remote actor's keys (§4.6) and verify; fail closed now.
-      fail("remote actor resolution is not yet supported");
-      return;
-    }
-    const key = resolveActorKeys(db, handle).find((k) => k.keyId === keyId);
-    if (!key) {
-      fail("no active device key matches actor/keyId");
-      return;
+
+    // The signature is always bound to THIS provider's authority (the home
+    // provider being connected to, §8.5) — never the actor's own domain.
+    const verifyWith = (publicKey: string): boolean =>
+      verifyWsAuthenticate({
+        publicKey,
+        authority,
+        challengeNonce: state.challengeNonce,
+        timestamp,
+        signature,
+      });
+
+    if (actorDomain === authority) {
+      // --- Local actor: resolve a device key locally (§4.5 step 6) -----------
+      const key = resolveActorKeys(db, handle).find((k) => k.keyId === keyId);
+      if (!key) {
+        fail("no active device key matches actor/keyId");
+        return;
+      }
+      if (!verifyWith(key.publicKey)) {
+        fail("invalid authenticate signature");
+        return;
+      }
+    } else {
+      // --- Remote actor (§8.5 step 3) ----------------------------------------
+      // Connect-time federation policy (§8.5 connection notes): a disallowed peer
+      // is rejected BEFORE any key fetch.
+      if (!isProviderAllowed(config, actorDomain)) {
+        fail(`federation with ${actorDomain} is not permitted by this provider's policy`);
+        return;
+      }
+
+      // Resolve the actor's published device key from its home provider (§4.6),
+      // verifying against it; on a miss (unknown key id *or* a key that fails to
+      // verify) force one keys-endpoint re-fetch and retry, mirroring the HTTP
+      // signature path so rotation/revocation is picked up promptly.
+      const cached = await userKeysCache.getActorKey(actor, keyId);
+      let resolved = cached != null && verifyWith(cached.publicKey);
+      if (!resolved) {
+        const fresh = await userKeysCache.getActorKey(actor, keyId, { forceRefresh: true });
+        resolved = fresh != null && verifyWith(fresh.publicKey);
+      }
+      if (!resolved) {
+        fail("no active remote device key matches actor/keyId, or invalid signature");
+        return;
+      }
     }
 
-    // §7.1 step 3 (crypto): verify the signature over OUR challenge nonce.
-    const ok = verifyWsAuthenticate({
-      publicKey: key.publicKey,
-      authority,
-      challengeNonce: state.challengeNonce,
-      timestamp,
-      signature,
-    });
-    if (!ok) {
-      fail("invalid authenticate signature");
+    // A late frame may have raced the async key resolution and already closed /
+    // re-authenticated this connection; bail if so (don't double-register).
+    if (state.authenticated || state.challengeUsed) {
       return;
     }
 

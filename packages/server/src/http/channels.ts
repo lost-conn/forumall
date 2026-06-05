@@ -35,6 +35,7 @@ import {
   updateChannel,
 } from "../provider/channels.ts";
 import { getGroupRow } from "../provider/groups.ts";
+import { addMember, getMemberRow, requestToJoin, rowToMember } from "../provider/membership.ts";
 import { canActor, isMember } from "../provider/permissions.ts";
 import { AppError } from "./errors.ts";
 import { createMessagesRouter } from "./messages.ts";
@@ -191,6 +192,60 @@ export function createChannelsRouter() {
 
     deleteChannel(db, channelId);
     return c.body(null, 204);
+  });
+
+  // -- POST /api/groups/{groupId}/channels/{channelId}/join (§8.2, signed) --
+  //
+  // The endpoint a (typically REMOTE, §8.5 step 1) user calls to become a member
+  // before subscribing for live events. In this implementation channel
+  // membership IS group membership + channel tier: there is no per-channel
+  // member list, so joining a channel joins its PARENT GROUP, honoring the
+  // group's `joinPolicy` exactly like `POST /api/groups/{groupId}/join` (§5.7):
+  //   - `open`    → immediate `member` (201, returns the `Member`);
+  //   - `request` → pending `JoinRequest` (202, idempotent while pending);
+  //   - `invite`  → 403 (must redeem an invite, §5.6).
+  // A remote user can call this because remote user-signed requests now verify
+  // (§4.6); subscribe-time tier/visibility (§7.1) then gates real-time access.
+  router.post("/:channelId/join", signed, async (c) => {
+    const { db } = c.var;
+    const actor = c.var.actor;
+    if (!actor) throw AppError.unauthorized(); // unreachable: middleware sets it
+    const groupId = requireParam(c, "groupId");
+    const channelId = requireParam(c, "channelId");
+
+    if (!getGroupRow(db, groupId)) throw AppError.notFound({ detail: "no such group" });
+    const channel = getChannelRow(db, channelId);
+    if (!channel || channel.groupId !== groupId) {
+      throw AppError.notFound({ detail: "no such channel" });
+    }
+    const group = getGroupRow(db, groupId);
+    if (!group) throw AppError.notFound({ detail: "no such group" }); // raced delete
+
+    // Already a member → idempotent return of their group membership (200).
+    const existing = getMemberRow(db, groupId, actor.actor);
+    if (existing) return c.json(rowToMember(existing), 200);
+
+    // The body is optional; only the `request` policy reads `{ message }`.
+    const raw = await c.req.json().catch(() => undefined as Record<string, unknown> | undefined);
+    const message =
+      raw && typeof raw === "object" && typeof raw.message === "string" ? raw.message : undefined;
+
+    switch (group.joinPolicy) {
+      case "open": {
+        const member = addMember(db, groupId, actor.actor, "member");
+        return c.json(member, 201);
+      }
+      case "request": {
+        const request = requestToJoin(db, groupId, actor.actor, message);
+        return c.json(request, 202);
+      }
+      default: {
+        // `invite` (and any unknown policy): must redeem an invite (§5.6).
+        throw AppError.forbidden({
+          detail: "this group is invite-only; redeem an invite to join",
+        });
+      }
+    }
   });
 
   // -- Message history nested under the channel (§7.2). Mounted here so
