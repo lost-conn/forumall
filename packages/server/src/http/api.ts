@@ -14,6 +14,7 @@ import { Hono } from "hono";
 import { TIERS } from "../provider/tiers.ts";
 import { createAuthRouter } from "./auth.ts";
 import { createGroupsRouter } from "./groups.ts";
+import { createInvitesRouter } from "./invites.ts";
 import type { AppBindings } from "./types.ts";
 
 export function createApiRouter() {
@@ -37,6 +38,9 @@ export function createApiRouter() {
 
   /** Group CRUD + permission model (§5.2, §5.5). */
   api.route("/groups", createGroupsRouter());
+
+  /** Invite redemption + guest provisioning (§5.6, §4.8). */
+  api.route("/invites", createInvitesRouter());
 
   // Later: api.route("/channels", …); …
 

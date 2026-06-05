@@ -166,6 +166,61 @@ const migrations: readonly Migration[] = [
       );
     },
   },
+  {
+    // Guest accounts (§4.8): make `password_hash` nullable and add the
+    // `guest` / `display_name` / `expires_at` columns to `users`.
+    //
+    // SQLite cannot ALTER a NOT NULL constraint off an existing column, so we
+    // rebuild the table (create new → copy → drop → rename) inside the
+    // migration's transaction. The DB is greenfield, but the copy preserves any
+    // rows that exist (full accounts default to guest=0, the others NULL). The
+    // table-rebuild recipe disables foreign-key enforcement; `users` has no FKs
+    // pointing at it via SQLite constraints (references are by `handle` string),
+    // so a plain rebuild is safe.
+    id: "0008_users_guest_columns",
+    up: (sqlite) => {
+      sqlite.exec(`
+        CREATE TABLE users_new (
+          handle         TEXT PRIMARY KEY,
+          password_hash  TEXT,
+          recovery_email TEXT,
+          guest          INTEGER NOT NULL DEFAULT 0,
+          display_name   TEXT,
+          expires_at     INTEGER,
+          created_at     INTEGER NOT NULL
+        ) STRICT;
+      `);
+      sqlite.exec(`
+        INSERT INTO users_new (handle, password_hash, recovery_email, guest, display_name, expires_at, created_at)
+        SELECT handle, password_hash, recovery_email, 0, NULL, NULL, created_at
+        FROM users;
+      `);
+      sqlite.exec("DROP TABLE users;");
+      sqlite.exec("ALTER TABLE users_new RENAME TO users;");
+    },
+  },
+  {
+    id: "0009_invites",
+    up: (sqlite) => {
+      sqlite.exec(`
+        CREATE TABLE IF NOT EXISTS invites (
+          id           TEXT PRIMARY KEY,
+          group_id     TEXT NOT NULL,
+          token        TEXT NOT NULL UNIQUE,
+          channel_id   TEXT,
+          role         TEXT NOT NULL DEFAULT 'member',
+          grants_guest INTEGER NOT NULL DEFAULT 0,
+          max_uses     INTEGER,
+          uses         INTEGER NOT NULL DEFAULT 0,
+          expires_at   INTEGER,
+          created_by   TEXT NOT NULL,
+          created_at   INTEGER NOT NULL
+        ) STRICT;
+      `);
+      sqlite.exec("CREATE INDEX IF NOT EXISTS idx_invites_token ON invites (token);");
+      sqlite.exec("CREATE INDEX IF NOT EXISTS idx_invites_group_id ON invites (group_id);");
+    },
+  },
 ];
 
 const LEDGER_DDL = `

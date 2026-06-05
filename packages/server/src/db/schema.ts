@@ -55,14 +55,28 @@ export type NewProviderKeyRow = typeof providerKeys.$inferInsert;
  * (§4.1.4) — verification is fully self-contained (salt + params embedded), so
  * no separate salt/params columns are needed. The hash is internal-only and
  * MUST never appear in an HTTP response.
+ *
+ * `password_hash` is **nullable**: guest accounts (§4.8) authenticate with a
+ * device key only and have no password. A `guest` row also MAY carry an
+ * `expires_at` (after which the provider SHOULD revoke it) and a `display_name`.
  */
 export const users = sqliteTable("users", {
   /** Provider-scoped handle, e.g. `alice`. Primary key + unique identity. */
   handle: text("handle").primaryKey(),
-  /** Argon2id PHC string (`$argon2id$v=19$m=…,t=…,p=…$salt$hash`). Secret. */
-  passwordHash: text("password_hash").notNull(),
+  /**
+   * Argon2id PHC string (`$argon2id$v=19$m=…,t=…,p=…$salt$hash`). Secret.
+   * Nullable: guest accounts (§4.8) have no password (device key is the only
+   * credential).
+   */
+  passwordHash: text("password_hash"),
   /** Optional recovery email for account recovery (§4.1.3). */
   recoveryEmail: text("recovery_email"),
+  /** Guest-account flag (§4.8). 0 = full account, 1 = guest (no password). */
+  guest: integer("guest", { mode: "boolean" }).notNull().default(false),
+  /** Optional human display name; surfaced on the `UserProfile` (§4.8, §6). */
+  displayName: text("display_name"),
+  /** Optional account expiry (epoch millis); guests MAY carry one (§4.8). */
+  expiresAt: integer("expires_at", { mode: "number" }),
   /** Creation time (epoch millis). */
   createdAt: integer("created_at", { mode: "number" })
     .notNull()
@@ -287,3 +301,53 @@ export const joinRequests = sqliteTable(
 
 export type JoinRequestRow = typeof joinRequests.$inferSelect;
 export type NewJoinRequestRow = typeof joinRequests.$inferInsert;
+
+/**
+ * Invites / join links (spec §5.6). One row per invite. `token` is a
+ * high-entropy opaque secret embedded in the shareable link
+ * (`https://{domain}/invite/{token}`); redeeming it joins the issuing group (or
+ * a specific `channel_id`) with `role` (default `member`) without per-person
+ * approval. An invite MAY be multi-use (`max_uses`), time-limited
+ * (`expires_at`), and MAY provision a provider-local guest account
+ * (`grants_guest`, §4.8). `uses` counts redemptions and is incremented
+ * atomically against `max_uses`.
+ *
+ * `created_by` is the canonical actor (`handle@domain`) that minted it. Deleting
+ * the owning group cascades to its invites (`provider/groups.ts`).
+ */
+export const invites = sqliteTable(
+  "invites",
+  {
+    /** Stable invite id, e.g. `inv_<base64url>`. Primary key. */
+    id: text("id").primaryKey(),
+    /** FK to `groups.id`. */
+    groupId: text("group_id").notNull(),
+    /** High-entropy opaque secret embedded in the join link. Unique. */
+    token: text("token").notNull().unique(),
+    /** Optional FK to `channels.id`: redeem joins this channel's group. */
+    channelId: text("channel_id"),
+    /** Role granted on redemption (`owner|admin|member|guest`). Default member. */
+    role: text("role").notNull().default("member"),
+    /** Whether this invite may provision a guest account (§4.8). */
+    grantsGuest: integer("grants_guest", { mode: "boolean" }).notNull().default(false),
+    /** Optional max redemptions; null = unlimited. */
+    maxUses: integer("max_uses", { mode: "number" }),
+    /** Redemption count (incremented atomically). */
+    uses: integer("uses", { mode: "number" }).notNull().default(0),
+    /** Optional expiry (epoch millis); rejected once `now >= expires_at`. */
+    expiresAt: integer("expires_at", { mode: "number" }),
+    /** Minting actor (`handle@domain`). */
+    createdBy: text("created_by").notNull(),
+    /** Creation time (epoch millis); rendered as RFC 3339 `createdAt`. */
+    createdAt: integer("created_at", { mode: "number" })
+      .notNull()
+      .$defaultFn(() => Date.now()),
+  },
+  (t) => ({
+    tokenIdx: index("idx_invites_token").on(t.token),
+    groupIdx: index("idx_invites_group_id").on(t.groupId),
+  }),
+);
+
+export type InviteRow = typeof invites.$inferSelect;
+export type NewInviteRow = typeof invites.$inferInsert;
