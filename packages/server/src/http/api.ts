@@ -13,6 +13,7 @@ import { Hono } from "hono";
 
 import { TIERS } from "../provider/tiers.ts";
 import { createAuthRouter } from "./auth.ts";
+import { createFederationContactsRouter, createMeContactsRouter } from "./contacts.ts";
 import { createDmsRouter, createFederationDmsRouter, createMeDmsRouter } from "./dms.ts";
 import { createGroupsRouter } from "./groups.ts";
 import { createInvitesRouter } from "./invites.ts";
@@ -50,8 +51,14 @@ export function createApiRouter() {
   /** DM federation ingest (§7.4, §8.3): the single user-signed send path. */
   api.route("/federation/dms", createFederationDmsRouter());
 
+  /** Contacts federation receiver (§6.7): cross-provider request/accept/remove. */
+  api.route("/federation/contacts", createFederationContactsRouter());
+
   /** Caller's DM conversation list (§7.4): `GET /api/me/dms`. */
   api.route("/me", createMeDmsRouter());
+
+  /** Contacts request/accept/remove/list (§6.7): `/api/me/contacts`. */
+  api.route("/me", createMeContactsRouter());
 
   /** DM history reads + edit/delete on the stored copy (§7.4, §7.1). */
   api.route("/dms", createDmsRouter());

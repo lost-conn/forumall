@@ -616,3 +616,52 @@ export const dmConversations = sqliteTable(
 
 export type DmConversationRow = typeof dmConversations.$inferSelect;
 export type NewDmConversationRow = typeof dmConversations.$inferInsert;
+
+/**
+ * Contacts (spec §6.7). A mutually-consented relationship that backs the
+ * `contacts` visibility tier (§6.1). One row per (owner, user) FROM the local
+ * `owner`'s perspective:
+ *
+ *  - `owner` is the LOCAL handle whose side of the relationship this row holds.
+ *  - `user` is the OTHER actor (`handle@domain`), local or remote.
+ *  - `state` is `pending` | `accepted`.
+ *  - `direction` is `outgoing` (owner sent the request) | `incoming` (owner
+ *    received it); meaningful only while `pending`, retained (but ignored) once
+ *    `accepted`.
+ *
+ * A relationship is `accepted` for the `contacts` tier only once BOTH sides hold
+ * an `accepted` row. For a fully-local pair that is both local rows; across
+ * providers each provider independently converges its own row via the
+ * federation receiver (`POST /api/federation/contacts`). This provider trusts
+ * its OWN accepted row when answering the tier (`areContacts`), since that row
+ * only reaches `accepted` after the mutual handshake.
+ */
+export const contacts = sqliteTable(
+  "contacts",
+  {
+    /** The LOCAL handle whose perspective this row holds. */
+    owner: text("owner").notNull(),
+    /** The other actor (`handle@domain`), local or remote. */
+    user: text("user").notNull(),
+    /** Relationship state: `pending` | `accepted`. */
+    state: text("state").notNull(),
+    /** `outgoing` | `incoming`; meaningful while `pending`. */
+    direction: text("direction").notNull(),
+    /** Creation time (epoch millis); rendered as RFC 3339 `createdAt`. */
+    createdAt: integer("created_at", { mode: "number" })
+      .notNull()
+      .$defaultFn(() => Date.now()),
+    /** Last-update time (epoch millis); rendered as RFC 3339 `updatedAt`. */
+    updatedAt: integer("updated_at", { mode: "number" })
+      .notNull()
+      .$defaultFn(() => Date.now()),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.owner, t.user] }),
+    // Listing an owner's contacts (`GET /api/me/contacts`).
+    ownerIdx: index("idx_contacts_owner").on(t.owner),
+  }),
+);
+
+export type ContactRow = typeof contacts.$inferSelect;
+export type NewContactRow = typeof contacts.$inferInsert;

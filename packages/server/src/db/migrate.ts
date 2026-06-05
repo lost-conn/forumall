@@ -365,6 +365,27 @@ const migrations: readonly Migration[] = [
       );
     },
   },
+  {
+    // Contacts (§6.7). A mutually-consented relationship backing the `contacts`
+    // visibility tier (§6.1). One row per (owner, user) from the local owner's
+    // perspective; `direction` is meaningful while `state` is `pending`. The
+    // owner index backs the contact listing (`GET /api/me/contacts`).
+    id: "0015_contacts",
+    up: (sqlite) => {
+      sqlite.exec(`
+        CREATE TABLE IF NOT EXISTS contacts (
+          owner      TEXT NOT NULL,
+          user       TEXT NOT NULL,
+          state      TEXT NOT NULL,
+          direction  TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY (owner, user)
+        ) STRICT;
+      `);
+      sqlite.exec("CREATE INDEX IF NOT EXISTS idx_contacts_owner ON contacts (owner);");
+    },
+  },
 ];
 
 const LEDGER_DDL = `
