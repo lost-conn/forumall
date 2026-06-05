@@ -316,6 +316,55 @@ const migrations: readonly Migration[] = [
       sqlite.exec("CREATE INDEX IF NOT EXISTS idx_media_owner ON media (owner);");
     },
   },
+  {
+    // Direct messages (§7.4, §8.3). `dm_messages` is the recipient's inbox (no
+    // sender copy); `seq` shares the global timeline space with `messages` so
+    // the §7.2 cursor/`dm.message` cursor is one space. `dm_conversations` is the
+    // per-inbox summary that backs listing AND participation checks. The
+    // partial unique index enforces (owner, dm_id, author, client_message_id)
+    // idempotency only for keyed rows.
+    id: "0014_direct_messages",
+    up: (sqlite) => {
+      sqlite.exec(`
+        CREATE TABLE IF NOT EXISTS dm_messages (
+          id                TEXT PRIMARY KEY,
+          dm_id             TEXT NOT NULL,
+          owner             TEXT NOT NULL,
+          author            TEXT NOT NULL,
+          content           TEXT NOT NULL,
+          attachments       TEXT NOT NULL,
+          reference         TEXT,
+          seq               INTEGER NOT NULL,
+          created_at        INTEGER NOT NULL,
+          edited_at         INTEGER,
+          deleted_at        INTEGER,
+          edit_until        INTEGER NOT NULL,
+          client_message_id TEXT
+        ) STRICT;
+      `);
+      sqlite.exec(
+        "CREATE INDEX IF NOT EXISTS idx_dm_messages_owner_dm_seq ON dm_messages (owner, dm_id, seq);",
+      );
+      sqlite.exec(
+        `CREATE UNIQUE INDEX IF NOT EXISTS idx_dm_messages_owner_dm_author_client_msg
+           ON dm_messages (owner, dm_id, author, client_message_id)
+           WHERE client_message_id IS NOT NULL;`,
+      );
+      sqlite.exec(`
+        CREATE TABLE IF NOT EXISTS dm_conversations (
+          owner             TEXT NOT NULL,
+          dm_id             TEXT NOT NULL,
+          counterparty      TEXT NOT NULL,
+          updated_at        INTEGER NOT NULL,
+          last_message_seq  INTEGER NOT NULL,
+          PRIMARY KEY (owner, dm_id)
+        ) STRICT;
+      `);
+      sqlite.exec(
+        "CREATE INDEX IF NOT EXISTS idx_dm_conversations_owner_updated ON dm_conversations (owner, updated_at);",
+      );
+    },
+  },
 ];
 
 const LEDGER_DDL = `

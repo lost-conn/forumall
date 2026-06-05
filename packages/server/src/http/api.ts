@@ -13,6 +13,7 @@ import { Hono } from "hono";
 
 import { TIERS } from "../provider/tiers.ts";
 import { createAuthRouter } from "./auth.ts";
+import { createDmsRouter, createFederationDmsRouter, createMeDmsRouter } from "./dms.ts";
 import { createGroupsRouter } from "./groups.ts";
 import { createInvitesRouter } from "./invites.ts";
 import { createMediaRouter } from "./media.ts";
@@ -45,6 +46,15 @@ export function createApiRouter() {
 
   /** Media upload + serve (§5.8): single-step `multipart/form-data` upload. */
   api.route("/media", createMediaRouter());
+
+  /** DM federation ingest (§7.4, §8.3): the single user-signed send path. */
+  api.route("/federation/dms", createFederationDmsRouter());
+
+  /** Caller's DM conversation list (§7.4): `GET /api/me/dms`. */
+  api.route("/me", createMeDmsRouter());
+
+  /** DM history reads + edit/delete on the stored copy (§7.4, §7.1). */
+  api.route("/dms", createDmsRouter());
 
   // Later: api.route("/channels", …); …
 

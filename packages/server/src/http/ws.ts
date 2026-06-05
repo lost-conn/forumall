@@ -56,6 +56,7 @@ import type { Config } from "../config.ts";
 import type { Db } from "../db/index.ts";
 import { channelVisibleTo, getChannelRow } from "../provider/channels.ts";
 import { resolveActorKeys } from "../provider/device-keys.ts";
+import { isDmParticipant } from "../provider/dms.ts";
 import {
   type MessageRecord,
   createMessage,
@@ -568,6 +569,18 @@ export function createWsHandlers(deps: WsHandlerDeps) {
     // groupId (needed to build the replayed `message.created` events).
     const resumable: { channelId: string; groupId: string; sinceCursor: string }[] = [];
     for (const channelId of parsed.data.data.channels) {
+      // A `dm_…` target is a DM subscription (§7.4). Delivery itself uses
+      // `publishToActor`, so subscribing to a dm is an explicit opt-in/ack: we
+      // authorize it iff the caller is a participant (has a `dm_conversations`
+      // row). No resume/replay path for DMs in v0.1.
+      if (channelId.startsWith("dm_")) {
+        if (state.handle && isDmParticipant(db, state.handle, channelId)) {
+          authorized.push(channelId);
+        } else {
+          forbidden.push(channelId);
+        }
+        continue;
+      }
       const row = getChannelRow(db, channelId);
       // Unknown channel or actor not permitted by tier/membership → forbidden.
       if (row && channelVisibleTo(db, row.groupId, row.tier, state.actor)) {
