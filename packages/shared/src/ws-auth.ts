@@ -10,11 +10,7 @@
  */
 import * as ed from "@noble/ed25519";
 
-import {
-  type PrivateKeyInput,
-  type PublicKeyInput,
-  canonicalAuthority,
-} from "./signing.ts";
+import { type PrivateKeyInput, type PublicKeyInput, canonicalAuthority } from "./signing.ts";
 
 // `signing.ts` already wires `ed.etc.sha512Sync` at module load; importing from
 // it above guarantees that setup runs before any sign/verify call here.

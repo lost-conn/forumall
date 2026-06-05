@@ -11,9 +11,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   type AuthBootstrapResponse,
-  generateKeyPair,
   ProblemDetailsSchema,
   UserKeysResponseSchema,
+  generateKeyPair,
 } from "@forumall/shared";
 
 import { createApp } from "../src/app.ts";

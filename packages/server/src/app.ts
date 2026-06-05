@@ -21,8 +21,8 @@ import { createApiRouter } from "./http/api.ts";
 import { createDiscoveryRouter } from "./http/discovery.ts";
 import { notFound, onError } from "./http/errors.ts";
 import { createStaticHandler } from "./http/static.ts";
-import { createUserKeysRouter } from "./http/user-keys.ts";
 import type { AppBindings } from "./http/types.ts";
+import { createUserKeysRouter } from "./http/user-keys.ts";
 
 export interface AppDeps {
   readonly db: Db;

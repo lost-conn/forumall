@@ -13,6 +13,7 @@ import { Hono } from "hono";
 
 import { TIERS } from "../provider/tiers.ts";
 import { createAuthRouter } from "./auth.ts";
+import { createGroupsRouter } from "./groups.ts";
 import type { AppBindings } from "./types.ts";
 
 export function createApiRouter() {
@@ -34,7 +35,10 @@ export function createApiRouter() {
   /** Local auth: register + login → bootstrap tokens (§4.1, §4.2). */
   api.route("/auth", createAuthRouter());
 
-  // Later: api.route("/groups", groupsRouter); api.route("/channels", …); …
+  /** Group CRUD + permission model (§5.2, §5.5). */
+  api.route("/groups", createGroupsRouter());
+
+  // Later: api.route("/channels", …); …
 
   return api;
 }

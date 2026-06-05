@@ -8,9 +8,9 @@
  */
 import { OFSCP_VERSION, type ProviderDiscovery, rfc3339Timestamp } from "@forumall/shared";
 
+import packageJson from "../../package.json" with { type: "json" };
 import type { Config } from "../config.ts";
 import type { Db } from "../db/index.ts";
-import packageJson from "../../package.json" with { type: "json" };
 import { getProviderSigningKey, toPublicKey } from "./signing-key.ts";
 import { TIER_IDS } from "./tiers.ts";
 

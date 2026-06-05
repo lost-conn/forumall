@@ -99,6 +99,35 @@ const migrations: readonly Migration[] = [
       );
     },
   },
+  {
+    id: "0005_groups_and_members",
+    up: (sqlite) => {
+      sqlite.exec(`
+        CREATE TABLE IF NOT EXISTS groups (
+          id          TEXT PRIMARY KEY,
+          name        TEXT NOT NULL,
+          description TEXT,
+          owner       TEXT NOT NULL,
+          join_policy TEXT NOT NULL,
+          tier        TEXT NOT NULL,
+          permissions TEXT NOT NULL,
+          metadata    TEXT NOT NULL,
+          created_at  INTEGER NOT NULL,
+          updated_at  INTEGER NOT NULL
+        ) STRICT;
+      `);
+      sqlite.exec(`
+        CREATE TABLE IF NOT EXISTS group_members (
+          group_id  TEXT NOT NULL,
+          user      TEXT NOT NULL,
+          role      TEXT NOT NULL,
+          joined_at INTEGER NOT NULL,
+          PRIMARY KEY (group_id, user)
+        ) STRICT;
+      `);
+      sqlite.exec("CREATE INDEX IF NOT EXISTS idx_group_members_user ON group_members (user);");
+    },
+  },
 ];
 
 const LEDGER_DDL = `

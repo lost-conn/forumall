@@ -7,7 +7,7 @@
  * groups, …) are added by their respective feature cards — do NOT add them
  * here, to avoid overlap.
  */
-import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { integer, primaryKey, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 /** Provider-level key/value metadata. */
 export const appMeta = sqliteTable("app_meta", {
@@ -132,3 +132,74 @@ export const deviceKeys = sqliteTable("device_keys", {
 
 export type DeviceKeyRow = typeof deviceKeys.$inferSelect;
 export type NewDeviceKeyRow = typeof deviceKeys.$inferInsert;
+
+/**
+ * Groups (spec §5.2). The canonical container object. Channels are NOT embedded
+ * (fetched separately, §5.5), so this row stays stable regardless of channel
+ * count.
+ *
+ * `owner` is the canonical actor (`handle@domain`) who created the group; on
+ * create, the same actor is also inserted into {@link groupMembers} with the
+ * `owner` role. `permissions` and `metadata` are stored as JSON text (mapped to
+ * the shared `GroupPermissions` / `MetadataList` shapes at the HTTP boundary).
+ * `joinPolicy` is `open|request|invite` (§5.2); `tier` is an open string
+ * (§11) — the canonical values are `private|group|public|discoverable`.
+ */
+export const groups = sqliteTable("groups", {
+  /** Stable group id, e.g. `grp_<base64url>`. Primary key. */
+  id: text("id").primaryKey(),
+  /** Display name (REQUIRED at create). */
+  name: text("name").notNull(),
+  /** Optional human description. */
+  description: text("description"),
+  /** Owning actor (`handle@domain`). */
+  owner: text("owner").notNull(),
+  /** Join policy: `open` | `request` | `invite`. */
+  joinPolicy: text("join_policy").notNull(),
+  /** Access/discoverability tier (open string; §11). */
+  tier: text("tier").notNull(),
+  /** Action→roles permission map, stored as JSON (`GroupPermissions`). */
+  permissions: text("permissions").notNull(),
+  /** Extension metadata list, stored as JSON (`MetadataList`). */
+  metadata: text("metadata").notNull(),
+  /** Creation time (epoch millis); rendered as RFC 3339 `createdAt`. */
+  createdAt: integer("created_at", { mode: "number" })
+    .notNull()
+    .$defaultFn(() => Date.now()),
+  /** Last-update time (epoch millis); rendered as RFC 3339 `updatedAt`. */
+  updatedAt: integer("updated_at", { mode: "number" })
+    .notNull()
+    .$defaultFn(() => Date.now()),
+});
+
+export type GroupRow = typeof groups.$inferSelect;
+export type NewGroupRow = typeof groups.$inferInsert;
+
+/**
+ * Group membership (spec §5.2). One row per (group, user). `role` is an open
+ * string; canonical roles are `owner|admin|member|guest` ranked
+ * owner > admin > member > guest by the permission resolver
+ * (`provider/permissions.ts`). On group create, the creator is inserted here as
+ * `owner`. The membership card extends these tables.
+ */
+export const groupMembers = sqliteTable(
+  "group_members",
+  {
+    /** FK to `groups.id`. */
+    groupId: text("group_id").notNull(),
+    /** Member actor (`handle@domain`). */
+    user: text("user").notNull(),
+    /** Membership role: `owner` | `admin` | `member` | `guest`. */
+    role: text("role").notNull(),
+    /** Join time (epoch millis); rendered as RFC 3339 `joinedAt`. */
+    joinedAt: integer("joined_at", { mode: "number" })
+      .notNull()
+      .$defaultFn(() => Date.now()),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.groupId, t.user] }),
+  }),
+);
+
+export type GroupMemberRow = typeof groupMembers.$inferSelect;
+export type NewGroupMemberRow = typeof groupMembers.$inferInsert;

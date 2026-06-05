@@ -4,8 +4,7 @@ import { deriveDmId } from "../src/dm.ts";
 // Spec §7.4 known vector: `alice@a.com` + `bob@b.com`.
 const VECTOR_A = "alice@a.com";
 const VECTOR_B = "bob@b.com";
-const VECTOR_ID =
-  "dm_c2a3a0d4bc7aa54700d2f412c42fc0155df6071e502977e4988933eef7e46868";
+const VECTOR_ID = "dm_c2a3a0d4bc7aa54700d2f412c42fc0155df6071e502977e4988933eef7e46868";
 
 describe("deriveDmId", () => {
   test("reproduces the spec §7.4 vector", () => {

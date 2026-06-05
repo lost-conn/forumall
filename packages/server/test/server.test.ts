@@ -229,9 +229,7 @@ describe("discovery (§3.1)", () => {
 
     // ...and our output must be structurally consistent (same top-level keys,
     // same provider/capabilities key sets minus optional extras).
-    expect(Object.keys(ours).sort()).toEqual(
-      expect.arrayContaining(["provider", "capabilities"]),
-    );
+    expect(Object.keys(ours).sort()).toEqual(expect.arrayContaining(["provider", "capabilities"]));
     for (const k of ["domain", "protocolVersion", "software", "authentication", "publicKeys"]) {
       expect(ours.provider).toHaveProperty(k);
       expect(sample.provider).toHaveProperty(k);

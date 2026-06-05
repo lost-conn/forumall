@@ -32,8 +32,7 @@ export const TIERS: TiersResponse = {
     {
       id: "discoverable",
       name: "Discoverable",
-      description:
-        "Public and eligible to appear in discovery feeds across federated providers.",
+      description: "Public and eligible to appear in discovery feeds across federated providers.",
     },
   ],
 };

@@ -137,9 +137,7 @@ export function consumeBootstrapToken(db: Db, token: string): { handle: string }
   // because it surfaces the affected-row count (`.changes`) that the claim
   // hinges on; drizzle's `.run()` discards it.
   const claimed = db.sqlite
-    .prepare(
-      "UPDATE bootstrap_tokens SET used_at = ? WHERE token_hash = ? AND used_at IS NULL",
-    )
+    .prepare("UPDATE bootstrap_tokens SET used_at = ? WHERE token_hash = ? AND used_at IS NULL")
     .run(now, tokenHash);
 
   if (claimed.changes < 1) return null;

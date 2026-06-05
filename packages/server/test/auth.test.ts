@@ -20,6 +20,7 @@ import {
   ProblemDetailsSchema,
 } from "@forumall/shared";
 
+import { eq } from "drizzle-orm";
 import { createApp } from "../src/app.ts";
 import { type Argon2Params, type Config, loadConfig } from "../src/config.ts";
 import { openDb } from "../src/db/index.ts";
@@ -31,7 +32,6 @@ import {
   verifyBootstrapToken,
 } from "../src/provider/bootstrap-token.ts";
 import { hashPassword, verifyPassword } from "../src/provider/password.ts";
-import { eq } from "drizzle-orm";
 
 const PROBLEM_CT = "application/problem+json";
 

@@ -182,6 +182,35 @@ export function requireSignature(
   const identityHeader = mode === "provider" ? HEADER.PROVIDER : HEADER.ACTOR;
 
   return async (c, next) => {
+    await verifyAndSetActor(c, {
+      mode,
+      skewSeconds,
+      nonceRetentionMs,
+      nonceStore,
+      identityHeader,
+    });
+    await next();
+  };
+}
+
+/** Internal resolved config shared by `requireSignature` + `optionalSignature`. */
+interface VerifyContext {
+  readonly mode: SignatureMode;
+  readonly skewSeconds: number;
+  readonly nonceRetentionMs: number;
+  readonly nonceStore: NonceStore;
+  readonly identityHeader: string;
+}
+
+/**
+ * The §4.5 verification core. Runs the ordered checks against the request and,
+ * on success, sets `c.var.actor`. Throws an {@link AppError} on the first failed
+ * check. Shared by {@link requireSignature} (always required) and
+ * {@link optionalSignature} (only invoked when signing headers are present).
+ */
+async function verifyAndSetActor(c: Context, vctx: VerifyContext): Promise<void> {
+  const { mode, skewSeconds, nonceRetentionMs, nonceStore, identityHeader } = vctx;
+  {
     const { config, db } = c.var;
     const h = (name: string) => c.req.header(name);
 
@@ -266,6 +295,56 @@ export function requireSignature(
 
     // Authenticated. Authorization (membership/tier) is applied separately.
     c.set("actor", signer.actor);
+  }
+}
+
+/**
+ * Optional-authentication variant of {@link requireSignature} for routes that
+ * are readable both signed and unsigned (e.g. `GET /api/groups/{id}` — public
+ * groups are readable by anyone, private groups require an authenticated
+ * member). Behavior:
+ *
+ *  - **No** `X-OFSCP-*` signing headers present → continue with no `c.var.actor`
+ *    (the handler decides whether anonymous access is allowed).
+ *  - **Any** signing header present → run the full §4.5 verification; a
+ *    present-but-invalid signature still fails (401/400), so a forged identity
+ *    can never slip through.
+ *
+ * Shares the verification core and (per-instance) nonce store with
+ * {@link requireSignature}.
+ */
+export function optionalSignature(
+  opts: RequireSignatureOptions = {},
+): MiddlewareHandler<AppBindings> {
+  const mode: SignatureMode = opts.mode ?? "actor";
+  const skewSeconds = opts.skewSeconds ?? DEFAULT_TIMESTAMP_SKEW_SECONDS;
+  const nonceRetentionMs = opts.nonceRetentionMs ?? DEFAULT_NONCE_RETENTION_MS;
+  const nonceStore = opts.nonceStore ?? new InMemoryNonceStore();
+  const identityHeader = mode === "provider" ? HEADER.PROVIDER : HEADER.ACTOR;
+
+  // A request is "signing" if it carries ANY of the X-OFSCP signing headers; if
+  // so we verify fully (so a partial/invalid set 401s rather than passing as
+  // anonymous). Absent entirely → continue unauthenticated.
+  const SIGNING_HEADERS = [
+    identityHeader,
+    HEADER.KEY_ID,
+    HEADER.TIMESTAMP,
+    HEADER.NONCE,
+    HEADER.CONTENT_DIGEST,
+    HEADER.SIGNATURE,
+  ];
+
+  return async (c, next) => {
+    const present = SIGNING_HEADERS.some((name) => c.req.header(name) !== undefined);
+    if (present) {
+      await verifyAndSetActor(c, {
+        mode,
+        skewSeconds,
+        nonceRetentionMs,
+        nonceStore,
+        identityHeader,
+      });
+    }
     await next();
   };
 }
