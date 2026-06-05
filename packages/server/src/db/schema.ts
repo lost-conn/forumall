@@ -486,3 +486,44 @@ export const reactions = sqliteTable(
 
 export type ReactionRow = typeof reactions.$inferSelect;
 export type NewReactionRow = typeof reactions.$inferInsert;
+
+/**
+ * Media / attachments (spec §5.8). One row per uploaded blob; the raw bytes live
+ * in the {@link StorageBackend} (filesystem by default) keyed by `id`, this table
+ * holds the metadata that builds the hosted `Attachment` (§5.3, §5.8). `hash` is
+ * the content-integrity digest in `<algo>:<base64>` form (`sha-256:…`) so
+ * recipients can verify integrity. `width`/`height` are best-effort image
+ * dimensions (nullable; absent for non-images). `owner` is the authenticated
+ * actor (`handle@domain`) that uploaded the file.
+ */
+export const media = sqliteTable(
+  "media",
+  {
+    /** Provider-generated stable id, e.g. `att_<base64url>`. Primary key. */
+    id: text("id").primaryKey(),
+    /** Stored content type (IANA media type), served back on GET. */
+    mime: text("mime").notNull(),
+    /** Size of the stored blob in bytes. */
+    size: integer("size", { mode: "number" }).notNull(),
+    /** Optional original filename supplied with the upload. */
+    filename: text("filename"),
+    /** Content-integrity digest in `<algo>:<base64>` form (`sha-256:…`). */
+    hash: text("hash").notNull(),
+    /** Best-effort image width in pixels; null for non-images. */
+    width: integer("width", { mode: "number" }),
+    /** Best-effort image height in pixels; null for non-images. */
+    height: integer("height", { mode: "number" }),
+    /** Uploading actor (`handle@domain`). */
+    owner: text("owner").notNull(),
+    /** Creation time (epoch millis); rendered as RFC 3339 when needed. */
+    createdAt: integer("created_at", { mode: "number" })
+      .notNull()
+      .$defaultFn(() => Date.now()),
+  },
+  (t) => ({
+    ownerIdx: index("idx_media_owner").on(t.owner),
+  }),
+);
+
+export type MediaRow = typeof media.$inferSelect;
+export type NewMediaRow = typeof media.$inferInsert;

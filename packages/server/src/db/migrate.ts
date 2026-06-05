@@ -294,6 +294,28 @@ const migrations: readonly Migration[] = [
       sqlite.exec("CREATE INDEX IF NOT EXISTS idx_reactions_message_id ON reactions (message_id);");
     },
   },
+  {
+    // Media / attachments (§5.8). Metadata for uploaded blobs; the raw bytes
+    // live in the storage backend (filesystem by default), keyed by `id`. The
+    // owner index backs per-user media listings.
+    id: "0013_media",
+    up: (sqlite) => {
+      sqlite.exec(`
+        CREATE TABLE IF NOT EXISTS media (
+          id         TEXT PRIMARY KEY,
+          mime       TEXT NOT NULL,
+          size       INTEGER NOT NULL,
+          filename   TEXT,
+          hash       TEXT NOT NULL,
+          width      INTEGER,
+          height     INTEGER,
+          owner      TEXT NOT NULL,
+          created_at INTEGER NOT NULL
+        ) STRICT;
+      `);
+      sqlite.exec("CREATE INDEX IF NOT EXISTS idx_media_owner ON media (owner);");
+    },
+  },
 ];
 
 const LEDGER_DDL = `

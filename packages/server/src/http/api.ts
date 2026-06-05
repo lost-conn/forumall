@@ -15,6 +15,7 @@ import { TIERS } from "../provider/tiers.ts";
 import { createAuthRouter } from "./auth.ts";
 import { createGroupsRouter } from "./groups.ts";
 import { createInvitesRouter } from "./invites.ts";
+import { createMediaRouter } from "./media.ts";
 import type { AppBindings } from "./types.ts";
 
 export function createApiRouter() {
@@ -41,6 +42,9 @@ export function createApiRouter() {
 
   /** Invite redemption + guest provisioning (§5.6, §4.8). */
   api.route("/invites", createInvitesRouter());
+
+  /** Media upload + serve (§5.8): single-step `multipart/form-data` upload. */
+  api.route("/media", createMediaRouter());
 
   // Later: api.route("/channels", …); …
 
