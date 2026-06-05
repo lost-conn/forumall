@@ -78,6 +78,14 @@ const RawEnvSchema = z.object({
    * with a tiny cap.
    */
   MAX_RESUME_REPLAY: z.coerce.number().int().min(0).default(500),
+
+  /**
+   * Typing-indicator auto-expiry window in ms (§7.1 "Typing indicators"). A
+   * `typing.start` auto-expires into a `stop` after this long without a
+   * refreshing `typing.start`. Spec RECOMMENDED ~6s; default 6000. Configurable
+   * so tests can use a tiny value to exercise expiry quickly.
+   */
+  TYPING_TIMEOUT_MS: z.coerce.number().int().min(1).default(6000),
 });
 
 /** Argon2id cost parameters (§4.1.4). */
@@ -117,6 +125,8 @@ export interface Config {
   readonly messageEditWindowSeconds: number;
   /** Max post-cursor messages the WS resume path replays per channel (§7.1). */
   readonly maxResumeReplay: number;
+  /** Typing-indicator auto-expiry window in ms (§7.1 "Typing indicators"). */
+  readonly typingTimeoutMs: number;
 }
 
 /** A loosely-typed environment bag (process.env shape). */
@@ -156,6 +166,7 @@ export function loadConfig(env: Env = process.env): Config {
     userKeysCacheSeconds: raw.USER_KEYS_CACHE_SECONDS,
     messageEditWindowSeconds: raw.MESSAGE_EDIT_WINDOW_SECONDS,
     maxResumeReplay: raw.MAX_RESUME_REPLAY,
+    typingTimeoutMs: raw.TYPING_TIMEOUT_MS,
     ...(raw.CONTACT !== undefined ? { contact: raw.CONTACT } : {}),
   });
 }

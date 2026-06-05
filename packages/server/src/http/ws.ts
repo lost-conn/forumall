@@ -2,8 +2,8 @@
  * WebSocket transport (spec §7.1) — the signed-challenge handshake, subscribe /
  * unsubscribe authorization, heartbeat, and the wiring into the connection
  * {@link Hub}. This is the real-time backbone; message posting / fan-out,
- * reactions, typing, presence, DM, calls and resume (`since`) are LATER cards
- * that build on the hub exposed here.
+ * reactions, typing indicators and resume (`since`) build on the hub exposed
+ * here; presence, DM and calls are LATER cards.
  *
  * The endpoint is mounted at `GET /api/ws` and upgraded via Bun's WebSocket
  * support (`createBunWebSocket` from `hono/bun`). Per-connection state lives in
@@ -30,6 +30,7 @@ import {
   type Message,
   MessageReferenceSchema,
   WsAuthenticateSchema,
+  WsChannelTypingSchema,
   WsEnvelopeSchema,
   WsMessageCreateSchema,
   WsMessageCreatedSchema,
@@ -42,6 +43,8 @@ import {
   WsReactionRemoveSchema,
   WsReactionRemovedSchema,
   WsSubscribeSchema,
+  WsTypingStartSchema,
+  WsTypingStopSchema,
   WsUnsubscribeSchema,
   canonicalAuthority,
   isKnownWsType,
@@ -143,6 +146,14 @@ interface ConnState {
   authTimer?: ReturnType<typeof setTimeout>;
   /** Periodic server-`ping` + idle-timeout sweep. */
   heartbeatTimer?: ReturnType<typeof setInterval>;
+  /**
+   * Active typing indicators for THIS connection, keyed by channel id. Each
+   * entry is the auto-expiry timer that fans out a `stop` if no refreshing
+   * `typing.start` arrives within {@link Config.typingTimeoutMs}. A new
+   * `typing.start` resets the channel's timer; an explicit `typing.stop`,
+   * expiry, or disconnect removes the entry. Ephemeral — never persisted.
+   */
+  typingTimers: Map<string, ReturnType<typeof setTimeout>>;
 }
 
 /**
@@ -217,11 +228,57 @@ export function createWsHandlers(deps: WsHandlerDeps) {
     hub.send(ws, event);
   }
 
+  /** Build a validated `channel.typing` event (§7.1 "Typing indicators"). */
+  function typingEvent(
+    channelId: string,
+    user: string,
+    typingState: "start" | "stop",
+  ): OutboundEvent {
+    return {
+      type: "channel.typing",
+      data: WsChannelTypingSchema.shape.data.parse({ channelId, user, state: typingState }),
+    };
+  }
+
+  /**
+   * Clear a connection's typing timer for `channelId` without fanning out. Used
+   * on explicit stop (we fan out separately) and when resetting on refresh.
+   */
+  function clearTypingTimer(state: ConnState, channelId: string): void {
+    const timer = state.typingTimers.get(channelId);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      state.typingTimers.delete(channelId);
+    }
+  }
+
+  /**
+   * Clear every active typing indicator for a connection, optionally fanning out
+   * a `stop` for each first. On disconnect (`emitStop`) we MUST emit a `stop` per
+   * channel the actor was typing in, so a dropped connection never leaves an
+   * indicator stuck (§7.1). On a clean teardown after the hub is gone we still
+   * clear the timers so none leak past the connection.
+   */
+  function clearAllTyping(state: ConnState, emitStop: boolean): void {
+    for (const [channelId, timer] of state.typingTimers) {
+      clearTimeout(timer);
+      if (emitStop && state.actor) {
+        hub.publishToChannel(channelId, typingEvent(channelId, state.actor, "stop"));
+      }
+    }
+    state.typingTimers.clear();
+  }
+
   /** Tear down timers + hub registration for a connection. Idempotent. */
   function teardown(state: ConnState | undefined): void {
     if (!state) return;
     if (state.authTimer) clearTimeout(state.authTimer);
     if (state.heartbeatTimer) clearInterval(state.heartbeatTimer);
+    // Emit a `stop` for every channel this connection was typing in BEFORE we
+    // drop it from the hub (so the fan-out still reaches the channel's other
+    // subscribers), then clear its timers (§7.1: a dropped connection must not
+    // leave a stuck indicator).
+    clearAllTyping(state, true);
     if (state.hubConn) hub.remove(state.hubConn);
   }
 
@@ -239,6 +296,7 @@ export function createWsHandlers(deps: WsHandlerDeps) {
         challengeExpiresAt: now + timings.challengeTtlMs,
         challengeUsed: false,
         lastSeen: now,
+        typingTimers: new Map(),
       };
       stateBySocket.set(keyOf(ws), state);
 
@@ -336,6 +394,12 @@ export function createWsHandlers(deps: WsHandlerDeps) {
           return;
         case "reaction.remove":
           handleReactionRemove(ws, state, raw_json, envelope.id);
+          return;
+        case "typing.start":
+          handleTypingStart(ws, state, raw_json, envelope.id);
+          return;
+        case "typing.stop":
+          handleTypingStop(ws, state, raw_json, envelope.id);
           return;
         default:
           // Known-but-not-yet-implemented (message.create, reaction.*, …) and
@@ -856,6 +920,78 @@ export function createWsHandlers(deps: WsHandlerDeps) {
         author,
       }),
     });
+  }
+
+  /**
+   * §7.1 Typing indicators: signal that the connection's actor started typing in
+   * a channel. Authorize the actor against channel visibility ({@link
+   * channelVisibleTo} on the channel's group/tier) — an actor who can't see the
+   * channel gets `forbidden` and NO fan-out. On success fan out `channel.typing
+   * { channelId, user, state: "start" }` to every channel subscriber (matching
+   * message fan-out, which includes the sender; clients filter their own user)
+   * and (re)arm the per-(connection, channel) auto-expiry timer: if no refreshing
+   * `typing.start` arrives within {@link Config.typingTimeoutMs}, the timer fans
+   * out an automatic `stop`. Typing is ephemeral soft state — never persisted.
+   */
+  function handleTypingStart(
+    ws: WsContext,
+    state: ConnState,
+    rawFrame: unknown,
+    frameId: string,
+  ): void {
+    const parsed = WsTypingStartSchema.safeParse(rawFrame);
+    if (!parsed.success) {
+      send(ws, errorEvent("bad_request", "malformed typing.start command", 400, frameId));
+      return;
+    }
+    const actor = state.actor;
+    if (!actor) return; // unreachable: only authenticated connections reach here
+
+    const { channelId } = parsed.data.data;
+    const channel = getChannelRow(db, channelId);
+    if (!channel || !channelVisibleTo(db, channel.groupId, channel.tier, actor)) {
+      send(ws, errorEvent("forbidden", "not authorized to type in this channel", 403, frameId));
+      return;
+    }
+
+    // Fan out the `start` (includes the typer's own connection, like message
+    // fan-out; clients drop their own user).
+    hub.publishToChannel(channelId, typingEvent(channelId, actor, "start"));
+
+    // (Re)arm the auto-expiry timer: a refreshing `typing.start` resets it.
+    clearTypingTimer(state, channelId);
+    const timer = setTimeout(() => {
+      // Window elapsed with no refresh → auto-emit a `stop` (§7.1) and forget it.
+      state.typingTimers.delete(channelId);
+      hub.publishToChannel(channelId, typingEvent(channelId, actor, "stop"));
+    }, config.typingTimeoutMs);
+    state.typingTimers.set(channelId, timer);
+  }
+
+  /**
+   * §7.1 Typing indicators: signal that the connection's actor stopped typing in
+   * a channel. Cancels the auto-expiry timer (so it doesn't double-emit) and fans
+   * out `channel.typing { channelId, user, state: "stop" }`. We don't gate this on
+   * visibility — stopping is always safe — but a malformed frame still errors.
+   */
+  function handleTypingStop(
+    ws: WsContext,
+    state: ConnState,
+    rawFrame: unknown,
+    frameId: string,
+  ): void {
+    const parsed = WsTypingStopSchema.safeParse(rawFrame);
+    if (!parsed.success) {
+      send(ws, errorEvent("bad_request", "malformed typing.stop command", 400, frameId));
+      return;
+    }
+    const actor = state.actor;
+    if (!actor) return; // unreachable: only authenticated connections reach here
+
+    const { channelId } = parsed.data.data;
+    // Cancel the pending auto-expiry; we're emitting the `stop` explicitly now.
+    clearTypingTimer(state, channelId);
+    hub.publishToChannel(channelId, typingEvent(channelId, actor, "stop"));
   }
 }
 
