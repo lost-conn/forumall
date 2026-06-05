@@ -114,6 +114,7 @@ export function createMessagesRouter() {
       data: WsMessageUpdatedSchema.shape.data.parse({
         groupId,
         channelId,
+        cursor: record.cursor,
         message: record.message,
       }),
     });
@@ -140,7 +141,13 @@ export function createMessagesRouter() {
 
     hub.publishToChannel(channelId, {
       type: "message.deleted",
-      data: WsMessageDeletedSchema.shape.data.parse({ groupId, channelId, messageId, deletedAt }),
+      data: WsMessageDeletedSchema.shape.data.parse({
+        groupId,
+        channelId,
+        messageId,
+        cursor: record.cursor,
+        deletedAt,
+      }),
     });
 
     return c.body(null, 204);

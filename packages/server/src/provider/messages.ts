@@ -303,6 +303,81 @@ export function tombstoneMessage(db: Db, channelId: string, messageId: string): 
   return { message: rowToMessage(row), seq: row.seq, cursor: encodeMessageCursor(row.seq) };
 }
 
+/**
+ * Outcome of a WS resume request (§7.1 "Resuming after a disconnect") for one
+ * channel + `since` cursor: either the post-cursor messages to replay or a
+ * truncation signal telling the caller to fall back to REST history (§7.2).
+ */
+export type ResumeOutcome =
+  | {
+      /** The gap is replayable: messages with `seq > sinceSeq`, ascending. */
+      readonly truncated: false;
+      readonly messages: MessageRecord[];
+    }
+  | {
+      /** The gap exceeds the cap (or predates retention) — backfill via REST. */
+      readonly truncated: true;
+      readonly messages?: undefined;
+    };
+
+/**
+ * Resolve the channel timeline events to replay strictly after `sinceSeq`
+ * (§7.1). Returns the post-cursor messages in **ascending** `seq` order, each in
+ * its CURRENT canonical state (so edits/deletes since the cursor are reflected),
+ * as {@link MessageRecord}s carrying the per-message resume cursor.
+ *
+ * Truncation (caller falls back to REST history, §7.2) when either:
+ *  - the number of post-cursor messages exceeds `cap`; or
+ *  - `sinceSeq` predates the channel's oldest RETAINED message — i.e. the oldest
+ *    row has `seq > sinceSeq + 1`, so messages between the cursor and the oldest
+ *    retained row may have been reaped and replay could leave a gap.
+ *
+ * Tombstoned messages keep their `seq` and are replayed as tombstones (§7.1), so
+ * a delete after the cursor is reflected in the replayed copy.
+ */
+export function resumeMessages(
+  db: Db,
+  channelId: string,
+  sinceSeq: number,
+  cap: number,
+): ResumeOutcome {
+  // Oldest retained row in the channel; if it sits strictly past `sinceSeq + 1`
+  // the cursor predates retention (older messages may have been reaped) → can't
+  // guarantee a gap-free replay.
+  const minRow = db.drizzle
+    .select({ min: sql<number | null>`MIN(${messages.seq})` })
+    .from(messages)
+    .where(eq(messages.channelId, channelId))
+    .all()[0];
+  const minSeq = minRow?.min ?? null;
+  if (minSeq != null && minSeq > sinceSeq + 1) {
+    return { truncated: true };
+  }
+
+  // Fetch one extra past the cap to detect "gap too large" without loading the
+  // whole tail.
+  const rows = db.drizzle
+    .select()
+    .from(messages)
+    .where(and(eq(messages.channelId, channelId), sql`${messages.seq} > ${sinceSeq}`))
+    .orderBy(sql`${messages.seq} ASC`)
+    .limit(cap + 1)
+    .all();
+
+  if (rows.length > cap) {
+    return { truncated: true };
+  }
+
+  const replay = rows.map(
+    (row): MessageRecord => ({
+      message: rowToMessage(row),
+      seq: row.seq,
+      cursor: encodeMessageCursor(row.seq),
+    }),
+  );
+  return { truncated: false, messages: replay };
+}
+
 /** Options for {@link listMessages}. */
 export interface ListMessagesOptions {
   /** Opaque cursor to page from (exclusive); omit for the first page. */

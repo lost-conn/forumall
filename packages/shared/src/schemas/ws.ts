@@ -335,7 +335,15 @@ export type WsAuthenticated = z.infer<typeof WsAuthenticatedSchema>;
 /** `subscribed` event. */
 export const WsSubscribedSchema = wsFrame(
   "subscribed",
-  z.object({ channels: z.array(z.string().min(1)) }).passthrough(),
+  z
+    .object({
+      channels: z.array(z.string().min(1)),
+      // Channels whose resume (`since`) gap exceeded what the provider will
+      // replay (§7.1 "Resuming after a disconnect"): the client MUST fall back to
+      // REST history (§7.2) to backfill. Present only when non-empty.
+      truncated: z.array(z.string().min(1)).optional(),
+    })
+    .passthrough(),
 );
 export type WsSubscribed = z.infer<typeof WsSubscribedSchema>;
 
@@ -380,6 +388,11 @@ export const WsMessageUpdatedSchema = wsFrame(
     .object({
       groupId: z.string().min(1),
       channelId: z.string().min(1),
+      // Opaque timeline cursor for this message (§7.1 resume / §7.2 history share
+      // one cursor space). Optional to stay forward/backward compatible; mirrors
+      // `message.created`. Carrying it lets a client advance its resume position
+      // off updated/deleted events too.
+      cursor: OpaqueCursorSchema.optional(),
       message: WsMessagePayloadSchema,
     })
     .passthrough(),
@@ -394,6 +407,9 @@ export const WsMessageDeletedSchema = wsFrame(
       groupId: z.string().min(1),
       channelId: z.string().min(1),
       messageId: z.string().min(1),
+      // Opaque timeline cursor for the tombstoned message (same cursor space as
+      // `message.created`/history). Optional; see `message.updated` above.
+      cursor: OpaqueCursorSchema.optional(),
       deletedAt: Rfc3339DateTimeSchema.optional(),
     })
     .passthrough(),

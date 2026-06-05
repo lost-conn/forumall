@@ -68,6 +68,16 @@ const RawEnvSchema = z.object({
    * Default 900 (15 min); configurable so tests can use a tiny/large window.
    */
   MESSAGE_EDIT_WINDOW_SECONDS: z.coerce.number().int().min(0).default(900),
+
+  /**
+   * Max number of post-cursor messages the WS resume path will replay per
+   * channel on `subscribe` with a `since` cursor (§7.1 "Resuming after a
+   * disconnect"). If the gap exceeds this cap the channel is reported in the
+   * `subscribed` ack's `truncated` array and the client falls back to REST
+   * history (§7.2). Default 500; configurable so tests can exercise truncation
+   * with a tiny cap.
+   */
+  MAX_RESUME_REPLAY: z.coerce.number().int().min(0).default(500),
 });
 
 /** Argon2id cost parameters (§4.1.4). */
@@ -105,6 +115,8 @@ export interface Config {
   readonly userKeysCacheSeconds: number;
   /** Message edit window in seconds (§5.3); basis of `permissions.editUntil`. */
   readonly messageEditWindowSeconds: number;
+  /** Max post-cursor messages the WS resume path replays per channel (§7.1). */
+  readonly maxResumeReplay: number;
 }
 
 /** A loosely-typed environment bag (process.env shape). */
@@ -143,6 +155,7 @@ export function loadConfig(env: Env = process.env): Config {
     bootstrapTtlSeconds: raw.BOOTSTRAP_TTL_SECONDS,
     userKeysCacheSeconds: raw.USER_KEYS_CACHE_SECONDS,
     messageEditWindowSeconds: raw.MESSAGE_EDIT_WINDOW_SECONDS,
+    maxResumeReplay: raw.MAX_RESUME_REPLAY,
     ...(raw.CONTACT !== undefined ? { contact: raw.CONTACT } : {}),
   });
 }

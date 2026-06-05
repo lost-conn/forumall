@@ -52,7 +52,9 @@ import { resolveActorKeys } from "../provider/device-keys.ts";
 import {
   type MessageRecord,
   createMessage,
+  decodeMessageCursor,
   getMessageByClientId,
+  resumeMessages,
   tombstoneMessage,
   updateMessageContent,
 } from "../provider/messages.ts";
@@ -435,10 +437,36 @@ export function createWsHandlers(deps: WsHandlerDeps) {
   }
 
   /**
-   * §7.1 Subscriptions: enforce per-channel visibility (membership + tier) at
-   * subscribe-time, ack the authorized ones, and reject unauthorized channels
-   * with a `forbidden` error. `since`/`include` are accepted but `since` replay
-   * is a LATER card (resume), so it is no-op'd here.
+   * §7.1 Subscriptions + resume: enforce per-channel visibility (membership +
+   * tier) at subscribe-time, ack the authorized ones, reject unauthorized
+   * channels with a `forbidden` error, and — for any channel carrying a `since`
+   * cursor — REPLAY the post-cursor timeline before any live event flows.
+   *
+   * ## Resume (§7.1 "Resuming after a disconnect")
+   * For each authorized channel with a `since` cursor we decode it to `sinceSeq`
+   * and replay every message with `seq > sinceSeq`, in ascending `seq` order, as
+   * a `message.created` event carrying the message's CURRENT canonical state (so
+   * an edit/delete since the cursor is reflected in the replayed copy) and its
+   * `cursor`. We register the subscription FIRST, then replay synchronously —
+   * the single-process hub means no live event for that channel can interleave
+   * ahead of the replay, so the client sees the gap-closing replay strictly
+   * before live events. (At-least-once delivery, §7.1: the boundary message MAY
+   * re-appear if the client already has it; clients de-dupe by message `id`.)
+   *
+   * ## Truncation
+   * Replay is capped at {@link Config.maxResumeReplay}. If the gap exceeds the
+   * cap (or the cursor predates retention), the channel is NOT replayed; instead
+   * it is reported in the `subscribed` ack's `truncated` array so the client
+   * backfills via REST history (§7.2).
+   *
+   * ## Known limitation (within §7.1 at-least-once + §8.5 REST-backfill)
+   * The cursor space is REST-history (create) order, keyed on `seq`. Edits and
+   * deletes to messages AT OR BEFORE the resume cursor are NOT individually
+   * replayed (they carry the original message's `seq`, which is `<= sinceSeq`, so
+   * `seq > sinceSeq` excludes them). A client reconciles such older edits/deletes
+   * by re-reading REST history (§7.2). Only edits/deletes to post-cursor messages
+   * are reflected here, via the message's current state in the replayed copy.
+   * `include`/ephemeral events (typing, presence) are never replayed.
    */
   function handleSubscribe(
     ws: WsContext,
@@ -454,13 +482,21 @@ export function createWsHandlers(deps: WsHandlerDeps) {
     const hubConn = state.hubConn;
     if (!hubConn) return; // unreachable: only authenticated connections reach here
 
+    const since = parsed.data.data.since;
     const authorized: string[] = [];
     const forbidden: string[] = [];
+    // Authorized channels that carry a `since` cursor, paired with the channel's
+    // groupId (needed to build the replayed `message.created` events).
+    const resumable: { channelId: string; groupId: string; sinceCursor: string }[] = [];
     for (const channelId of parsed.data.data.channels) {
       const row = getChannelRow(db, channelId);
       // Unknown channel or actor not permitted by tier/membership → forbidden.
       if (row && channelVisibleTo(db, row.groupId, row.tier, state.actor)) {
         authorized.push(channelId);
+        const sinceCursor = since?.[channelId];
+        if (sinceCursor !== undefined) {
+          resumable.push({ channelId, groupId: row.groupId, sinceCursor });
+        }
       } else {
         forbidden.push(channelId);
       }
@@ -477,9 +513,45 @@ export function createWsHandlers(deps: WsHandlerDeps) {
         ),
       );
     }
-    if (authorized.length > 0) {
-      hub.subscribe(hubConn, authorized);
-      send(ws, { type: "subscribed", correlationId: frameId, data: { channels: authorized } });
+    if (authorized.length === 0) return;
+
+    // Register the subscriptions BEFORE replaying so the single-process hub never
+    // interleaves a live event ahead of the replay for a resumed channel.
+    hub.subscribe(hubConn, authorized);
+
+    // Resolve each resumable channel to either a replay set or a truncation.
+    const truncated: string[] = [];
+    const replays: { channelId: string; groupId: string; records: MessageRecord[] }[] = [];
+    for (const { channelId, groupId, sinceCursor } of resumable) {
+      const sinceSeq = decodeMessageCursor(sinceCursor);
+      // A forged/garbage cursor decodes to null; treat it as "no replay" rather
+      // than replaying the whole channel from the start.
+      if (sinceSeq == null) continue;
+      const outcome = resumeMessages(db, channelId, sinceSeq, config.maxResumeReplay);
+      if (outcome.truncated) {
+        truncated.push(channelId);
+      } else {
+        replays.push({ channelId, groupId, records: outcome.messages });
+      }
+    }
+
+    // Ack first (carrying `truncated` when non-empty), then replay — the ack
+    // tells the client which channels to backfill via REST before live events.
+    send(ws, {
+      type: "subscribed",
+      correlationId: frameId,
+      data: {
+        channels: authorized,
+        ...(truncated.length > 0 ? { truncated } : {}),
+      },
+    });
+
+    // Replay each non-truncated channel's post-cursor timeline, ascending, to
+    // THIS connection only (a resume is private to the resuming client).
+    for (const { channelId, groupId, records } of replays) {
+      for (const record of records) {
+        send(ws, createdEvent(groupId, channelId, record, frameId));
+      }
     }
   }
 
@@ -666,7 +738,13 @@ export function createWsHandlers(deps: WsHandlerDeps) {
     const deletedAt = record.message.deletedAt ?? rfc3339Timestamp();
     hub.publishToChannel(channelId, {
       type: "message.deleted",
-      data: WsMessageDeletedSchema.shape.data.parse({ groupId, channelId, messageId, deletedAt }),
+      data: WsMessageDeletedSchema.shape.data.parse({
+        groupId,
+        channelId,
+        messageId,
+        cursor: record.cursor,
+        deletedAt,
+      }),
     });
   }
 }
@@ -676,16 +754,17 @@ const AttachmentsSchema = z.array(AttachmentSchema);
 
 /**
  * Build a validated `message.created` event for `record`, with the message's
- * opaque `cursor` on `data` (§7.1 resume / §7.2 history share one cursor space)
- * and the request `correlationId` echoed (the author's copy correlates to the
- * request per the §7.1 example). The fan-out payload is re-validated against the
- * shared `WsMessageCreated` schema before it goes on the wire.
+ * opaque `cursor` on `data` (§7.1 resume / §7.2 history share one cursor space).
+ * When `correlationId` is given it is echoed (the author's own copy correlates to
+ * the request per the §7.1 example); resume replays pass `undefined` since a
+ * replayed event is not a response to any client frame. The fan-out payload is
+ * re-validated against the shared `WsMessageCreated` schema before the wire.
  */
 function createdEvent(
   groupId: string,
   channelId: string,
   record: MessageRecord,
-  correlationId: string,
+  correlationId?: string,
 ): OutboundEvent {
   const message = record.message satisfies Message;
   const data = WsMessageCreatedSchema.shape.data.parse({
@@ -694,13 +773,19 @@ function createdEvent(
     cursor: record.cursor,
     message,
   });
-  return { type: "message.created", correlationId, data };
+  return {
+    type: "message.created",
+    ...(correlationId !== undefined ? { correlationId } : {}),
+    data,
+  };
 }
 
 /**
  * Build a validated `message.updated` event for an edited `record` (§7.1). Mirrors
- * {@link createdEvent}: the editor's own copy correlates to the request id and the
- * payload is re-validated against the shared `WsMessageUpdated` schema.
+ * {@link createdEvent}: the editor's own copy correlates to the request id, the
+ * event carries the message's resume `cursor` (so clients can advance their
+ * resume position off edits), and the payload is re-validated against the shared
+ * `WsMessageUpdated` schema.
  */
 function updatedEvent(
   groupId: string,
@@ -709,7 +794,12 @@ function updatedEvent(
   correlationId: string,
 ): OutboundEvent {
   const message = record.message satisfies Message;
-  const data = WsMessageUpdatedSchema.shape.data.parse({ groupId, channelId, message });
+  const data = WsMessageUpdatedSchema.shape.data.parse({
+    groupId,
+    channelId,
+    cursor: record.cursor,
+    message,
+  });
   return { type: "message.updated", correlationId, data };
 }
 
