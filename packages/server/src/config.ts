@@ -52,6 +52,14 @@ const RawEnvSchema = z.object({
    * tests can use a tiny TTL to exercise expiry; defaults to 300.
    */
   BOOTSTRAP_TTL_SECONDS: z.coerce.number().int().min(1).default(300),
+
+  /**
+   * `cache_until` window for the public keys endpoint (§4.6) in seconds. The
+   * spec recommends keeping this short to bound revocation latency (§4.7.1,
+   * ≤1 hour); default 3600. Capped at 1 hour so an operator cannot accidentally
+   * make stale revocations linger.
+   */
+  USER_KEYS_CACHE_SECONDS: z.coerce.number().int().min(1).max(3600).default(3600),
 });
 
 /** Argon2id cost parameters (§4.1.4). */
@@ -85,6 +93,8 @@ export interface Config {
   readonly argon2: Argon2Params;
   /** Bootstrap-token TTL in seconds (§4.2). */
   readonly bootstrapTtlSeconds: number;
+  /** `cache_until` window for the public keys endpoint in seconds (§4.6). */
+  readonly userKeysCacheSeconds: number;
 }
 
 /** A loosely-typed environment bag (process.env shape). */
@@ -121,6 +131,7 @@ export function loadConfig(env: Env = process.env): Config {
       parallelism: raw.ARGON2_PARALLELISM,
     }),
     bootstrapTtlSeconds: raw.BOOTSTRAP_TTL_SECONDS,
+    userKeysCacheSeconds: raw.USER_KEYS_CACHE_SECONDS,
     ...(raw.CONTACT !== undefined ? { contact: raw.CONTACT } : {}),
   });
 }

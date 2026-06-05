@@ -125,7 +125,7 @@ export const UserPublicKeySchema = z
   .passthrough();
 export type UserPublicKey = z.infer<typeof UserPublicKeySchema>;
 
-/** GET /api/users/{userRef}/keys response (`user-keys-response`). */
+/** GET /.well-known/ofscp/users/{handle}/keys response (`user-keys-response`, §4.6). */
 export const UserKeysResponseSchema = z
   .object({
     actor: UserRefSchema,

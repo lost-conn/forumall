@@ -21,6 +21,7 @@ import { createApiRouter } from "./http/api.ts";
 import { createDiscoveryRouter } from "./http/discovery.ts";
 import { notFound, onError } from "./http/errors.ts";
 import { createStaticHandler } from "./http/static.ts";
+import { createUserKeysRouter } from "./http/user-keys.ts";
 import type { AppBindings } from "./http/types.ts";
 
 export interface AppDeps {
@@ -40,6 +41,10 @@ export function createApp(config: Config, deps: AppDeps): Hono<AppBindings> {
   // Root-level OFSCP discovery (§3.1). Mounted before the SPA static handler so
   // `/.well-known/ofscp-provider` is never shadowed by the index.html fallback.
   app.route("/", createDiscoveryRouter());
+
+  // Root-level public key discovery (§4.6): `/.well-known/ofscp/users/{handle}/keys`.
+  // Also mounted before the static handler so it isn't shadowed by the SPA.
+  app.route("/", createUserKeysRouter());
 
   // API surface. Unmatched `/api/*` paths fall through to `notFound` below.
   app.route("/api", createApiRouter());

@@ -99,3 +99,36 @@ export const bootstrapTokens = sqliteTable("bootstrap_tokens", {
 
 export type BootstrapTokenRow = typeof bootstrapTokens.$inferSelect;
 export type NewBootstrapTokenRow = typeof bootstrapTokens.$inferInsert;
+
+/**
+ * User device keys (spec §4.3). Each row is an Ed25519 public key registered to
+ * a local user `handle`; the corresponding private key never leaves the client.
+ * All authenticated requests are signed with one of these keys (§4.4), and the
+ * non-revoked set is published at `/.well-known/ofscp/users/{handle}/keys` (§4.6).
+ *
+ * The `handle` binding is taken from the consumed bootstrap token, never from
+ * client input (§4.3.1). `revoked` is a soft-delete flag: a revoked key is
+ * retained for audit but omitted from the keys endpoint and from actor-key
+ * resolution (§4.7.1).
+ */
+export const deviceKeys = sqliteTable("device_keys", {
+  /** Provider-generated stable id, e.g. `dk_<base64url>`. Primary key. */
+  keyId: text("key_id").primaryKey(),
+  /** Owning user handle (bound from the bootstrap token, never the client). */
+  userHandle: text("user_handle").notNull(),
+  /** Base64 raw 32-byte Ed25519 public key. */
+  publicKey: text("public_key").notNull(),
+  /** Always `Ed25519` in v0.1 (§4.3.3). */
+  algorithm: text("algorithm").notNull(),
+  /** Human-readable device description (`device_name`). */
+  deviceName: text("device_name").notNull(),
+  /** Creation time (epoch millis); rendered as RFC 3339 `created_at`. */
+  createdAt: integer("created_at", { mode: "number" })
+    .notNull()
+    .$defaultFn(() => Date.now()),
+  /** Soft-delete flag (§4.7.1). 0 = active, 1 = revoked. */
+  revoked: integer("revoked", { mode: "boolean" }).notNull().default(false),
+});
+
+export type DeviceKeyRow = typeof deviceKeys.$inferSelect;
+export type NewDeviceKeyRow = typeof deviceKeys.$inferInsert;

@@ -80,6 +80,25 @@ const migrations: readonly Migration[] = [
       );
     },
   },
+  {
+    id: "0004_device_keys",
+    up: (sqlite) => {
+      sqlite.exec(`
+        CREATE TABLE IF NOT EXISTS device_keys (
+          key_id      TEXT PRIMARY KEY,
+          user_handle TEXT NOT NULL,
+          public_key  TEXT NOT NULL,
+          algorithm   TEXT NOT NULL,
+          device_name TEXT NOT NULL,
+          created_at  INTEGER NOT NULL,
+          revoked     INTEGER NOT NULL DEFAULT 0
+        ) STRICT;
+      `);
+      sqlite.exec(
+        "CREATE INDEX IF NOT EXISTS idx_device_keys_user_handle ON device_keys (user_handle);",
+      );
+    },
+  },
 ];
 
 const LEDGER_DDL = `
