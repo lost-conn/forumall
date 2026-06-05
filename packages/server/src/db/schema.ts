@@ -743,3 +743,43 @@ export const presence = sqliteTable("presence", {
 
 export type PresenceRow = typeof presence.$inferSelect;
 export type NewPresenceRow = typeof presence.$inferInsert;
+
+/**
+ * Follows (spec §7.6). A follow is a **pointer** — the provider stores only
+ * *which* channels a local user follows; it does NOT compile or store a feed
+ * (the client composes the home feed by reading each followed channel from its
+ * authoritative source, §7.6). One row per (owner, channel).
+ *
+ *  - `owner` is the LOCAL handle who follows.
+ *  - `channel` is the channel reference (§2.4): a bare local `chn_…` id, or a
+ *    URI for a remote channel (or the canonical local channel URI).
+ *  - `group_id` is the optional owning-group ref the client supplied.
+ *  - `metadata` is a JSON `MetadataList`.
+ *
+ * There is intentionally NO feed table: the only follow state is this pointer.
+ */
+export const follows = sqliteTable(
+  "follows",
+  {
+    /** The LOCAL handle who follows. */
+    owner: text("owner").notNull(),
+    /** Followed channel ref (§2.4): local `chn_…` id or a URI. */
+    channel: text("channel").notNull(),
+    /** Optional owning-group ref supplied with the follow; nullable. */
+    groupId: text("group_id"),
+    /** Creation time (epoch millis); rendered as RFC 3339 `createdAt`. */
+    createdAt: integer("created_at", { mode: "number" })
+      .notNull()
+      .$defaultFn(() => Date.now()),
+    /** Extension metadata list, stored as JSON (`MetadataList`). */
+    metadata: text("metadata").notNull(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.owner, t.channel] }),
+    // Listing an owner's follows (`GET /api/me/follows`).
+    ownerIdx: index("idx_follows_owner").on(t.owner),
+  }),
+);
+
+export type FollowRow = typeof follows.$inferSelect;
+export type NewFollowRow = typeof follows.$inferInsert;

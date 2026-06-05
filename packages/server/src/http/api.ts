@@ -15,6 +15,7 @@ import { TIERS } from "../provider/tiers.ts";
 import { createAuthRouter } from "./auth.ts";
 import { createFederationContactsRouter, createMeContactsRouter } from "./contacts.ts";
 import { createDmsRouter, createFederationDmsRouter, createMeDmsRouter } from "./dms.ts";
+import { createMeFollowsRouter } from "./follows.ts";
 import { createGroupsRouter } from "./groups.ts";
 import { createInvitesRouter } from "./invites.ts";
 import { createMediaRouter } from "./media.ts";
@@ -60,6 +61,9 @@ export function createApiRouter() {
 
   /** Contacts request/accept/remove/list (§6.7): `/api/me/contacts`. */
   api.route("/me", createMeContactsRouter());
+
+  /** Follow list (pointers only, §7.6): `/api/me/follows`. No feed is stored. */
+  api.route("/me/follows", createMeFollowsRouter());
 
   /** Caller's account + profile + privacy (§5.1, §6.3, §6.6): `/api/me`. */
   api.route("/me", createMeUserRouter());

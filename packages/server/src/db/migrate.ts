@@ -441,6 +441,26 @@ const migrations: readonly Migration[] = [
       `);
     },
   },
+  {
+    // Follows (§7.6). A follow is a POINTER only: one row per (owner, channel)
+    // recording which channels a local user follows. The provider MUST NOT
+    // compile or store a feed — there is intentionally no feed table here. The
+    // owner index backs the follow listing (`GET /api/me/follows`).
+    id: "0019_follows",
+    up: (sqlite) => {
+      sqlite.exec(`
+        CREATE TABLE IF NOT EXISTS follows (
+          owner      TEXT NOT NULL,
+          channel    TEXT NOT NULL,
+          group_id   TEXT,
+          created_at INTEGER NOT NULL,
+          metadata   TEXT NOT NULL,
+          PRIMARY KEY (owner, channel)
+        ) STRICT;
+      `);
+      sqlite.exec("CREATE INDEX IF NOT EXISTS idx_follows_owner ON follows (owner);");
+    },
+  },
 ];
 
 const LEDGER_DDL = `
