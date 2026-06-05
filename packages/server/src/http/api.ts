@@ -19,6 +19,7 @@ import { createMeFollowsRouter } from "./follows.ts";
 import { createGroupsRouter } from "./groups.ts";
 import { createInvitesRouter } from "./invites.ts";
 import { createMediaRouter } from "./media.ts";
+import { createNotificationsRouter } from "./notifications.ts";
 import type { AppBindings } from "./types.ts";
 import { createMeUserRouter, createUsersRouter } from "./users.ts";
 
@@ -73,6 +74,9 @@ export function createApiRouter() {
 
   /** DM history reads + edit/delete on the stored copy (§7.4, §7.1). */
   api.route("/dms", createDmsRouter());
+
+  /** Notification webhook registration + delivery (§10): `/api/notifications`. */
+  api.route("/notifications", createNotificationsRouter());
 
   // Later: api.route("/channels", …); …
 

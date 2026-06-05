@@ -343,6 +343,43 @@ export function signProvider(input: ProviderSignInput): SignResult {
 }
 
 // ---------------------------------------------------------------------------
+// Detached signatures over an arbitrary message (spec §10 notification payload)
+// ---------------------------------------------------------------------------
+
+/**
+ * Produce a detached Ed25519 signature (base64) over arbitrary `message` bytes
+ * (or a UTF-8 string) with `privateKey`. Used for the §10 notification delivery
+ * `signature` field: a detached signature over the canonical delivery payload so
+ * a stored payload remains verifiable independent of the HTTP transport.
+ *
+ * This signs raw bytes directly — it is NOT the §4.4 canonical-request signer
+ * (`sign`/`signProvider`); the caller is responsible for serializing `message`
+ * deterministically (e.g. the canonical notification payload).
+ */
+export function signDetached(privateKey: PrivateKeyInput, message: Uint8Array | string): string {
+  const bytes = typeof message === "string" ? utf8.encode(message) : message;
+  return toBase64(ed.sign(bytes, decodeKey(privateKey)));
+}
+
+/**
+ * Verify a detached Ed25519 `signature` (base64) over `message` (bytes or a
+ * UTF-8 string) against `publicKey`. Returns `true` iff valid; never throws on a
+ * malformed signature/key. Counterpart of {@link signDetached} (§10).
+ */
+export function verifyDetached(
+  publicKey: PublicKeyInput,
+  message: Uint8Array | string,
+  signature: string,
+): boolean {
+  const bytes = typeof message === "string" ? utf8.encode(message) : message;
+  try {
+    return ed.verify(fromBase64(signature), bytes, decodeKey(publicKey));
+  } catch {
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Verification (spec §4.5 step 7 — the cryptographic check only)
 // ---------------------------------------------------------------------------
 

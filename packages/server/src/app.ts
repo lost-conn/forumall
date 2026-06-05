@@ -124,6 +124,9 @@ export function createApp(config: Config, deps: AppDeps): AppWithWebSocket {
     // §8.5 step 3: the WS handshake resolves a REMOTE actor's `authenticate` key
     // via this same user-keys cache the HTTP signature path uses.
     userKeysCache,
+    // §10: the `message.create` fan-out fires notification webhook delivery
+    // through the same injected federation transport.
+    federationFetch,
     ...(deps.wsTimings !== undefined ? { timings: deps.wsTimings } : {}),
   });
   app.get(

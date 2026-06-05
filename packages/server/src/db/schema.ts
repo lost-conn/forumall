@@ -783,3 +783,47 @@ export const follows = sqliteTable(
 
 export type FollowRow = typeof follows.$inferSelect;
 export type NewFollowRow = typeof follows.$inferInsert;
+
+/**
+ * Notification webhook endpoints (spec §10). One row per registered webhook: a
+ * local user (`owner`) asks this provider to deliver a provider-signed webhook
+ * to `target` whenever one of the subscribed `events` (e.g. `message.created`,
+ * `call.started`) fires for a resource the owner can see.
+ *
+ *  - `owner` is the LOCAL handle that registered the endpoint.
+ *  - `type` is the transport hint (e.g. `webpush`) — open string, passthrough.
+ *  - `target` is the HTTPS URL the provider POSTs the (provider-signed) delivery
+ *    to.
+ *  - `events` is a JSON `string[]` of subscribed event names.
+ *
+ * Delivery itself (§10) signs the HTTP request with this provider's signing key
+ * (§8.1) AND carries a detached Ed25519 `signature` in the body over the
+ * canonical delivery payload, so a stored payload stays verifiable independent of
+ * transport. The owner index backs both per-owner listing and the membership-
+ * scoped fan-out lookup.
+ */
+export const notificationEndpoints = sqliteTable(
+  "notification_endpoints",
+  {
+    /** Stable endpoint id, e.g. `nep_<base64url>`. Primary key. */
+    id: text("id").primaryKey(),
+    /** The LOCAL handle that registered this endpoint. */
+    owner: text("owner").notNull(),
+    /** Transport hint (e.g. `webpush`); open string. */
+    type: text("type").notNull(),
+    /** HTTPS delivery URL the provider-signed webhook is POSTed to. */
+    target: text("target").notNull(),
+    /** Subscribed event names, stored as a JSON `string[]`. */
+    events: text("events").notNull(),
+    /** Creation time (epoch millis); rendered as RFC 3339 `createdAt`. */
+    createdAt: integer("created_at", { mode: "number" })
+      .notNull()
+      .$defaultFn(() => Date.now()),
+  },
+  (t) => ({
+    ownerIdx: index("idx_notification_endpoints_owner").on(t.owner),
+  }),
+);
+
+export type NotificationEndpointRow = typeof notificationEndpoints.$inferSelect;
+export type NewNotificationEndpointRow = typeof notificationEndpoints.$inferInsert;

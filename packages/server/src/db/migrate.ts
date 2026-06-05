@@ -461,6 +461,28 @@ const migrations: readonly Migration[] = [
       sqlite.exec("CREATE INDEX IF NOT EXISTS idx_follows_owner ON follows (owner);");
     },
   },
+  {
+    // Notification webhook endpoints (§10). One row per registered webhook: a
+    // local owner asks this provider to deliver a provider-signed webhook to
+    // `target` for each subscribed event. `events` is a JSON `string[]`. The
+    // owner index backs per-owner listing and the membership-scoped fan-out.
+    id: "0020_notification_endpoints",
+    up: (sqlite) => {
+      sqlite.exec(`
+        CREATE TABLE IF NOT EXISTS notification_endpoints (
+          id         TEXT PRIMARY KEY,
+          owner      TEXT NOT NULL,
+          type       TEXT NOT NULL,
+          target     TEXT NOT NULL,
+          events     TEXT NOT NULL,
+          created_at INTEGER NOT NULL
+        ) STRICT;
+      `);
+      sqlite.exec(
+        "CREATE INDEX IF NOT EXISTS idx_notification_endpoints_owner ON notification_endpoints (owner);",
+      );
+    },
+  },
 ];
 
 const LEDGER_DDL = `

@@ -64,6 +64,7 @@ import type { Db } from "../db/index.ts";
 import { channelVisibleTo, getChannelRow } from "../provider/channels.ts";
 import { resolveActorKeys } from "../provider/device-keys.ts";
 import { isDmParticipant } from "../provider/dms.ts";
+import type { FederationFetch } from "../provider/federation/http.ts";
 import { isProviderAllowed } from "../provider/federation/policy.ts";
 import type { RemoteUserKeysCache } from "../provider/federation/user-keys-cache.ts";
 import {
@@ -75,6 +76,7 @@ import {
   tombstoneMessage,
   updateMessageContent,
 } from "../provider/messages.ts";
+import { deliverNotification, groupMemberActors } from "../provider/notifications.ts";
 import { canActor } from "../provider/permissions.ts";
 import {
   type PresenceRegistry,
@@ -227,6 +229,13 @@ export interface WsHandlerDeps {
    * step 3), with a forced re-fetch on a verify miss for key rotation/revocation.
    */
   readonly userKeysCache: RemoteUserKeysCache;
+  /**
+   * Injectable outbound federation fetch (§8). Threaded so the §10 notification
+   * delivery fired from the `message.create` fan-out reaches the same transport
+   * the rest of federation uses (and so tests can point a `target` at an
+   * in-process receiver). Defaults via `app.ts` to the global-`fetch` transport.
+   */
+  readonly federationFetch: FederationFetch;
   /** Heartbeat/handshake timings; defaults to {@link DEFAULT_WS_TIMINGS}. */
   readonly timings?: Partial<WsTimings>;
 }
@@ -237,7 +246,7 @@ export interface WsHandlerDeps {
  * straight to the route, while the closure captures `deps` + per-socket state.
  */
 export function createWsHandlers(deps: WsHandlerDeps) {
-  const { config, db, hub, presenceRegistry, userKeysCache } = deps;
+  const { config, db, hub, presenceRegistry, userKeysCache, federationFetch } = deps;
   const timings: WsTimings = { ...DEFAULT_WS_TIMINGS, ...deps.timings };
   const authority = canonicalAuthority(config.domain);
 
@@ -882,6 +891,37 @@ export function createWsHandlers(deps: WsHandlerDeps) {
     // Deliver to every subscriber of the channel, including the author's own
     // connection. The author's copy correlates to the request id (§7.1).
     hub.publishToChannel(channelId, createdEvent(groupId, channelId, record, frameId));
+
+    // --- Notification webhooks (§10) ---------------------------------------
+    // Fire-and-forget: also deliver a `message.created` notification to every
+    // registered endpoint whose owner is a member of the message's group and who
+    // subscribed to the event. Scoping rule: member-of-group ∧ subscribed; the
+    // author is excluded (they don't need to be notified of their own message).
+    // This MUST NOT block the WS fan-out, so we don't await — errors (including
+    // zero-endpoint no-ops, which resolve cleanly) are logged off the promise.
+    fireMessageCreatedNotifications(groupId, channelId, record, author);
+  }
+
+  /**
+   * §10 fan-out hook for `message.created`. Non-blocking: builds the owner filter
+   * (group members minus the author) and hands off to {@link deliverNotification}
+   * without awaiting, logging any rejection. A group with no subscribed endpoints
+   * resolves to an empty result (no outbound requests).
+   */
+  function fireMessageCreatedNotifications(
+    groupId: string,
+    channelId: string,
+    record: MessageRecord,
+    author: string,
+  ): void {
+    const ownerFilter = groupMemberActors(db, groupId, author);
+    void deliverNotification(db, config, federationFetch, {
+      event: "message.created",
+      resource: { id: record.message.id, channel: channelId },
+      ownerFilter,
+    }).catch((err) => {
+      console.error("notification delivery (message.created) failed:", err);
+    });
   }
 
   /**
