@@ -24,6 +24,7 @@ import {
 import { canActor, isMember } from "../provider/permissions.ts";
 import { createChannelsRouter } from "./channels.ts";
 import { AppError } from "./errors.ts";
+import { createMembershipRouter } from "./membership.ts";
 import { optionalSignature, requireSignature } from "./signature.ts";
 import type { AppBindings } from "./types.ts";
 
@@ -128,6 +129,10 @@ export function createGroupsRouter() {
   // Mounted here so `:groupId` is in scope; the channel router reads it via the
   // merged request params.
   router.route("/:groupId/channels", createChannelsRouter());
+
+  // -- Membership (join/leave/members/roles/requests) nested under the group
+  // (§5.7). Mounted here so `:groupId` is in scope via merged request params.
+  router.route("/:groupId", createMembershipRouter());
 
   return router;
 }

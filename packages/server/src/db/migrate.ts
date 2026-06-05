@@ -148,6 +148,24 @@ const migrations: readonly Migration[] = [
       sqlite.exec("CREATE INDEX IF NOT EXISTS idx_channels_group_id ON channels (group_id);");
     },
   },
+  {
+    id: "0007_join_requests",
+    up: (sqlite) => {
+      sqlite.exec(`
+        CREATE TABLE IF NOT EXISTS join_requests (
+          id           TEXT PRIMARY KEY,
+          group_id     TEXT NOT NULL,
+          user         TEXT NOT NULL,
+          state        TEXT NOT NULL,
+          message      TEXT,
+          requested_at INTEGER NOT NULL
+        ) STRICT;
+      `);
+      sqlite.exec(
+        "CREATE INDEX IF NOT EXISTS idx_join_requests_group_id ON join_requests (group_id);",
+      );
+    },
+  },
 ];
 
 const LEDGER_DDL = `

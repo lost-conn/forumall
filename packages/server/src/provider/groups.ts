@@ -21,7 +21,7 @@ import {
 import { eq } from "drizzle-orm";
 
 import type { Db } from "../db/index.ts";
-import { type GroupRow, channels, groupMembers, groups } from "../db/schema.ts";
+import { type GroupRow, channels, groupMembers, groups, joinRequests } from "../db/schema.ts";
 
 /** `id` prefix per the §5.2 wire examples (`grp_…`). */
 const GROUP_ID_PREFIX = "grp_";
@@ -138,6 +138,7 @@ export function deleteGroup(db: Db, groupId: string): boolean {
   db.sqlite.transaction(() => {
     db.drizzle.delete(channels).where(eq(channels.groupId, groupId)).run();
     db.drizzle.delete(groupMembers).where(eq(groupMembers.groupId, groupId)).run();
+    db.drizzle.delete(joinRequests).where(eq(joinRequests.groupId, groupId)).run();
     db.drizzle.delete(groups).where(eq(groups.id, groupId)).run();
   })();
   return true;

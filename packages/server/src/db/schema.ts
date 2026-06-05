@@ -248,3 +248,42 @@ export const channels = sqliteTable(
 
 export type ChannelRow = typeof channels.$inferSelect;
 export type NewChannelRow = typeof channels.$inferInsert;
+
+/**
+ * Pending join requests (spec §5.7). One row per request to join a
+ * `request`-policy group. A request starts `pending`; approving creates the
+ * membership and marks the request `approved`, denying marks it `denied`. The
+ * pending request is idempotent per (group, user): a second join while one is
+ * pending returns the existing row rather than inserting a duplicate (enforced
+ * in `provider/membership.ts`).
+ *
+ * `user` is the canonical actor (`handle@domain`). `state` is `pending`|
+ * `approved`|`denied` (matching the shared `JoinRequest` schema). `message` is
+ * the optional note supplied with the join request. Deleting the owning group
+ * cascades to its join requests (`provider/groups.ts`).
+ */
+export const joinRequests = sqliteTable(
+  "join_requests",
+  {
+    /** Stable request id, e.g. `jrq_<base64url>`. Primary key. */
+    id: text("id").primaryKey(),
+    /** FK to `groups.id`. */
+    groupId: text("group_id").notNull(),
+    /** Requesting actor (`handle@domain`). */
+    user: text("user").notNull(),
+    /** Request state: `pending` | `approved` | `denied`. */
+    state: text("state").notNull(),
+    /** Optional message accompanying the request. */
+    message: text("message"),
+    /** Request time (epoch millis); rendered as RFC 3339 `requestedAt`. */
+    requestedAt: integer("requested_at", { mode: "number" })
+      .notNull()
+      .$defaultFn(() => Date.now()),
+  },
+  (t) => ({
+    groupIdx: index("idx_join_requests_group_id").on(t.groupId),
+  }),
+);
+
+export type JoinRequestRow = typeof joinRequests.$inferSelect;
+export type NewJoinRequestRow = typeof joinRequests.$inferInsert;

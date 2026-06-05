@@ -42,8 +42,12 @@ const ROLE_RANK: Record<string, number> = {
   guest: 0,
 };
 
-/** Rank of a role string; unknown roles → -1 (below every canonical role). */
-function rankOf(role: string): number {
+/**
+ * Rank of a role string; unknown roles → -1 (below every canonical role).
+ * Exported so the membership card can compare ranks for kick/promote rules
+ * (target MUST NOT outrank the caller; single-owner transfer).
+ */
+export function rankOf(role: string): number {
   return ROLE_RANK[role] ?? -1;
 }
 
