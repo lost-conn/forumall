@@ -38,6 +38,11 @@ import {
   WsMessageDeletedSchema,
   WsMessageUpdateSchema,
   WsMessageUpdatedSchema,
+  WsPresenceSetSchema,
+  WsPresenceSubscribeSchema,
+  WsPresenceSubscribedSchema,
+  WsPresenceUnsubscribeSchema,
+  WsPresenceUnsubscribedSchema,
   WsReactionAddSchema,
   WsReactionAddedSchema,
   WsReactionRemoveSchema,
@@ -67,6 +72,15 @@ import {
   updateMessageContent,
 } from "../provider/messages.ts";
 import { canActor } from "../provider/permissions.ts";
+import {
+  type PresenceRegistry,
+  fanOutPresence,
+  filterPresenceFor,
+  markLastSeen,
+  presenceUpdateEvent,
+  setExplicitPresence,
+  toPresence,
+} from "../provider/presence.ts";
 import { addReaction, removeReaction } from "../provider/reactions.ts";
 import type { Hub, HubConnection, HubSocket, OutboundEvent } from "../provider/ws-hub.ts";
 import {
@@ -201,6 +215,8 @@ export interface WsHandlerDeps {
   readonly config: Config;
   readonly db: Db;
   readonly hub: Hub;
+  /** Shared presence-subscription registry (§7.5). */
+  readonly presenceRegistry: PresenceRegistry;
   /** Heartbeat/handshake timings; defaults to {@link DEFAULT_WS_TIMINGS}. */
   readonly timings?: Partial<WsTimings>;
 }
@@ -211,7 +227,7 @@ export interface WsHandlerDeps {
  * straight to the route, while the closure captures `deps` + per-socket state.
  */
 export function createWsHandlers(deps: WsHandlerDeps) {
-  const { config, db, hub } = deps;
+  const { config, db, hub, presenceRegistry } = deps;
   const timings: WsTimings = { ...DEFAULT_WS_TIMINGS, ...deps.timings };
   const authority = canonicalAuthority(config.domain);
 
@@ -280,7 +296,22 @@ export function createWsHandlers(deps: WsHandlerDeps) {
     // subscribers), then clear its timers (§7.1: a dropped connection must not
     // leave a stuck indicator).
     clearAllTyping(state, true);
-    if (state.hubConn) hub.remove(state.hubConn);
+
+    const hubConn = state.hubConn;
+    if (hubConn) {
+      // Purge THIS connection's presence subscriptions so it no longer receives
+      // fan-out (and the subject sets shrink), then drop it from the hub.
+      presenceRegistry.removeConnection(hubConn);
+      hub.remove(hubConn);
+      // §7.5 connection-derived offline: if this was the actor's LAST live
+      // connection, stamp `lastSeen` and fan out an `offline` presence.update.
+      // We check AFTER `hub.remove` so the live-connection count excludes this
+      // connection (a remaining device keeps the actor online).
+      if (state.handle && hub.liveConnectionCount(hubConn.actor) === 0) {
+        markLastSeen(db, state.handle);
+        fanOutPresence(db, hub, config, presenceRegistry, state.handle);
+      }
+    }
   }
 
   return {
@@ -402,6 +433,15 @@ export function createWsHandlers(deps: WsHandlerDeps) {
         case "typing.stop":
           handleTypingStop(ws, state, raw_json, envelope.id);
           return;
+        case "presence.subscribe":
+          handlePresenceSubscribe(ws, state, raw_json, envelope.id);
+          return;
+        case "presence.unsubscribe":
+          handlePresenceUnsubscribe(ws, state, raw_json, envelope.id);
+          return;
+        case "presence.set":
+          handlePresenceSet(ws, state, raw_json, envelope.id);
+          return;
         default:
           // Known-but-not-yet-implemented (message.create, reaction.*, …) and
           // unknown types are both ignored after auth (open-world, §2.3). A
@@ -511,9 +551,21 @@ export function createWsHandlers(deps: WsHandlerDeps) {
     const socket: HubSocket = rawSocket(ws) ?? ws;
     const hubConn: HubConnection = { socket, actor, subscriptions: new Set() };
     state.hubConn = hubConn;
+    // Whether the actor had NO live connection before this one (→ this auth flips
+    // them online). Checked BEFORE `hub.add` so the prior count excludes us.
+    const wasOffline = hub.liveConnectionCount(actor) === 0;
     hub.add(hubConn);
 
     send(ws, { type: "authenticated", correlationId: frameId, data: { actor } });
+
+    // §7.5 connection-derived online: the actor's first live connection flips
+    // them effectively online (their explicit away/dnd, if any, is preserved by
+    // `effectivePresence` reading the stored value) and fans out a
+    // `presence.update` to subscribers. A second/third device does not re-fan
+    // (they were already online).
+    if (wasOffline) {
+      fanOutPresence(db, hub, config, presenceRegistry, handle);
+    }
   }
 
   /**
@@ -1006,6 +1058,119 @@ export function createWsHandlers(deps: WsHandlerDeps) {
     clearTypingTimer(state, channelId);
     hub.publishToChannel(channelId, typingEvent(channelId, actor, "stop"));
   }
+
+  /**
+   * §7.5 presence.subscribe: register this connection as a subscriber of each
+   * named user's presence (connection-scoped, like channel subscriptions), ack
+   * with `presence.subscribed`, then IMMEDIATELY send an initial `presence.update`
+   * snapshot for each subscribed user — filtered for THIS viewer exactly as
+   * `GET /api/users/{ref}/presence` would be (so the two surfaces agree). Subjects
+   * are subscribed by canonical actor; a snapshot for a non-local subject simply
+   * reflects whatever state we hold (none → effectively offline).
+   */
+  function handlePresenceSubscribe(
+    ws: WsContext,
+    state: ConnState,
+    rawFrame: unknown,
+    frameId: string,
+  ): void {
+    const parsed = WsPresenceSubscribeSchema.safeParse(rawFrame);
+    if (!parsed.success) {
+      send(ws, errorEvent("bad_request", "malformed presence.subscribe command", 400, frameId));
+      return;
+    }
+    const hubConn = state.hubConn;
+    if (!hubConn) return; // unreachable: only authenticated connections reach here
+
+    // Normalize each subject to its canonical actor key so the registry key
+    // matches the fan-out key (`${handle}@${host}`); the snapshot `user` field
+    // uses the same canonical actor the fan-out emits, keeping them consistent.
+    const subjects = parsed.data.data.users.map((u) => `${subjectHandleOf(u)}@${authority}`);
+    presenceRegistry.subscribe(hubConn, subjects);
+
+    // Ack first, then the per-user snapshot (§7.5).
+    send(ws, {
+      type: "presence.subscribed",
+      correlationId: frameId,
+      data: WsPresenceSubscribedSchema.shape.data.parse({ users: subjects }),
+    });
+
+    const viewer = {
+      actor: state.actor as string,
+      handle: state.handle as string,
+      domain: authority,
+    };
+    for (const subject of subjects) {
+      const eff = filterPresenceFor(db, hub, config, subjectHandleOf(subject), viewer);
+      send(ws, presenceUpdateEvent(subject, toPresence(eff)));
+    }
+  }
+
+  /**
+   * §7.5 presence.unsubscribe: drop this connection's subscription to each named
+   * user's presence and ack `presence.unsubscribed`. No further updates flow for
+   * those subjects until re-subscribed.
+   */
+  function handlePresenceUnsubscribe(
+    ws: WsContext,
+    state: ConnState,
+    rawFrame: unknown,
+    frameId: string,
+  ): void {
+    const parsed = WsPresenceUnsubscribeSchema.safeParse(rawFrame);
+    if (!parsed.success) {
+      send(ws, errorEvent("bad_request", "malformed presence.unsubscribe command", 400, frameId));
+      return;
+    }
+    const hubConn = state.hubConn;
+    if (!hubConn) return;
+
+    // Normalize to the same canonical actor key used at subscribe time.
+    const subjects = parsed.data.data.users.map((u) => `${subjectHandleOf(u)}@${authority}`);
+    presenceRegistry.unsubscribe(hubConn, subjects);
+    send(ws, {
+      type: "presence.unsubscribed",
+      correlationId: frameId,
+      data: WsPresenceUnsubscribedSchema.shape.data.parse({ users: subjects }),
+    });
+  }
+
+  /**
+   * §7.5 presence.set: equivalent to `PUT /api/me/presence` — update the caller's
+   * stored EXPLICIT availability/status (the schema already rejects `offline` as a
+   * set value) and fan out a privacy-filtered `presence.update` to subscribers.
+   * The same stored value drives both surfaces (§7.5 reconciliation).
+   */
+  function handlePresenceSet(
+    ws: WsContext,
+    state: ConnState,
+    rawFrame: unknown,
+    frameId: string,
+  ): void {
+    const parsed = WsPresenceSetSchema.safeParse(rawFrame);
+    if (!parsed.success) {
+      // A malformed frame OR an `offline` availability (not in the set enum) lands
+      // here — both are rejected (§7.5: `offline` is not settable).
+      send(ws, errorEvent("bad_request", "malformed presence.set command", 400, frameId));
+      return;
+    }
+    const handle = state.handle;
+    if (!handle) return; // unreachable: only authenticated connections reach here
+
+    const { availability, status } = parsed.data.data;
+    setExplicitPresence(db, handle, availability, status ?? undefined);
+    fanOutPresence(db, hub, config, presenceRegistry, handle);
+  }
+}
+
+/**
+ * Resolve a canonical subject actor (`handle@domain`) to its local handle. A
+ * bare handle (no `@`) is treated as local; the local/remote split only matters
+ * for the visibility resolver, which keys on the handle.
+ */
+function subjectHandleOf(subject: string): string {
+  const at = subject.lastIndexOf("@");
+  return at > 0 ? subject.slice(0, at) : subject;
 }
 
 /** Validates the optional `attachments` array on a `message.create` command. */

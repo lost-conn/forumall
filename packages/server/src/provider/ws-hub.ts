@@ -180,6 +180,16 @@ export class Hub {
     return this.connections.size;
   }
 
+  /**
+   * How many live, authenticated connections `actor` currently has across all
+   * devices. The presence card (§7.5) reads this to derive coarse online/offline
+   * state: `0` means the actor is effectively offline. Counting from the
+   * `byActor` reverse index keeps this O(1) on the device set.
+   */
+  liveConnectionCount(actor: string): number {
+    return this.byActor.get(actor)?.size ?? 0;
+  }
+
   /** Connections currently subscribed to `channelId` (diagnostics / tests). */
   subscriberCount(channelId: string): number {
     return this.byChannel.get(channelId)?.size ?? 0;

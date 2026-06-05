@@ -35,12 +35,15 @@ import { createStaticHandler } from "./http/static.ts";
 import type { AppBindings } from "./http/types.ts";
 import { createUserKeysRouter } from "./http/user-keys.ts";
 import { type WsTimings, createWsHandlers } from "./http/ws.ts";
+import { PresenceRegistry } from "./provider/presence.ts";
 import { Hub } from "./provider/ws-hub.ts";
 
 export interface AppDeps {
   readonly db: Db;
   /** Shared real-time hub; one is created if not injected. */
   readonly hub?: Hub;
+  /** Shared presence-subscription registry (§7.5); one is created if not injected. */
+  readonly presenceRegistry?: PresenceRegistry;
   /** Heartbeat / handshake timings (§7.1); tests pass short values. */
   readonly wsTimings?: Partial<WsTimings>;
 }
@@ -51,19 +54,23 @@ export type AppWithWebSocket = Hono<AppBindings> & {
   readonly __websocket: ReturnType<typeof createBunWebSocket>["websocket"];
   /** The shared real-time hub (for tests / later wiring). */
   readonly __hub: Hub;
+  /** The shared presence-subscription registry (for tests / later wiring). */
+  readonly __presenceRegistry: PresenceRegistry;
 };
 
 export function createApp(config: Config, deps: AppDeps): AppWithWebSocket {
   const app = new Hono<AppBindings>();
   const hub = deps.hub ?? new Hub();
+  const presenceRegistry = deps.presenceRegistry ?? new PresenceRegistry();
 
   const { upgradeWebSocket, websocket } = createBunWebSocket();
 
-  // Make config + db + hub available to every handler via c.var.
+  // Make config + db + hub + presence registry available to every handler.
   app.use("*", async (c, next) => {
     c.set("config", config);
     c.set("db", deps.db);
     c.set("hub", hub);
+    c.set("presenceRegistry", presenceRegistry);
     await next();
   });
 
@@ -84,6 +91,7 @@ export function createApp(config: Config, deps: AppDeps): AppWithWebSocket {
     config,
     db: deps.db,
     hub,
+    presenceRegistry,
     ...(deps.wsTimings !== undefined ? { timings: deps.wsTimings } : {}),
   });
   app.get(
@@ -110,6 +118,10 @@ export function createApp(config: Config, deps: AppDeps): AppWithWebSocket {
   app.notFound(notFound);
   app.onError(onError);
 
-  // Attach the Bun WS handler object + hub for the entry/test harness to pick up.
-  return Object.assign(app, { __websocket: websocket, __hub: hub });
+  // Attach the Bun WS handler object + hub + registry for the entry/test harness.
+  return Object.assign(app, {
+    __websocket: websocket,
+    __hub: hub,
+    __presenceRegistry: presenceRegistry,
+  });
 }

@@ -421,6 +421,26 @@ const migrations: readonly Migration[] = [
       `);
     },
   },
+  {
+    // Presence (§6.4, §7.5). One row per local user holding the EXPLICIT
+    // presence the user last set (`online|away|dnd`, never `offline`). The
+    // effective `offline` state is derived from WS connection liveness at read
+    // time, not stored. `last_seen` is stamped when the user's last live
+    // connection drops. A missing row means "explicitly online" (resolved in
+    // `provider/presence.ts`), so rows are only written on an explicit set.
+    id: "0018_presence",
+    up: (sqlite) => {
+      sqlite.exec(`
+        CREATE TABLE IF NOT EXISTS presence (
+          handle       TEXT PRIMARY KEY,
+          availability TEXT NOT NULL DEFAULT 'online',
+          status       TEXT,
+          last_seen    INTEGER,
+          updated_at   INTEGER NOT NULL
+        ) STRICT;
+      `);
+    },
+  },
 ];
 
 const LEDGER_DDL = `

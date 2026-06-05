@@ -7,6 +7,7 @@
  */
 import type { Config } from "../config.ts";
 import type { Db } from "../db/index.ts";
+import type { PresenceRegistry } from "../provider/presence.ts";
 import type { Hub } from "../provider/ws-hub.ts";
 
 /**
@@ -35,6 +36,12 @@ export interface AppVariables {
    * WS handlers.
    */
   readonly hub: Hub;
+  /**
+   * Connection-scoped presence subscriptions (§7.5). Shared across the app so the
+   * REST `PUT /api/me/presence` fan-out reaches the same subscriber connections
+   * the WS `presence.set` would, keeping the two surfaces consistent.
+   */
+  readonly presenceRegistry: PresenceRegistry;
   /** Set by `requireSignature` on success; undefined on unauthenticated routes. */
   actor?: AuthenticatedActor;
 }

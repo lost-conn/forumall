@@ -24,6 +24,7 @@
  * never appear in any response here.
  */
 import {
+  PresenceUpdateRequestSchema,
   PrivacySettingsSchema,
   PrivacySettingsUpdateRequestSchema,
   UserAccountSchema,
@@ -36,6 +37,13 @@ import { type Context, Hono } from "hono";
 
 import { buildUserProfile, getUserRow, updateUserProfile } from "../provider/guests.ts";
 import { groupIdsOf } from "../provider/membership.ts";
+import {
+  type ExplicitAvailability,
+  fanOutPresence,
+  filterPresenceFor,
+  setExplicitPresence,
+  toPresence,
+} from "../provider/presence.ts";
 import { getPrivacySettings, updatePrivacySettings } from "../provider/privacy.ts";
 import { canView } from "../provider/visibility.ts";
 import { AppError } from "./errors.ts";
@@ -218,6 +226,50 @@ export function createMeUserRouter() {
     );
   });
 
+  // -- PUT /api/me/presence (§6.4 — signed) -------------------------------
+  // Equivalent to the WS `presence.set` (§7.5): update the caller's stored
+  // EXPLICIT availability/status (the request body's enum rejects `offline`) and
+  // fan out a privacy-filtered `presence.update` to subscribers over the shared
+  // registry. The response echoes the caller's own (self-visible) presence.
+  router.put("/presence", signed, async (c) => {
+    const { config, db, hub, presenceRegistry } = c.var;
+    const actor = c.var.actor;
+    if (!actor) throw AppError.unauthorized();
+    if (!getUserRow(db, actor.handle)) throw AppError.notFound({ detail: "no such user" });
+
+    const raw = await c.req.json().catch(() => {
+      throw AppError.badRequest({ detail: "request body must be valid JSON" });
+    });
+    const parsed = PresenceUpdateRequestSchema.safeParse(raw);
+    if (!parsed.success) {
+      throw AppError.badRequest({
+        detail: "invalid presence update request",
+        extensions: { errors: parsed.error.flatten() },
+      });
+    }
+    // `offline` is connection-derived, never a settable value (§6.4/§7.5). The
+    // shared Presence schema permits it (it is the read shape), so reject here.
+    if (parsed.data.availability === "offline") {
+      throw AppError.badRequest({ detail: "`offline` is not a settable availability" });
+    }
+
+    setExplicitPresence(
+      db,
+      actor.handle,
+      parsed.data.availability as ExplicitAvailability,
+      parsed.data.status ?? undefined,
+    );
+    fanOutPresence(db, hub, config, presenceRegistry, actor.handle);
+
+    // The caller always sees their own real presence (self-visibility).
+    const eff = filterPresenceFor(db, hub, config, actor.handle, {
+      actor: actor.actor,
+      handle: actor.handle,
+      domain: actor.domain,
+    });
+    return c.json(toPresence(eff), 200);
+  });
+
   return router;
 }
 
@@ -302,6 +354,25 @@ export function createUsersRouter() {
       }),
       200,
     );
+  });
+
+  // -- GET /api/users/{userRef}/presence (§6.4 — signed) ------------------
+  // The subject's presence, filtered for the caller EXACTLY as the WS fan-out /
+  // snapshot would be (same `canView` + effective-state derivation, §7.5): a
+  // viewer not permitted by the subject's `presenceVisibility` gets a uniform
+  // `offline` (no status/lastSeen); a permitted viewer gets the real effective
+  // presence (offline if the subject has no live WS connection). 404 if no such
+  // local user.
+  router.get("/:userRef/presence", signed, (c) => {
+    const { config, db, hub } = c.var;
+    const actor = c.var.actor;
+    if (!actor) throw AppError.unauthorized();
+
+    const subjectHandle = localHandleOfRef(c, requireParam(c, "userRef"));
+    if (!subjectHandle) throw AppError.notFound({ detail: "no such user" });
+
+    const eff = filterPresenceFor(db, hub, config, subjectHandle, viewerOf(actor));
+    return c.json(toPresence(eff), 200);
   });
 
   return router;

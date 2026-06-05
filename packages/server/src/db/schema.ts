@@ -707,3 +707,39 @@ export const privacySettings = sqliteTable("privacy_settings", {
 
 export type PrivacySettingsRow = typeof privacySettings.$inferSelect;
 export type NewPrivacySettingsRow = typeof privacySettings.$inferInsert;
+
+/**
+ * Presence (spec §6.4, §7.5). One row per LOCAL user `handle`, holding the
+ * user's **explicit** presence — the value they last set via `presence.set` /
+ * `PUT /api/me/presence`. `offline` is NEVER stored here: it is the
+ * *connection-derived* effective state computed at read time (a user with no
+ * live WS connection is effectively `offline`, regardless of this stored value).
+ *
+ * `availability` is therefore one of `online | away | dnd` only (default
+ * `online`). An explicit `away`/`dnd` + `status` persist across reconnects until
+ * the user changes them (a successful `authenticate` does NOT clobber an
+ * explicit away/dnd). `last_seen` is stamped when the user's LAST live
+ * connection drops, and surfaced (filtered) on the effective presence.
+ *
+ * A row is created/updated lazily on the first `presence.set` /
+ * `PUT /api/me/presence`. When no row exists the user's explicit availability is
+ * the default `online` (so a connected user with no row reads as effectively
+ * `online`).
+ */
+export const presence = sqliteTable("presence", {
+  /** The LOCAL user handle this presence belongs to. Primary key. */
+  handle: text("handle").primaryKey(),
+  /** Explicit availability the user set: `online` | `away` | `dnd`. Never `offline`. */
+  availability: text("availability").notNull().default("online"),
+  /** Optional free-text status line (e.g. "On vacation"). */
+  status: text("status"),
+  /** Last time the user's last live connection dropped (epoch millis); nullable. */
+  lastSeen: integer("last_seen", { mode: "number" }),
+  /** Last-update time (epoch millis). */
+  updatedAt: integer("updated_at", { mode: "number" })
+    .notNull()
+    .$defaultFn(() => Date.now()),
+});
+
+export type PresenceRow = typeof presence.$inferSelect;
+export type NewPresenceRow = typeof presence.$inferInsert;
