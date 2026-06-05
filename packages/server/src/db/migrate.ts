@@ -267,6 +267,33 @@ const migrations: readonly Migration[] = [
       );
     },
   },
+  {
+    // Reactions (§5.3, §7.1). At most one reaction per (message, author, key)
+    // enforced by the unique index (idempotent add). The message_id index backs
+    // the paginated listing endpoint. No server-aggregated count column —
+    // clients aggregate from these rows / the reaction.* events.
+    id: "0012_reactions",
+    up: (sqlite) => {
+      sqlite.exec(`
+        CREATE TABLE IF NOT EXISTS reactions (
+          id         TEXT PRIMARY KEY,
+          message_id TEXT NOT NULL,
+          channel_id TEXT NOT NULL,
+          group_id   TEXT NOT NULL,
+          author     TEXT NOT NULL,
+          key        TEXT NOT NULL,
+          unicode    TEXT,
+          image      TEXT,
+          created_at INTEGER NOT NULL
+        ) STRICT;
+      `);
+      sqlite.exec(
+        `CREATE UNIQUE INDEX IF NOT EXISTS idx_reactions_message_author_key
+           ON reactions (message_id, author, key);`,
+      );
+      sqlite.exec("CREATE INDEX IF NOT EXISTS idx_reactions_message_id ON reactions (message_id);");
+    },
+  },
 ];
 
 const LEDGER_DDL = `

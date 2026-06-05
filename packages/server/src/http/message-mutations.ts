@@ -15,7 +15,7 @@
  */
 import type { Db } from "../db/index.ts";
 import type { MessageRow } from "../db/schema.ts";
-import { getChannelRow } from "../provider/channels.ts";
+import { channelVisibleTo, getChannelRow } from "../provider/channels.ts";
 import { getMessageRow } from "../provider/messages.ts";
 import { canActor } from "../provider/permissions.ts";
 
@@ -93,5 +93,35 @@ export function authorizeMessageDelete(
   const row = resolved.row;
   const permitted = row.author === actor || canActor(db, "moderate", groupId, actor);
   if (!permitted) return forbidden("not authorized to delete this message");
+  return { row };
+}
+
+/**
+ * Authorize a **reaction add/remove** (§7.1 "Reactions"): the actor must be able
+ * to SEE the channel (tier + membership, via {@link channelVisibleTo}) and the
+ * target message must exist in that channel/group. There is no per-key
+ * permission gate — any actor who can read the channel may react. 404 if the
+ * channel/message is missing (or in another group); 403 if the actor cannot see
+ * the channel. Returns the target message row on success (callers don't need it,
+ * but it keeps the {@link MutationOutcome} contract uniform).
+ *
+ * Note 404 (missing) precedes the 403 visibility check only for an *existing but
+ * hidden* channel: an unknown channel is 404 regardless of caller, a known
+ * private channel the actor can't see is 403, mirroring the message-history read.
+ */
+export function authorizeReaction(
+  db: Db,
+  groupId: string,
+  channelId: string,
+  messageId: string,
+  actor: string,
+): MutationOutcome {
+  const channel = getChannelRow(db, channelId);
+  if (!channel || channel.groupId !== groupId) return notFound();
+  if (!channelVisibleTo(db, groupId, channel.tier, actor)) {
+    return forbidden("not authorized to react in this channel");
+  }
+  const row = getMessageRow(db, channelId, messageId);
+  if (!row) return notFound();
   return { row };
 }

@@ -438,3 +438,51 @@ export const messages = sqliteTable(
 
 export type MessageRow = typeof messages.$inferSelect;
 export type NewMessageRow = typeof messages.$inferInsert;
+
+/**
+ * Reactions (spec §5.3, §7.1). One row per (message, author, key): a user may
+ * hold at most ONE reaction per `key` per message, enforced by the unique
+ * `(message_id, author, key)` index — `addReaction` is idempotent against it.
+ * OFSCP v0.1 does NOT store a server-aggregated count; clients aggregate totals
+ * from these rows / the `reaction.added`/`reaction.removed` events (§7.1).
+ *
+ * `channel_id` / `group_id` are denormalized (from the target message) so the
+ * fan-out + authorization paths and cascade deletes do not need a message join.
+ * `unicode` / `image` are nullable (a reaction MAY carry either or neither). The
+ * canonical `Reaction.reference` is always `{ type: "message", id: message_id }`
+ * (re-derived at the read boundary in `provider/reactions.ts`), so no separate
+ * reference column is stored. The `message_id` index backs the listing endpoint.
+ */
+export const reactions = sqliteTable(
+  "reactions",
+  {
+    /** Stable reaction id, e.g. `rct_<base64url>`. Primary key. */
+    id: text("id").primaryKey(),
+    /** FK to `messages.id` — the reacted-to message. */
+    messageId: text("message_id").notNull(),
+    /** FK to `channels.id` (denormalized for fan-out + cascade). */
+    channelId: text("channel_id").notNull(),
+    /** FK to `groups.id` (denormalized for cascade + group-scoped reads). */
+    groupId: text("group_id").notNull(),
+    /** Reacting actor (`handle@domain`). */
+    author: text("author").notNull(),
+    /** Reaction key (e.g. `heart`); the dedupe axis with author + message. */
+    key: text("key").notNull(),
+    /** Optional unicode glyph (e.g. `❤️`). */
+    unicode: text("unicode"),
+    /** Optional https image/GIF URL. */
+    image: text("image"),
+    /** Creation time (epoch millis); rendered as RFC 3339 `createdAt`. */
+    createdAt: integer("created_at", { mode: "number" }).notNull(),
+  },
+  (t) => ({
+    // One reaction per (message, author, key): adding the same key again is a
+    // no-op (idempotent in `addReaction`).
+    uniqueIdx: uniqueIndex("idx_reactions_message_author_key").on(t.messageId, t.author, t.key),
+    // Listing reactions for a message (§7.1 history / late-joiners).
+    messageIdx: index("idx_reactions_message_id").on(t.messageId),
+  }),
+);
+
+export type ReactionRow = typeof reactions.$inferSelect;
+export type NewReactionRow = typeof reactions.$inferInsert;

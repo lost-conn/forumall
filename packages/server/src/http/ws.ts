@@ -37,6 +37,10 @@ import {
   WsMessageDeletedSchema,
   WsMessageUpdateSchema,
   WsMessageUpdatedSchema,
+  WsReactionAddSchema,
+  WsReactionAddedSchema,
+  WsReactionRemoveSchema,
+  WsReactionRemovedSchema,
   WsSubscribeSchema,
   WsUnsubscribeSchema,
   canonicalAuthority,
@@ -59,8 +63,13 @@ import {
   updateMessageContent,
 } from "../provider/messages.ts";
 import { canActor } from "../provider/permissions.ts";
+import { addReaction, removeReaction } from "../provider/reactions.ts";
 import type { Hub, HubConnection, HubSocket, OutboundEvent } from "../provider/ws-hub.ts";
-import { authorizeMessageDelete, authorizeMessageEdit } from "./message-mutations.ts";
+import {
+  authorizeMessageDelete,
+  authorizeMessageEdit,
+  authorizeReaction,
+} from "./message-mutations.ts";
 
 /** Application close code for an authentication failure (§7.1). */
 export const WS_CLOSE_AUTH_FAILED = 4001;
@@ -321,6 +330,12 @@ export function createWsHandlers(deps: WsHandlerDeps) {
           return;
         case "message.delete":
           handleMessageDelete(ws, state, raw_json, envelope.id);
+          return;
+        case "reaction.add":
+          handleReactionAdd(ws, state, raw_json, envelope.id);
+          return;
+        case "reaction.remove":
+          handleReactionRemove(ws, state, raw_json, envelope.id);
           return;
         default:
           // Known-but-not-yet-implemented (message.create, reaction.*, …) and
@@ -744,6 +759,101 @@ export function createWsHandlers(deps: WsHandlerDeps) {
         messageId,
         cursor: record.cursor,
         deletedAt,
+      }),
+    });
+  }
+
+  /**
+   * §7.1 Reactions: add the connection actor's reaction to a message. Authz: the
+   * actor must be able to SEE the channel and the message must exist
+   * ({@link authorizeReaction}); there is no per-key permission gate. The add is
+   * idempotent on `(message, author, key)` — a repeat add returns the existing
+   * reaction. On success fan out `reaction.added` carrying the FULL `Reaction`
+   * object to every channel subscriber (the author's own copy correlates to the
+   * request id). Missing message / no channel access → `error` (404/403).
+   */
+  function handleReactionAdd(
+    ws: WsContext,
+    state: ConnState,
+    rawFrame: unknown,
+    frameId: string,
+  ): void {
+    const parsed = WsReactionAddSchema.safeParse(rawFrame);
+    if (!parsed.success) {
+      send(ws, errorEvent("bad_request", "malformed reaction.add command", 400, frameId));
+      return;
+    }
+    const author = state.actor;
+    if (!author) return; // unreachable: only authenticated connections reach here
+
+    const { groupId, channelId, messageId, key, unicode, image } = parsed.data.data;
+    const outcome = authorizeReaction(db, groupId, channelId, messageId, author);
+    if (outcome.error) {
+      send(
+        ws,
+        errorEvent(outcome.error.code, outcome.error.message, outcome.error.status, frameId),
+      );
+      return;
+    }
+
+    const reaction = addReaction(db, {
+      messageId,
+      channelId,
+      groupId,
+      author,
+      key,
+      ...(unicode !== undefined ? { unicode } : {}),
+      ...(image !== undefined ? { image } : {}),
+    });
+    hub.publishToChannel(channelId, {
+      type: "reaction.added",
+      correlationId: frameId,
+      data: WsReactionAddedSchema.shape.data.parse({ groupId, channelId, reaction }),
+    });
+  }
+
+  /**
+   * §7.1 Reactions: remove the connection actor's reaction `key` from a message.
+   * Same visibility/existence authz as {@link handleReactionAdd}. Removal is
+   * idempotent (a no-op if the actor held no such reaction). Always fan out
+   * `reaction.removed { groupId, channelId, messageId, key, author }` to channel
+   * subscribers (the author's own copy correlates to the request id). Missing
+   * message / no channel access → `error` (404/403).
+   */
+  function handleReactionRemove(
+    ws: WsContext,
+    state: ConnState,
+    rawFrame: unknown,
+    frameId: string,
+  ): void {
+    const parsed = WsReactionRemoveSchema.safeParse(rawFrame);
+    if (!parsed.success) {
+      send(ws, errorEvent("bad_request", "malformed reaction.remove command", 400, frameId));
+      return;
+    }
+    const author = state.actor;
+    if (!author) return; // unreachable: only authenticated connections reach here
+
+    const { groupId, channelId, messageId, key } = parsed.data.data;
+    const outcome = authorizeReaction(db, groupId, channelId, messageId, author);
+    if (outcome.error) {
+      send(
+        ws,
+        errorEvent(outcome.error.code, outcome.error.message, outcome.error.status, frameId),
+      );
+      return;
+    }
+
+    removeReaction(db, messageId, author, key);
+    hub.publishToChannel(channelId, {
+      type: "reaction.removed",
+      correlationId: frameId,
+      data: WsReactionRemovedSchema.shape.data.parse({
+        groupId,
+        channelId,
+        messageId,
+        key,
+        author,
       }),
     });
   }
