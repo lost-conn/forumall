@@ -7,7 +7,7 @@
  * groups, …) are added by their respective feature cards — do NOT add them
  * here, to avoid overlap.
  */
-import { integer, primaryKey, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { index, integer, primaryKey, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 /** Provider-level key/value metadata. */
 export const appMeta = sqliteTable("app_meta", {
@@ -203,3 +203,48 @@ export const groupMembers = sqliteTable(
 
 export type GroupMemberRow = typeof groupMembers.$inferSelect;
 export type NewGroupMemberRow = typeof groupMembers.$inferInsert;
+
+/**
+ * Channels (spec §5.2, §5.5). A channel belongs to one group (`group_id` FK →
+ * `groups.id`) and carries its own access `tier` (§11), independent of the
+ * group's. `type` is `text|call` and is immutable after creation (§5.2). `tags`
+ * and `metadata` are stored as JSON text and mapped to the shared `Channel`
+ * shape at the HTTP boundary; a `call`-type channel's derived `call` summary is
+ * a read-time projection, never stored here (§9). Deleting the owning group
+ * cascades to its channels (`provider/groups.ts`).
+ */
+export const channels = sqliteTable(
+  "channels",
+  {
+    /** Stable channel id, e.g. `chn_<base64url>`. Primary key. */
+    id: text("id").primaryKey(),
+    /** FK to `groups.id`. */
+    groupId: text("group_id").notNull(),
+    /** Optional display name. */
+    name: text("name"),
+    /** Channel kind: `text` | `call`. Immutable after create (§5.2). */
+    type: text("type").notNull(),
+    /** Access/discoverability tier (open string; §11). */
+    tier: text("tier").notNull(),
+    /** Optional topic / description. */
+    topic: text("topic"),
+    /** Tag list, stored as JSON (`string[]`). */
+    tags: text("tags").notNull(),
+    /** Extension metadata list, stored as JSON (`MetadataList`). */
+    metadata: text("metadata").notNull(),
+    /** Creation time (epoch millis); rendered as RFC 3339 `createdAt`. */
+    createdAt: integer("created_at", { mode: "number" })
+      .notNull()
+      .$defaultFn(() => Date.now()),
+    /** Last-update time (epoch millis); rendered as RFC 3339 `updatedAt`. */
+    updatedAt: integer("updated_at", { mode: "number" })
+      .notNull()
+      .$defaultFn(() => Date.now()),
+  },
+  (t) => ({
+    groupIdx: index("idx_channels_group_id").on(t.groupId),
+  }),
+);
+
+export type ChannelRow = typeof channels.$inferSelect;
+export type NewChannelRow = typeof channels.$inferInsert;

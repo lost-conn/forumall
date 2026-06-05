@@ -3,8 +3,8 @@
  *
  * Owns the persistence helpers the `/api/groups` router builds on, keeping the
  * HTTP layer thin: row ↔ canonical `Group` translation, default application on
- * create, partial update, and deletion (group + its members; channels cascade
- * in the channel card). The permission resolver (`provider/permissions.ts`)
+ * create, partial update, and deletion (group + its members + its channels,
+ * which cascade on delete). The permission resolver (`provider/permissions.ts`)
  * reads memberships separately; this module owns the `groups`/`group_members`
  * row lifecycle.
  */
@@ -21,7 +21,7 @@ import {
 import { eq } from "drizzle-orm";
 
 import type { Db } from "../db/index.ts";
-import { type GroupRow, groupMembers, groups } from "../db/schema.ts";
+import { type GroupRow, channels, groupMembers, groups } from "../db/schema.ts";
 
 /** `id` prefix per the §5.2 wire examples (`grp_…`). */
 const GROUP_ID_PREFIX = "grp_";
@@ -129,13 +129,14 @@ export function updateGroup(db: Db, groupId: string, req: GroupUpdateRequest): G
 }
 
 /**
- * Delete `groupId` and its membership rows. (Channels cascade in the channel
- * card.) Returns true if a group was deleted, false if it did not exist.
+ * Delete `groupId` and its membership rows, cascading to its channels (§5.5).
+ * Returns true if a group was deleted, false if it did not exist.
  */
 export function deleteGroup(db: Db, groupId: string): boolean {
   const existing = getGroupRow(db, groupId);
   if (!existing) return false;
   db.sqlite.transaction(() => {
+    db.drizzle.delete(channels).where(eq(channels.groupId, groupId)).run();
     db.drizzle.delete(groupMembers).where(eq(groupMembers.groupId, groupId)).run();
     db.drizzle.delete(groups).where(eq(groups.id, groupId)).run();
   })();

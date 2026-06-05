@@ -22,6 +22,7 @@ import {
   updateGroup,
 } from "../provider/groups.ts";
 import { canActor, isMember } from "../provider/permissions.ts";
+import { createChannelsRouter } from "./channels.ts";
 import { AppError } from "./errors.ts";
 import { optionalSignature, requireSignature } from "./signature.ts";
 import type { AppBindings } from "./types.ts";
@@ -122,6 +123,11 @@ export function createGroupsRouter() {
     deleteGroup(db, id);
     return c.body(null, 204);
   });
+
+  // -- Channel CRUD nested under the group (§5.5) --------------------------
+  // Mounted here so `:groupId` is in scope; the channel router reads it via the
+  // merged request params.
+  router.route("/:groupId/channels", createChannelsRouter());
 
   return router;
 }
