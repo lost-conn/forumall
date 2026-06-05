@@ -14,6 +14,7 @@ import { Hono } from "hono";
 import { TIERS } from "../provider/tiers.ts";
 import { createAuthRouter } from "./auth.ts";
 import { createFederationContactsRouter, createMeContactsRouter } from "./contacts.ts";
+import { createDiscoverRouter, createProvidersRouter } from "./discovery-feed.ts";
 import { createDmsRouter, createFederationDmsRouter, createMeDmsRouter } from "./dms.ts";
 import { createMeFollowsRouter } from "./follows.ts";
 import { createGroupsRouter } from "./groups.ts";
@@ -77,6 +78,20 @@ export function createApiRouter() {
 
   /** Notification webhook registration + delivery (§10): `/api/notifications`. */
   api.route("/notifications", createNotificationsRouter());
+
+  /**
+   * Known providers (§8.6, OPTIONAL): `GET /api/providers`. 404 unless
+   * `ENABLE_KNOWN_PROVIDERS` — gated inside the router so the discovery doc's
+   * `sharesKnownProviders` flag and the endpoint stay in lockstep.
+   */
+  api.route("/providers", createProvidersRouter());
+
+  /**
+   * Discovery feed (§11.2, OPTIONAL): `GET /api/discover`. 404 unless
+   * `ENABLE_DISCOVER_FEED`. Items are pointers to local `discoverable` channels,
+   * compiled at read time — no feed is stored.
+   */
+  api.route("/discover", createDiscoverRouter());
 
   // Later: api.route("/channels", …); …
 

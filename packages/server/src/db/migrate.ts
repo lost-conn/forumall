@@ -483,6 +483,23 @@ const migrations: readonly Migration[] = [
       );
     },
   },
+  {
+    // Known providers / peers (§8.6, OPTIONAL). A flat list of peer domains used
+    // to support discovery (§11.2) without a central registry. `domain` is the
+    // canonicalized peer authority and primary key, so re-adding is idempotent.
+    // This is the only table for §8.6; the discovery feed (§11.2) stores nothing
+    // (its items are compiled at read time).
+    id: "0021_known_providers",
+    up: (sqlite) => {
+      sqlite.exec(`
+        CREATE TABLE IF NOT EXISTS known_providers (
+          domain   TEXT PRIMARY KEY,
+          name     TEXT,
+          added_at INTEGER NOT NULL
+        ) STRICT;
+      `);
+    },
+  },
 ];
 
 const LEDGER_DDL = `

@@ -63,8 +63,10 @@ export function buildDiscoveryDocument(config: Config, db: Db): ProviderDiscover
         realtimeDelivery: "direct-ws",
       },
       discovery: {
-        sharesKnownProviders: false,
-        discoverFeed: false,
+        // Reflect the optional-feature toggles (§8.6, §11.2). Default config
+        // leaves both OFF → both advertised `false` (and the endpoints 404).
+        sharesKnownProviders: config.enableKnownProviders,
+        discoverFeed: config.enableDiscoverFeed,
       },
     },
   };

@@ -13,6 +13,19 @@ import { z } from "zod";
 /** Coerce a possibly-undefined env string into a positive int port. */
 const PortSchema = z.coerce.number().int().min(1).max(65535);
 
+/**
+ * Parse a feature-flag env var into a boolean. Accepts the usual truthy/falsy
+ * spellings; an unset/empty value is left `undefined` so the schema `.default()`
+ * applies (default OFF). Anything unrecognized is rejected at boot.
+ */
+const BoolEnvSchema = z.preprocess(
+  (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
+  z
+    .union([z.boolean(), z.enum(["true", "1", "yes", "on", "false", "0", "no", "off"])])
+    .transform((v) => v === true || v === "true" || v === "1" || v === "yes" || v === "on")
+    .optional(),
+);
+
 const RawEnvSchema = z.object({
   PORT: PortSchema.default(3000),
   /**
@@ -103,6 +116,25 @@ const RawEnvSchema = z.object({
    * `403` before any remote key fetch happens.
    */
   FEDERATION_DENY: z.string().default(""),
+
+  /**
+   * Known-providers feature toggle (§8.6, OPTIONAL/MAY). When `false` (default)
+   * this provider maintains no shareable peer list: `GET /api/providers` returns
+   * **404** and discovery advertises `capabilities.discovery.sharesKnownProviders:
+   * false`. When `true`, the provider both maintains AND shares the list (v0.1
+   * collapses "maintains" and "shares" into one flag), so `GET /api/providers`
+   * serves it and discovery advertises `sharesKnownProviders: true`.
+   */
+  ENABLE_KNOWN_PROVIDERS: BoolEnvSchema.default(false),
+
+  /**
+   * Discovery-feed feature toggle (§11.2, OPTIONAL/MAY). When `false` (default)
+   * `GET /api/discover` returns **404** and discovery advertises
+   * `capabilities.discovery.discoverFeed: false`. When `true`, the provider
+   * compiles a read-time feed of pointers to LOCAL `discoverable`-tier channels
+   * (no feed is ever stored) and advertises `discoverFeed: true`.
+   */
+  ENABLE_DISCOVER_FEED: BoolEnvSchema.default(false),
 });
 
 /** Parse a comma-separated domain list into canonicalized, de-duplicated hosts. */
@@ -164,6 +196,16 @@ export interface Config {
    * Deny wins over the allow-list. Empty → none denied.
    */
   readonly federationDeny: readonly string[];
+  /**
+   * Known-providers feature toggle (§8.6). When false (default) `GET
+   * /api/providers` 404s and discovery advertises `sharesKnownProviders: false`.
+   */
+  readonly enableKnownProviders: boolean;
+  /**
+   * Discovery-feed feature toggle (§11.2). When false (default) `GET
+   * /api/discover` 404s and discovery advertises `discoverFeed: false`.
+   */
+  readonly enableDiscoverFeed: boolean;
 }
 
 /** A loosely-typed environment bag (process.env shape). */
@@ -206,6 +248,8 @@ export function loadConfig(env: Env = process.env): Config {
     typingTimeoutMs: raw.TYPING_TIMEOUT_MS,
     federationAllow: parseDomainList(raw.FEDERATION_ALLOW),
     federationDeny: parseDomainList(raw.FEDERATION_DENY),
+    enableKnownProviders: raw.ENABLE_KNOWN_PROVIDERS,
+    enableDiscoverFeed: raw.ENABLE_DISCOVER_FEED,
     ...(raw.CONTACT !== undefined ? { contact: raw.CONTACT } : {}),
   });
 }

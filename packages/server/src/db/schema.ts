@@ -827,3 +827,31 @@ export const notificationEndpoints = sqliteTable(
 
 export type NotificationEndpointRow = typeof notificationEndpoints.$inferSelect;
 export type NewNotificationEndpointRow = typeof notificationEndpoints.$inferInsert;
+
+/**
+ * Known providers / peers (spec §8.6, OPTIONAL). A flat list of peer provider
+ * domains this provider has recorded, used to support discovery (§11.2) without
+ * a central registry. The list is grown by manual seeding and/or scraping peers'
+ * `GET /api/providers` (`provider/known-providers.ts`).
+ *
+ *  - `domain` is the canonicalized peer authority (e.g. `b.test`) and the
+ *    primary key, so re-adding a peer is idempotent (an upsert).
+ *  - `name` is an optional human label.
+ *  - `added_at` is when this peer was first recorded.
+ *
+ * This is the ONLY table backing §8.6; the discovery feed (§11.2) stores nothing
+ * — its items are pointers compiled at read time (`provider/discover.ts`).
+ */
+export const knownProviders = sqliteTable("known_providers", {
+  /** Canonicalized peer authority (e.g. `b.test`). Primary key (idempotent add). */
+  domain: text("domain").primaryKey(),
+  /** Optional human label for the peer. */
+  name: text("name"),
+  /** First-recorded time (epoch millis); rendered as RFC 3339 `addedAt`. */
+  addedAt: integer("added_at", { mode: "number" })
+    .notNull()
+    .$defaultFn(() => Date.now()),
+});
+
+export type KnownProviderRow = typeof knownProviders.$inferSelect;
+export type NewKnownProviderRow = typeof knownProviders.$inferInsert;
