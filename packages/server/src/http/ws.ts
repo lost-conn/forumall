@@ -26,18 +26,26 @@
  * frames get an `error` event.
  */
 import {
+  AttachmentSchema,
+  type Message,
+  MessageReferenceSchema,
   WsAuthenticateSchema,
   WsEnvelopeSchema,
+  WsMessageCreateSchema,
+  WsMessageCreatedSchema,
   WsSubscribeSchema,
   WsUnsubscribeSchema,
   canonicalAuthority,
   isKnownWsType,
   verifyWsAuthenticate,
 } from "@forumall/shared";
+import { z } from "zod";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/index.ts";
 import { channelVisibleTo, getChannelRow } from "../provider/channels.ts";
 import { resolveActorKeys } from "../provider/device-keys.ts";
+import { type MessageRecord, createMessage, getMessageByClientId } from "../provider/messages.ts";
+import { canActor } from "../provider/permissions.ts";
 import type { Hub, HubConnection, HubSocket, OutboundEvent } from "../provider/ws-hub.ts";
 
 /** Application close code for an authentication failure (§7.1). */
@@ -291,6 +299,9 @@ export function createWsHandlers(deps: WsHandlerDeps) {
         case "unsubscribe":
           handleUnsubscribe(ws, state, raw_json, envelope.id);
           return;
+        case "message.create":
+          handleMessageCreate(ws, state, raw_json, envelope.id);
+          return;
         default:
           // Known-but-not-yet-implemented (message.create, reaction.*, …) and
           // unknown types are both ignored after auth (open-world, §2.3). A
@@ -472,4 +483,130 @@ export function createWsHandlers(deps: WsHandlerDeps) {
     hub.unsubscribe(hubConn, channels);
     send(ws, { type: "unsubscribed", correlationId: frameId, data: { channels } });
   }
+
+  /**
+   * §7.1 Sending messages: validate the command, authorize the actor against the
+   * channel (must exist + be visible + carry the group `post` permission), apply
+   * `(author, channelId, clientMessageId)` idempotency, persist, then fan out
+   * `message.created` to every connection subscribed to the channel — INCLUDING
+   * the author's own connection (the example's author copy carries the request
+   * `correlationId`).
+   *
+   * The author is ALWAYS the connection's authenticated actor; any `author` in
+   * the client payload is ignored. Each timeline event carries the message's
+   * opaque `cursor` (§7.1 resume / §7.2 history share one cursor space), placed
+   * on the event `data`.
+   */
+  function handleMessageCreate(
+    ws: WsContext,
+    state: ConnState,
+    rawFrame: unknown,
+    frameId: string,
+  ): void {
+    const parsed = WsMessageCreateSchema.safeParse(rawFrame);
+    if (!parsed.success) {
+      send(ws, errorEvent("bad_request", "malformed message.create command", 400, frameId));
+      return;
+    }
+    const hubConn = state.hubConn;
+    const author = state.actor;
+    if (!hubConn || !author) return; // unreachable: only authenticated connections reach here
+
+    const { groupId, channelId, clientMessageId, content } = parsed.data.data;
+    // `attachments` / `reference` are open-world passthrough on the command
+    // schema; validate them here against the canonical shapes (drop if invalid).
+    const extra = parsed.data.data as Record<string, unknown>;
+    const attachments = AttachmentsSchema.safeParse(extra.attachments);
+    const reference = MessageReferenceSchema.safeParse(extra.reference);
+
+    // --- Authorization -----------------------------------------------------
+    // The channel must exist, belong to the named group, be visible to the
+    // actor, AND the actor must hold the group's `post` permission. Any failure
+    // → forbidden (don't leak existence beyond what subscribe already does).
+    const channel = getChannelRow(db, channelId);
+    const authorized =
+      channel != null &&
+      channel.groupId === groupId &&
+      channelVisibleTo(db, channel.groupId, channel.tier, author) &&
+      canActor(db, "post", groupId, author);
+    if (!authorized) {
+      send(ws, errorEvent("forbidden", "not authorized to post to this channel", 403, frameId));
+      return;
+    }
+
+    // --- Idempotency: short-circuit a known duplicate ----------------------
+    if (clientMessageId !== undefined) {
+      const existing = getMessageByClientId(db, author, channelId, clientMessageId);
+      if (existing) {
+        // Duplicate re-send: reply to the REQUESTING connection only with the
+        // canonical message.created; do NOT re-fan-out to everyone.
+        send(ws, createdEvent(groupId, channelId, existing, frameId));
+        return;
+      }
+    }
+
+    // --- Persist -----------------------------------------------------------
+    let record: MessageRecord;
+    try {
+      record = createMessage(db, config, {
+        channelId,
+        groupId,
+        author,
+        type: "message",
+        content,
+        ...(attachments.success ? { attachments: attachments.data } : {}),
+        ...(reference.success ? { reference: reference.data } : {}),
+        ...(clientMessageId !== undefined ? { clientMessageId } : {}),
+      });
+    } catch (err) {
+      // Idempotency race: a concurrent create won the unique
+      // (author, channelId, clientMessageId) index. Fall back to the row it
+      // inserted and reply (to us only) with the canonical message.
+      if (clientMessageId !== undefined && isUniqueViolation(err)) {
+        const winner = getMessageByClientId(db, author, channelId, clientMessageId);
+        if (winner) {
+          send(ws, createdEvent(groupId, channelId, winner, frameId));
+          return;
+        }
+      }
+      throw err;
+    }
+
+    // --- Fan out -----------------------------------------------------------
+    // Deliver to every subscriber of the channel, including the author's own
+    // connection. The author's copy correlates to the request id (§7.1).
+    hub.publishToChannel(channelId, createdEvent(groupId, channelId, record, frameId));
+  }
+}
+
+/** Validates the optional `attachments` array on a `message.create` command. */
+const AttachmentsSchema = z.array(AttachmentSchema);
+
+/**
+ * Build a validated `message.created` event for `record`, with the message's
+ * opaque `cursor` on `data` (§7.1 resume / §7.2 history share one cursor space)
+ * and the request `correlationId` echoed (the author's copy correlates to the
+ * request per the §7.1 example). The fan-out payload is re-validated against the
+ * shared `WsMessageCreated` schema before it goes on the wire.
+ */
+function createdEvent(
+  groupId: string,
+  channelId: string,
+  record: MessageRecord,
+  correlationId: string,
+): OutboundEvent {
+  const message = record.message satisfies Message;
+  const data = WsMessageCreatedSchema.shape.data.parse({
+    groupId,
+    channelId,
+    cursor: record.cursor,
+    message,
+  });
+  return { type: "message.created", correlationId, data };
+}
+
+/** Whether `err` is a SQLite UNIQUE-constraint violation (idempotency race). */
+function isUniqueViolation(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return /UNIQUE constraint failed/i.test(message);
 }

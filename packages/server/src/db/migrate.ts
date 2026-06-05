@@ -253,6 +253,20 @@ const migrations: readonly Migration[] = [
       sqlite.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_seq ON messages (seq);");
     },
   },
+  {
+    // WS create idempotency (§7.1): `(author, channelId, clientMessageId)` is
+    // idempotent. A PARTIAL unique index (only where client_message_id is not
+    // null) enforces "at most one message per (author, channel, key)" while
+    // still permitting unlimited rows that carry no idempotency key.
+    id: "0011_messages_client_message_id_unique",
+    up: (sqlite) => {
+      sqlite.exec(
+        `CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_author_channel_client_msg
+           ON messages (author, channel_id, client_message_id)
+           WHERE client_message_id IS NOT NULL;`,
+      );
+    },
+  },
 ];
 
 const LEDGER_DDL = `

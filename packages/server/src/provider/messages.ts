@@ -148,6 +148,36 @@ export function getMessage(db: Db, channelId: string, messageId: string): Messag
   return row ? rowToMessage(row) : null;
 }
 
+/**
+ * Look up an existing message by its WS-create idempotency key (§7.1):
+ * `(author, channelId, clientMessageId)`. Returns the stored {@link MessageRecord}
+ * (canonical message + `seq` + opaque cursor) for the prior create, or `null` if
+ * no such message exists. Backed by the partial unique index, so it matches the
+ * (at most one) row a duplicate `message.create` would otherwise have inserted.
+ */
+export function getMessageByClientId(
+  db: Db,
+  author: string,
+  channelId: string,
+  clientMessageId: string,
+): MessageRecord | null {
+  const row =
+    db.drizzle
+      .select()
+      .from(messages)
+      .where(
+        and(
+          eq(messages.author, author),
+          eq(messages.channelId, channelId),
+          eq(messages.clientMessageId, clientMessageId),
+        ),
+      )
+      .limit(1)
+      .all()[0] ?? null;
+  if (!row) return null;
+  return { message: rowToMessage(row), seq: row.seq, cursor: encodeMessageCursor(row.seq) };
+}
+
 /** Arguments to {@link createMessage}. */
 export interface CreateMessageInput {
   readonly channelId: string;

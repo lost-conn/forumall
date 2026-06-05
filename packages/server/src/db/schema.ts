@@ -7,6 +7,7 @@
  * groups, …) are added by their respective feature cards — do NOT add them
  * here, to avoid overlap.
  */
+import { sql } from "drizzle-orm";
 import {
   index,
   integer,
@@ -426,6 +427,12 @@ export const messages = sqliteTable(
   (t) => ({
     channelSeqIdx: index("idx_messages_channel_seq").on(t.channelId, t.seq),
     seqIdx: uniqueIndex("idx_messages_seq").on(t.seq),
+    // WS-create idempotency (§7.1): at most one message per
+    // (author, channelId, clientMessageId). Partial — only rows that carry an
+    // idempotency key participate; keyless messages are unconstrained.
+    clientMsgIdx: uniqueIndex("idx_messages_author_channel_client_msg")
+      .on(t.author, t.channelId, t.clientMessageId)
+      .where(sql`${t.clientMessageId} IS NOT NULL`),
   }),
 );
 
