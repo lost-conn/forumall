@@ -8,9 +8,27 @@
 import type { Config } from "../config.ts";
 import type { Db } from "../db/index.ts";
 
+/**
+ * The authenticated identity established by the signed-request middleware
+ * (`requireSignature`, §4.5). Present on `c.var.actor` only on routes guarded by
+ * that middleware; unauthenticated routes leave it `undefined`.
+ */
+export interface AuthenticatedActor {
+  /** Full actor/provider identifier as sent, e.g. `alice@providera.com`. */
+  readonly actor: string;
+  /** Local handle for a user actor; empty string for a provider identity (§8.1). */
+  readonly handle: string;
+  /** The `X-OFSCP-Key-ID` whose key verified the request. */
+  readonly keyId: string;
+  /** Canonicalized authority/domain the identity belongs to. */
+  readonly domain: string;
+}
+
 export interface AppVariables {
   readonly config: Config;
   readonly db: Db;
+  /** Set by `requireSignature` on success; undefined on unauthenticated routes. */
+  actor?: AuthenticatedActor;
 }
 
 export interface AppBindings {
