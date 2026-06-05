@@ -1,9 +1,11 @@
+import { Hono } from "hono";
 /**
  * App factory: assembles the Hono application from config + injected deps.
  *
  * Responsibilities:
- *  - inject `config` and `db` into the request context (`c.var`) for handlers;
- *  - mount the `/api` router;
+ *  - inject `config`, `db`, and the real-time {@link Hub} into the request
+ *    context (`c.var`) for handlers;
+ *  - mount the `/api` router and the `GET /api/ws` WebSocket endpoint (§7.1);
  *  - install the problem+json `onError` and `notFound` handlers;
  *  - serve the built web client as static for all non-API routes, with SPA
  *    fallback to `index.html`. The static dir is `config.webDir` (configurable,
@@ -12,8 +14,17 @@
  *
  * `createApp` is pure (no I/O, no port binding), so it can be driven directly
  * in tests via `app.request(...)`.
+ *
+ * ## WebSocket wiring (§7.1)
+ * Bun's WS support needs two pieces: the upgrade handler (mounted on the route)
+ * and a `websocket` handler object that the Bun entry must export alongside
+ * `fetch`. {@link createBunWebSocket} returns both; {@link createApp} mounts the
+ * upgrade route and exposes the `websocket` object as `app.__websocket` so the
+ * Bun entry (`index.ts`) and the test harness can pass it to `Bun.serve`. The
+ * {@link Hub} is created once here (or injected) and shared via `c.var.hub`, so
+ * later real-time cards publish through the same connection registry.
  */
-import { Hono } from "hono";
+import { createBunWebSocket } from "hono/bun";
 
 import type { Config } from "./config.ts";
 import type { Db } from "./db/index.ts";
@@ -23,18 +34,36 @@ import { notFound, onError } from "./http/errors.ts";
 import { createStaticHandler } from "./http/static.ts";
 import type { AppBindings } from "./http/types.ts";
 import { createUserKeysRouter } from "./http/user-keys.ts";
+import { type WsTimings, createWsHandlers } from "./http/ws.ts";
+import { Hub } from "./provider/ws-hub.ts";
 
 export interface AppDeps {
   readonly db: Db;
+  /** Shared real-time hub; one is created if not injected. */
+  readonly hub?: Hub;
+  /** Heartbeat / handshake timings (§7.1); tests pass short values. */
+  readonly wsTimings?: Partial<WsTimings>;
 }
 
-export function createApp(config: Config, deps: AppDeps): Hono<AppBindings> {
-  const app = new Hono<AppBindings>();
+/** A Hono app augmented with the Bun `websocket` handler object it requires. */
+export type AppWithWebSocket = Hono<AppBindings> & {
+  /** The Bun WS handler object to export alongside `fetch` (see file header). */
+  readonly __websocket: ReturnType<typeof createBunWebSocket>["websocket"];
+  /** The shared real-time hub (for tests / later wiring). */
+  readonly __hub: Hub;
+};
 
-  // Make config + db available to every handler via c.var.
+export function createApp(config: Config, deps: AppDeps): AppWithWebSocket {
+  const app = new Hono<AppBindings>();
+  const hub = deps.hub ?? new Hub();
+
+  const { upgradeWebSocket, websocket } = createBunWebSocket();
+
+  // Make config + db + hub available to every handler via c.var.
   app.use("*", async (c, next) => {
     c.set("config", config);
     c.set("db", deps.db);
+    c.set("hub", hub);
     await next();
   });
 
@@ -45,6 +74,22 @@ export function createApp(config: Config, deps: AppDeps): Hono<AppBindings> {
   // Root-level public key discovery (§4.6): `/.well-known/ofscp/users/{handle}/keys`.
   // Also mounted before the static handler so it isn't shadowed by the SPA.
   app.route("/", createUserKeysRouter());
+
+  // Real-time WebSocket endpoint (§7.1): the signed-challenge handshake,
+  // subscribe/unsubscribe, and heartbeat. Mounted before the SPA static handler
+  // (it lives under `/api/`, so it falls through the static guard anyway, but we
+  // register it explicitly here). The same handler instance is shared across all
+  // connections; per-connection state lives in the closure (`createWsHandlers`).
+  const wsHandlers = createWsHandlers({
+    config,
+    db: deps.db,
+    hub,
+    ...(deps.wsTimings !== undefined ? { timings: deps.wsTimings } : {}),
+  });
+  app.get(
+    "/api/ws",
+    upgradeWebSocket(() => wsHandlers),
+  );
 
   // API surface. Unmatched `/api/*` paths fall through to `notFound` below.
   app.route("/api", createApiRouter());
@@ -65,5 +110,6 @@ export function createApp(config: Config, deps: AppDeps): Hono<AppBindings> {
   app.notFound(notFound);
   app.onError(onError);
 
-  return app;
+  // Attach the Bun WS handler object + hub for the entry/test harness to pick up.
+  return Object.assign(app, { __websocket: websocket, __hub: hub });
 }

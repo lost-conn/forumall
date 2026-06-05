@@ -30,7 +30,12 @@ const app = createApp(config, { db });
 console.log(`[server] forumall listening on http://localhost:${config.port}`);
 console.log(`[server] domain=${config.domain} data=${config.dataDir}`);
 
+// Bun's WebSocket support requires the entry to export a `websocket` handler
+// object alongside `fetch` (§7.1). `createApp` builds it and attaches it as
+// `app.__websocket`; the upgrade route lives on the app, and Bun routes accepted
+// upgrades into this handler.
 export default {
   port: config.port,
   fetch: app.fetch,
+  websocket: app.__websocket,
 };

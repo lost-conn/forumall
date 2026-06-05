@@ -7,6 +7,7 @@
  */
 import type { Config } from "../config.ts";
 import type { Db } from "../db/index.ts";
+import type { Hub } from "../provider/ws-hub.ts";
 
 /**
  * The authenticated identity established by the signed-request middleware
@@ -27,6 +28,13 @@ export interface AuthenticatedActor {
 export interface AppVariables {
   readonly config: Config;
   readonly db: Db;
+  /**
+   * The real-time WebSocket fan-out hub (§7.1). Shared across the app so later
+   * cards (message create, reactions, typing, presence, DM, calls) can call
+   * `c.var.hub.publishToChannel(...)` / `publishToActor(...)` from their HTTP or
+   * WS handlers.
+   */
+  readonly hub: Hub;
   /** Set by `requireSignature` on success; undefined on unauthenticated routes. */
   actor?: AuthenticatedActor;
 }
