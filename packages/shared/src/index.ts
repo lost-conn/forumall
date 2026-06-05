@@ -8,3 +8,4 @@
 export const OFSCP_VERSION = "0.1.0" as const;
 
 export * from "./signing.ts";
+export * from "./ws-auth.ts";
