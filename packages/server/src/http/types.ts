@@ -9,6 +9,7 @@ import type { Config } from "../config.ts";
 import type { Db } from "../db/index.ts";
 import type { RemoteDiscoveryCache } from "../provider/federation/discovery-cache.ts";
 import type { FederationFetch } from "../provider/federation/http.ts";
+import type { RemoteUserKeysCache } from "../provider/federation/user-keys-cache.ts";
 import type { PresenceRegistry } from "../provider/presence.ts";
 import type { Hub } from "../provider/ws-hub.ts";
 
@@ -57,6 +58,13 @@ export interface AppVariables {
    * requests from remote providers (with a forced re-fetch on a verify miss).
    */
   readonly discoveryCache: RemoteDiscoveryCache;
+  /**
+   * Remote actor user-keys cache (§4.6): fetches + caches a remote user's active
+   * device keys so the signature middleware can verify user-signed requests from
+   * actors whose home provider is not this one (with a forced re-fetch on a
+   * verify miss for key rotation/revocation).
+   */
+  readonly userKeysCache: RemoteUserKeysCache;
   /** Set by `requireSignature` on success; undefined on unauthenticated routes. */
   actor?: AuthenticatedActor;
 }

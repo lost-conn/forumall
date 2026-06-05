@@ -7,6 +7,7 @@
  * and exposed as a typed, immutable {@link Config}.
  */
 import { join } from "node:path";
+import { canonicalAuthority } from "@forumall/shared";
 import { z } from "zod";
 
 /** Coerce a possibly-undefined env string into a positive int port. */
@@ -86,7 +87,33 @@ const RawEnvSchema = z.object({
    * so tests can use a tiny value to exercise expiry quickly.
    */
   TYPING_TIMEOUT_MS: z.coerce.number().int().min(1).default(6000),
+
+  /**
+   * Federation allow-list (§8 Authorization): comma-separated remote provider
+   * domains permitted to federate. **Empty by default → open** (every non-denied
+   * domain is allowed). When non-empty, ONLY the listed domains may federate.
+   * Domains are matched case-insensitively after default-port stripping.
+   */
+  FEDERATION_ALLOW: z.string().default(""),
+
+  /**
+   * Federation deny-list (§8 Authorization): comma-separated remote provider
+   * domains blocked from federating. **Empty by default → none denied.** Deny
+   * wins over the allow-list (a domain on both is denied). Disallowed peers get a
+   * `403` before any remote key fetch happens.
+   */
+  FEDERATION_DENY: z.string().default(""),
 });
+
+/** Parse a comma-separated domain list into canonicalized, de-duplicated hosts. */
+function parseDomainList(raw: string): readonly string[] {
+  const seen = new Set<string>();
+  for (const part of raw.split(",")) {
+    const trimmed = part.trim();
+    if (trimmed.length > 0) seen.add(canonicalAuthority(trimmed));
+  }
+  return Object.freeze([...seen]);
+}
 
 /** Argon2id cost parameters (§4.1.4). */
 export interface Argon2Params {
@@ -127,6 +154,16 @@ export interface Config {
   readonly maxResumeReplay: number;
   /** Typing-indicator auto-expiry window in ms (§7.1 "Typing indicators"). */
   readonly typingTimeoutMs: number;
+  /**
+   * Federation allow-list (§8): canonicalized domains permitted to federate.
+   * Empty → open (all non-denied domains allowed). See {@link isProviderAllowed}.
+   */
+  readonly federationAllow: readonly string[];
+  /**
+   * Federation deny-list (§8): canonicalized domains blocked from federating.
+   * Deny wins over the allow-list. Empty → none denied.
+   */
+  readonly federationDeny: readonly string[];
 }
 
 /** A loosely-typed environment bag (process.env shape). */
@@ -167,6 +204,8 @@ export function loadConfig(env: Env = process.env): Config {
     messageEditWindowSeconds: raw.MESSAGE_EDIT_WINDOW_SECONDS,
     maxResumeReplay: raw.MAX_RESUME_REPLAY,
     typingTimeoutMs: raw.TYPING_TIMEOUT_MS,
+    federationAllow: parseDomainList(raw.FEDERATION_ALLOW),
+    federationDeny: parseDomainList(raw.FEDERATION_DENY),
     ...(raw.CONTACT !== undefined ? { contact: raw.CONTACT } : {}),
   });
 }

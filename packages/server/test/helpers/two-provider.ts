@@ -21,6 +21,7 @@ import { openDb } from "../../src/db/index.ts";
 import { migrate } from "../../src/db/migrate.ts";
 import type { RemoteDiscoveryCache } from "../../src/provider/federation/discovery-cache.ts";
 import type { FederationFetch } from "../../src/provider/federation/http.ts";
+import type { RemoteUserKeysCache } from "../../src/provider/federation/user-keys-cache.ts";
 
 const FAST_ARGON2: Argon2Params = { memoryKib: 1024, iterations: 1, parallelism: 1 };
 
@@ -32,6 +33,8 @@ export interface Provider {
   readonly db: ReturnType<typeof openDb>;
   readonly server: ReturnType<typeof Bun.serve>;
   readonly discoveryCache: RemoteDiscoveryCache;
+  /** This provider's remote user-keys cache (§4.6); assert `fetchCount` in tests. */
+  readonly userKeysCache: RemoteUserKeysCache;
   /** The injected federation fetch (pass to `signedProviderFetch` to reach the peer). */
   readonly federationFetch: FederationFetch;
   /** `http://localhost:{port}` base for direct (non-federation) requests. */
@@ -72,21 +75,35 @@ export function mappedFederationFetch(ports: Map<string, number>): FederationFet
   };
 }
 
+/** Extra `loadConfig` env overrides applied per-provider (e.g. policy lists). */
+export interface StartFederationOptions {
+  readonly domainA?: string;
+  readonly domainB?: string;
+  /** Extra env vars merged into provider A's config (e.g. `FEDERATION_DENY`). */
+  readonly envA?: Record<string, string>;
+  /** Extra env vars merged into provider B's config. */
+  readonly envB?: Record<string, string>;
+}
+
 /**
  * Boot a two-provider federation. Each provider's injected `federationFetch`
  * resolves both domains, so either can call the other. The DBs live under
- * `dir` (one sqlite file per provider).
+ * `dir` (one sqlite file per provider). Per-provider env overrides (e.g.
+ * `FEDERATION_ALLOW` / `FEDERATION_DENY`) may be supplied via {@link StartFederationOptions}.
  */
-export function startFederation(dir: string, domainA = "a.test", domainB = "b.test"): Federation {
+export function startFederation(dir: string, opts: StartFederationOptions = {}): Federation {
+  const domainA = opts.domainA ?? "a.test";
+  const domainB = opts.domainB ?? "b.test";
   const ports = new Map<string, number>();
   const federationFetch = mappedFederationFetch(ports);
 
-  const boot = (domain: string, name: string): Provider => {
+  const boot = (domain: string, name: string, env: Record<string, string>): Provider => {
     const base = loadConfig({
       DATA_DIR: dir,
       DB_PATH: `${dir}/${name}.sqlite`,
       WEB_DIR: `${dir}/${name}-web`,
       DOMAIN: domain,
+      ...env,
     });
     const config: Config = Object.freeze({ ...base, argon2: FAST_ARGON2 });
     const db = openDb(config.dbPath);
@@ -101,13 +118,14 @@ export function startFederation(dir: string, domainA = "a.test", domainB = "b.te
       db,
       server,
       discoveryCache: app.__discoveryCache,
+      userKeysCache: app.__userKeysCache,
       federationFetch,
       base: `http://localhost:${server.port}`,
     };
   };
 
-  const a = boot(domainA, "fed-a");
-  const b = boot(domainB, "fed-b");
+  const a = boot(domainA, "fed-a", opts.envA ?? {});
+  const b = boot(domainB, "fed-b", opts.envB ?? {});
 
   return {
     a,

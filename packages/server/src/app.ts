@@ -37,6 +37,7 @@ import { createUserKeysRouter } from "./http/user-keys.ts";
 import { type WsTimings, createWsHandlers } from "./http/ws.ts";
 import { RemoteDiscoveryCache } from "./provider/federation/discovery-cache.ts";
 import { type FederationFetch, defaultFederationFetch } from "./provider/federation/http.ts";
+import { RemoteUserKeysCache } from "./provider/federation/user-keys-cache.ts";
 import { PresenceRegistry } from "./provider/presence.ts";
 import { Hub } from "./provider/ws-hub.ts";
 
@@ -57,6 +58,8 @@ export interface AppDeps {
   readonly federationFetch?: FederationFetch;
   /** Shared remote-discovery cache (§8.1); one is created if not injected. */
   readonly discoveryCache?: RemoteDiscoveryCache;
+  /** Shared remote user-keys cache (§4.6); one is created if not injected. */
+  readonly userKeysCache?: RemoteUserKeysCache;
 }
 
 /** A Hono app augmented with the Bun `websocket` handler object it requires. */
@@ -69,6 +72,8 @@ export type AppWithWebSocket = Hono<AppBindings> & {
   readonly __presenceRegistry: PresenceRegistry;
   /** The shared remote-discovery cache (for tests / later wiring). */
   readonly __discoveryCache: RemoteDiscoveryCache;
+  /** The shared remote user-keys cache (for tests / later wiring). */
+  readonly __userKeysCache: RemoteUserKeysCache;
 };
 
 export function createApp(config: Config, deps: AppDeps): AppWithWebSocket {
@@ -79,6 +84,9 @@ export function createApp(config: Config, deps: AppDeps): AppWithWebSocket {
   // The discovery cache shares the injected federation fetch so it reaches the
   // same (real or in-process-peer) transport the rest of federation uses.
   const discoveryCache = deps.discoveryCache ?? new RemoteDiscoveryCache({ federationFetch });
+  // The user-keys cache likewise shares the injected federation fetch so remote
+  // actor key resolution (§4.6) reaches the same transport (real TLS or peer).
+  const userKeysCache = deps.userKeysCache ?? new RemoteUserKeysCache({ federationFetch });
 
   const { upgradeWebSocket, websocket } = createBunWebSocket();
 
@@ -91,6 +99,7 @@ export function createApp(config: Config, deps: AppDeps): AppWithWebSocket {
     c.set("presenceRegistry", presenceRegistry);
     c.set("federationFetch", federationFetch);
     c.set("discoveryCache", discoveryCache);
+    c.set("userKeysCache", userKeysCache);
     await next();
   });
 
@@ -144,5 +153,6 @@ export function createApp(config: Config, deps: AppDeps): AppWithWebSocket {
     __hub: hub,
     __presenceRegistry: presenceRegistry,
     __discoveryCache: discoveryCache,
+    __userKeysCache: userKeysCache,
   });
 }
