@@ -25,6 +25,17 @@ const RawEnvSchema = z.object({
   MEDIA_DIR: z.string().min(1).optional(),
   /** Override for the sqlite file; defaults to `${DATA_DIR}/forumall.sqlite`. */
   DB_PATH: z.string().min(1).optional(),
+  /**
+   * Maximum attachment upload size in bytes, advertised in discovery as
+   * `capabilities.limits.maxUploadBytes` (§3.1, §6) and enforced on upload.
+   * Defaults to 25 MiB.
+   */
+  MAX_UPLOAD_BYTES: z.coerce.number().int().min(0).default(26_214_400),
+  /**
+   * Optional admin contact published in discovery (`provider.contact`), e.g.
+   * `mailto:admin@example.social`. Omitted from the document if unset.
+   */
+  CONTACT: z.string().min(1).optional(),
 });
 
 /** Fully-resolved, validated server configuration. */
@@ -40,6 +51,10 @@ export interface Config {
    * app still boots (static routes just 404).
    */
   readonly webDir: string;
+  /** Max attachment upload size in bytes (advertised + enforced). */
+  readonly maxUploadBytes: number;
+  /** Optional admin contact for discovery; omitted when unset. */
+  readonly contact?: string;
 }
 
 /** A loosely-typed environment bag (process.env shape). */
@@ -69,5 +84,7 @@ export function loadConfig(env: Env = process.env): Config {
     mediaDir,
     dbPath,
     webDir,
+    maxUploadBytes: raw.MAX_UPLOAD_BYTES,
+    ...(raw.CONTACT !== undefined ? { contact: raw.CONTACT } : {}),
   });
 }

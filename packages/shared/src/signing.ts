@@ -205,6 +205,27 @@ export function publicKeyFromPrivate(privateKey: PrivateKeyInput): string {
   return toBase64(ed.getPublicKey(decodeKey(privateKey)));
 }
 
+/** A freshly-generated Ed25519 keypair, both encoded as base64 (raw 32 bytes). */
+export interface GeneratedKeyPair {
+  /** Base64 of the raw 32-byte private seed. Keep secret; never serve. */
+  privateKey: string;
+  /** Base64 of the raw 32-byte public key. Safe to publish. */
+  publicKey: string;
+}
+
+/**
+ * Generate a fresh Ed25519 keypair (e.g. a provider signing identity, §8.1).
+ * Both halves are base64 of the raw 32-byte values. Uses the module's wired
+ * synchronous SHA-512, so it is safe to call without extra setup.
+ */
+export function generateKeyPair(): GeneratedKeyPair {
+  const seed = ed.utils.randomPrivateKey();
+  return {
+    privateKey: toBase64(seed),
+    publicKey: toBase64(ed.getPublicKey(seed)),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Signing headers
 // ---------------------------------------------------------------------------

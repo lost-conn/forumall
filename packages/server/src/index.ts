@@ -10,6 +10,7 @@ import { createApp } from "./app.ts";
 import { loadConfig } from "./config.ts";
 import { openDb } from "./db/index.ts";
 import { migrate } from "./db/migrate.ts";
+import { getProviderSigningKey } from "./provider/signing-key.ts";
 
 const config = loadConfig();
 
@@ -18,6 +19,11 @@ const applied = migrate(db);
 if (applied.length > 0) {
   console.log(`[server] applied migrations: ${applied.join(", ")}`);
 }
+
+// Ensure the provider's Ed25519 signing identity exists (§8.1). Generated once
+// on first boot and reused thereafter.
+const providerKey = getProviderSigningKey(db);
+console.log(`[server] provider signing key id=${providerKey.keyId}`);
 
 const app = createApp(config, { db });
 

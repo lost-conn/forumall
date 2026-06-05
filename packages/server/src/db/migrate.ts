@@ -41,6 +41,20 @@ const migrations: readonly Migration[] = [
       `);
     },
   },
+  {
+    id: "0002_provider_keys",
+    up: (sqlite) => {
+      sqlite.exec(`
+        CREATE TABLE IF NOT EXISTS provider_keys (
+          key_id      TEXT PRIMARY KEY,
+          public_key  TEXT NOT NULL,
+          private_key TEXT NOT NULL,
+          algorithm   TEXT NOT NULL,
+          created_at  INTEGER NOT NULL
+        ) STRICT;
+      `);
+    },
+  },
 ];
 
 const LEDGER_DDL = `

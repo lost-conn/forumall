@@ -11,6 +11,7 @@
 import { OFSCP_VERSION } from "@forumall/shared";
 import { Hono } from "hono";
 
+import { TIERS } from "../provider/tiers.ts";
 import type { AppBindings } from "./types.ts";
 
 export function createApiRouter() {
@@ -25,6 +26,9 @@ export function createApiRouter() {
       domain: config.domain,
     });
   });
+
+  /** Tier discovery (§11.1): canonical access/discoverability levels. */
+  api.get("/tiers", (c) => c.json(TIERS));
 
   // Later: api.route("/auth", authRouter); api.route("/groups", groupsRouter); …
 

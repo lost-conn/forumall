@@ -18,6 +18,7 @@ import { Hono } from "hono";
 import type { Config } from "./config.ts";
 import type { Db } from "./db/index.ts";
 import { createApiRouter } from "./http/api.ts";
+import { createDiscoveryRouter } from "./http/discovery.ts";
 import { notFound, onError } from "./http/errors.ts";
 import { createStaticHandler } from "./http/static.ts";
 import type { AppBindings } from "./http/types.ts";
@@ -35,6 +36,10 @@ export function createApp(config: Config, deps: AppDeps): Hono<AppBindings> {
     c.set("db", deps.db);
     await next();
   });
+
+  // Root-level OFSCP discovery (§3.1). Mounted before the SPA static handler so
+  // `/.well-known/ofscp-provider` is never shadowed by the index.html fallback.
+  app.route("/", createDiscoveryRouter());
 
   // API surface. Unmatched `/api/*` paths fall through to `notFound` below.
   app.route("/api", createApiRouter());

@@ -10,7 +10,11 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ProblemDetailsSchema } from "@forumall/shared";
+import {
+  ProblemDetailsSchema,
+  ProviderDiscoverySchema,
+  TiersResponseSchema,
+} from "@forumall/shared";
 import { Hono } from "hono";
 
 import { createApp } from "../src/app.ts";
@@ -86,7 +90,8 @@ describe("migrations", () => {
     const ledger = db.sqlite
       .query<{ n: number }, []>("SELECT COUNT(*) AS n FROM _migrations")
       .get();
-    expect(ledger?.n).toBe(1);
+    // One row per shipped migration (app_meta + provider_keys, …).
+    expect(ledger?.n).toBe(first.length);
   });
 });
 
@@ -159,6 +164,137 @@ describe("api", () => {
     const body = (await res.json()) as { status: string; domain: string };
     expect(body.status).toBe("ok");
     expect(body.domain).toBe("localhost:4321");
+  });
+});
+
+describe("discovery (§3.1)", () => {
+  test("GET /.well-known/ofscp-provider -> 200, validates, no private key", async () => {
+    const { app } = freshApp("discovery", { PORT: "5555" });
+    const res = await app.request("/.well-known/ofscp-provider");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("application/json");
+
+    const text = await res.text();
+    // No private *key* material anywhere in the serialized body (the literal
+    // "private" tier id is expected, so we check for key field names only).
+    expect(text).not.toContain("privateKey");
+    expect(text).not.toContain("private_key");
+
+    const body = JSON.parse(text);
+    const doc = ProviderDiscoverySchema.parse(body);
+
+    expect(doc.provider.protocolVersion).toBe("0.1.0");
+    expect(doc.provider.domain).toBe("localhost:5555");
+    expect(doc.provider.publicKeys[0]?.algorithm).toBe("Ed25519");
+    expect(doc.provider.publicKeys[0]?.public_key.length).toBeGreaterThan(0);
+    expect(doc.provider.software?.name).toBe("forumall");
+    expect(doc.provider.authentication.login_endpoint).toBe(
+      "https://localhost:5555/api/auth/login",
+    );
+    expect(doc.capabilities?.tiers).toContain("private");
+    expect(doc.capabilities?.limits?.maxUploadBytes).toBe(26_214_400);
+    expect(doc.capabilities?.federation?.realtimeDelivery).toBe("direct-ws");
+
+    // No private key field should appear at any nesting level.
+    const walk = (v: unknown): void => {
+      if (v && typeof v === "object") {
+        for (const [k, val] of Object.entries(v)) {
+          expect(k.toLowerCase()).not.toContain("private");
+          walk(val);
+        }
+      }
+    };
+    walk(body);
+  });
+
+  test("cross-checks against the published discovery sample's shape", async () => {
+    const samplePath = join(
+      import.meta.dir,
+      "..",
+      "..",
+      "..",
+      "..",
+      "ofscp",
+      "tests",
+      "provider-discovery.sample.json",
+    );
+    const sample = await Bun.file(samplePath).json();
+    // The published sample itself must validate against our shared schema...
+    ProviderDiscoverySchema.parse(sample);
+
+    const { app } = freshApp("discovery-sample");
+    const res = await app.request("/.well-known/ofscp-provider");
+    const ours = await res.json();
+    ProviderDiscoverySchema.parse(ours);
+
+    // ...and our output must be structurally consistent (same top-level keys,
+    // same provider/capabilities key sets minus optional extras).
+    expect(Object.keys(ours).sort()).toEqual(
+      expect.arrayContaining(["provider", "capabilities"]),
+    );
+    for (const k of ["domain", "protocolVersion", "software", "authentication", "publicKeys"]) {
+      expect(ours.provider).toHaveProperty(k);
+      expect(sample.provider).toHaveProperty(k);
+    }
+    for (const k of ["messageTypes", "tiers", "limits", "federation", "discovery"]) {
+      expect(ours.capabilities).toHaveProperty(k);
+      expect(sample.capabilities).toHaveProperty(k);
+    }
+    expect(ours.provider.publicKeys[0].algorithm).toBe(sample.provider.publicKeys[0].algorithm);
+  });
+
+  test("caching headers present on discovery", async () => {
+    const { app } = freshApp("discovery-cache");
+    const res = await app.request("/.well-known/ofscp-provider");
+    expect(res.headers.get("cache-control")).toBeTruthy();
+    const etag = res.headers.get("etag");
+    expect(etag).toBeTruthy();
+
+    // If-None-Match short-circuits to 304.
+    const res2 = await app.request("/.well-known/ofscp-provider", {
+      headers: { "if-none-match": etag ?? "" },
+    });
+    expect(res2.status).toBe(304);
+  });
+
+  test("provider signing key persists across a fresh app on the same db file", async () => {
+    const dbPath = join(tmp, "persist-key.sqlite");
+    const mk = () => {
+      const config = loadConfig({ DATA_DIR: tmp, DB_PATH: dbPath, WEB_DIR: join(tmp, "pk-web") });
+      const db = openDb(config.dbPath);
+      migrate(db);
+      return { app: createApp(config, { db }), db };
+    };
+
+    const first = mk();
+    const doc1 = ProviderDiscoverySchema.parse(
+      await (await first.app.request("/.well-known/ofscp-provider")).json(),
+    );
+    first.db.sqlite.close();
+
+    // Re-open a fresh app on the SAME db file: the key must be reused.
+    const second = mk();
+    const doc2 = ProviderDiscoverySchema.parse(
+      await (await second.app.request("/.well-known/ofscp-provider")).json(),
+    );
+    second.db.sqlite.close();
+
+    expect(doc2.provider.publicKeys[0]?.key_id).toBe(doc1.provider.publicKeys[0]?.key_id);
+    expect(doc2.provider.publicKeys[0]?.public_key).toBe(doc1.provider.publicKeys[0]?.public_key);
+  });
+});
+
+describe("tiers (§11.1)", () => {
+  test("GET /api/tiers -> 200, validates, includes private", async () => {
+    const { app } = freshApp("tiers");
+    const res = await app.request("/api/tiers");
+    expect(res.status).toBe(200);
+    const body = TiersResponseSchema.parse(await res.json());
+    const ids = body.tiers.map((t) => t.id);
+    expect(ids).toContain("private");
+    const priv = body.tiers.find((t) => t.id === "private");
+    expect(priv?.name.length).toBeGreaterThan(0);
+    expect(typeof priv?.description).toBe("string");
   });
 });
 
