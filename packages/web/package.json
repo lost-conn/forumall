@@ -17,6 +17,7 @@
     "solid-js": "^1.9.4"
   },
   "devDependencies": {
+    "@forumall/server": "workspace:*",
     "@unocss/preset-wind": "^0.65.4",
     "unocss": "^0.65.4",
     "vite": "^6.0.11",

@@ -1,11 +1,33 @@
-import { OFSCP_VERSION } from "@forumall/shared";
+import { Route, Router } from "@solidjs/router";
+import { QueryClient, QueryClientProvider } from "@tanstack/solid-query";
 import type { Component } from "solid-js";
+import { AppShell } from "./components/AppShell";
+import {
+  DmsPage,
+  GroupChannelPage,
+  HomePage,
+  LoginPage,
+  NotFoundPage,
+  SettingsPage,
+} from "./routes/pages";
+
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: { staleTime: 30_000, retry: 1 },
+  },
+});
 
 export const App: Component = () => {
   return (
-    <main class="min-h-screen flex flex-col items-center justify-center gap-2 bg-neutral-950 text-neutral-100">
-      <h1 class="text-3xl font-bold">Forumall</h1>
-      <p class="text-neutral-400">OFSCP provider + client · v{OFSCP_VERSION}</p>
-    </main>
+    <QueryClientProvider client={queryClient}>
+      <Router root={AppShell}>
+        <Route path="/" component={HomePage} />
+        <Route path="/login" component={LoginPage} />
+        <Route path="/groups/:groupId?/:channelId?" component={GroupChannelPage} />
+        <Route path="/dms/:dmId?" component={DmsPage} />
+        <Route path="/settings" component={SettingsPage} />
+        <Route path="*" component={NotFoundPage} />
+      </Router>
+    </QueryClientProvider>
   );
 };

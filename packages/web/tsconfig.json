@@ -3,7 +3,7 @@
   "compilerOptions": {
     "jsx": "preserve",
     "jsxImportSource": "solid-js",
-    "types": ["vite/client"]
+    "types": ["vite/client", "bun"]
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx", "vite.config.ts", "uno.config.ts"]
+  "include": ["src/**/*.ts", "src/**/*.tsx", "test/**/*.ts", "vite.config.ts", "uno.config.ts"]
 }
