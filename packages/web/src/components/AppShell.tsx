@@ -3,6 +3,7 @@ import { A, useLocation } from "@solidjs/router";
 import { For, type ParentComponent, Show } from "solid-js";
 import { session } from "../stores/session";
 import { SelfPresenceControl } from "./social/SelfPresenceControl";
+import { UserProfileCard } from "./social/UserProfileCard";
 
 interface NavItem {
   href: string;
@@ -78,6 +79,9 @@ export const AppShell: ParentComponent = (props) => {
       </nav>
 
       <main class="app-content">{props.children}</main>
+
+      {/* Global, opened from anywhere via openUserProfile(actor). */}
+      <UserProfileCard />
     </div>
   );
 };

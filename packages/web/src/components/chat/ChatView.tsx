@@ -2,18 +2,25 @@
  * ChatView (P8) — the real-time chat experience for one text channel.
  *
  * Renders the message timeline (history + live, de-duped, with tombstones +
- * in-place edits), a composer (optimistic local echo, attachments, typing), and
- * per-message reactions, edit/delete affordances. Wires the live
- * {@link OfscpWsClient} into the chat store via {@link openChannel} and the
- * command helpers.
+ * in-place edits), a composer (optimistic local echo, attachments, typing,
+ * message-kind selection), per-message reactions + edit/delete + reply
+ * affordances. Wires the live {@link OfscpWsClient} into the chat store via
+ * {@link openChannel} and the command helpers.
  *
  * Message-type rendering (§5.3 / §2.3 forward-compat):
- *  - `message` / `memo` → plain text,
- *  - `article` → sanitized markdown,
+ *  - `message` / `memo` → plain text, `article` → sanitized markdown,
  *  - unknown `type` → generic best-effort text fallback (never crashes).
+ *
+ * Replies (§7.2):
+ *  - a reply carries `reference = { type: "reply", id }`;
+ *  - replies to a **memo/article** are pulled OUT of the main flow and nested
+ *    under their parent (always), with a lazy "load replies" expander;
+ *  - replies to a **chat message** render inline with a quoted-parent snippet
+ *    by default, or nested under the parent in "threaded" view (header toggle).
  */
 import type { Attachment, Channel } from "@forumall/shared";
 import {
+  type Accessor,
   type Component,
   For,
   Match,
@@ -38,11 +45,14 @@ import {
 } from "../../stores/chat.ts";
 import { session, sessionClient, sessionWs } from "../../stores/session.ts";
 import { FollowToggle } from "../feed/FollowToggle.tsx";
+import { openUserProfile } from "../social/user-profile-store.ts";
+import { ArticleEditor } from "./ArticleEditor.tsx";
 import {
   type ChannelHandle,
   addReactionCmd,
   deleteMessage,
   editMessage,
+  loadReplies,
   openChannel,
   removeReactionCmd,
   retrySend,
@@ -65,15 +75,27 @@ const TYPING_THROTTLE_MS = 2500;
 /** Idle window after the last keystroke before emitting `typing.stop` (ms). */
 const TYPING_IDLE_MS = 3000;
 
-export const ChatView: Component<{ channel: Channel; canPost: boolean; canModerate: boolean }> = (
-  props,
-) => {
+/** Message kinds whose replies are pulled out of the main flow and nested. */
+function isLongForm(type: string | undefined): boolean {
+  return type === "memo" || type === "article";
+}
+
+export const ChatView: Component<{
+  channel: Channel;
+  canPost: boolean;
+  canModerate: boolean;
+  /** Whether the actor may post memos / articles (defaults to `canPost`). */
+  canPostMemo?: boolean;
+  canPostArticle?: boolean;
+}> = (props) => {
   const channelId = () => props.channel.id;
   const groupId = () => props.channel.groupId;
 
   const [handle, setHandle] = createSignal<ChannelHandle | null>(null);
   const [loadingOlder, setLoadingOlder] = createSignal(false);
   const [historyError, setHistoryError] = createSignal<string | null>(null);
+  const [threadMode, setThreadMode] = createSignal(false);
+  const [replyTarget, setReplyTarget] = createSignal<ChatMessage | null>(null);
 
   // (Re)open the channel whenever it changes. Tear down the previous wiring.
   createEffect(
@@ -81,6 +103,7 @@ export const ChatView: Component<{ channel: Channel; canPost: boolean; canModera
       const client = sessionClient();
       const ws = sessionWs();
       setHistoryError(null);
+      setReplyTarget(null);
       handle()?.close();
       setHandle(null);
       if (!client || !ws) return;
@@ -102,6 +125,37 @@ export const ChatView: Component<{ channel: Channel; canPost: boolean; canModera
   const messages = createMemo(() => messagesFor(channelId()));
   const typingActors = createMemo(() => typingFor(channelId()).filter((u) => u !== session.actor));
 
+  // Index loaded messages + group replies by parent so we can render threads.
+  const byId = createMemo(() => {
+    const map = new Map<string, ChatMessage>();
+    for (const m of messages()) map.set(m.id, m);
+    return map;
+  });
+  const repliesByParent = createMemo(() => {
+    const map = new Map<string, ChatMessage[]>();
+    for (const m of messages()) {
+      const pid = m.reference?.id;
+      if (pid) {
+        const list = map.get(pid) ?? [];
+        list.push(m);
+        map.set(pid, list);
+      }
+    }
+    return map;
+  });
+
+  /** Is this message nested under its parent (hidden from the main flow)? */
+  const isNested = (m: ChatMessage): boolean => {
+    const pid = m.reference?.id;
+    if (!pid) return false;
+    const parent = byId().get(pid);
+    if (!parent) return false; // orphan reply (parent out of window) → stays inline
+    if (isLongForm(parent.type)) return true; // memo/article replies always nest
+    return threadMode(); // chat replies nest only in threaded view
+  };
+
+  const roots = createMemo(() => messages().filter((m) => !isNested(m)));
+
   const loadOlder = async (): Promise<void> => {
     const h = handle();
     if (!h || loadingOlder()) return;
@@ -114,8 +168,6 @@ export const ChatView: Component<{ channel: Channel; canPost: boolean; canModera
   };
 
   let scrollEl: HTMLDivElement | undefined;
-  // Auto-scroll to the newest message when the timeline grows (and we were near
-  // the bottom). Keyed off the message count so each append nudges us down.
   createEffect(
     on(
       () => messages().length,
@@ -137,7 +189,19 @@ export const ChatView: Component<{ channel: Channel; canPost: boolean; canModera
         <Show when={props.channel.topic}>
           <span class="truncate text-xs text-faint">— {props.channel.topic}</span>
         </Show>
-        <FollowToggle channelId={props.channel.id} groupId={props.channel.groupId} />
+        <div class="ml-auto flex items-center gap-2">
+          <button
+            type="button"
+            class="btn-ghost px-2 py-1 text-xs"
+            data-testid="thread-toggle"
+            aria-pressed={threadMode()}
+            onClick={() => setThreadMode((v) => !v)}
+            title="Toggle threaded / inline reply view"
+          >
+            {threadMode() ? "Threaded" : "Inline"}
+          </button>
+          <FollowToggle channelId={props.channel.id} groupId={props.channel.groupId} />
+        </div>
       </header>
 
       <div ref={scrollEl} class="min-h-0 flex-1 overflow-auto px-6 py-4" data-testid="message-list">
@@ -162,7 +226,7 @@ export const ChatView: Component<{ channel: Channel; canPost: boolean; canModera
         </Show>
 
         <Show
-          when={messages().length > 0}
+          when={roots().length > 0}
           fallback={
             <p class="text-sm text-muted" data-testid="chat-empty">
               No messages yet. Say hello.
@@ -170,14 +234,17 @@ export const ChatView: Component<{ channel: Channel; canPost: boolean; canModera
           }
         >
           <ul class="flex flex-col gap-3">
-            <For each={messages()}>
+            <For each={roots()}>
               {(msg) => (
-                <MessageRow
+                <MessageNode
                   message={msg}
+                  depth={0}
                   channelId={channelId()}
                   groupId={groupId()}
                   canModerate={props.canModerate}
-                  reactions={() => reactionsFor(channelId(), msg.id)}
+                  byId={byId}
+                  repliesByParent={repliesByParent}
+                  onReply={setReplyTarget}
                 />
               )}
             </For>
@@ -198,8 +265,141 @@ export const ChatView: Component<{ channel: Channel; canPost: boolean; canModera
           </div>
         }
       >
-        <Composer channel={props.channel} />
+        <Composer
+          channel={props.channel}
+          canPostMemo={props.canPostMemo ?? props.canPost}
+          canPostArticle={props.canPostArticle ?? props.canPost}
+          replyTarget={replyTarget}
+          onClearReply={() => setReplyTarget(null)}
+        />
       </Show>
+    </div>
+  );
+};
+
+// ---------------------------------------------------------------------------
+// Message node (a message + its nested reply thread)
+// ---------------------------------------------------------------------------
+
+const MessageNode: Component<{
+  message: ChatMessage;
+  depth: number;
+  channelId: string;
+  groupId: string;
+  canModerate: boolean;
+  byId: Accessor<Map<string, ChatMessage>>;
+  repliesByParent: Accessor<Map<string, ChatMessage[]>>;
+  onReply: (m: ChatMessage) => void;
+}> = (props) => {
+  const m = () => props.message;
+  const [expanded, setExpanded] = createSignal(props.depth === 0 && isLongForm(props.message.type));
+  const [loadingReplies, setLoadingReplies] = createSignal(false);
+
+  const loaded = () => props.repliesByParent().get(m().id) ?? [];
+  // Show a "load replies" affordance when the server reports more replies than
+  // we currently have loaded (parent + replies can be far apart in the window).
+  const missingReplies = () => Math.max(0, (m().replyCount ?? 0) - loaded().length);
+
+  const expandAndLoad = async (): Promise<void> => {
+    setExpanded(true);
+    if (missingReplies() > 0 && !loadingReplies()) {
+      const client = sessionClient();
+      if (!client) return;
+      setLoadingReplies(true);
+      try {
+        await loadReplies({
+          client,
+          groupId: props.groupId,
+          channelId: props.channelId,
+          messageId: m().id,
+        });
+      } finally {
+        setLoadingReplies(false);
+      }
+    }
+  };
+
+  const replyParent = () => {
+    const pid = m().reference?.id;
+    return pid ? props.byId().get(pid) : undefined;
+  };
+
+  return (
+    <li
+      class="flex flex-col gap-1"
+      classList={{ "ml-4 border-l border-border pl-3": props.depth > 0 }}
+    >
+      <Show when={m().reference}>
+        <ReplyQuote parent={replyParent()} />
+      </Show>
+
+      <MessageRow
+        message={m()}
+        channelId={props.channelId}
+        groupId={props.groupId}
+        canModerate={props.canModerate}
+        reactions={() => reactionsFor(props.channelId, m().id)}
+        onReply={() => props.onReply(m())}
+      />
+
+      {/* Nested replies (memo/article always; chat in threaded mode). */}
+      <Show when={loaded().length > 0 || missingReplies() > 0}>
+        <div class="mt-1 flex flex-col gap-2">
+          <Show when={isLongForm(m().type) || missingReplies() > 0}>
+            <button
+              type="button"
+              class="self-start text-xs text-accent hover:underline"
+              data-testid="thread-expander"
+              onClick={() => (expanded() ? setExpanded(false) : void expandAndLoad())}
+            >
+              {expanded()
+                ? "Hide replies"
+                : loadingReplies()
+                  ? "Loading…"
+                  : `Show ${m().replyCount ?? loaded().length} ${
+                      (m().replyCount ?? loaded().length) === 1 ? "reply" : "replies"
+                    }`}
+            </button>
+          </Show>
+          <Show when={expanded()}>
+            <ul class="flex flex-col gap-3">
+              <For each={loaded()}>
+                {(reply) => (
+                  <MessageNode
+                    message={reply}
+                    depth={props.depth + 1}
+                    channelId={props.channelId}
+                    groupId={props.groupId}
+                    canModerate={props.canModerate}
+                    byId={props.byId}
+                    repliesByParent={props.repliesByParent}
+                    onReply={props.onReply}
+                  />
+                )}
+              </For>
+            </ul>
+          </Show>
+        </div>
+      </Show>
+    </li>
+  );
+};
+
+/** A small quoted snippet of the message being replied to (inline replies). */
+const ReplyQuote: Component<{ parent?: ChatMessage }> = (props) => {
+  const snippet = (): string => {
+    const p = props.parent;
+    if (!p) return "a message";
+    if (p.deletedAt) return "a deleted message";
+    const author = displayName(p.author);
+    const text = (p.content.text ?? "").replace(/\s+/g, " ").trim();
+    const clipped = text.length > 80 ? `${text.slice(0, 80)}…` : text;
+    return clipped ? `${author}: ${clipped}` : author;
+  };
+  return (
+    <div class="flex items-center gap-1 text-xs text-faint" data-testid="reply-quote">
+      <span aria-hidden="true">↳</span>
+      <span class="truncate">replying to {snippet()}</span>
     </div>
   );
 };
@@ -214,6 +414,7 @@ const MessageRow: Component<{
   groupId: string;
   canModerate: boolean;
   reactions: () => ReactionGroup[];
+  onReply: () => void;
 }> = (props) => {
   const m = () => props.message;
   const isAuthor = () => m().author === session.actor;
@@ -242,10 +443,8 @@ const MessageRow: Component<{
       channelId: props.channelId,
       messageId: m().id,
       text,
+      mime: m().content.mime,
     });
-    // The server reports an expired edit-window (403) etc. as an `error` event
-    // echoing our command's id in `correlationId`. Listen once: surface the
-    // message + keep the editor open, otherwise close on the matching success.
     const off = w.on("error", (e) => {
       const err = e.data as { message?: string; correlationId?: string } | undefined;
       if ((e as { correlationId?: string }).correlationId !== frameId) return;
@@ -294,16 +493,27 @@ const MessageRow: Component<{
   };
 
   return (
-    <li
+    <div
       class="group/msg flex flex-col gap-1"
       data-testid="message-row"
       data-message-id={m().id}
+      data-message-type={m().type ?? "message"}
       data-pending={m().pending ? "1" : undefined}
     >
       <div class="flex items-baseline gap-2">
-        <span class="text-xs font-semibold text-ink" data-testid="message-author">
+        <button
+          type="button"
+          class="text-xs font-semibold text-ink hover:underline"
+          data-testid="message-author"
+          onClick={() => openUserProfile(m().author)}
+        >
           {displayName(m().author)}
-        </span>
+        </button>
+        <Show when={isLongForm(m().type)}>
+          <span class="badge text-[10px] uppercase" data-testid="message-kind">
+            {m().type}
+          </span>
+        </Show>
         <span class="text-[10px] text-faint">{formatTime(m().createdAt)}</span>
         <Show when={m().editedAt && !isDeleted()}>
           <span class="text-[10px] text-faint" data-testid="message-edited">
@@ -341,6 +551,14 @@ const MessageRow: Component<{
         {/* Hover actions */}
         <Show when={!isDeleted()}>
           <span class="ml-auto flex items-center gap-1 opacity-0 transition-opacity group-hover/msg:opacity-100">
+            <button
+              type="button"
+              class="rounded px-1.5 py-0.5 text-xs text-faint hover:(bg-surface-2 text-ink)"
+              data-testid="reply-button"
+              onClick={() => props.onReply()}
+            >
+              Reply
+            </button>
             <div class="relative">
               <button
                 type="button"
@@ -479,7 +697,7 @@ const MessageRow: Component<{
           </For>
         </div>
       </Show>
-    </li>
+    </div>
   );
 };
 
@@ -567,10 +785,20 @@ function typingText(actors: string[]): string {
 // Composer
 // ---------------------------------------------------------------------------
 
-const Composer: Component<{ channel: Channel }> = (props) => {
+type ComposeKind = "message" | "memo" | "article";
+
+const Composer: Component<{
+  channel: Channel;
+  canPostMemo: boolean;
+  canPostArticle: boolean;
+  replyTarget: Accessor<ChatMessage | null>;
+  onClearReply: () => void;
+}> = (props) => {
   const channelId = () => props.channel.id;
   const groupId = () => props.channel.groupId;
   const [text, setText] = createSignal("");
+  const [articleMarkdown, setArticleMarkdown] = createSignal("");
+  const [kind, setKind] = createSignal<ComposeKind>("message");
   const [pendingAttachments, setPendingAttachments] = createSignal<Attachment[]>([]);
   const [uploading, setUploading] = createSignal(false);
   const [sendError, setSendError] = createSignal<string | null>(null);
@@ -601,10 +829,13 @@ const Composer: Component<{ channel: Channel }> = (props) => {
 
   const doSend = (): void => {
     const ws = sessionWs();
-    const body = text().trim();
+    if (!ws) return;
+    const k = kind();
+    const body = k === "article" ? articleMarkdown().trim() : text().trim();
     const atts = pendingAttachments();
-    if (!ws || (body.length === 0 && atts.length === 0)) return;
+    if (body.length === 0 && atts.length === 0) return;
     setSendError(null);
+    const target = props.replyTarget();
     try {
       sendMessage({
         ws,
@@ -612,10 +843,16 @@ const Composer: Component<{ channel: Channel }> = (props) => {
         channelId: channelId(),
         author: session.actor ?? "",
         text: body,
+        type: k,
+        mime: k === "article" ? "text/markdown" : "text/plain",
+        ...(target ? { reference: { type: "reply", id: target.id } } : {}),
         attachments: atts,
       });
       setText("");
+      setArticleMarkdown("");
+      setKind("message");
       setPendingAttachments([]);
+      props.onClearReply();
       stopTyping();
     } catch (err) {
       setSendError(err instanceof Error ? err.message : "Could not send the message.");
@@ -642,8 +879,56 @@ const Composer: Component<{ channel: Channel }> = (props) => {
     if (idleTimer) clearTimeout(idleTimer);
   });
 
+  const kindButton = (k: ComposeKind, label: string, show = true) => (
+    <Show when={show}>
+      <button
+        type="button"
+        class="rounded px-2 py-0.5 text-xs"
+        classList={{
+          "bg-accent text-white": kind() === k,
+          "text-muted hover:text-ink": kind() !== k,
+        }}
+        data-testid={`compose-kind-${k}`}
+        aria-pressed={kind() === k}
+        onClick={() => setKind(k)}
+      >
+        {label}
+      </button>
+    </Show>
+  );
+
   return (
     <div class="border-t border-border px-6 py-3" data-testid="composer">
+      {/* Reply context pill */}
+      <Show when={props.replyTarget()}>
+        {(t) => (
+          <div
+            class="mb-2 flex items-center gap-2 rounded-lg bg-surface-2 px-3 py-1.5 text-xs"
+            data-testid="composer-reply-pill"
+          >
+            <span class="truncate text-muted">
+              Replying to <span class="text-ink">{displayName(t().author)}</span>
+            </span>
+            <button
+              type="button"
+              class="ml-auto text-faint hover:text-danger"
+              aria-label="Cancel reply"
+              data-testid="cancel-reply"
+              onClick={() => props.onClearReply()}
+            >
+              ✕
+            </button>
+          </div>
+        )}
+      </Show>
+
+      {/* Message-kind selector */}
+      <div class="mb-2 flex items-center gap-1" data-testid="compose-kind">
+        {kindButton("message", "Chat")}
+        {kindButton("memo", "Memo", props.canPostMemo)}
+        {kindButton("article", "Article", props.canPostArticle)}
+      </div>
+
       <Show when={pendingAttachments().length > 0}>
         <div class="mb-2 flex flex-wrap gap-2" data-testid="composer-attachments">
           <For each={pendingAttachments()}>
@@ -665,50 +950,76 @@ const Composer: Component<{ channel: Channel }> = (props) => {
           </For>
         </div>
       </Show>
-      <div class="flex items-end gap-2">
-        <button
-          type="button"
-          class="btn-ghost shrink-0 px-3 py-2 text-sm"
-          data-testid="attach-button"
-          disabled={uploading()}
-          onClick={() => fileInput?.click()}
-          aria-label="Attach a file"
-        >
-          {uploading() ? "…" : "📎"}
-        </button>
-        <input
-          ref={fileInput}
-          type="file"
-          class="hidden"
-          data-testid="file-input"
-          onChange={(e) => {
-            const file = e.currentTarget.files?.[0];
-            if (file) void onPickFile(file);
-          }}
-        />
-        <textarea
-          class="input max-h-40 min-h-10 flex-1 resize-y"
-          data-testid="composer-input"
-          placeholder={`Message #${props.channel.name ?? props.channel.id}`}
-          value={text()}
-          onInput={(e) => onType(e.currentTarget.value)}
-          onBlur={stopTyping}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              doSend();
-            }
-          }}
-        />
-        <button
-          type="button"
-          class="btn-accent shrink-0 px-4 py-2 text-sm"
-          data-testid="send-button"
-          onClick={doSend}
-        >
-          Send
-        </button>
-      </div>
+
+      <Switch>
+        <Match when={kind() === "article"}>
+          <div class="flex flex-col gap-2">
+            <ArticleEditor onChange={setArticleMarkdown} placeholder="Write an article…" />
+            <button
+              type="button"
+              class="btn-accent self-end px-4 py-2 text-sm"
+              data-testid="send-button"
+              onClick={doSend}
+            >
+              Publish article
+            </button>
+          </div>
+        </Match>
+        <Match when={true}>
+          <div class="flex items-end gap-2">
+            <button
+              type="button"
+              class="btn-ghost shrink-0 px-3 py-2 text-sm"
+              data-testid="attach-button"
+              disabled={uploading()}
+              onClick={() => fileInput?.click()}
+              aria-label="Attach a file"
+            >
+              {uploading() ? "…" : "📎"}
+            </button>
+            <input
+              ref={fileInput}
+              type="file"
+              class="hidden"
+              data-testid="file-input"
+              onChange={(e) => {
+                const file = e.currentTarget.files?.[0];
+                if (file) void onPickFile(file);
+              }}
+            />
+            <textarea
+              class="input flex-1 resize-y"
+              classList={{
+                "max-h-40 min-h-10": kind() === "message",
+                "min-h-24": kind() === "memo",
+              }}
+              data-testid="composer-input"
+              placeholder={
+                kind() === "memo"
+                  ? "Write a memo…"
+                  : `Message #${props.channel.name ?? props.channel.id}`
+              }
+              value={text()}
+              onInput={(e) => onType(e.currentTarget.value)}
+              onBlur={stopTyping}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey && kind() === "message") {
+                  e.preventDefault();
+                  doSend();
+                }
+              }}
+            />
+            <button
+              type="button"
+              class="btn-accent shrink-0 px-4 py-2 text-sm"
+              data-testid="send-button"
+              onClick={doSend}
+            >
+              Send
+            </button>
+          </div>
+        </Match>
+      </Switch>
       <Show when={sendError()}>
         <p class="mt-1 text-xs text-danger" data-testid="composer-error">
           {sendError()}

@@ -33,6 +33,10 @@ export interface ChatMessage {
   type?: string;
   content: { mime?: string; text?: string };
   attachments?: Attachment[];
+  /** §5.3 reply pointer: `{ type: "reply", id: <parent message id> }`. */
+  reference?: { type: string; id: string };
+  /** Advisory count of replies to this message (§7.2), when the server sends it. */
+  replyCount?: number;
   createdAt?: string;
   editedAt?: string;
   deletedAt?: string;

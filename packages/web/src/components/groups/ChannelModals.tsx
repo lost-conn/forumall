@@ -5,13 +5,39 @@
  */
 import type { Channel, ChannelType } from "@forumall/shared";
 import { useQuery } from "@tanstack/solid-query";
-import { type Component, For, createSignal } from "solid-js";
+import { type Component, For, Show, createSignal } from "solid-js";
+import { createStore } from "solid-js/store";
 import { createChannel, deleteChannel, updateChannel } from "../../lib/groups-api.ts";
 import { sessionClient } from "../../stores/session.ts";
 import { tiersQuery, useInvalidateGroup } from "./queries.ts";
 import { ErrorLine, Field, Modal, TierSelect, errorMessage } from "./ui.tsx";
 
 const CHANNEL_TYPES: ChannelType[] = ["text", "call"];
+
+/** Comma-separated role list → trimmed non-empty string[]. */
+function roleList(s: string): string[] {
+  return s
+    .split(",")
+    .map((r) => r.trim())
+    .filter((r) => r.length > 0);
+}
+
+/** Roles array → comma-separated string for the inputs. */
+function joinRoles(roles: readonly string[] | undefined): string {
+  return (roles ?? []).join(", ");
+}
+
+/** The per-channel grant/restriction actions edited as comma-separated roles. */
+const PERMISSION_FIELDS: { key: string; label: string; hint: string }[] = [
+  { key: "view", label: "Who can view", hint: "blank = inherit channel tier" },
+  { key: "post:message", label: "Who can post chats", hint: "blank = inherit group post" },
+  { key: "post:memo", label: "Who can post memos", hint: "blank = inherit group post" },
+  { key: "post:article", label: "Who can post articles", hint: "blank = inherit group post" },
+  { key: "react", label: "Who can react", hint: "blank = anyone who can read" },
+  { key: "replyOnly", label: "Reply-only roles", hint: "these roles may only post replies" },
+];
+
+const REPLY_PARENT_TYPES = ["message", "memo", "article"] as const;
 
 export const CreateChannelModal: Component<{
   groupId: string;
@@ -125,6 +151,29 @@ export const ManageChannelModal: Component<{
   const [busy, setBusy] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
 
+  // Per-channel permissions (§5.2.1). Seed each action's roles from the channel.
+  const initialPerms = (props.channel.permissions ?? {}) as Record<string, string[] | undefined>;
+  const [perms, setPerms] = createStore<Record<string, string>>(
+    Object.fromEntries(PERMISSION_FIELDS.map((f) => [f.key, joinRoles(initialPerms[f.key])])),
+  );
+  const [replyOnlyTo, setReplyOnlyTo] = createStore<Record<string, boolean>>(
+    Object.fromEntries(
+      REPLY_PARENT_TYPES.map((t) => [t, (initialPerms.replyOnlyTo ?? []).includes(t)]),
+    ),
+  );
+
+  /** Assemble the ChannelPermissions object from the form (empty → clear). */
+  const buildPermissions = (): Record<string, string[]> => {
+    const out: Record<string, string[]> = {};
+    for (const f of PERMISSION_FIELDS) {
+      const arr = roleList(perms[f.key] ?? "");
+      if (arr.length > 0) out[f.key] = arr;
+    }
+    const rot = REPLY_PARENT_TYPES.filter((t) => replyOnlyTo[t]);
+    if (rot.length > 0) out.replyOnlyTo = [...rot];
+    return out;
+  };
+
   const save = async (e: Event) => {
     e.preventDefault();
     setBusy(true);
@@ -136,6 +185,7 @@ export const ManageChannelModal: Component<{
         name: name().trim(),
         tier: tier(),
         topic: topic().trim(),
+        permissions: buildPermissions(),
       });
       invalidate(props.groupId);
       props.onClose();
@@ -193,6 +243,53 @@ export const ManageChannelModal: Component<{
             disabled={busy()}
           />
         </Field>
+
+        {/* Per-channel permissions (§5.2.1). Roles are comma-separated; blank
+            inherits the group/tier default. */}
+        <details class="rounded-lg border border-border" data-testid="channel-permissions">
+          <summary class="cursor-pointer px-3 py-2 text-xs font-medium text-muted">
+            Permissions (advanced)
+          </summary>
+          <div class="flex flex-col gap-3 px-3 pb-3">
+            <For each={PERMISSION_FIELDS}>
+              {(f) => (
+                <Field label={f.label} hint={f.hint}>
+                  <input
+                    class="input"
+                    placeholder="e.g. admin, member"
+                    value={perms[f.key] ?? ""}
+                    onInput={(e) => setPerms(f.key, e.currentTarget.value)}
+                    disabled={busy()}
+                    data-testid={`perm-${f.key}`}
+                  />
+                </Field>
+              )}
+            </For>
+            <Show when={roleList(perms.replyOnly ?? "").length > 0}>
+              <Field
+                label="Reply-only: allowed parent types"
+                hint="replies must target one of these"
+              >
+                <div class="flex gap-3 text-xs">
+                  <For each={REPLY_PARENT_TYPES}>
+                    {(t) => (
+                      <label class="flex items-center gap-1 capitalize">
+                        <input
+                          type="checkbox"
+                          checked={replyOnlyTo[t]}
+                          onChange={(e) => setReplyOnlyTo(t, e.currentTarget.checked)}
+                          data-testid={`reply-only-to-${t}`}
+                        />
+                        {t}
+                      </label>
+                    )}
+                  </For>
+                </div>
+              </Field>
+            </Show>
+          </div>
+        </details>
+
         <ErrorLine message={error()} testid="manage-channel-error" />
         <div class="flex items-center justify-between gap-2">
           <button

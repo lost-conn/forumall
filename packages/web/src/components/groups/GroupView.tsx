@@ -50,6 +50,17 @@ export const GroupView: Component<{ groupId: string }> = (props) => {
   const canManage = () => can("manage", myRole(), g()?.permissions);
   const canModerate = () => can("moderate", myRole(), g()?.permissions);
   const canPost = () => can("post", myRole(), g()?.permissions);
+  /**
+   * Client-side hint for posting a message kind in a channel (§5.2.1): the
+   * channel's `post:<kind>` override if present, else the group `post` action.
+   * The server is authoritative; this just gates the composer affordances.
+   */
+  const canPostKind = (channel: Channel, kind: "memo" | "article"): boolean => {
+    const cp = channel.permissions as Record<string, string[] | undefined> | undefined;
+    const key = `post:${kind}`;
+    if (cp?.[key]) return can(key, myRole(), cp as never);
+    return canPost();
+  };
 
   const doJoin = async () => {
     const grp = g();
@@ -292,6 +303,8 @@ export const GroupView: Component<{ groupId: string }> = (props) => {
                                 <ChatView
                                   channel={ch()}
                                   canPost={isMember() && canPost()}
+                                  canPostMemo={isMember() && canPostKind(ch(), "memo")}
+                                  canPostArticle={isMember() && canPostKind(ch(), "article")}
                                   canModerate={canModerate()}
                                 />
                               </div>

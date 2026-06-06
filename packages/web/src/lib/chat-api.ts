@@ -59,6 +59,37 @@ function isReaction(item: TimelineItem): item is Reaction {
   );
 }
 
+/**
+ * Read one page of the replies to a message (§7.2) — the thread under a parent,
+ * oldest-first by default. Returns messages + the next cursor (reactions on
+ * replies are folded in like the timeline). Used to nest replies under a
+ * memo/article and to expand a thread whose parent is outside the loaded window.
+ */
+export async function fetchReplies(
+  client: OfscpClient,
+  groupId: string,
+  channelId: string,
+  messageId: string,
+  opts: { cursor?: string; limit?: number; direction?: "backward" | "forward" } = {},
+): Promise<MessagesPageResult> {
+  const params = new URLSearchParams();
+  if (opts.cursor) params.set("cursor", opts.cursor);
+  if (opts.limit) params.set("limit", String(opts.limit));
+  params.set("direction", opts.direction ?? "forward");
+  const qs = params.toString();
+  const res = await client.get<{ items: TimelineItem[]; page: { nextCursor?: string | null } }>(
+    `/api/groups/${groupId}/channels/${channelId}/messages/${messageId}/replies${qs ? `?${qs}` : ""}`,
+  );
+  const items = res.data.items ?? [];
+  const messages: Message[] = [];
+  const reactions: Reaction[] = [];
+  for (const item of items) {
+    if (isReaction(item)) reactions.push(item);
+    else messages.push(item as Message);
+  }
+  return { messages, reactions, nextCursor: res.data.page?.nextCursor ?? null };
+}
+
 /** Fetch the reaction history for one message (late-joiner / history backfill). */
 export async function fetchReactions(
   client: OfscpClient,

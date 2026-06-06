@@ -30,7 +30,12 @@ import type {
   WsReactionRemoved,
 } from "@forumall/shared";
 import { rfc3339Timestamp } from "@forumall/shared";
-import { fetchHistory, fetchReactions, newClientMessageId } from "../../lib/chat-api.ts";
+import {
+  fetchHistory,
+  fetchReactions,
+  fetchReplies,
+  newClientMessageId,
+} from "../../lib/chat-api.ts";
 import type { OfscpClient } from "../../lib/ofscp-client.ts";
 import type { OfscpWsClient } from "../../lib/ofscp-ws.ts";
 import {
@@ -128,6 +133,8 @@ export async function openChannel(deps: OpenChannelDeps): Promise<ChannelHandle>
       type: (m as { type?: string }).type,
       content: m.content,
       attachments: (m as { attachments?: never }).attachments,
+      reference: (m as { reference?: { type: string; id: string } }).reference,
+      replyCount: (m as { replyCount?: number }).replyCount,
       createdAt: m.createdAt,
       editedAt: m.editedAt,
       cursor: data.cursor,
@@ -157,6 +164,7 @@ export async function openChannel(deps: OpenChannelDeps): Promise<ChannelHandle>
       author: m.author,
       type: (m as { type?: string }).type,
       content: m.content,
+      reference: (m as { reference?: { type: string; id: string } }).reference,
       createdAt: m.createdAt,
       editedAt: m.editedAt,
       cursor: data.cursor,
@@ -207,6 +215,8 @@ export async function openChannel(deps: OpenChannelDeps): Promise<ChannelHandle>
       type: m.type,
       content: m.content,
       attachments: m.attachments,
+      reference: m.reference,
+      replyCount: (m as { replyCount?: number }).replyCount,
       createdAt: m.createdAt,
       editedAt: m.editedAt,
       deletedAt: m.deletedAt,
@@ -243,6 +253,8 @@ export async function openChannel(deps: OpenChannelDeps): Promise<ChannelHandle>
           type: m.type,
           content: m.content,
           attachments: m.attachments,
+          reference: m.reference,
+          replyCount: (m as { replyCount?: number }).replyCount,
           createdAt: m.createdAt,
           editedAt: m.editedAt,
           deletedAt: m.deletedAt,
@@ -276,6 +288,10 @@ export interface SendArgs {
   author: string;
   text: string;
   mime?: string;
+  /** §5.3 kind: `message` (default) | `memo` | `article`. */
+  type?: "message" | "memo" | "article";
+  /** §5.3 reply pointer to a parent message id. */
+  reference?: { type: string; id: string };
   attachments?: import("@forumall/shared").Attachment[];
 }
 
@@ -286,13 +302,15 @@ export interface SendArgs {
  * echo in place — see the `pendingSends` correlation in {@link openChannel}.
  */
 export function sendMessage(args: SendArgs): string {
-  const { ws, groupId, channelId, author, text, mime, attachments } = args;
+  const { ws, groupId, channelId, author, text, mime, type, reference, attachments } = args;
+  const kind = type ?? "message";
   const clientMessageId = newClientMessageId();
   addOptimistic(channelId, {
     id: `optimistic:${clientMessageId}`,
     author,
-    type: "message",
+    type: kind,
     content: { mime: mime ?? "text/plain", text },
+    ...(reference ? { reference } : {}),
     ...(attachments && attachments.length > 0 ? { attachments } : {}),
     createdAt: rfc3339Timestamp(),
     clientMessageId,
@@ -302,7 +320,9 @@ export function sendMessage(args: SendArgs): string {
       groupId,
       channelId,
       clientMessageId,
+      type: kind,
       content: { mime: mime ?? "text/plain", text },
+      ...(reference ? { reference } : {}),
       ...(attachments && attachments.length > 0 ? { attachments } : {}),
     });
     pendingSends.set(sentFrameId, { channelId, clientMessageId });
@@ -310,6 +330,40 @@ export function sendMessage(args: SendArgs): string {
     markOptimisticFailed(channelId, clientMessageId);
   }
   return clientMessageId;
+}
+
+/**
+ * Load the replies to `messageId` over REST (§7.2) and fold them into the store
+ * (so they de-dupe against any already in the timeline). Used to expand a thread
+ * / nest replies under a memo or article whose replies may be outside the loaded
+ * history window. Returns the reply messages in thread order.
+ */
+export async function loadReplies(deps: {
+  client: OfscpClient;
+  groupId: string;
+  channelId: string;
+  messageId: string;
+}): Promise<void> {
+  const { client, groupId, channelId, messageId } = deps;
+  const page = await fetchReplies(client, groupId, channelId, messageId, {
+    limit: HISTORY_PAGE_SIZE,
+  });
+  for (const m of page.messages) {
+    upsertMessage(channelId, {
+      id: m.id,
+      author: m.author,
+      type: m.type,
+      content: m.content,
+      attachments: m.attachments,
+      reference: m.reference,
+      replyCount: (m as { replyCount?: number }).replyCount,
+      createdAt: m.createdAt,
+      editedAt: m.editedAt,
+      deletedAt: m.deletedAt,
+      cursor: (m as { cursor?: string }).cursor,
+    });
+  }
+  for (const r of page.reactions) addReactionAgg(channelId, r);
 }
 
 /** Retry a failed optimistic send: drop the failed echo and resend its content. */
