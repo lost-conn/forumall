@@ -69,6 +69,9 @@ export function bootServer(extraEnv: Record<string, string> = {}): Promise<Boote
         ...extraEnv,
         DATA_DIR: dataDir,
         WEB_DIR,
+        // So the child can self-terminate if THIS worker dies without teardown
+        // (a SIGKILLed/aborted run would otherwise leak a bound port + temp dir).
+        PARENT_PID: String(process.pid),
         // Short WS heartbeat/idle so the presence e2e observes disconnect→offline
         // quickly even on an ungraceful drop (a clean close is immediate anyway).
         WS_PING_INTERVAL_MS: process.env.WS_PING_INTERVAL_MS ?? "1000",
@@ -91,6 +94,20 @@ export function bootServer(extraEnv: Record<string, string> = {}): Promise<Boote
       clearTimeout(timeout);
       try {
         child.kill("SIGTERM");
+        // Escalate: if the child doesn't honor SIGTERM promptly it would keep
+        // its ephemeral port bound, so force-kill it. The timer is unref'd so it
+        // never keeps the worker process alive on its own.
+        if (child.exitCode === null && child.signalCode === null) {
+          const force = setTimeout(() => {
+            try {
+              child.kill("SIGKILL");
+            } catch {
+              /* already gone */
+            }
+          }, 2000);
+          force.unref?.();
+          child.once("exit", () => clearTimeout(force));
+        }
       } catch {
         /* already gone */
       }

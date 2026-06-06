@@ -106,3 +106,26 @@ process.on("SIGINT", () => {
   server.stop(true);
   process.exit(0);
 });
+
+// Parent-death watchdog: if the Playwright worker that spawned us dies without
+// running the fixture teardown (e.g. it was SIGKILLed, or the whole run was
+// aborted), we'd otherwise leak — a still-bound ephemeral port + a still-mounted
+// temp DATA_DIR. The fixture passes its own pid as PARENT_PID; once that process
+// is gone, no one will ever call stop(), so we self-terminate. `kill(pid, 0)`
+// only probes liveness (throws ESRCH when the process no longer exists).
+const parentPid = process.env.PARENT_PID ? Number(process.env.PARENT_PID) : undefined;
+if (parentPid !== undefined && Number.isFinite(parentPid)) {
+  const watchdog = setInterval(() => {
+    try {
+      process.kill(parentPid, 0);
+    } catch {
+      // Parent gone → release the port and exit (the parent's stop() removes the
+      // temp dir on the normal path; here we just stop holding resources).
+      clearInterval(watchdog);
+      server.stop(true);
+      process.exit(0);
+    }
+  }, 1000);
+  // Don't let the watchdog timer itself keep the event loop alive.
+  watchdog.unref?.();
+}

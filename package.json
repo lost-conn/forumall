@@ -7,7 +7,9 @@
     "dev": "bun run --filter '*' dev",
     "build": "bun run --filter '@forumall/web' build",
     "typecheck": "bun run --filter '*' typecheck",
-    "test": "bun test",
+    "test": "bun run --filter '@forumall/server' --filter '@forumall/shared' --filter '@forumall/web' test",
+    "test:e2e": "bun run --filter '@forumall/e2e' test",
+    "test:all": "bun run test && bun run test:e2e",
     "lint": "biome check .",
     "format": "biome format --write ."
   },
