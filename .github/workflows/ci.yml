@@ -1,0 +1,116 @@
+name: CI
+
+# Continuous verification for the Forumall monorepo: typecheck, lint, unit/
+# integration + conformance tests, web build, and the Playwright e2e suite.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel superseded runs on the same ref to keep the queue fast.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Typecheck + lint + unit/integration + conformance + web build. Conformance
+  # runs as part of `bun run test` (packages/server/test/conformance.test.ts and
+  # the shared schema fixtures); we also surface it as its own visible step so a
+  # conformance regression is obvious in the job log.
+  verify:
+    name: Typecheck · Lint · Test · Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # Cache the global Bun install cache, keyed on the lockfile.
+      - name: Cache Bun dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: ${{ runner.os }}-bun-
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Lint (Biome)
+        run: bunx biome check .
+
+      - name: Unit + integration + conformance tests
+        run: bun run test
+
+      # The conformance suite already ran inside `bun run test` above; re-running
+      # the conformance file alone gives a dedicated, clearly-named signal.
+      - name: Conformance (golden vectors + schema fixtures)
+        run: bun test packages/server/test/conformance.test.ts
+
+      - name: Build web bundle
+        run: bun run build
+
+  # Playwright e2e: drives the real Solid client against a real ephemeral
+  # provider. The dev machine's OS is too new for Playwright's bundled Chromium,
+  # so locally the suite uses system Google Chrome via the `chrome` channel. On
+  # GitHub's `ubuntu-latest` the bundled Chromium DOES work, so here we install
+  # it with system deps and select it via PW_CHANNEL=chromium (the e2e
+  # playwright.config.ts reads PW_CHANNEL, defaulting to `chrome`).
+  e2e:
+    name: Playwright e2e
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Cache Bun dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: ${{ runner.os }}-bun-
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # Install the bundled Chromium + its system libraries. ubuntu-latest
+      # supports the bundled build (unlike the dev OS), so no system Chrome is
+      # needed here.
+      - name: Install Playwright Chromium
+        run: bunx playwright install --with-deps chromium
+
+      # The harness builds packages/web/dist itself before the first test, but
+      # building up-front fails fast on a broken bundle and warms the cache.
+      - name: Build web bundle
+        run: bun run build
+
+      - name: Run e2e
+        # Select the bundled Chromium (vs the local default `chrome` channel) and
+        # cap workers so the CI runner doesn't oversubscribe booting a provider
+        # per worker.
+        env:
+          CI: "true"
+          PW_CHANNEL: chromium
+          PW_WORKERS: "2"
+        run: bun run test:e2e
+
+      - name: Upload Playwright report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            e2e/playwright-report/
+            e2e/test-results/
+          retention-days: 7
+          if-no-files-found: ignore

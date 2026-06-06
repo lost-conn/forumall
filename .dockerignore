@@ -1,0 +1,38 @@
+# Keep the build context small and avoid copying host-built artifacts/state.
+node_modules
+**/node_modules
+dist
+**/dist
+build
+**/build
+
+# Local state / data volumes
+data
+**/*.sqlite
+**/*.sqlite-*
+**/*.db
+
+# VCS + CI
+.git
+.github
+.gitignore
+
+# Test + report artifacts
+e2e/test-results
+e2e/playwright-report
+coverage
+**/*.tsbuildinfo
+
+# Env + editor
+.env
+.env.*
+!.env.example
+.DS_Store
+.vscode
+.idea
+
+# Docker/compose files themselves aren't needed inside the image
+Dockerfile
+.dockerignore
+docker-compose.yml
+Caddyfile

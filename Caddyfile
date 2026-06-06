@@ -1,0 +1,30 @@
+# Forumall reverse proxy with automatic HTTPS.
+#
+# Caddy obtains and renews a Let's Encrypt certificate for {$DOMAIN} on its own,
+# then proxies all traffic to the app container. {$DOMAIN} and {$APP_UPSTREAM}
+# come from docker-compose.yml (sourced from .env).
+#
+# Requirements for auto-TLS to succeed: DOMAIN must be a real, public DNS name
+# pointing at this host, and ports 80 + 443 must be reachable from the internet
+# (the ACME HTTP/TLS challenge). WebSocket upgrades are proxied transparently.
+
+{$DOMAIN} {
+	encode zstd gzip
+	reverse_proxy {$APP_UPSTREAM}
+}
+
+# ---------------------------------------------------------------------------
+# Local / no-public-domain testing override.
+#
+# Without a public domain Caddy cannot complete the ACME challenge, so swap the
+# block above for a plain http:// site (no TLS). Set DOMAIN=localhost in .env
+# and replace the site block with:
+#
+#   http://localhost {
+#   	reverse_proxy {$APP_UPSTREAM}
+#   }
+#
+# Then browse http://localhost. (Alternatively keep HTTPS with Caddy's built-in
+# local CA by using `localhost` as the site address and running
+# `caddy trust`, but plain http:// is simplest for a smoke test.)
+# ---------------------------------------------------------------------------
