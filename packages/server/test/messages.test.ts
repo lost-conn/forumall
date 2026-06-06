@@ -360,3 +360,89 @@ describe("GET .../messages (§7.2, authz)", () => {
     expect(noGroup.status).toBe(404);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Replies — reply_to denormalization, replyCount, GET .../replies (§7.2)
+// ---------------------------------------------------------------------------
+
+/** Seed one reply to `parentId`; returns the reply id. */
+function seedReply(
+  db: Db,
+  config: Config,
+  groupId: string,
+  channelId: string,
+  author: string,
+  parentId: string,
+  text: string,
+): string {
+  const rec = createMessage(db, config, {
+    channelId,
+    groupId,
+    author,
+    type: "message",
+    content: { text, mime: "text/plain" },
+    reference: { type: "reply", id: parentId },
+  });
+  return rec.message.id;
+}
+
+describe("replies (§7.2)", () => {
+  test("GET .../replies returns only the thread, oldest-first", async () => {
+    const { app, config, db } = freshApp("replies-list");
+    const alice = await registerUserWithKey(app, "alice");
+    const group = await createGroup(app, alice, { name: "G", tier: "public" });
+    const channel = await createChannel(app, alice, group.id, { type: "text", tier: "public" });
+
+    const [parent, other] = seedMessages(db, config, group.id, channel.id, alice.actor, 2);
+    const r1 = seedReply(db, config, group.id, channel.id, alice.actor, parent, "re 1");
+    const r2 = seedReply(db, config, group.id, channel.id, alice.actor, parent, "re 2");
+    // A reply to a different message must not leak into parent's thread.
+    seedReply(db, config, group.id, channel.id, alice.actor, other, "re other");
+
+    const res = await app.request(
+      `/api/groups/${group.id}/channels/${channel.id}/messages/${parent}/replies`,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Page;
+    expect(() => MessagesPageSchema.parse(body)).not.toThrow();
+    expect(body.items.map((m) => m.id)).toEqual([r1, r2]);
+    for (const m of body.items) {
+      expect(m.reference).toEqual({ type: "reply", id: parent });
+    }
+  });
+
+  test("history stamps an advisory replyCount on parents", async () => {
+    const { app, config, db } = freshApp("replies-count");
+    const alice = await registerUserWithKey(app, "alice");
+    const group = await createGroup(app, alice, { name: "G", tier: "public" });
+    const channel = await createChannel(app, alice, group.id, { type: "text", tier: "public" });
+
+    const [parent] = seedMessages(db, config, group.id, channel.id, alice.actor, 1);
+    seedReply(db, config, group.id, channel.id, alice.actor, parent, "a");
+    seedReply(db, config, group.id, channel.id, alice.actor, parent, "b");
+
+    const res = await app.request(
+      `/api/groups/${group.id}/channels/${channel.id}/messages?direction=forward&limit=50`,
+    );
+    const body = (await res.json()) as Page;
+    const parentMsg = body.items.find((m) => m.id === parent);
+    expect(parentMsg?.replyCount).toBe(2);
+    // The replies themselves have no replies → no replyCount field.
+    const reply = body.items.find((m) => m.id !== parent && m.reference);
+    expect(reply?.replyCount).toBeUndefined();
+  });
+
+  test("replies read gate matches history (private channel → 403)", async () => {
+    const { app, config, db } = freshApp("replies-authz");
+    const alice = await registerUserWithKey(app, "alice");
+    const bob = await registerUserWithKey(app, "bob");
+    const group = await createGroup(app, alice, { name: "G", tier: "public" });
+    const channel = await createChannel(app, alice, group.id, { type: "text", tier: "private" });
+    const [parent] = seedMessages(db, config, group.id, channel.id, alice.actor, 1);
+    const path = `/api/groups/${group.id}/channels/${channel.id}/messages/${parent}/replies`;
+
+    expect((await signedRequest(app, bob, "GET", path)).status).toBe(403);
+    addMember(db, group.id, bob, "member");
+    expect((await signedRequest(app, bob, "GET", path)).status).toBe(200);
+  });
+});

@@ -423,6 +423,12 @@ export const messages = sqliteTable(
     attachments: text("attachments").notNull(),
     /** Optional typed reference (reply etc.), stored as JSON `{ type, id }`. */
     reference: text("reference"),
+    /**
+     * Parent message id for a reply (`reference.id`), denormalized out of
+     * `reference` so the reply listing (§7.2) can index + query it directly.
+     * Null for a top-level message. Populated on create; added in migration 0023.
+     */
+    replyTo: text("reply_to"),
     /** Tag list, stored as JSON (`string[]`). */
     tags: text("tags").notNull(),
     /** Globally-monotonic timeline position; basis of the §7.2 cursor. */
@@ -441,6 +447,8 @@ export const messages = sqliteTable(
   (t) => ({
     channelSeqIdx: index("idx_messages_channel_seq").on(t.channelId, t.seq),
     seqIdx: uniqueIndex("idx_messages_seq").on(t.seq),
+    // Reply listing (§7.2): all replies to a parent, in cursor order.
+    replyToIdx: index("idx_messages_channel_reply_to").on(t.channelId, t.replyTo, t.seq),
     // WS-create idempotency (§7.1): at most one message per
     // (author, channelId, clientMessageId). Partial — only rows that carry an
     // idempotency key participate; keyless messages are unconstrained.

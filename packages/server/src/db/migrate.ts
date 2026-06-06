@@ -516,6 +516,33 @@ const migrations: readonly Migration[] = [
       }
     },
   },
+  {
+    // Reply listing (§7.2): denormalize the reply parent id out of the
+    // `reference` JSON into its own nullable column so it can be indexed +
+    // queried directly. Backfill existing rows via json_extract, then index
+    // (channel_id, reply_to, seq) for cursor-ordered reply pages.
+    id: "0023_messages_reply_to",
+    up: (sqlite) => {
+      const cols = sqlite
+        .query<{ name: string }, []>("PRAGMA table_info(messages)")
+        .all()
+        .map((c) => c.name);
+      if (!cols.includes("reply_to")) {
+        sqlite.exec("ALTER TABLE messages ADD COLUMN reply_to TEXT;");
+        // Backfill: a reply has reference.type === "reply"; pull reference.id.
+        sqlite.exec(`
+          UPDATE messages
+             SET reply_to = json_extract(reference, '$.id')
+           WHERE reference IS NOT NULL
+             AND json_valid(reference)
+             AND json_extract(reference, '$.type') = 'reply';
+        `);
+      }
+      sqlite.exec(
+        "CREATE INDEX IF NOT EXISTS idx_messages_channel_reply_to ON messages (channel_id, reply_to, seq);",
+      );
+    },
+  },
 ];
 
 const LEDGER_DDL = `

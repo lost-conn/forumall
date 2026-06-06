@@ -41,7 +41,7 @@ import {
   type MetadataList,
   rfc3339Timestamp,
 } from "@forumall/shared";
-import { and, eq, sql } from "drizzle-orm";
+import { type SQL, and, eq, inArray, sql } from "drizzle-orm";
 
 import type { Config } from "../config.ts";
 import type { Db } from "../db/index.ts";
@@ -237,6 +237,9 @@ export function createMessage(db: Db, config: Config, input: CreateMessageInput)
       content: JSON.stringify(input.content),
       attachments: JSON.stringify(input.attachments ?? []),
       reference: input.reference ? JSON.stringify(input.reference) : null,
+      // Denormalize the reply parent id for the reply listing (§7.2): a reply
+      // carries `reference.type === "reply"`.
+      replyTo: input.reference?.type === "reply" ? input.reference.id : null,
       tags: JSON.stringify(input.tags ?? []),
       seq,
       createdAt: now,
@@ -400,25 +403,53 @@ export interface MessagePage {
 }
 
 /**
- * Read one page of `channelId`'s timeline by keyset over `seq` (§7.2).
- *
- *  - `direction: "backward"` (default) returns the newest messages first
- *    (`seq DESC`); `"forward"` returns oldest first (`seq ASC`).
- *  - `cursor` is **exclusive**: rows strictly past it in the travel direction
- *    are returned, so following `nextCursor` never repeats or skips. A malformed
- *    cursor is treated as the first page.
- *  - `nextCursor` is present only when a further page exists in `direction`.
- *  - `prevCursor` points just past the **first** item of this page in the
- *    opposite direction, so a client can walk back; it is `undefined` only for
- *    an empty page.
- *
- * Tombstoned messages (§7.1) are not filtered out — they keep their `seq` and
- * are returned so references/resume cursors stay valid.
+ * Number of (direct) replies to each of `parentIds` in `channelId`, as a map
+ * (parents with zero replies are absent). One grouped query — no N+1. Used to
+ * stamp the advisory `replyCount` (§7.2) onto page items.
  */
-export function listMessages(
+export function replyCountsFor(
   db: Db,
   channelId: string,
-  opts: ListMessagesOptions = {},
+  parentIds: string[],
+): Map<string, number> {
+  const counts = new Map<string, number>();
+  if (parentIds.length === 0) return counts;
+  const rows = db.drizzle
+    .select({ parent: messages.replyTo, n: sql<number>`COUNT(*)` })
+    .from(messages)
+    .where(and(eq(messages.channelId, channelId), inArray(messages.replyTo, parentIds)))
+    .groupBy(messages.replyTo)
+    .all();
+  for (const r of rows) {
+    if (r.parent != null) counts.set(r.parent, Number(r.n));
+  }
+  return counts;
+}
+
+/** Map a page of rows to canonical messages, stamping a positive `replyCount`. */
+function rowsToMessagesWithReplyCount(db: Db, channelId: string, rows: MessageRow[]): Message[] {
+  const counts = replyCountsFor(
+    db,
+    channelId,
+    rows.map((r) => r.id),
+  );
+  return rows.map((row) => {
+    const message = rowToMessage(row);
+    const count = counts.get(row.id);
+    return count && count > 0 ? { ...message, replyCount: count } : message;
+  });
+}
+
+/**
+ * Shared keyset pager over `seq` (§7.2). `base` is the channel/scope predicate
+ * (e.g. just the channel, or channel + `reply_to`); the cursor/direction keyset
+ * is applied on top. Returns the canonical page (with `replyCount` stamped).
+ */
+function pageBySeq(
+  db: Db,
+  channelId: string,
+  base: SQL | undefined,
+  opts: ListMessagesOptions,
 ): MessagePage {
   const direction: PageDirection = opts.direction === "forward" ? "forward" : "backward";
   const limit =
@@ -429,16 +460,15 @@ export function listMessages(
 
   // Keyset predicate: rows strictly past `after` in the travel direction.
   // backward → seq < after (descending), forward → seq > after (ascending).
-  const channelEq = eq(messages.channelId, channelId);
   const where =
     after != null
       ? and(
-          channelEq,
+          base,
           direction === "forward"
             ? sql`${messages.seq} > ${after}`
             : sql`${messages.seq} < ${after}`,
         )
-      : channelEq;
+      : base;
 
   // Fetch one extra row to detect a further page.
   const rows = db.drizzle
@@ -451,7 +481,7 @@ export function listMessages(
 
   const hasMore = rows.length > limit;
   const pageRows = hasMore ? rows.slice(0, limit) : rows;
-  const items = pageRows.map(rowToMessage);
+  const items = rowsToMessagesWithReplyCount(db, channelId, pageRows);
 
   const first = pageRows[0];
   const last = pageRows[pageRows.length - 1];
@@ -468,4 +498,46 @@ export function listMessages(
       ...(prevCursor !== undefined ? { prevCursor } : {}),
     },
   };
+}
+
+/**
+ * Read one page of `channelId`'s timeline by keyset over `seq` (§7.2).
+ *
+ *  - `direction: "backward"` (default) returns the newest messages first
+ *    (`seq DESC`); `"forward"` returns oldest first (`seq ASC`).
+ *  - `cursor` is **exclusive**: rows strictly past it in the travel direction
+ *    are returned, so following `nextCursor` never repeats or skips. A malformed
+ *    cursor is treated as the first page.
+ *  - `nextCursor` is present only when a further page exists in `direction`.
+ *  - `prevCursor` points just past the **first** item of this page in the
+ *    opposite direction, so a client can walk back; it is `undefined` only for
+ *    an empty page.
+ *
+ * Tombstoned messages (§7.1) are not filtered out — they keep their `seq` and
+ * are returned so references/resume cursors stay valid. Each item carries an
+ * advisory `replyCount` when it has replies (§7.2).
+ */
+export function listMessages(
+  db: Db,
+  channelId: string,
+  opts: ListMessagesOptions = {},
+): MessagePage {
+  return pageBySeq(db, channelId, eq(messages.channelId, channelId), opts);
+}
+
+/**
+ * Read one page of the replies to `messageId` in `channelId` (§7.2) — the
+ * messages whose `reference.id` is `messageId` — over the same `seq` cursor
+ * space as {@link listMessages} (so a thread interleaves with the timeline).
+ * `direction` defaults to `forward` (oldest reply first), the natural thread
+ * reading order. Authorization (channel read access) is the caller's job.
+ */
+export function listReplies(
+  db: Db,
+  channelId: string,
+  messageId: string,
+  opts: ListMessagesOptions = {},
+): MessagePage {
+  const base = and(eq(messages.channelId, channelId), eq(messages.replyTo, messageId));
+  return pageBySeq(db, channelId, base, { direction: "forward", ...opts });
 }

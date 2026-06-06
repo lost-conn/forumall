@@ -32,7 +32,12 @@ import { z } from "zod";
 
 import { canViewChannel, getChannelRow } from "../provider/channels.ts";
 import { getGroupRow } from "../provider/groups.ts";
-import { listMessages, tombstoneMessage, updateMessageContent } from "../provider/messages.ts";
+import {
+  listMessages,
+  listReplies,
+  tombstoneMessage,
+  updateMessageContent,
+} from "../provider/messages.ts";
 import { addReaction, hasReaction, listReactions, removeReaction } from "../provider/reactions.ts";
 import { AppError } from "./errors.ts";
 import {
@@ -97,6 +102,40 @@ export function createMessagesRouter() {
     });
 
     // Validate the response shape (§7.2 `messages-page`) before returning.
+    return c.json(MessagesPageSchema.parse(page));
+  });
+
+  // -- GET .../messages/:messageId/replies (§7.2, optional auth) -----------
+  // Paged list of the replies to a message (its thread). Same read gate +
+  // `messages-page` shape as the history read; defaults to oldest-reply-first.
+  // Unknown group/channel → 404; the parent message need not exist (an empty
+  // page is a valid answer), but a private channel → 403.
+  router.get("/:messageId/replies", optional, (c) => {
+    const { db } = c.var;
+    const groupId = requireParam(c, "groupId");
+    const channelId = requireParam(c, "channelId");
+    const messageId = requireParam(c, "messageId");
+
+    if (!getGroupRow(db, groupId)) throw AppError.notFound({ detail: "no such group" });
+    const channel = getChannelRow(db, channelId);
+    if (!channel || channel.groupId !== groupId) {
+      throw AppError.notFound({ detail: "no such channel" });
+    }
+    const actor = c.var.actor?.actor ?? null;
+    if (!canViewChannel(db, channel, actor)) {
+      throw AppError.forbidden({ detail: "this channel is private" });
+    }
+
+    const cursor = c.req.query("cursor") ?? null;
+    const direction = c.req.query("direction") === "backward" ? "backward" : "forward";
+    const rawLimit = Number.parseInt(c.req.query("limit") ?? "", 10);
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : undefined;
+
+    const page = listReplies(db, channelId, messageId, {
+      cursor,
+      direction,
+      ...(limit !== undefined ? { limit } : {}),
+    });
     return c.json(MessagesPageSchema.parse(page));
   });
 

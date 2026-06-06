@@ -442,6 +442,16 @@ describe("live schema validation: groups, channels, messaging (§5, §7)", () =>
 
     const messageId = (page.items[0] as { id: string }).id;
 
+    // Reply listing (§7.2): GET …/messages/{id}/replies returns a messages-page.
+    const repliesRes = await signedReq(
+      alice,
+      "GET",
+      `/api/groups/${group.id}/channels/${channel.id}/messages/${messageId}/replies`,
+    );
+    expect(repliesRes.status).toBe(200);
+    const repliesPage = (await repliesRes.json()) as { items: unknown[] };
+    await expectValid("messages-page.json", repliesPage);
+
     // Reaction (§7.1): add one (PUT …/reactions/{key}), then list → each Reaction
     const rxAdd = await signedReq(
       alice,
