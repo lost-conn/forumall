@@ -7,6 +7,11 @@ import { type Component, type JSX, Show, createResource } from "solid-js";
 import { DeviceKeys } from "../components/DeviceKeys.tsx";
 import { DmsPage as DmsPageImpl } from "../components/dms/DmsPage.tsx";
 import { GroupsPage } from "../components/groups/GroupsPage.tsx";
+import { ContactsPage } from "../components/social/ContactsPage.tsx";
+import {
+  PrivacySettingsCard,
+  ProfileSettings,
+} from "../components/social/PrivacyProfileSettings.tsx";
 import { doLogout } from "../stores/auth-controller.ts";
 import { session, sessionClient } from "../stores/session.ts";
 
@@ -44,6 +49,9 @@ export const GroupsRoutePage: Component = () => <GroupsPage />;
 
 /** Direct messages screen (§7.4 / §8.3): conversation list + live thread. */
 export const DmsPage: Component = () => <DmsPageImpl />;
+
+/** Contacts screen (§6.7): contacts + pending requests, with live presence. */
+export const ContactsRoutePage: Component = () => <ContactsPage />;
 
 interface MeProfile {
   handle: string;
@@ -96,6 +104,10 @@ export const SettingsPage: Component = () => {
             )}
           </Show>
         </section>
+
+        <ProfileSettings />
+
+        <PrivacySettingsCard />
 
         <DeviceKeys />
 

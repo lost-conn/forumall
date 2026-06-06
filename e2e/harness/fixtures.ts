@@ -58,7 +58,15 @@ export function bootServer(): Promise<BootedServer> {
   return new Promise<BootedServer>((resolveReady, rejectReady) => {
     const child: ChildProcess = spawn("bun", [BOOT_SCRIPT], {
       cwd: REPO_ROOT,
-      env: { ...process.env, DATA_DIR: dataDir, WEB_DIR },
+      env: {
+        ...process.env,
+        DATA_DIR: dataDir,
+        WEB_DIR,
+        // Short WS heartbeat/idle so the presence e2e observes disconnect→offline
+        // quickly even on an ungraceful drop (a clean close is immediate anyway).
+        WS_PING_INTERVAL_MS: process.env.WS_PING_INTERVAL_MS ?? "1000",
+        WS_IDLE_TIMEOUT_MS: process.env.WS_IDLE_TIMEOUT_MS ?? "3000",
+      },
       stdio: ["ignore", "pipe", "inherit"],
     });
 

@@ -6,9 +6,11 @@
  */
 import type { Group, Member } from "@forumall/shared";
 import { useQuery } from "@tanstack/solid-query";
-import { type Component, For, Show, createSignal } from "solid-js";
+import { type Component, For, Show, createMemo, createSignal, onCleanup } from "solid-js";
 import { can, removeMember, setMemberRole } from "../../lib/groups-api.ts";
-import { session, sessionClient } from "../../stores/session.ts";
+import { subscribePresence } from "../../stores/presence-controller.ts";
+import { session, sessionClient, sessionWs } from "../../stores/session.ts";
+import { PresenceDot } from "../social/PresenceDot.tsx";
 import { membersQuery, useInvalidateGroup } from "./queries.ts";
 import { ErrorLine, RoleBadge, errorMessage } from "./ui.tsx";
 
@@ -27,6 +29,16 @@ export const MembersPanel: Component<{ group: Group; myRole: () => string | unde
   const canManage = () => can("manage", props.myRole(), props.group.permissions);
   const canModerate = () => can("moderate", props.myRole(), props.group.permissions);
   const isOwner = () => props.myRole() === "owner";
+
+  // Subscribe to live presence for every visible member while the panel is shown;
+  // the ref-counted controller de-dupes overlap with other views (DMs, contacts).
+  let disposeSub: (() => void) | null = null;
+  createMemo(() => {
+    const actors = (members.data ?? []).map((m: Member) => m.user);
+    disposeSub?.();
+    disposeSub = subscribePresence(sessionWs(), actors, session.actor);
+  });
+  onCleanup(() => disposeSub?.());
 
   const mutate = async (label: string, fn: () => Promise<unknown>) => {
     setBusy(label);
@@ -77,8 +89,14 @@ export const MembersPanel: Component<{ group: Group; myRole: () => string | unde
                       {m.user.slice(0, 2).toUpperCase()}
                     </span>
                     <div class="min-w-0 flex-1">
-                      <div class="truncate text-sm text-ink font-mono" data-testid="member-handle">
-                        {m.user}
+                      <div
+                        class="flex items-center gap-2 truncate text-sm text-ink font-mono"
+                        data-testid="member-handle"
+                      >
+                        <Show when={!isSelf()}>
+                          <PresenceDot actor={m.user} />
+                        </Show>
+                        <span class="truncate">{m.user}</span>
                         <Show when={isSelf()}>
                           <span class="ml-1.5 text-xs text-faint">(you)</span>
                         </Show>

@@ -2,6 +2,7 @@ import { OFSCP_VERSION } from "@forumall/shared";
 import { A, useLocation } from "@solidjs/router";
 import { For, type ParentComponent, Show } from "solid-js";
 import { session } from "../stores/session";
+import { SelfPresenceControl } from "./social/SelfPresenceControl";
 
 interface NavItem {
   href: string;
@@ -13,6 +14,7 @@ const NAV: NavItem[] = [
   { href: "/", label: "Home", glyph: "◆" },
   { href: "/groups", label: "Groups", glyph: "❑" },
   { href: "/dms", label: "Direct messages", glyph: "✉" },
+  { href: "/contacts", label: "Contacts", glyph: "☺" },
   { href: "/settings", label: "Settings", glyph: "⚙" },
 ];
 
@@ -57,14 +59,19 @@ export const AppShell: ParentComponent = (props) => {
           )}
         </For>
 
-        <div class="mt-auto px-2 pt-4">
-          <div class="badge w-full justify-start">
-            <span
-              class={`h-2 w-2 rounded-full ${CONNECTION_DOT[session.connection] ?? "bg-faint"}`}
-            />
-            <Show when={session.actor} fallback={<span>Signed out</span>}>
-              <span class="truncate">{session.actor}</span>
-            </Show>
+        <div class="mt-auto pt-4">
+          <Show when={session.actor}>
+            <SelfPresenceControl />
+          </Show>
+          <div class="px-2">
+            <div class="badge w-full justify-start">
+              <span
+                class={`h-2 w-2 rounded-full ${CONNECTION_DOT[session.connection] ?? "bg-faint"}`}
+              />
+              <Show when={session.actor} fallback={<span>Signed out</span>}>
+                <span class="truncate">{session.actor}</span>
+              </Show>
+            </div>
           </div>
         </div>
       </nav>

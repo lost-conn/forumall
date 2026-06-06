@@ -14,6 +14,7 @@ import { AuthScreen } from "./components/AuthScreen";
 import { InviteRedeemPage } from "./components/groups/InviteRedeemPage";
 import { loadProviderHost, probeProvider } from "./lib/provider";
 import {
+  ContactsRoutePage,
   DmsPage,
   GroupsRoutePage,
   HomePage,
@@ -108,6 +109,7 @@ export const App: Component = () => {
             <Route path="/login" component={LoginPage} />
             <Route path="/groups/:groupId?" component={GroupsRoutePage} />
             <Route path="/dms/:dmId?" component={DmsPage} />
+            <Route path="/contacts" component={ContactsRoutePage} />
             <Route path="/settings" component={SettingsPage} />
             <Route path="*" component={NotFoundPage} />
           </Route>

@@ -35,7 +35,9 @@ import {
   dmThread,
   upsertConversation,
 } from "../../stores/dms.ts";
+import { subscribePresence } from "../../stores/presence-controller.ts";
 import { session, sessionClient, sessionWs } from "../../stores/session.ts";
+import { PresenceDot } from "../social/PresenceDot.tsx";
 import { type ConversationHandle, openConversation, retrySendDm, sendDm } from "./dm-controller.ts";
 
 /** The current user's local sent-store, recreated when the actor changes. */
@@ -95,6 +97,16 @@ export const DmsPage: Component = () => {
 
   const conversations = createMemo(dmConversations);
   const selected = () => params.dmId;
+
+  // Subscribe to live presence for every DM counterparty while the screen is
+  // mounted; re-run when the list changes (ref-counted controller de-dupes).
+  let disposeSub: (() => void) | null = null;
+  createMemo(() => {
+    const actors = conversations().map((c) => c.counterparty);
+    disposeSub?.();
+    disposeSub = subscribePresence(sessionWs(), actors, session.actor);
+  });
+  onCleanup(() => disposeSub?.());
 
   return (
     <div class="flex min-h-0 flex-1" data-testid="dms-page">
@@ -184,8 +196,12 @@ const ConversationRow: Component<{ conv: DmConversationSummary; active: boolean 
       {displayName(props.conv.counterparty).slice(0, 1).toUpperCase()}
     </span>
     <span class="min-w-0 flex-1">
-      <span class="block truncate font-medium text-ink" data-testid="dm-conv-name">
-        {props.conv.counterparty}
+      <span
+        class="flex items-center gap-1.5 truncate font-medium text-ink"
+        data-testid="dm-conv-name"
+      >
+        <PresenceDot actor={props.conv.counterparty} />
+        <span class="truncate">{props.conv.counterparty}</span>
       </span>
       <Show when={props.conv.lastMessageText}>
         <span class="block truncate text-xs text-faint" data-testid="dm-conv-last">
@@ -278,6 +294,9 @@ const ThreadView: Component<{
         <h2 class="text-sm font-semibold tracking-tight" data-testid="dm-thread-name">
           {counterparty() || props.dmId}
         </h2>
+        <Show when={counterparty()}>
+          <PresenceDot actor={counterparty()} showStatus />
+        </Show>
       </header>
 
       <div

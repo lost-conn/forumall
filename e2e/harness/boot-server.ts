@@ -57,7 +57,25 @@ const db = openDb(config.dbPath);
 migrate(db);
 getProviderSigningKey(db); // ensure §8.1 provider identity exists
 
-const app = createApp(config, { db });
+// Optional short WS heartbeat/idle timings (§7.1) so the presence e2e can observe
+// disconnect→offline quickly when a connection drops without a clean close. A
+// clean page/context close already fans out `offline` immediately via the WS
+// `close` handler; these shorten the idle-sweep fallback for ungraceful drops.
+const num = (v: string | undefined): number | undefined =>
+  v !== undefined && v !== "" && !Number.isNaN(Number(v)) ? Number(v) : undefined;
+const wsTimings = {
+  ...(num(process.env.WS_PING_INTERVAL_MS) !== undefined
+    ? { pingIntervalMs: num(process.env.WS_PING_INTERVAL_MS) as number }
+    : {}),
+  ...(num(process.env.WS_IDLE_TIMEOUT_MS) !== undefined
+    ? { idleTimeoutMs: num(process.env.WS_IDLE_TIMEOUT_MS) as number }
+    : {}),
+};
+
+const app = createApp(config, {
+  db,
+  ...(Object.keys(wsTimings).length > 0 ? { wsTimings } : {}),
+});
 
 const server = Bun.serve({
   port: config.port,

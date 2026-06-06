@@ -27,6 +27,8 @@ import { keyStore as defaultKeyStore } from "../lib/key-store.ts";
 import { OfscpWsClient } from "../lib/ofscp-ws.ts";
 import { baseUrlForHost } from "../lib/provider.ts";
 import { clearDms } from "./dms.ts";
+import { installPresenceListener, resetPresenceSubscriptions } from "./presence-controller.ts";
+import { clearPresence } from "./presence.ts";
 import {
   clearSession,
   sessionClient,
@@ -54,6 +56,9 @@ async function adopt(result: AuthResult, store: KeyStore): Promise<void> {
     url: `${base.replace(/^http/, "ws")}/api/ws`,
   });
   ws.onState(setConnectionState);
+  // Wire the single inbound `presence.update` → store listener (§7.5) BEFORE
+  // connecting, so the immediate snapshots a (re)subscribe triggers are captured.
+  installPresenceListener(ws);
   // Fire-and-forget connect; the status dot reflects progress / retries.
   void ws.connect().catch(() => undefined);
 
@@ -109,6 +114,8 @@ export async function doLogout(opts: { keyStore?: KeyStore } = {}): Promise<bool
   // Tear down the live WS + reactive state. The local DM sent-store (localStorage)
   // is intentionally preserved so re-login restores the sender's own history.
   clearDms();
+  clearPresence();
+  resetPresenceSubscriptions();
   clearSession();
   return revoked;
 }

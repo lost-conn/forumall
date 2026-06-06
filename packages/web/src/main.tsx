@@ -5,7 +5,8 @@ import "uno.css";
 import { render } from "solid-js/web";
 import { App } from "./App.tsx";
 import { type ChatMessage, upsertMessage } from "./stores/chat.ts";
-import { sessionClient } from "./stores/session.ts";
+import { presence } from "./stores/presence.ts";
+import { sessionClient, sessionWs } from "./stores/session.ts";
 
 const root = document.getElementById("root");
 if (!root) throw new Error("#root not found");
@@ -74,5 +75,22 @@ if (!root) throw new Error("#root not found");
     throw err;
   }
 };
+
+// Test/debug hook: snapshot the live presence store + WS connection state. The
+// e2e presence suite uses this to read a subject's observed availability directly
+// (independent of which screen renders a dot) and to assert the WS is connected.
+(
+  globalThis as unknown as {
+    __forumall_presence?: () => {
+      connection: string | undefined;
+      self: { availability: string; status?: string };
+      byActor: Record<string, { availability: string; status?: string; lastSeen?: string }>;
+    };
+  }
+).__forumall_presence = () => ({
+  connection: sessionWs()?.state,
+  self: { ...presence.self },
+  byActor: JSON.parse(JSON.stringify(presence.byActor)),
+});
 
 render(() => <App />, root);

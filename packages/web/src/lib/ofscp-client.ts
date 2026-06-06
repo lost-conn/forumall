@@ -160,6 +160,9 @@ export class OfscpClient {
   ): Promise<OfscpResponse<T>> {
     return this.request<T>("PATCH", path, body, opts);
   }
+  put<T = unknown>(path: string, body?: unknown, opts?: RequestOptions): Promise<OfscpResponse<T>> {
+    return this.request<T>("PUT", path, body, opts);
+  }
   delete<T = unknown>(path: string, opts?: RequestOptions): Promise<OfscpResponse<T>> {
     return this.request<T>("DELETE", path, undefined, opts);
   }
