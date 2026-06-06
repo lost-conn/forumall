@@ -165,6 +165,50 @@ export class OfscpClient {
   }
 
   /**
+   * POST raw binary bytes (e.g. a `multipart/form-data` upload) signed over the
+   * EXACT bytes — without the UTF-8 round-trip {@link request} applies to a
+   * `Uint8Array` body (which corrupts binary content). The §4.4 digest is computed
+   * over `bytes` verbatim and the same `bytes` are handed to `fetch`, so the
+   * canonical string the server reconstructs is byte-identical. `contentType` MUST
+   * include the multipart boundary. Used by media upload (§5.8).
+   */
+  async postBinary<T = unknown>(
+    path: string,
+    bytes: Uint8Array,
+    contentType: string,
+    opts: RequestOptions = {},
+  ): Promise<OfscpResponse<T>> {
+    const url = new URL(path, this.config.baseUrl);
+    const headers: Record<string, string> = { ...opts.headers, "content-type": contentType };
+    if (!opts.anonymous && this.canSign()) {
+      const { headers: signed } = sign({
+        actor: this.config.actor as string,
+        keyId: this.config.keyId as string,
+        privateKey: this.config.privateKey as string,
+        authority: this.config.authority ?? authorityOf(url),
+        method: "POST",
+        path: url.pathname,
+        query: url.search,
+        timestamp: rfc3339Timestamp(),
+        nonce: generateNonce(),
+        // Pass the exact bytes so `sign` digests them verbatim (no decode).
+        body: bytes,
+      });
+      Object.assign(headers, signed);
+    }
+    // Copy into a fresh ArrayBuffer-backed view so `fetch` sends a plain BodyInit.
+    const body = new Uint8Array(bytes.byteLength);
+    body.set(bytes);
+    const res = await this.doFetch(url.toString(), {
+      method: "POST",
+      headers,
+      body,
+      ...(opts.signal ? { signal: opts.signal } : {}),
+    });
+    return parseResponse<T>(res);
+  }
+
+  /**
    * Build (and optionally sign) a request, send it, and parse the response.
    * Throws {@link OfscpHttpError} on a non-2xx status.
    */

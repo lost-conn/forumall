@@ -9,6 +9,7 @@ import { useQuery } from "@tanstack/solid-query";
 import { type Component, For, Match, Show, Switch, createMemo, createSignal } from "solid-js";
 import { can, joinGroup, leaveGroup } from "../../lib/groups-api.ts";
 import { session, sessionClient } from "../../stores/session.ts";
+import { ChatView } from "../chat/ChatView.tsx";
 import { CreateChannelModal, ManageChannelModal } from "./ChannelModals.tsx";
 import { GroupSettingsModal } from "./GroupSettingsModal.tsx";
 import { InvitesPanel } from "./InvitesPanel.tsx";
@@ -33,6 +34,7 @@ export const GroupView: Component<{ groupId: string }> = (props) => {
   const [tab, setTab] = createSignal<Tab>("channels");
   const [showCreateChannel, setShowCreateChannel] = createSignal(false);
   const [manageChannel, setManageChannel] = createSignal<Channel | null>(null);
+  const [openChat, setOpenChat] = createSignal<Channel | null>(null);
   const [showSettings, setShowSettings] = createSignal(false);
   const [joinBusy, setJoinBusy] = createSignal(false);
   const [joinError, setJoinError] = createSignal<string | null>(null);
@@ -47,6 +49,7 @@ export const GroupView: Component<{ groupId: string }> = (props) => {
   const g = (): Group | undefined => group.data;
   const canManage = () => can("manage", myRole(), g()?.permissions);
   const canModerate = () => can("moderate", myRole(), g()?.permissions);
+  const canPost = () => can("post", myRole(), g()?.permissions);
 
   const doJoin = async () => {
     const grp = g();
@@ -225,13 +228,22 @@ export const GroupView: Component<{ groupId: string }> = (props) => {
                               {(ch) => (
                                 <li
                                   class="group flex items-center gap-3 rounded-lg border border-transparent px-3 py-2 hover:(border-border bg-surface-2)"
+                                  classList={{
+                                    "border-border bg-surface-2": openChat()?.id === ch.id,
+                                  }}
                                   data-testid="channel-row"
                                   data-channel-name={ch.name ?? ch.id}
                                 >
                                   <span class="w-4 text-center text-faint">
                                     {CHANNEL_GLYPH[ch.type] ?? "#"}
                                   </span>
-                                  <div class="min-w-0 flex-1">
+                                  <button
+                                    type="button"
+                                    class="min-w-0 flex-1 text-left disabled:cursor-default"
+                                    data-testid="open-channel"
+                                    disabled={ch.type !== "text"}
+                                    onClick={() => ch.type === "text" && setOpenChat(ch)}
+                                  >
                                     <div class="flex items-center gap-2">
                                       <span
                                         class="truncate text-sm text-ink"
@@ -244,7 +256,7 @@ export const GroupView: Component<{ groupId: string }> = (props) => {
                                     <Show when={ch.topic}>
                                       <p class="truncate text-xs text-faint">{ch.topic}</p>
                                     </Show>
-                                  </div>
+                                  </button>
                                   <Show when={canManage()}>
                                     <button
                                       type="button"
@@ -259,6 +271,32 @@ export const GroupView: Component<{ groupId: string }> = (props) => {
                               )}
                             </For>
                           </ul>
+
+                          {/* Open chat for the selected text channel. */}
+                          <Show when={openChat()}>
+                            {(ch) => (
+                              <div
+                                class="mt-4 flex min-h-[28rem] flex-col overflow-hidden rounded-xl border border-border bg-surface"
+                                data-testid="chat-panel"
+                              >
+                                <div class="flex items-center justify-end border-b border-border px-3 py-1">
+                                  <button
+                                    type="button"
+                                    class="text-xs text-faint hover:text-ink"
+                                    data-testid="close-chat"
+                                    onClick={() => setOpenChat(null)}
+                                  >
+                                    Close chat ✕
+                                  </button>
+                                </div>
+                                <ChatView
+                                  channel={ch()}
+                                  canPost={isMember() && canPost()}
+                                  canModerate={canModerate()}
+                                />
+                              </div>
+                            )}
+                          </Show>
                         </Show>
                       </Show>
                     </section>

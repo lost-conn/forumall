@@ -4,6 +4,7 @@ import "./lib/buffer-polyfill.ts";
 import "uno.css";
 import { render } from "solid-js/web";
 import { App } from "./App.tsx";
+import { type ChatMessage, upsertMessage } from "./stores/chat.ts";
 import { sessionClient } from "./stores/session.ts";
 
 const root = document.getElementById("root");
@@ -28,6 +29,20 @@ if (!root) throw new Error("#root not found");
     }
     return -1;
   }
+};
+
+// Test/debug hook: inject a message straight into the chat store's timeline for a
+// channel. The product cannot compose `article`/unknown-`type` messages (the WS
+// `message.create` path forces `type: "message"`), so the e2e suite uses this to
+// fabricate those variants and assert the §5.3/§2.3 rendering (markdown + the
+// unknown-type text fallback). It only touches the in-memory render store — no
+// network, no key material — mirroring `__forumall_signedFetch` above.
+(
+  globalThis as unknown as {
+    __forumall_injectMessage?: (channelId: string, message: ChatMessage) => void;
+  }
+).__forumall_injectMessage = (channelId: string, message: ChatMessage): void => {
+  upsertMessage(channelId, message);
 };
 
 render(() => <App />, root);
