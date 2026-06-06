@@ -60,6 +60,12 @@ const config = loadConfig({
   ...(process.env.ENABLE_KNOWN_PROVIDERS !== undefined
     ? { ENABLE_KNOWN_PROVIDERS: process.env.ENABLE_KNOWN_PROVIDERS }
     : {}),
+  // Two-provider federation e2e: the insecure-localhost transport lets a provider
+  // reach its loopback peer (`https://localhost:<port>` → `http://…`) for §4.6
+  // user-keys + §3.1 discovery. Default OFF; the federation harness sets it.
+  ...(process.env.FEDERATION_INSECURE_LOCALHOST !== undefined
+    ? { FEDERATION_INSECURE_LOCALHOST: process.env.FEDERATION_INSECURE_LOCALHOST }
+    : {}),
 });
 
 const db = openDb(config.dbPath);

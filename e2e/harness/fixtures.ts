@@ -139,8 +139,40 @@ export function bootServer(extraEnv: Record<string, string> = {}): Promise<Boote
   });
 }
 
+/** Two booted providers (A + B), each reachable as the other's loopback peer. */
+export interface TwoProviders {
+  a: BootedServer;
+  b: BootedServer;
+  stop: () => void;
+}
+
+/**
+ * Boot two ephemeral providers, BOTH with the insecure-localhost federation
+ * transport on, so each can resolve the other's §4.6 user-keys / §3.1 discovery
+ * over loopback (`https://localhost:<portPeer>` → `http://…`). Each serves the
+ * same built web bundle and pins its `DOMAIN` to `localhost:<port>` (so the
+ * browser's `location.host` equals the signing authority). The two-provider
+ * federation e2e loads A's app for `alice` and B's app for `bob`.
+ */
+export async function startTwoProviders(): Promise<TwoProviders> {
+  const fedEnv = { FEDERATION_INSECURE_LOCALHOST: "true" };
+  // Boot sequentially: ensureWebBuilt() guards a single build, and a parallel
+  // first-build race would have both workers shell out to `vite build`.
+  const a = await bootServer(fedEnv);
+  const b = await bootServer(fedEnv);
+  return {
+    a,
+    b,
+    stop: () => {
+      a.stop();
+      b.stop();
+    },
+  };
+}
+
 interface Fixtures {
   appServer: BootedServer;
+  twoProviders: TwoProviders;
 }
 
 export const test = base.extend<Fixtures>({
@@ -152,6 +184,14 @@ export const test = base.extend<Fixtures>({
   },
   baseURL: async ({ appServer }, use) => {
     await use(appServer.baseUrl);
+  },
+  // Two federated providers for the cross-provider e2e. Independent of `appServer`
+  // (a spec requests one or the other), so unrelated specs don't pay the cost.
+  // biome-ignore lint/correctness/noEmptyPattern: Playwright fixture signature.
+  twoProviders: async ({}, use) => {
+    const fed = await startTwoProviders();
+    await use(fed);
+    fed.stop();
   },
 });
 

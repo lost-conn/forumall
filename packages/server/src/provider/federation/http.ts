@@ -50,6 +50,41 @@ export type FederationFetch = (domain: string, request: Request) => Promise<Resp
  */
 export const defaultFederationFetch: FederationFetch = (_domain, request) => fetch(request);
 
+/** True for a loopback host (`localhost`, `127.0.0.1`, `[::1]`), port-agnostic. */
+function isLoopbackHost(host: string): boolean {
+  // `host` may carry a port (e.g. `localhost:8787`); strip it before matching.
+  const bracket = host.startsWith("[") ? host.indexOf("]") : -1;
+  const hostname = bracket >= 0 ? host.slice(1, bracket) : (host.split(":")[0] ?? host);
+  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+}
+
+/**
+ * Insecure-localhost {@link FederationFetch} (dev / self-host / testing only,
+ * gated behind `FEDERATION_INSECURE_LOCALHOST`).
+ *
+ * Federation always *addresses* a peer as `https://{domain}/...` (the discovery /
+ * user-keys caches and `signedProviderFetch` build https URLs). In a loopback
+ * dev/test topology the peer is a plain-http server bound to `localhost:<port>`,
+ * so this transport rewrites the scheme to `http` **only when the target host is
+ * loopback** — every non-loopback target still goes out over TLS unchanged. The
+ * request's authority/`Host` (and the signing authority baked into the
+ * `X-OFSCP-*` headers) are untouched, so the peer verifies the signature against
+ * its own `config.domain` exactly as in production.
+ *
+ * This is what lets the two-provider browser harness — where each provider's
+ * `DOMAIN` is `localhost:<port>` over http — resolve a peer's §4.6 user-keys and
+ * §3.1 discovery over loopback. Production (default OFF) never reaches here.
+ */
+export const insecureLocalhostFederationFetch: FederationFetch = (_domain, request) => {
+  const url = new URL(request.url);
+  if (url.protocol === "https:" && isLoopbackHost(url.host)) {
+    url.protocol = "http:";
+    // Preserve method/body/headers (incl. the X-OFSCP-* signing headers + Host).
+    return fetch(new Request(url.toString(), request));
+  }
+  return fetch(request);
+};
+
 /** Split a target URL into the pieces the canonical string needs. */
 function targetParts(url: string): {
   domain: string;

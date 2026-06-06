@@ -29,6 +29,9 @@ import {
 } from "solid-js";
 import { fetchDmConversations } from "../../lib/dm-api.ts";
 import { DmSentStore } from "../../lib/dm-store.ts";
+import { clientForHost, domainOf, isLocalActor } from "../../lib/federation.ts";
+import { keyStore } from "../../lib/key-store.ts";
+import type { OfscpClient } from "../../lib/ofscp-client.ts";
 import {
   type DmConversationSummary,
   dmConversations,
@@ -77,6 +80,26 @@ async function loadConversations(me: string, sentStore: DmSentStore): Promise<vo
       ...(last ? { lastMessageText: last.content.text ?? "", updatedAt: last.createdAt } : {}),
     });
   }
+}
+
+/**
+ * Resolve the client a DM to `counterparty` is delivered through (§7.4): the home
+ * client for a same-provider recipient, or a per-host client targeting the
+ * recipient's domain for a CROSS-PROVIDER DM (signed by the home key; the
+ * recipient's provider resolves it via §4.6). Returns `null` if the session has
+ * no signing identity (the caller falls back to the home client).
+ */
+async function resolveDeliveryClient(counterparty: string): Promise<OfscpClient | null> {
+  const home = session.host;
+  const actor = session.actor;
+  const keyId = session.keyId;
+  if (!home || !actor || !keyId) return null;
+  if (isLocalActor(counterparty, home)) return null; // same provider → home client
+  const targetHost = domainOf(counterparty);
+  if (!targetHost) return null;
+  const privateKey = await keyStore.getKey(keyId);
+  if (!privateKey) return null;
+  return clientForHost(targetHost, { actor, keyId, privateKey });
 }
 
 export const DmsPage: Component = () => {
@@ -378,15 +401,19 @@ const DmMessageRow: Component<{
               const store = props.sentStore();
               const me = session.actor;
               if (client && store && me && m().clientMessageId) {
-                void retrySendDm({
-                  client,
-                  dmId: props.dmId,
-                  me,
-                  counterparty: props.counterparty,
-                  text: m().content.text ?? "",
-                  sentStore: store,
-                  clientMessageId: m().clientMessageId as string,
-                });
+                const counterparty = props.counterparty;
+                void resolveDeliveryClient(counterparty).then((deliveryClient) =>
+                  retrySendDm({
+                    client,
+                    ...(deliveryClient ? { deliveryClient } : {}),
+                    dmId: props.dmId,
+                    me,
+                    counterparty,
+                    text: m().content.text ?? "",
+                    sentStore: store,
+                    clientMessageId: m().clientMessageId as string,
+                  }),
+                );
               }
             }}
           >
@@ -418,14 +445,19 @@ const DmComposer: Component<{
     if (!client || !store || !me || body.length === 0 || !props.counterparty) return;
     setSendError(null);
     setText("");
-    void sendDm({
-      client,
-      dmId: props.dmId,
-      me,
-      counterparty: props.counterparty,
-      text: body,
-      sentStore: store,
-    })
+    const counterparty = props.counterparty;
+    void resolveDeliveryClient(counterparty)
+      .then((deliveryClient) =>
+        sendDm({
+          client,
+          ...(deliveryClient ? { deliveryClient } : {}),
+          dmId: props.dmId,
+          me,
+          counterparty,
+          text: body,
+          sentStore: store,
+        }),
+      )
       .then(() => props.onSent())
       .catch((err) => {
         setSendError(err instanceof Error ? err.message : "Could not send the message.");

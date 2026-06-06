@@ -149,7 +149,16 @@ export async function openConversation(deps: OpenConversationDeps): Promise<Conv
 }
 
 export interface SendDmArgs {
+  /** The home signing client (the sender's own provider) — used as the default. */
   client: OfscpClient;
+  /**
+   * The client the DM is DELIVERED through (§7.4): the RECIPIENT's home provider.
+   * For a same-provider DM this equals `client`; for a CROSS-PROVIDER DM it is a
+   * per-host client (built via `clientForHost`) targeting the recipient's domain,
+   * signed by the sender's home key (the recipient's provider resolves that key
+   * via §4.6). Defaults to `client` when omitted (same-provider).
+   */
+  deliveryClient?: OfscpClient;
   dmId: string;
   me: string;
   counterparty: string;
@@ -162,9 +171,14 @@ export interface SendDmArgs {
  * Send a DM: show an optimistic echo, POST the user-signed message, and on
  * success persist the canonical sent message locally + reconcile the echo. On
  * failure the echo is marked failed for a retry. Returns the `clientMessageId`.
+ *
+ * The send is delivered to the RECIPIENT's home provider (`deliveryClient`, which
+ * for a cross-provider DM targets the recipient's domain). The sender still keeps
+ * the canonical sent copy locally — the server keeps no sender copy (§8.3).
  */
 export async function sendDm(args: SendDmArgs): Promise<string> {
-  const { client, dmId, me, counterparty, text, mime, sentStore } = args;
+  const { client, deliveryClient, dmId, me, counterparty, text, mime, sentStore } = args;
+  const sendClient = deliveryClient ?? client;
   sentStore.rememberCounterparty(dmId, counterparty);
   const content = { mime: mime ?? "text/plain", text };
   // We don't know the clientMessageId until the API mints one; pre-generate the
@@ -183,7 +197,7 @@ export async function sendDm(args: SendDmArgs): Promise<string> {
   });
 
   try {
-    const { message, clientMessageId } = await sendDmMessage(client, dmId, content);
+    const { message, clientMessageId } = await sendDmMessage(sendClient, dmId, content);
     // Reconcile the optimistic echo (matched on our temp client id) with the
     // canonical message, and stamp the real clientMessageId for cross-tab de-dupe.
     upsertDmMessage(dmId, {

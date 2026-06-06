@@ -76,6 +76,52 @@ if (!root) throw new Error("#root not found");
   }
 };
 
+// Test/debug hook: drive a SIGNED cross-provider request through a per-host
+// client built from the live session's HOME identity (actor + device key), with
+// `authority` = the target host. This is the exact §4.4.2 shape a peer verifies
+// after resolving the home key via §4.6 — it exposes no key material beyond the
+// session's own signing path. The two-provider federation e2e uses it to drive
+// the browser-level cross-provider join (`POST /api/groups/{g}/channels/{c}/join`
+// on the peer) — the one cross-provider action the UI has no input for — and to
+// follow a remote channel by its canonical URI (which then flows through the REAL
+// feed controller). Mirrors `__forumall_signedFetch` above.
+(
+  globalThis as unknown as {
+    __forumall_federation?: (
+      host: string,
+      method: string,
+      path: string,
+      body?: unknown,
+    ) => Promise<{ status: number; body: unknown }>;
+  }
+).__forumall_federation = async (host, method, path, body) => {
+  const { clientForHost } = await import("./lib/federation.ts");
+  const { keyStore } = await import("./lib/key-store.ts");
+  const { session } = await import("./stores/session.ts");
+  const { canonicalAuthority } = await import("@forumall/shared");
+  const actor = session.actor;
+  const keyId = session.keyId;
+  const home = session.host;
+  if (!actor || !keyId || !home) return { status: 0, body: undefined };
+  const privateKey = await keyStore.getKey(keyId);
+  if (!privateKey) return { status: 0, body: undefined };
+  // A same-host call still routes through the home transport (authority == home).
+  const target = canonicalAuthority(host) === canonicalAuthority(home) ? home : host;
+  const client = clientForHost(target, { actor, keyId, privateKey });
+  try {
+    const res = await client.request(method, path, body);
+    return { status: res.status, body: res.data };
+  } catch (err) {
+    if (err && typeof err === "object" && "status" in err) {
+      return {
+        status: Number((err as { status: number }).status),
+        body: (err as { body?: unknown }).body,
+      };
+    }
+    return { status: -1, body: String(err) };
+  }
+};
+
 // Test/debug hook: snapshot the live presence store + WS connection state. The
 // e2e presence suite uses this to read a subject's observed availability directly
 // (independent of which screen renders a dot) and to assert the WS is connected.

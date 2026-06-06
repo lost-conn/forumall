@@ -29,6 +29,7 @@ import { createBunWebSocket } from "hono/bun";
 import type { Config } from "./config.ts";
 import type { Db } from "./db/index.ts";
 import { createApiRouter } from "./http/api.ts";
+import { cors } from "./http/cors.ts";
 import { createDiscoveryRouter } from "./http/discovery.ts";
 import { notFound, onError } from "./http/errors.ts";
 import { createStaticHandler } from "./http/static.ts";
@@ -36,7 +37,11 @@ import type { AppBindings } from "./http/types.ts";
 import { createUserKeysRouter } from "./http/user-keys.ts";
 import { type WsTimings, createWsHandlers } from "./http/ws.ts";
 import { RemoteDiscoveryCache } from "./provider/federation/discovery-cache.ts";
-import { type FederationFetch, defaultFederationFetch } from "./provider/federation/http.ts";
+import {
+  type FederationFetch,
+  defaultFederationFetch,
+  insecureLocalhostFederationFetch,
+} from "./provider/federation/http.ts";
 import { RemoteUserKeysCache } from "./provider/federation/user-keys-cache.ts";
 import { PresenceRegistry } from "./provider/presence.ts";
 import { Hub } from "./provider/ws-hub.ts";
@@ -80,7 +85,13 @@ export function createApp(config: Config, deps: AppDeps): AppWithWebSocket {
   const app = new Hono<AppBindings>();
   const hub = deps.hub ?? new Hub();
   const presenceRegistry = deps.presenceRegistry ?? new PresenceRegistry();
-  const federationFetch = deps.federationFetch ?? defaultFederationFetch;
+  // Default federation transport: production-https unless the operator opted into
+  // the insecure-localhost rewrite (§ dev/self-host/testing). An explicitly
+  // injected `federationFetch` (e.g. the two-provider unit harness) always wins.
+  const defaultTransport = config.federationInsecureLocalhost
+    ? insecureLocalhostFederationFetch
+    : defaultFederationFetch;
+  const federationFetch = deps.federationFetch ?? defaultTransport;
   // The discovery cache shares the injected federation fetch so it reaches the
   // same (real or in-process-peer) transport the rest of federation uses.
   const discoveryCache = deps.discoveryCache ?? new RemoteDiscoveryCache({ federationFetch });
@@ -102,6 +113,12 @@ export function createApp(config: Config, deps: AppDeps): AppWithWebSocket {
     c.set("userKeysCache", userKeysCache);
     await next();
   });
+
+  // Cross-origin support for the cross-provider browser client (§4/§8): a user's
+  // browser signs requests addressed to ANOTHER provider (DM delivery, contact
+  // mirror, remote join, §4.6 key reads) and sends them cross-origin. The
+  // signature is the credential, so a credential-less wildcard CORS is safe.
+  app.use("*", cors());
 
   // Root-level OFSCP discovery (§3.1). Mounted before the SPA static handler so
   // `/.well-known/ofscp-provider` is never shadowed by the index.html fallback.

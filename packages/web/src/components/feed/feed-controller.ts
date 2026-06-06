@@ -1,4 +1,10 @@
-import { fetchFollows, hostForRef, localChannelId } from "../../lib/feed-api.ts";
+import { clientForHost } from "../../lib/federation.ts";
+import {
+  channelIdFromRef,
+  fetchFollows,
+  groupIdFromChannelRef,
+  hostForRef,
+} from "../../lib/feed-api.ts";
 import { fetchChannel, fetchGroup } from "../../lib/groups-api.ts";
 import { keyStore } from "../../lib/key-store.ts";
 import type { OfscpClient } from "../../lib/ofscp-client.ts";
@@ -72,7 +78,8 @@ export async function startFeed(deps: FeedDeps): Promise<FeedHandle> {
   /** Resolve the WS client for a source host (session WS for home; registry else). */
   async function wsForHost(host: string): Promise<OfscpWsClient> {
     if (host === deps.homeHost) return deps.homeWs;
-    // Foreign source (future federation): an authenticated per-host client.
+    // Foreign source (federation): an authenticated per-host client signed by the
+    // home key (the peer resolves it via §8.5 step 3 / §4.6).
     const privateKey = await keyStore.getKey(deps.keyId);
     if (!privateKey) throw new Error("device private key missing");
     const base = baseUrlForHost(host);
@@ -89,6 +96,18 @@ export async function startFeed(deps: FeedDeps): Promise<FeedHandle> {
     return ws;
   }
 
+  /**
+   * Resolve the signing client for a source host's REST reads (history/metadata).
+   * Home → the session client; a peer → a per-host client signed by the home key,
+   * with `authority = host` (the peer resolves the key via §4.6).
+   */
+  async function clientForSource(host: string): Promise<OfscpClient> {
+    if (host === deps.homeHost) return deps.client;
+    const privateKey = await keyStore.getKey(deps.keyId);
+    if (!privateKey) throw new Error("device private key missing");
+    return clientForHost(host, { actor: deps.actor, keyId: deps.keyId, privateKey });
+  }
+
   /** Open one followed channel (history + live subscribe), or prune on failure. */
   async function openOne(f: FollowedChannel): Promise<void> {
     if (open.has(f.channelId)) return;
@@ -101,15 +120,17 @@ export async function startFeed(deps: FeedDeps): Promise<FeedHandle> {
     }
     try {
       const ws = await wsForHost(f.host);
+      const client = await clientForSource(f.host);
       const handle = await openChannel({
-        client: deps.client,
+        client,
         ws,
         groupId,
         channelId: f.channelId,
       });
       open.set(f.channelId, { handle, host: f.host });
-      // Resolve display metadata (channel + group names) for the feed item header.
-      void hydrateMeta(deps.client, f);
+      // Resolve display metadata (channel + group names) for the feed item header,
+      // read from the SOURCE provider (home or peer).
+      void hydrateMeta(client, f);
     } catch {
       // Reads failed / access lost → drop the stale pointer from the feed (§7.6).
       pruneFollow(f.channelId);
@@ -121,11 +142,16 @@ export async function startFeed(deps: FeedDeps): Promise<FeedHandle> {
     const raw = await fetchFollows(deps.client);
     const list: FollowedChannel[] = raw.map((follow) => {
       const host = hostForRef(follow.channel, deps.homeHost);
-      const localId = localChannelId(follow.channel, deps.homeHost);
+      // The bare channel id (the source provider's WS `channelId` + chat-store key)
+      // works for a bare local id, a local channel URI, AND a remote channel URI.
+      const channelId = channelIdFromRef(follow.channel) ?? follow.channel;
+      // Owning group: the follow pointer carries it for a local follow; a remote
+      // follow URI encodes it in the path (`…/groups/{g}/channels/{c}`).
+      const groupId = follow.groupId ?? groupIdFromChannelRef(follow.channel) ?? undefined;
       return {
-        channelId: localId ?? follow.channel,
+        channelId,
         ref: follow.channel,
-        ...(follow.groupId ? { groupId: follow.groupId } : {}),
+        ...(groupId ? { groupId } : {}),
         host,
       };
     });

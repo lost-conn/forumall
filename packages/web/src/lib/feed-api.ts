@@ -112,6 +112,43 @@ export function localChannelId(ref: string, homeHost: string): string | null {
 }
 
 /**
+ * The bare channel id for any channel ref: the trailing `chn_…` segment of a
+ * channel URI (local OR remote), or the ref itself for a bare id. This is the id
+ * the SOURCE provider's WS uses for `channelId` in its events and the key the
+ * shared chat store is keyed by — so a remote channel subscribed by its bare id
+ * folds its live events into the right timeline. Returns `null` for a URI that
+ * isn't shaped like a channel URL.
+ */
+export function channelIdFromRef(ref: string): string | null {
+  if (ref.startsWith("https://") || ref.startsWith("http://")) {
+    try {
+      const url = new URL(ref);
+      const m = url.pathname.match(/\/channels\/([^/]+)\/?$/);
+      return m ? decodeURIComponent(m[1] as string) : null;
+    } catch {
+      return null;
+    }
+  }
+  return ref;
+}
+
+/**
+ * The owning group id encoded in a channel URI
+ * (`…/api/groups/{groupId}/channels/{channelId}`), or `null` when absent. Lets a
+ * remote follow read history without the server echoing a separate `groupId`.
+ */
+export function groupIdFromChannelRef(ref: string): string | null {
+  if (!(ref.startsWith("https://") || ref.startsWith("http://"))) return null;
+  try {
+    const url = new URL(ref);
+    const m = url.pathname.match(/\/groups\/([^/]+)\/channels\//);
+    return m ? decodeURIComponent(m[1] as string) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * The provider host a channel ref lives on: the URI host for an absolute ref, or
  * `homeHost` for a bare local id. Used to pick the WS source (the per-host
  * registry supports remote sources for a future federation run).

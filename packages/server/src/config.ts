@@ -135,6 +135,19 @@ const RawEnvSchema = z.object({
    * (no feed is ever stored) and advertises `discoverFeed: true`.
    */
   ENABLE_DISCOVER_FEED: BoolEnvSchema.default(false),
+
+  /**
+   * Insecure-localhost federation transport (dev / self-host / testing only).
+   * When `false` (default) the production federation transport is used: every
+   * provider-to-provider fetch goes to `https://{domain}/...` over TLS. When
+   * `true`, the DEFAULT federation transport rewrites a `https://localhost:<port>`
+   * or `https://127.0.0.1:<port>` (and `[::1]`) target to `http://…` so two
+   * providers can federate over loopback without TLS — e.g. the two-provider e2e
+   * harness where each provider's `DOMAIN` is `localhost:<port>` served over http.
+   * This NEVER affects a non-loopback host (production stays https-only) and is
+   * gated off by default. Ignored when a custom `federationFetch` is injected.
+   */
+  FEDERATION_INSECURE_LOCALHOST: BoolEnvSchema.default(false),
 });
 
 /** Parse a comma-separated domain list into canonicalized, de-duplicated hosts. */
@@ -206,6 +219,13 @@ export interface Config {
    * /api/discover` 404s and discovery advertises `discoverFeed: false`.
    */
   readonly enableDiscoverFeed: boolean;
+  /**
+   * Insecure-localhost federation transport (dev/self-host/testing). When true,
+   * the default federation transport rewrites `https://localhost:<port>` (and
+   * `127.0.0.1`/`[::1]`) targets to `http://…` so two providers can federate over
+   * loopback without TLS. Production stays https-only (default false).
+   */
+  readonly federationInsecureLocalhost: boolean;
 }
 
 /** A loosely-typed environment bag (process.env shape). */
@@ -250,6 +270,7 @@ export function loadConfig(env: Env = process.env): Config {
     federationDeny: parseDomainList(raw.FEDERATION_DENY),
     enableKnownProviders: raw.ENABLE_KNOWN_PROVIDERS,
     enableDiscoverFeed: raw.ENABLE_DISCOVER_FEED,
+    federationInsecureLocalhost: raw.FEDERATION_INSECURE_LOCALHOST,
     ...(raw.CONTACT !== undefined ? { contact: raw.CONTACT } : {}),
   });
 }

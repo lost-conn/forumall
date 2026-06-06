@@ -23,10 +23,15 @@ import {
   createSignal,
   onCleanup,
 } from "solid-js";
+import { clientForHost, domainOf, isLocalActor } from "../../lib/federation.ts";
+import { keyStore } from "../../lib/key-store.ts";
+import type { OfscpClient } from "../../lib/ofscp-client.ts";
 import { OfscpHttpError } from "../../lib/ofscp-client.ts";
 import {
+  type ContactMirrorAction,
   acceptContact,
   fetchContacts,
+  mirrorContactEvent,
   removeContact,
   requestContact,
 } from "../../lib/social-api.ts";
@@ -38,6 +43,27 @@ function clientOrThrow() {
   const c = sessionClient();
   if (!c) throw new Error("not authenticated");
   return c;
+}
+
+/**
+ * Mirror a contact `action` against a REMOTE counterparty's provider (§6.7). A
+ * same-provider counterparty (or a missing session identity) is a no-op — the
+ * server already mirrors a local counterparty's row. For a remote counterparty we
+ * build a per-host client targeting their domain, signed by the home key, and
+ * deliver `{action, from: me, to: counterparty}` to their federation receiver.
+ */
+async function mirrorIfRemote(action: ContactMirrorAction, counterparty: string): Promise<void> {
+  const home = session.host;
+  const me = session.actor;
+  const keyId = session.keyId;
+  if (!home || !me || !keyId) return;
+  if (isLocalActor(counterparty, home)) return; // same provider → no mirror needed
+  const targetHost = domainOf(counterparty);
+  if (!targetHost) return;
+  const privateKey = await keyStore.getKey(keyId);
+  if (!privateKey) return;
+  const mirrorClient: OfscpClient = clientForHost(targetHost, { actor: me, keyId, privateKey });
+  await mirrorContactEvent(mirrorClient, action, me, counterparty);
 }
 
 function errorOf(err: unknown, fallback: string): string {
@@ -108,6 +134,9 @@ export const ContactsPage: Component = () => {
     }
     void run("request", async () => {
       await requestContact(clientOrThrow(), value);
+      // Cross-provider: mirror the request to the counterparty's provider so they
+      // see an incoming pending request (§6.7). Same-provider needs no mirror.
+      await mirrorIfRemote("request", value);
       setNewActor("");
     });
   };
@@ -177,7 +206,10 @@ export const ContactsPage: Component = () => {
                         class="btn-accent px-3 py-1 text-xs"
                         disabled={busy() === `accept:${c.user}`}
                         onClick={() =>
-                          run(`accept:${c.user}`, () => acceptContact(clientOrThrow(), c.user))
+                          run(`accept:${c.user}`, async () => {
+                            await acceptContact(clientOrThrow(), c.user);
+                            await mirrorIfRemote("accept", c.user);
+                          })
                         }
                         data-testid="accept-contact"
                       >
@@ -188,7 +220,10 @@ export const ContactsPage: Component = () => {
                         class="btn-ghost px-3 py-1 text-xs hover:(border-danger text-danger)"
                         disabled={busy() === `decline:${c.user}`}
                         onClick={() =>
-                          run(`decline:${c.user}`, () => removeContact(clientOrThrow(), c.user))
+                          run(`decline:${c.user}`, async () => {
+                            await removeContact(clientOrThrow(), c.user);
+                            await mirrorIfRemote("remove", c.user);
+                          })
                         }
                         data-testid="decline-contact"
                       >
@@ -217,7 +252,10 @@ export const ContactsPage: Component = () => {
                         class="btn-ghost px-3 py-1 text-xs hover:(border-danger text-danger)"
                         disabled={busy() === `cancel:${c.user}`}
                         onClick={() =>
-                          run(`cancel:${c.user}`, () => removeContact(clientOrThrow(), c.user))
+                          run(`cancel:${c.user}`, async () => {
+                            await removeContact(clientOrThrow(), c.user);
+                            await mirrorIfRemote("remove", c.user);
+                          })
                         }
                         data-testid="cancel-contact"
                       >
@@ -250,7 +288,10 @@ export const ContactsPage: Component = () => {
                         class="btn-ghost px-3 py-1 text-xs hover:(border-danger text-danger)"
                         disabled={busy() === `remove:${c.user}`}
                         onClick={() =>
-                          run(`remove:${c.user}`, () => removeContact(clientOrThrow(), c.user))
+                          run(`remove:${c.user}`, async () => {
+                            await removeContact(clientOrThrow(), c.user);
+                            await mirrorIfRemote("remove", c.user);
+                          })
                         }
                         data-testid="remove-contact"
                       >

@@ -125,3 +125,27 @@ export async function acceptContact(client: OfscpClient, user: string): Promise<
 export async function removeContact(client: OfscpClient, user: string): Promise<void> {
   await client.delete(`/api/me/contacts/${encodeUserRef(user)}`);
 }
+
+/** A cross-provider contact action mirrored to the counterparty's provider (§6.7). */
+export type ContactMirrorAction = "request" | "accept" | "remove";
+
+/**
+ * Mirror a contact action to the counterparty's home provider (§6.7 federation
+ * receiver `POST /api/federation/contacts`). The local call records the caller's
+ * own deliverable side; this mirror applies the matching side to `to`'s row on
+ * `to`'s provider. `mirrorClient` MUST target the counterparty's domain and sign
+ * with the caller's home key (built via `clientForHost`), so the counterparty's
+ * provider resolves the signer (`from`) via §4.6. The signer MUST equal `from`.
+ *
+ * Best-effort by design at the call site: a same-provider contact needs no mirror
+ * (the local store already mirrors both rows), and a mirror failure shouldn't
+ * undo the local row — the caller decides how to surface it.
+ */
+export async function mirrorContactEvent(
+  mirrorClient: OfscpClient,
+  action: ContactMirrorAction,
+  from: string,
+  to: string,
+): Promise<void> {
+  await mirrorClient.post("/api/federation/contacts", { action, from, to });
+}
