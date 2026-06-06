@@ -209,6 +209,81 @@ export async function login(input: LoginInput): Promise<AuthResult> {
   });
 }
 
+export interface GuestRedeemInput {
+  host: string;
+  token: string;
+  displayName?: string;
+  deviceName?: string;
+  keyStore?: KeyStore;
+  fetch?: typeof fetch;
+}
+
+/** The guest-redeem response shape (§5.6/§4.8). */
+interface GuestRedeemResponse {
+  actor: string;
+  key_id: string;
+  profile?: { handle?: string };
+  groupId: string;
+  role?: string;
+}
+
+/** A guest redeem result: an authenticated session + the group it joined. */
+export interface GuestRedeemResult extends AuthResult {
+  groupId: string;
+  role?: string;
+}
+
+/**
+ * Guest redeem (§5.6/§4.8): for a user with NO account, redeeming a `grantsGuest`
+ * invite provisions a provider-local guest account in-browser. We generate a
+ * fresh Ed25519 keypair (the private seed never leaves the device), POST only its
+ * PUBLIC half to the UNSIGNED `POST /api/invites/{token}/guest`, and the server
+ * mints a guest handle + binds the device key. We then persist the private seed +
+ * a restorable session exactly like register/login, so the guest lands
+ * authenticated and signs subsequent requests itself.
+ */
+export async function redeemGuest(input: GuestRedeemInput): Promise<GuestRedeemResult> {
+  const store = input.keyStore ?? defaultKeyStore;
+  const anon = anonClientFor(input.host, input.fetch);
+  const deviceName = input.deviceName ?? defaultDeviceName();
+
+  // Generate the device keypair in-browser; the private seed stays here.
+  const { privateKey } = generateKeyPair();
+  const publicKey = publicKeyFromPrivate(privateKey);
+
+  const res = await anon.post<GuestRedeemResponse>(
+    `/api/invites/${input.token}/guest`,
+    {
+      public_key: publicKey,
+      algorithm: "Ed25519",
+      device_name: deviceName,
+      ...(input.displayName ? { displayName: input.displayName } : {}),
+    },
+    { anonymous: true },
+  );
+  const body = res.data;
+
+  // The server returns the canonical actor (`guest…@host`). Derive the local
+  // handle from it for the session descriptor.
+  const at = body.actor.lastIndexOf("@");
+  const handle = body.profile?.handle ?? (at > 0 ? body.actor.slice(0, at) : body.actor);
+
+  // Persist the private seed under the server-assigned key id, build the signing
+  // client, and persist a restorable session.
+  await store.setKey(body.key_id, privateKey);
+  const client = anon.withIdentity({ actor: body.actor, keyId: body.key_id, privateKey });
+  const session: StoredSession = {
+    actor: body.actor,
+    host: input.host,
+    keyId: body.key_id,
+    handle,
+    deviceName,
+  };
+  storeSession(session);
+
+  return { client, session, groupId: body.groupId, ...(body.role ? { role: body.role } : {}) };
+}
+
 /**
  * Restore the authenticated client from a persisted session + the matching
  * private seed in the key-store. Returns the client, or `null` when there is no

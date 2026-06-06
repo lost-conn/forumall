@@ -5,6 +5,7 @@
  */
 import { type Component, type JSX, Show, createResource } from "solid-js";
 import { DeviceKeys } from "../components/DeviceKeys.tsx";
+import { GroupsPage } from "../components/groups/GroupsPage.tsx";
 import { doLogout } from "../stores/auth-controller.ts";
 import { session, sessionClient } from "../stores/session.ts";
 
@@ -37,11 +38,8 @@ export const LoginPage: Component = () => (
   </Placeholder>
 );
 
-export const GroupChannelPage: Component = () => (
-  <Placeholder title="Groups" sub="Group + channel view.">
-    <div class="card max-w-xl text-sm text-muted">Channel timeline goes here.</div>
-  </Placeholder>
-);
+/** Groups & channels screen (P8): browse, create, manage, membership, invites. */
+export const GroupsRoutePage: Component = () => <GroupsPage />;
 
 export const DmsPage: Component = () => (
   <Placeholder title="Direct messages" sub="Your DM conversations.">

@@ -1,12 +1,21 @@
 import { Route, Router } from "@solidjs/router";
 import { QueryClient, QueryClientProvider } from "@tanstack/solid-query";
-import { type Component, ErrorBoundary, Show, Suspense, createSignal, onMount } from "solid-js";
+import {
+  type Component,
+  ErrorBoundary,
+  type ParentComponent,
+  Show,
+  Suspense,
+  createSignal,
+  onMount,
+} from "solid-js";
 import { AppShell } from "./components/AppShell";
 import { AuthScreen } from "./components/AuthScreen";
+import { InviteRedeemPage } from "./components/groups/InviteRedeemPage";
 import { loadProviderHost, probeProvider } from "./lib/provider";
 import {
   DmsPage,
-  GroupChannelPage,
+  GroupsRoutePage,
   HomePage,
   LoginPage,
   NotFoundPage,
@@ -21,82 +30,88 @@ const queryClient = new QueryClient({
   },
 });
 
-/** The routed, authenticated application. */
-const AuthedApp: Component = () => (
-  <Router root={AppShell}>
-    <Route path="/" component={HomePage} />
-    <Route path="/login" component={LoginPage} />
-    <Route path="/groups/:groupId?/:channelId?" component={GroupChannelPage} />
-    <Route path="/dms/:dmId?" component={DmsPage} />
-    <Route path="/settings" component={SettingsPage} />
-    <Route path="*" component={NotFoundPage} />
-  </Router>
+/**
+ * Restores a persisted session + re-confirms any chosen provider on mount, then
+ * exposes `ready()` so the routed roots can swap the "restoring" placeholder for
+ * real content. Lifted above the Router so the `/invite/{token}` redeem page is
+ * routable whether or not the user is signed in.
+ */
+const [restoring, setRestoring] = createSignal(true);
+async function bootstrapSession(): Promise<void> {
+  try {
+    const restored = await doRestore();
+    if (!restored) {
+      const host = loadProviderHost();
+      if (host && !provider()) {
+        try {
+          setProvider(await probeProvider(host));
+        } catch {
+          /* provider unreachable now: fall back to the connect stage */
+        }
+      }
+    }
+  } finally {
+    setRestoring(false);
+  }
+}
+
+const Restoring: Component = () => (
+  <div class="grid min-h-screen place-items-center bg-canvas text-sm text-muted">
+    Restoring session…
+  </div>
 );
 
 /**
- * Decides between the auth screen and the app. On mount it (a) restores a
- * persisted session + private key from storage so a reload stays authenticated
- * with no re-login, and (b) re-confirms any previously-chosen provider so the
- * auth screen can skip straight to the credentials stage.
+ * The authenticated app root layout: gates the shell behind a live session.
+ * Signed-out users get the auth/onboarding screen instead.
  */
-const AuthGate: Component = () => {
-  const [restoring, setRestoring] = createSignal(true);
-
-  onMount(async () => {
-    try {
-      const restored = await doRestore();
-      if (!restored) {
-        // Not signed in: if a provider was previously chosen, re-confirm it so
-        // the user lands on the credentials stage rather than re-entering a host.
-        const host = loadProviderHost();
-        if (host && !provider()) {
-          try {
-            setProvider(await probeProvider(host));
-          } catch {
-            /* provider unreachable now: fall back to the connect stage */
-          }
-        }
-      }
-    } finally {
-      setRestoring(false);
-    }
-  });
-
-  return (
-    <Show
-      when={!restoring()}
-      fallback={
-        <div class="grid min-h-screen place-items-center bg-canvas text-sm text-muted">
-          Restoring session…
-        </div>
-      }
-    >
-      <Show when={isAuthenticated()} fallback={<AuthScreen />}>
-        <ErrorBoundary
-          fallback={(err, reset) => (
-            <div class="grid min-h-screen place-items-center bg-canvas px-4">
-              <div class="card max-w-md text-center" data-testid="app-error">
-                <p class="text-sm text-danger">Something went wrong loading the app.</p>
-                <p class="mt-1 text-xs text-faint">{String(err)}</p>
-                <button type="button" class="btn-ghost mt-4" onClick={reset}>
-                  Retry
-                </button>
-              </div>
+const AuthedRoot: ParentComponent = (props) => (
+  <Show when={!restoring()} fallback={<Restoring />}>
+    <Show when={isAuthenticated()} fallback={<AuthScreen />}>
+      <ErrorBoundary
+        fallback={(err, reset) => (
+          <div class="grid min-h-screen place-items-center bg-canvas px-4">
+            <div class="card max-w-md text-center" data-testid="app-error">
+              <p class="text-sm text-danger">Something went wrong loading the app.</p>
+              <p class="mt-1 text-xs text-faint">{String(err)}</p>
+              <button type="button" class="btn-ghost mt-4" onClick={reset}>
+                Retry
+              </button>
             </div>
-          )}
-        >
-          <AuthedApp />
-        </ErrorBoundary>
-      </Show>
+          </div>
+        )}
+      >
+        <AppShell>{props.children}</AppShell>
+      </ErrorBoundary>
     </Show>
-  );
-};
+  </Show>
+);
+
+/** The invite-redeem root: routable signed in OR out (guest provisioning). */
+const InviteRoot: Component = () => (
+  <Show when={!restoring()} fallback={<Restoring />}>
+    <InviteRedeemPage />
+  </Show>
+);
 
 export const App: Component = () => {
+  onMount(bootstrapSession);
   return (
     <QueryClientProvider client={queryClient}>
       <Suspense>
-        <AuthGate />
+        <Router>
+          {/* Invite redemption — outside the auth gate so guests can join. */}
+          <Route path="/invite/:token" component={InviteRoot} />
+          {/* The authenticated application. */}
+          <Route path="/" component={AuthedRoot}>
+            <Route path="/" component={HomePage} />
+            <Route path="/login" component={LoginPage} />
+            <Route path="/groups/:groupId?" component={GroupsRoutePage} />
+            <Route path="/dms/:dmId?" component={DmsPage} />
+            <Route path="/settings" component={SettingsPage} />
+            <Route path="*" component={NotFoundPage} />
+          </Route>
+        </Router>
       </Suspense>
     </QueryClientProvider>
   );

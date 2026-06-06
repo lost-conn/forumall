@@ -12,11 +12,13 @@
  */
 import {
   type AuthResult,
+  type GuestRedeemInput,
   type LoginInput,
   type RegisterInput,
   type StoredSession,
   login as authLogin,
   logout as authLogout,
+  redeemGuest as authRedeemGuest,
   register as authRegister,
   restore as authRestore,
 } from "../lib/auth.ts";
@@ -67,6 +69,19 @@ export async function doRegister(input: RegisterInput): Promise<void> {
 export async function doLogin(input: LoginInput): Promise<void> {
   const result = await authLogin(input);
   await adopt(result, input.keyStore ?? defaultKeyStore);
+}
+
+/**
+ * Guest redeem → keygen → guest provision → store → connect. Lands the guest
+ * authenticated and returns the group they joined so the UI can route into it.
+ */
+export async function doRedeemGuest(
+  input: GuestRedeemInput,
+): Promise<{ groupId: string; role?: string }> {
+  const store = input.keyStore ?? defaultKeyStore;
+  const result = await authRedeemGuest({ ...input, keyStore: store });
+  await adopt(result, store);
+  return { groupId: result.groupId, ...(result.role ? { role: result.role } : {}) };
 }
 
 /**
