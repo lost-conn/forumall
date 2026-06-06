@@ -1,0 +1,81 @@
+/**
+ * Ephemeral @forumall/server boot script (P8 e2e harness).
+ *
+ * Spawned by the Playwright fixture under `bun`. It:
+ *   - picks a free TCP port,
+ *   - loads config with DATA_DIR pointed at a temp dir and DOMAIN pinned to
+ *     `localhost:<port>` (so the §4.4.2 signing authority — which the browser
+ *     derives from `location.host` — matches what the server verifies against),
+ *   - serves the prebuilt web client from WEB_DIR (packages/web/dist),
+ *   - runs migrations, brings up the Hono app + Bun WS handler, and
+ *   - prints a single `__READY__ {"port":N,"baseUrl":"..."}` line on stdout so
+ *     the parent can capture the URL, then serves until killed.
+ *
+ * Env in:
+ *   DATA_DIR   temp data dir (required)
+ *   WEB_DIR    built web dist dir (required)
+ *   PORT       optional fixed port; otherwise a free one is chosen
+ */
+import { createServer } from "node:net";
+import { createApp } from "../../packages/server/src/app.ts";
+import { loadConfig } from "../../packages/server/src/config.ts";
+import { openDb } from "../../packages/server/src/db/index.ts";
+import { migrate } from "../../packages/server/src/db/migrate.ts";
+import { getProviderSigningKey } from "../../packages/server/src/provider/signing-key.ts";
+
+/** Find a free TCP port by binding to 0 and reading the assigned port. */
+function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const srv = createServer();
+    srv.once("error", reject);
+    srv.listen(0, "127.0.0.1", () => {
+      const addr = srv.address();
+      const port = typeof addr === "object" && addr ? addr.port : 0;
+      srv.close(() => resolve(port));
+    });
+  });
+}
+
+const dataDir = process.env.DATA_DIR;
+const webDir = process.env.WEB_DIR;
+if (!dataDir || !webDir) {
+  console.error("boot-server: DATA_DIR and WEB_DIR are required");
+  process.exit(1);
+}
+
+const port = process.env.PORT ? Number(process.env.PORT) : await freePort();
+const domain = `localhost:${port}`;
+
+const config = loadConfig({
+  PORT: String(port),
+  DOMAIN: domain,
+  DATA_DIR: dataDir,
+  WEB_DIR: webDir,
+});
+
+const db = openDb(config.dbPath);
+migrate(db);
+getProviderSigningKey(db); // ensure §8.1 provider identity exists
+
+const app = createApp(config, { db });
+
+const server = Bun.serve({
+  port: config.port,
+  hostname: "127.0.0.1",
+  fetch: app.fetch,
+  websocket: app.__websocket,
+});
+
+const baseUrl = `http://localhost:${server.port}`;
+// Single machine-readable ready line for the parent fixture.
+console.log(`__READY__ ${JSON.stringify({ port: server.port, baseUrl })}`);
+
+// Stay alive until the parent kills us.
+process.on("SIGTERM", () => {
+  server.stop(true);
+  process.exit(0);
+});
+process.on("SIGINT", () => {
+  server.stop(true);
+  process.exit(0);
+});

@@ -1,7 +1,9 @@
 {
   "extends": "../tsconfig.base.json",
   "compilerOptions": {
-    "types": ["node"]
+    // The harness boots @forumall/server (Bun runtime) via a `bun`-run script and
+    // imports its source for the in-process boot, so Bun globals must resolve too.
+    "types": ["node", "bun"]
   },
   "include": ["**/*.ts"]
 }

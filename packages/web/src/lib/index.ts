@@ -2,3 +2,5 @@
 export * from "./ofscp-client.ts";
 export * from "./ofscp-ws.ts";
 export * from "./key-store.ts";
+export * from "./provider.ts";
+export * from "./auth.ts";
