@@ -15,6 +15,7 @@
 import {
   type Channel,
   type ChannelCreateRequest,
+  type ChannelPermissions,
   ChannelSchema,
   type ChannelType,
   type ChannelUpdateRequest,
@@ -25,7 +26,7 @@ import { eq } from "drizzle-orm";
 
 import type { Db } from "../db/index.ts";
 import { type ChannelRow, channels, messages, reactions } from "../db/schema.ts";
-import { isMember } from "./permissions.ts";
+import { getMembership, isMember, roleMeets } from "./permissions.ts";
 
 /** `id` prefix per the §5.2 wire examples (`chn_…`). */
 const CHANNEL_ID_PREFIX = "chn_";
@@ -53,10 +54,25 @@ function mintChannelId(): string {
   return `${CHANNEL_ID_PREFIX}${toBase64Url(raw)}`;
 }
 
+/**
+ * Parse the stored `channels.permissions` JSON column into a `ChannelPermissions`
+ * object, or `null` when absent/blank/malformed. Fails closed (treats a corrupt
+ * value as "no overrides", so the channel inherits group permissions + tier).
+ */
+export function parseChannelPermissions(raw: string | null): ChannelPermissions | null {
+  if (raw == null || raw === "") return null;
+  try {
+    return JSON.parse(raw) as ChannelPermissions;
+  } catch {
+    return null;
+  }
+}
+
 /** Map a stored row to the canonical, schema-valid `Channel` (§5.2). */
 export function rowToChannel(row: ChannelRow): Channel {
   const tags = JSON.parse(row.tags) as string[];
   const metadata = JSON.parse(row.metadata) as MetadataList;
+  const permissions = parseChannelPermissions(row.permissions);
   return ChannelSchema.parse({
     id: row.id,
     groupId: row.groupId,
@@ -65,6 +81,7 @@ export function rowToChannel(row: ChannelRow): Channel {
     tier: row.tier,
     ...(row.topic != null ? { topic: row.topic } : {}),
     ...(tags.length > 0 ? { tags } : {}),
+    ...(permissions ? { permissions } : {}),
     // A call channel carries a derived, read-time call summary (§9). Calls are
     // otherwise deferred, so this is a static projection: nothing is live yet.
     ...(row.type === "call" ? { call: { active: false, participants: [] } } : {}),
@@ -109,6 +126,33 @@ export function channelVisibleTo(
 }
 
 /**
+ * Channel-row–aware read gate (§5.2.1): the single decision for "may `actor`
+ * read this channel?", honoring an optional per-channel `view` permission.
+ *
+ *  - When the channel defines a `view` override, only a **member** whose role
+ *    rank meets the bar may read — this *overrides* the tier (e.g. restricting a
+ *    channel inside a `public` group to admins).
+ *  - Otherwise it falls back to {@link channelVisibleTo} (tier + membership).
+ *
+ * Use this (not the bare tier check) wherever channel read access is gated:
+ * message history, reply listing, and WS subscribe.
+ */
+export function canViewChannel(
+  db: Db,
+  channel: ChannelRow,
+  actor: string | null | undefined,
+): boolean {
+  const perms = parseChannelPermissions(channel.permissions);
+  const viewRoles = perms?.view;
+  if (viewRoles && viewRoles.length > 0) {
+    if (actor == null) return false;
+    const membership = getMembership(db, channel.groupId, actor);
+    return membership != null && roleMeets(membership.role, viewRoles);
+  }
+  return channelVisibleTo(db, channel.groupId, channel.tier, actor);
+}
+
+/**
  * Create a channel in `groupId`, applying the §5.5 defaults for any omitted
  * field. `type` is REQUIRED in the request and fixed here. Returns the canonical
  * `Channel`. Authorization (group `manage`) is the caller's responsibility.
@@ -123,6 +167,7 @@ export function createChannel(db: Db, groupId: string, req: ChannelCreateRequest
     tier: req.tier ?? DEFAULT_TIER,
     topic: req.topic ?? null,
     tags: JSON.stringify(req.tags ?? []),
+    permissions: req.permissions ? JSON.stringify(req.permissions) : null,
     metadata: JSON.stringify(req.metadata ?? []),
     createdAt: now,
     updatedAt: now,
@@ -150,6 +195,12 @@ export function updateChannel(
   if (req.tier !== undefined) patch.tier = req.tier;
   if (req.topic !== undefined) patch.topic = req.topic;
   if (req.tags !== undefined) patch.tags = JSON.stringify(req.tags);
+  // An empty object `{}` clears all overrides (channel reverts to group/tier
+  // inheritance); a populated object replaces them.
+  if (req.permissions !== undefined) {
+    patch.permissions =
+      Object.keys(req.permissions).length === 0 ? null : JSON.stringify(req.permissions);
+  }
   if (req.metadata !== undefined) patch.metadata = JSON.stringify(req.metadata);
 
   db.drizzle.update(channels).set(patch).where(eq(channels.id, channelId)).run();

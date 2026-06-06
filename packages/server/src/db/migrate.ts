@@ -500,6 +500,22 @@ const migrations: readonly Migration[] = [
       `);
     },
   },
+  {
+    // Per-channel permission overrides (§5.2.1). Nullable JSON column holding a
+    // `ChannelPermissions` object; null/absent means the channel inherits the
+    // group's permissions and tier. ADD COLUMN is safe on a STRICT table because
+    // the column is nullable with no default.
+    id: "0022_channel_permissions",
+    up: (sqlite) => {
+      const cols = sqlite
+        .query<{ name: string }, []>("PRAGMA table_info(channels)")
+        .all()
+        .map((c) => c.name);
+      if (!cols.includes("permissions")) {
+        sqlite.exec("ALTER TABLE channels ADD COLUMN permissions TEXT;");
+      }
+    },
+  },
 ];
 
 const LEDGER_DDL = `

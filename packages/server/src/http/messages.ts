@@ -30,7 +30,7 @@ import {
 import { type Context, Hono } from "hono";
 import { z } from "zod";
 
-import { channelVisibleTo, getChannelRow } from "../provider/channels.ts";
+import { canViewChannel, getChannelRow } from "../provider/channels.ts";
 import { getGroupRow } from "../provider/groups.ts";
 import { listMessages, tombstoneMessage, updateMessageContent } from "../provider/messages.ts";
 import { addReaction, hasReaction, listReactions, removeReaction } from "../provider/reactions.ts";
@@ -78,9 +78,9 @@ export function createMessagesRouter() {
       throw AppError.notFound({ detail: "no such channel" });
     }
 
-    // Tier rules mirror the channel read: private/group channel → members only.
+    // Read gate (§5.2.1): tier + membership, plus any per-channel `view` override.
     const actor = c.var.actor?.actor ?? null;
-    if (!channelVisibleTo(db, groupId, channel.tier, actor)) {
+    if (!canViewChannel(db, channel, actor)) {
       throw AppError.forbidden({ detail: "this channel is private" });
     }
 
@@ -180,7 +180,7 @@ export function createMessagesRouter() {
       throw AppError.notFound({ detail: "no such channel" });
     }
     const actor = c.var.actor?.actor ?? null;
-    if (!channelVisibleTo(db, groupId, channel.tier, actor)) {
+    if (!canViewChannel(db, channel, actor)) {
       throw AppError.forbidden({ detail: "this channel is private" });
     }
 

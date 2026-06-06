@@ -364,6 +364,23 @@ describe("live schema validation: groups, channels, messaging (§5, §7)", () =>
     const channel = (await cRes.json()) as { id: string };
     await expectValid("channel.json", channel);
 
+    // Channel carrying per-channel permissions (§5.2.1) — validates the
+    // `ChannelPermissions` shape on a live Channel object.
+    const cpRes = await signedReq(alice, "POST", `/api/groups/${group.id}/channels`, {
+      type: "text",
+      name: "announcements",
+      tier: "group",
+      permissions: {
+        view: ["member"],
+        "post:memo": ["admin"],
+        "post:article": ["admin"],
+        replyOnly: ["member"],
+        replyOnlyTo: ["memo", "article"],
+      },
+    });
+    expect(cpRes.status).toBe(201);
+    await expectValid("channel.json", await cpRes.json());
+
     // Invite (§5.6)
     const invRes = await signedReq(alice, "POST", `/api/groups/${group.id}/invites`, {});
     expect(invRes.status).toBe(201);

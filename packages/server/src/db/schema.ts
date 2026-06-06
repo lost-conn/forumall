@@ -260,6 +260,12 @@ export const channels = sqliteTable(
     topic: text("topic"),
     /** Tag list, stored as JSON (`string[]`). */
     tags: text("tags").notNull(),
+    /**
+     * Optional per-channel permission overrides, stored as JSON
+     * (`ChannelPermissions`, §5.2.1). Null/absent → inherit group permissions
+     * and tier. Added in migration 0022.
+     */
+    permissions: text("permissions"),
     /** Extension metadata list, stored as JSON (`MetadataList`). */
     metadata: text("metadata").notNull(),
     /** Creation time (epoch millis); rendered as RFC 3339 `createdAt`. */

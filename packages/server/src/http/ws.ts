@@ -30,6 +30,7 @@
 import {
   AttachmentSchema,
   type Message,
+  MessageKindSchema,
   MessageReferenceSchema,
   WsAuthenticateSchema,
   WsChannelTypingSchema,
@@ -61,7 +62,7 @@ import {
 import { z } from "zod";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/index.ts";
-import { channelVisibleTo, getChannelRow } from "../provider/channels.ts";
+import { canViewChannel, getChannelRow } from "../provider/channels.ts";
 import { resolveActorKeys } from "../provider/device-keys.ts";
 import { isDmParticipant } from "../provider/dms.ts";
 import type { FederationFetch } from "../provider/federation/http.ts";
@@ -77,7 +78,6 @@ import {
   updateMessageContent,
 } from "../provider/messages.ts";
 import { deliverNotification, groupMemberActors } from "../provider/notifications.ts";
-import { canActor } from "../provider/permissions.ts";
 import {
   type PresenceRegistry,
   fanOutPresence,
@@ -90,6 +90,7 @@ import {
 import { addReaction, removeReaction } from "../provider/reactions.ts";
 import type { Hub, HubConnection, HubSocket, OutboundEvent } from "../provider/ws-hub.ts";
 import {
+  authorizeChannelPost,
   authorizeMessageDelete,
   authorizeMessageEdit,
   authorizeReaction,
@@ -715,8 +716,8 @@ export function createWsHandlers(deps: WsHandlerDeps) {
         continue;
       }
       const row = getChannelRow(db, channelId);
-      // Unknown channel or actor not permitted by tier/membership → forbidden.
-      if (row && channelVisibleTo(db, row.groupId, row.tier, state.actor)) {
+      // Unknown channel or actor not permitted by tier/membership/view → forbidden.
+      if (row && canViewChannel(db, row, state.actor)) {
         authorized.push(channelId);
         const sinceCursor = since?.[channelId];
         if (sinceCursor !== undefined) {
@@ -828,24 +829,28 @@ export function createWsHandlers(deps: WsHandlerDeps) {
     if (!hubConn || !author) return; // unreachable: only authenticated connections reach here
 
     const { groupId, channelId, clientMessageId, content } = parsed.data.data;
-    // `attachments` / `reference` are open-world passthrough on the command
-    // schema; validate them here against the canonical shapes (drop if invalid).
+    // `type` / `attachments` / `reference` are open-world passthrough on the
+    // command schema; validate them here against the canonical shapes.
     const extra = parsed.data.data as Record<string, unknown>;
     const attachments = AttachmentsSchema.safeParse(extra.attachments);
     const reference = MessageReferenceSchema.safeParse(extra.reference);
+    // Message kind (§5.3): default to a chat `message`; reject an unknown kind.
+    const typeResult = MessageKindSchema.safeParse(extra.type ?? "message");
+    if (!typeResult.success) {
+      send(ws, errorEvent("bad_request", "invalid message type", 400, frameId));
+      return;
+    }
+    const type = typeResult.data;
+    const ref = reference.success ? reference.data : undefined;
 
-    // --- Authorization -----------------------------------------------------
-    // The channel must exist, belong to the named group, be visible to the
-    // actor, AND the actor must hold the group's `post` permission. Any failure
-    // → forbidden (don't leak existence beyond what subscribe already does).
-    const channel = getChannelRow(db, channelId);
-    const authorized =
-      channel != null &&
-      channel.groupId === groupId &&
-      channelVisibleTo(db, channel.groupId, channel.tier, author) &&
-      canActor(db, "post", groupId, author);
-    if (!authorized) {
-      send(ws, errorEvent("forbidden", "not authorized to post to this channel", 403, frameId));
+    // --- Authorization (§5.2.1) -------------------------------------------
+    // The channel must exist in the named group, be readable by the actor, and
+    // the actor must be permitted to post a message of this `type` (per-channel
+    // overrides falling back to the group `post` action), satisfying any reply
+    // qualification. Existence failures surface as forbidden (don't leak).
+    const postError = authorizeChannelPost(db, groupId, channelId, author, type, ref);
+    if (postError) {
+      send(ws, errorEvent(postError.code, postError.message, postError.status, frameId));
       return;
     }
 
@@ -867,10 +872,10 @@ export function createWsHandlers(deps: WsHandlerDeps) {
         channelId,
         groupId,
         author,
-        type: "message",
+        type,
         content,
         ...(attachments.success ? { attachments: attachments.data } : {}),
-        ...(reference.success ? { reference: reference.data } : {}),
+        ...(ref ? { reference: ref } : {}),
         ...(clientMessageId !== undefined ? { clientMessageId } : {}),
       });
     } catch (err) {
@@ -1126,7 +1131,7 @@ export function createWsHandlers(deps: WsHandlerDeps) {
 
     const { channelId } = parsed.data.data;
     const channel = getChannelRow(db, channelId);
-    if (!channel || !channelVisibleTo(db, channel.groupId, channel.tier, actor)) {
+    if (!channel || !canViewChannel(db, channel, actor)) {
       send(ws, errorEvent("forbidden", "not authorized to type in this channel", 403, frameId));
       return;
     }

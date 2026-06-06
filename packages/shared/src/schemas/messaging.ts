@@ -49,16 +49,21 @@ export type MessagePermissions = z.infer<typeof MessagePermissionsSchema>;
 // Message (message.json → BaseMessage; the message|memo|article variants)
 // ---------------------------------------------------------------------------
 
+/** The message kind discriminator (`BaseMessage.type`, §5.3). */
+export const MessageKindSchema = z.enum(["message", "memo", "article"]);
+export type MessageKind = z.infer<typeof MessageKindSchema>;
+
 /** A chat/memo/article message (`BaseMessage`). */
 export const MessageSchema = z
   .object({
     id: z.string().min(1),
     author: UserRefSchema,
-    type: z.enum(["message", "memo", "article"]),
+    type: MessageKindSchema,
     content: ContentSchema,
     attachments: z.array(AttachmentSchema),
     reference: MessageReferenceSchema.optional(),
     tags: z.array(z.string()).optional(),
+    replyCount: z.number().int().min(0).optional(),
     createdAt: Rfc3339DateTimeSchema,
     editedAt: Rfc3339DateTimeSchema.optional(),
     deletedAt: Rfc3339DateTimeSchema.optional(),

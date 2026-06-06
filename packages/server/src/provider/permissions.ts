@@ -22,6 +22,7 @@
  * the actor's membership row or in a group's permission list) are treated as the
  * lowest rank, so they fail closed rather than crash.
  */
+import type { ChannelPermissions } from "@forumall/shared";
 import { and, eq } from "drizzle-orm";
 
 import type { Db } from "../db/index.ts";
@@ -30,6 +31,9 @@ import { getGroupRow, rowToGroup } from "./groups.ts";
 
 /** A canonical action that the permission map gates. Providers MAY add more. */
 export type Action = "post" | "moderate" | "manage";
+
+/** A postable message kind (§5.3); the per-channel `post:<kind>` actions. */
+export type MessageKind = "message" | "memo" | "article";
 
 /**
  * Canonical role rank. Higher rank = more authority. Unknown/unlisted roles map
@@ -94,19 +98,21 @@ export function isMember(db: Db, groupId: string, actor: string): boolean {
  * denied.
  */
 export function can(action: Action, role: string, group: PermissionGroup): boolean {
-  // Owner is always allowed, independent of the permission map.
-  if (role === "owner") return true;
+  return roleMeets(role, group.permissions[action]);
+}
 
-  const allowed = group.permissions[action];
+/**
+ * Core rank-inheritance test: may a holder of `role` act, given the list of
+ * permitted roles? The **owner** is always allowed. An absent/empty list, or one
+ * naming only unrecognized roles, denies everyone but the owner (fail closed).
+ * Otherwise the lowest-ranked recognized role in `allowed` is the minimum bar and
+ * any role at or above it qualifies. Shared by group {@link can} and the
+ * per-channel resolvers ({@link canPostKind}, {@link canReact}).
+ */
+export function roleMeets(role: string, allowed: readonly string[] | undefined): boolean {
+  if (role === "owner") return true;
   if (!allowed || allowed.length === 0) return false;
 
-  // The lowest-ranked listed role is the minimum bar; rank-inheritance means any
-  // role at or above that bar qualifies. Unknown listed roles (rank -1) never
-  // lower the bar below a real role here because we take the min over them too —
-  // but an all-unknown list yields a -1 bar, which only unknown actors (also -1)
-  // would meet; canonical roles still satisfy >= -1, so an all-unknown list
-  // effectively allows any known member. To keep "unknown denies", require the
-  // bar to come from at least one recognized role.
   let minRank = Number.POSITIVE_INFINITY;
   for (const r of allowed) {
     const rank = rankOf(r);
@@ -115,6 +121,79 @@ export function can(action: Action, role: string, group: PermissionGroup): boole
   if (!Number.isFinite(minRank)) return false; // no recognized role listed → deny
 
   return rankOf(role) >= minRank;
+}
+
+/**
+ * The context a per-channel posting decision needs (§5.2.1): the actor's group
+ * `role`, the channel's parsed `permissions` overrides (or `null` to inherit),
+ * and the group's `permissions` map (for fallback). Built by the HTTP/WS layer
+ * from the channel row + group row so this module stays DB-free and cycle-free.
+ */
+export interface ChannelAuthzContext {
+  readonly role: string;
+  readonly channelPermissions: ChannelPermissions | null;
+  readonly groupPermissions: Record<string, readonly string[] | undefined>;
+}
+
+/** Read a channel-action role list from the (loosely-typed) overrides object. */
+function channelActionRoles(
+  perms: ChannelPermissions | null,
+  action: string,
+): readonly string[] | undefined {
+  if (!perms) return undefined;
+  const value = (perms as Record<string, unknown>)[action];
+  return Array.isArray(value) ? (value as string[]) : undefined;
+}
+
+/**
+ * May the actor post a message of `kind` in the channel (§5.2.1)? Uses the
+ * channel's `post:<kind>` override when present, otherwise falls back to the
+ * group's `post` action. Rank-inherited via {@link roleMeets}.
+ */
+export function canPostKind(ctx: ChannelAuthzContext, kind: MessageKind): boolean {
+  const channelRoles = channelActionRoles(ctx.channelPermissions, `post:${kind}`);
+  if (channelRoles !== undefined) return roleMeets(ctx.role, channelRoles);
+  return roleMeets(ctx.role, ctx.groupPermissions.post);
+}
+
+/**
+ * May the actor add a reaction in the channel (§5.2.1)? Uses the channel's
+ * `react` override when present, otherwise falls back to the group's `post`.
+ */
+export function canReact(ctx: ChannelAuthzContext): boolean {
+  const channelRoles = channelActionRoles(ctx.channelPermissions, "react");
+  if (channelRoles !== undefined) return roleMeets(ctx.role, channelRoles);
+  return roleMeets(ctx.role, ctx.groupPermissions.post);
+}
+
+/**
+ * Is the actor *reply-restricted* in the channel (§5.2.1)? A reply-restricted
+ * actor may post only as a reply. True iff `replyOnly` is non-empty and the
+ * actor's role rank is **≤** the maximum rank among the listed roles — the
+ * **owner is never restricted**. (e.g. `replyOnly: ["member"]` restricts member
+ * and guest.)
+ */
+export function isReplyRestricted(role: string, perms: ChannelPermissions | null): boolean {
+  if (role === "owner") return false;
+  const list = perms?.replyOnly;
+  if (!list || list.length === 0) return false;
+
+  let maxRank = Number.NEGATIVE_INFINITY;
+  for (const r of list) {
+    const rank = rankOf(r);
+    if (rank > maxRank) maxRank = rank;
+  }
+  if (!Number.isFinite(maxRank)) return false;
+  return rankOf(role) <= maxRank;
+}
+
+/**
+ * For a reply-restricted actor, the parent message types they may reply to
+ * (`replyOnlyTo`, §5.2.1), or `undefined` when unconstrained (any type).
+ */
+export function replyOnlyToTypes(perms: ChannelPermissions | null): readonly string[] | undefined {
+  const list = perms?.replyOnlyTo;
+  return list && list.length > 0 ? list : undefined;
 }
 
 /**

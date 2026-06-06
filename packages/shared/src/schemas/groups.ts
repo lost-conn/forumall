@@ -33,6 +33,27 @@ export const GroupPermissionsSchema = z
   .catchall(z.array(RoleSchema));
 export type GroupPermissions = z.infer<typeof GroupPermissionsSchema>;
 
+/**
+ * Per-channel permission overrides (`ChannelPermissions`, §5.2.1). Same
+ * action→roles shape as group permissions, refining them for one channel.
+ * Grant actions (`view`, `post:message`, `post:memo`, `post:article`, `react`)
+ * are rank-inherited; `replyOnly` restricts low-rank actors to posting replies;
+ * `replyOnlyTo` constrains the parent message type a reply-restricted actor may
+ * reply to. Open action set (catchall) for forward-compat (§2.3).
+ */
+export const ChannelPermissionsSchema = z
+  .object({
+    view: z.array(RoleSchema).optional(),
+    "post:message": z.array(RoleSchema).optional(),
+    "post:memo": z.array(RoleSchema).optional(),
+    "post:article": z.array(RoleSchema).optional(),
+    react: z.array(RoleSchema).optional(),
+    replyOnly: z.array(RoleSchema).optional(),
+    replyOnlyTo: z.array(z.enum(["message", "memo", "article"])).optional(),
+  })
+  .catchall(z.array(z.string().min(1)));
+export type ChannelPermissions = z.infer<typeof ChannelPermissionsSchema>;
+
 /** Derived call-status projection for a call channel (`CallSummary`). */
 export const CallSummarySchema = z
   .object({
@@ -103,6 +124,7 @@ export const ChannelSchema = z
     tier: TierSchema,
     topic: z.string().optional(),
     tags: z.array(z.string()).optional(),
+    permissions: ChannelPermissionsSchema.optional(),
     call: CallSummarySchema.optional(),
     createdAt: Rfc3339DateTimeSchema,
     updatedAt: Rfc3339DateTimeSchema,
@@ -119,6 +141,7 @@ export const ChannelCreateRequestSchema = z
     tier: TierSchema.optional(),
     topic: z.string().optional(),
     tags: z.array(z.string()).optional(),
+    permissions: ChannelPermissionsSchema.optional(),
     metadata: MetadataListSchema.optional(),
   })
   .passthrough();
@@ -131,6 +154,7 @@ export const ChannelUpdateRequestSchema = z
     tier: TierSchema.optional(),
     topic: z.string().optional(),
     tags: z.array(z.string()).optional(),
+    permissions: ChannelPermissionsSchema.optional(),
     metadata: MetadataListSchema.optional(),
   })
   .passthrough();

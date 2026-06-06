@@ -15,9 +15,19 @@
  */
 import type { Db } from "../db/index.ts";
 import type { MessageRow } from "../db/schema.ts";
-import { channelVisibleTo, getChannelRow } from "../provider/channels.ts";
+import { canViewChannel, getChannelRow, parseChannelPermissions } from "../provider/channels.ts";
+import { getGroupRow, rowToGroup } from "../provider/groups.ts";
 import { getMessageRow } from "../provider/messages.ts";
-import { canActor } from "../provider/permissions.ts";
+import {
+  type ChannelAuthzContext,
+  type MessageKind,
+  canActor,
+  canPostKind,
+  getMembership,
+  isReplyRestricted,
+  replyOnlyToTypes,
+  roleMeets,
+} from "../provider/permissions.ts";
 
 /** A structured failure: a stable code, human message, and HTTP status. */
 export interface MutationError {
@@ -118,10 +128,95 @@ export function authorizeReaction(
 ): MutationOutcome {
   const channel = getChannelRow(db, channelId);
   if (!channel || channel.groupId !== groupId) return notFound();
-  if (!channelVisibleTo(db, groupId, channel.tier, actor)) {
+  if (!canViewChannel(db, channel, actor)) {
     return forbidden("not authorized to react in this channel");
+  }
+  // Per-channel `react` override (§5.2.1): when present, gate on it (rank-
+  // inherited). When absent, any actor who can read the channel may react —
+  // the v0.1 default — so we add no extra bar.
+  const channelPerms = parseChannelPermissions(channel.permissions);
+  if (channelPerms?.react && channelPerms.react.length > 0) {
+    const membership = getMembership(db, groupId, actor);
+    if (!membership || !roleMeets(membership.role, channelPerms.react)) {
+      return forbidden("not authorized to react in this channel");
+    }
   }
   const row = getMessageRow(db, channelId, messageId);
   if (!row) return notFound();
   return { row };
+}
+
+/**
+ * Authorize a **post** (`message.create`, §5.2.1): the channel must exist in
+ * `groupId`, be readable by the actor ({@link canViewChannel}), and the actor —
+ * a group member — must be permitted to post a message of `type` there
+ * ({@link canPostKind}, falling back to the group `post` action). Reply
+ * qualification (`replyOnly` / `replyOnlyTo`) is enforced here too: a
+ * reply-restricted actor MUST supply a `reference`, and when `replyOnlyTo` is set
+ * the referenced parent's `type` must be allowed. A supplied `reference` MUST
+ * resolve to a message in the same channel (§7.2).
+ *
+ * Returns `null` when authorized, or a {@link MutationError}. Existence failures
+ * surface as `forbidden` (403) — like the prior single-boolean gate — so posting
+ * never leaks channel existence beyond what `subscribe` already does. A bad
+ * reply target is a `bad_request` (400).
+ */
+export function authorizeChannelPost(
+  db: Db,
+  groupId: string,
+  channelId: string,
+  actor: string,
+  type: MessageKind,
+  reference: { readonly type: string; readonly id: string } | undefined,
+): MutationError | null {
+  const deny = (message: string): MutationError => ({ code: "forbidden", message, status: 403 });
+
+  const channel = getChannelRow(db, channelId);
+  if (!channel || channel.groupId !== groupId)
+    return deny("not authorized to post to this channel");
+  if (!canViewChannel(db, channel, actor)) return deny("not authorized to post to this channel");
+
+  const membership = getMembership(db, groupId, actor);
+  const groupRow = getGroupRow(db, groupId);
+  if (!membership || !groupRow) return deny("not authorized to post to this channel");
+
+  const channelPermissions = parseChannelPermissions(channel.permissions);
+  const ctx: ChannelAuthzContext = {
+    role: membership.role,
+    channelPermissions,
+    groupPermissions: rowToGroup(groupRow).permissions as Record<
+      string,
+      readonly string[] | undefined
+    >,
+  };
+
+  // A reply target must resolve to a message in this same channel (§7.2).
+  let parent: MessageRow | null = null;
+  if (reference) {
+    parent = getMessageRow(db, channelId, reference.id);
+    if (!parent) {
+      return {
+        code: "bad_request",
+        message: "reply target not found in this channel",
+        status: 400,
+      };
+    }
+  }
+
+  if (!canPostKind(ctx, type)) {
+    return deny(`not authorized to post ${type}s to this channel`);
+  }
+
+  // Reply qualification (§5.2.1).
+  if (isReplyRestricted(membership.role, channelPermissions)) {
+    if (!reference || !parent) {
+      return deny("you may only post replies in this channel");
+    }
+    const allowedParentTypes = replyOnlyToTypes(channelPermissions);
+    if (allowedParentTypes && !allowedParentTypes.includes(parent.type)) {
+      return deny(`replies in this channel must target a ${allowedParentTypes.join(" or ")}`);
+    }
+  }
+
+  return null;
 }
