@@ -29,8 +29,11 @@ const BoolEnvSchema = z.preprocess(
 const RawEnvSchema = z.object({
   PORT: PortSchema.default(3000),
   /**
-   * Public authority for this provider (used later as the OFSCP signing
-   * authority / `iss`). Defaults to `localhost:<PORT>` once PORT is known.
+   * Public authority for this provider (the OFSCP signing authority / `iss`).
+   * Defaults to `localhost:<PORT>` when unset — fine for local testing, wrong for
+   * a real federated deployment. The `.env.example` placeholder `forum.example.com`
+   * is treated as unset (see {@link loadConfig}) so a half-configured `.env`
+   * doesn't silently sign under a fake domain.
    */
   DOMAIN: z.string().min(1).optional(),
   /** Root directory for all server-owned state (db + media). */
@@ -174,6 +177,14 @@ export interface Argon2Params {
 export interface Config {
   readonly port: number;
   readonly domain: string;
+  /**
+   * True when {@link domain} was NOT supplied by the operator and fell back to
+   * the `localhost:<port>` default. The signing authority / `iss` then binds to
+   * loopback, which is fine for local testing but breaks a real federated
+   * deployment — so the boot log surfaces a warning when this is set. See
+   * {@link loadConfig}.
+   */
+  readonly domainIsDefault: boolean;
   readonly dataDir: string;
   readonly mediaDir: string;
   readonly dbPath: string;
@@ -243,7 +254,14 @@ export function loadConfig(env: Env = process.env): Config {
   const dataDir = raw.DATA_DIR;
   const mediaDir = raw.MEDIA_DIR ?? join(dataDir, "media");
   const dbPath = raw.DB_PATH ?? join(dataDir, "forumall.sqlite");
-  const domain = raw.DOMAIN ?? `localhost:${raw.PORT}`;
+  // A DOMAIN left at the .env.example placeholder is treated as unset: it is not
+  // a real authority and signing under it would be wrong. This keeps zero-config
+  // local boot working (falls back to localhost) while still flagging that the
+  // operator hasn't picked a real domain yet.
+  const suppliedDomain =
+    raw.DOMAIN !== undefined && raw.DOMAIN !== "forum.example.com" ? raw.DOMAIN : undefined;
+  const domain = suppliedDomain ?? `localhost:${raw.PORT}`;
+  const domainIsDefault = suppliedDomain === undefined;
   // The web build lives next to the server package; resolved relative to the
   // monorepo's `packages/` so it works regardless of CWD.
   const webDir = env.WEB_DIR ?? join(import.meta.dir, "..", "..", "web", "dist");
@@ -251,6 +269,7 @@ export function loadConfig(env: Env = process.env): Config {
   return Object.freeze({
     port: raw.PORT,
     domain,
+    domainIsDefault,
     dataDir,
     mediaDir,
     dbPath,
