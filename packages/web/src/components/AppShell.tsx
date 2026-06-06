@@ -39,12 +39,10 @@ export const AppShell: ParentComponent = (props) => {
     <div class="app-shell">
       <nav class="app-nav">
         <div class="mb-4 flex items-center gap-2.5 px-2">
-          <span class="grid h-8 w-8 place-items-center rounded-lg bg-gradient-to-br from-accent to-cyan text-sm font-bold text-white">
-            F
-          </span>
+          <img src="/forumall-mark.svg" alt="Forumall" class="h-8 w-8" width="32" height="32" />
           <div class="leading-tight">
-            <div class="text-sm font-semibold tracking-tight">Forumall</div>
-            <div class="text-[10px] text-faint">OFSCP v{OFSCP_VERSION}</div>
+            <div class="font-display text-sm font-bold tracking-tight">Forumall</div>
+            <div class="eyebrow text-[10px]">OFSCP v{OFSCP_VERSION}</div>
           </div>
         </div>
 

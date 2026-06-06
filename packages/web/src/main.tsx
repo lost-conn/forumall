@@ -2,6 +2,9 @@
 // (@forumall/shared encodes keys/sigs through Node's Buffer).
 import "./lib/buffer-polyfill.ts";
 import "uno.css";
+// Terminal Garden design tokens (CSS variables + .fa-* component classes).
+// MUST load after uno.css so the variable layer the UnoCSS tokens resolve to wins.
+import "./forumall.css";
 import { render } from "solid-js/web";
 import { App } from "./App.tsx";
 import { type ChatMessage, upsertMessage } from "./stores/chat.ts";
