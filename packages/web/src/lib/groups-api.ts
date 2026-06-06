@@ -96,6 +96,16 @@ export async function listChannels(client: OfscpClient, groupId: string): Promis
   return res.data.items ?? [];
 }
 
+/** Fetch a single channel object (§5.5). Used to label home-feed items. */
+export async function fetchChannel(
+  client: OfscpClient,
+  groupId: string,
+  channelId: string,
+): Promise<Channel> {
+  const res = await client.get<Channel>(`/api/groups/${groupId}/channels/${channelId}`);
+  return res.data;
+}
+
 /** Create a channel (requires `manage`, §5.5). */
 export async function createChannel(
   client: OfscpClient,

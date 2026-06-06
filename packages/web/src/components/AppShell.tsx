@@ -12,6 +12,7 @@ interface NavItem {
 
 const NAV: NavItem[] = [
   { href: "/", label: "Home", glyph: "◆" },
+  { href: "/discover", label: "Discover", glyph: "✦" },
   { href: "/groups", label: "Groups", glyph: "❑" },
   { href: "/dms", label: "Direct messages", glyph: "✉" },
   { href: "/contacts", label: "Contacts", glyph: "☺" },

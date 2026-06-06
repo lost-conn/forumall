@@ -51,6 +51,15 @@ const config = loadConfig({
   DOMAIN: domain,
   DATA_DIR: dataDir,
   WEB_DIR: webDir,
+  // Forward the optional feature toggles a spec may set via the harness env so
+  // they reach `loadConfig` (which otherwise sees only these explicit keys, not
+  // the ambient process env). Used by the discover-feed e2e (default OFF → 404).
+  ...(process.env.ENABLE_DISCOVER_FEED !== undefined
+    ? { ENABLE_DISCOVER_FEED: process.env.ENABLE_DISCOVER_FEED }
+    : {}),
+  ...(process.env.ENABLE_KNOWN_PROVIDERS !== undefined
+    ? { ENABLE_KNOWN_PROVIDERS: process.env.ENABLE_KNOWN_PROVIDERS }
+    : {}),
 });
 
 const db = openDb(config.dbPath);

@@ -50,8 +50,14 @@ function ensureWebBuilt(): void {
   webBuilt = true;
 }
 
-/** Boot one ephemeral server serving the built web client; resolves when ready. */
-export function bootServer(): Promise<BootedServer> {
+/**
+ * Boot one ephemeral server serving the built web client; resolves when ready.
+ *
+ * `extraEnv` is layered onto the child's environment — used by specs that need a
+ * server-side feature toggle (e.g. `ENABLE_DISCOVER_FEED=true` for the discover
+ * feed, which 404s by default).
+ */
+export function bootServer(extraEnv: Record<string, string> = {}): Promise<BootedServer> {
   ensureWebBuilt();
   const dataDir = mkdtempSync(join(tmpdir(), "forumall-e2e-"));
 
@@ -60,6 +66,7 @@ export function bootServer(): Promise<BootedServer> {
       cwd: REPO_ROOT,
       env: {
         ...process.env,
+        ...extraEnv,
         DATA_DIR: dataDir,
         WEB_DIR,
         // Short WS heartbeat/idle so the presence e2e observes disconnect→offline

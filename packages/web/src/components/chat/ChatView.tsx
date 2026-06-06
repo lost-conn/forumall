@@ -37,6 +37,7 @@ import {
   typingFor,
 } from "../../stores/chat.ts";
 import { session, sessionClient, sessionWs } from "../../stores/session.ts";
+import { FollowToggle } from "../feed/FollowToggle.tsx";
 import {
   type ChannelHandle,
   addReactionCmd,
@@ -136,6 +137,7 @@ export const ChatView: Component<{ channel: Channel; canPost: boolean; canModera
         <Show when={props.channel.topic}>
           <span class="truncate text-xs text-faint">— {props.channel.topic}</span>
         </Show>
+        <FollowToggle channelId={props.channel.id} groupId={props.channel.groupId} />
       </header>
 
       <div ref={scrollEl} class="min-h-0 flex-1 overflow-auto px-6 py-4" data-testid="message-list">

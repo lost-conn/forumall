@@ -6,6 +6,8 @@
 import { type Component, type JSX, Show, createResource } from "solid-js";
 import { DeviceKeys } from "../components/DeviceKeys.tsx";
 import { DmsPage as DmsPageImpl } from "../components/dms/DmsPage.tsx";
+import { DiscoverPage } from "../components/feed/DiscoverPage.tsx";
+import { HomeFeed } from "../components/feed/HomeFeed.tsx";
 import { GroupsPage } from "../components/groups/GroupsPage.tsx";
 import { ContactsPage } from "../components/social/ContactsPage.tsx";
 import {
@@ -25,16 +27,11 @@ const Placeholder: Component<{ title: string; sub: string; children?: JSX.Elemen
   </div>
 );
 
-export const HomePage: Component = () => (
-  <Placeholder title="Home" sub="Your federated feed lands here.">
-    <div class="card max-w-xl">
-      <p class="text-sm text-muted">
-        You're signed in as <span class="font-mono text-ink">{session.actor}</span>. Auth, device
-        keys and account live under Settings; chat, DMs and the home feed fill these screens next.
-      </p>
-    </div>
-  </Placeholder>
-);
+/** Home (§7.6): the client-composed feed across the channels you follow. */
+export const HomePage: Component = () => <HomeFeed />;
+
+/** Discover (§11.2): browse this provider's discoverable channel pointers. */
+export const DiscoverRoutePage: Component = () => <DiscoverPage />;
 
 export const LoginPage: Component = () => (
   <Placeholder title="Sign in" sub="Register or log in to your home provider.">

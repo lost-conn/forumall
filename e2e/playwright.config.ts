@@ -15,6 +15,11 @@ export default defineConfig({
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: 0,
+  // Each test boots its own ephemeral @forumall/server (some specs boot a second
+  // for a feature toggle / federation), so a worker is heavyweight. Cap the pool
+  // (overridable via PW_WORKERS) so a high-core machine doesn't oversubscribe and
+  // flake on server-boot/registration timeouts under the default ~½-core fan-out.
+  workers: process.env.PW_WORKERS ? Number(process.env.PW_WORKERS) : 4,
   reporter: [["list"]],
   use: {
     trace: "on-first-retry",

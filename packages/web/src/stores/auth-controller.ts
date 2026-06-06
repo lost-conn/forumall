@@ -1,3 +1,4 @@
+import { resetFollowCache } from "../components/feed/FollowToggle.tsx";
 /**
  * Auth controller (P8): the single orchestration point the UI calls. It runs the
  * register/login/restore/logout flows from `lib/auth.ts`, wires the resulting
@@ -27,6 +28,7 @@ import { keyStore as defaultKeyStore } from "../lib/key-store.ts";
 import { OfscpWsClient } from "../lib/ofscp-ws.ts";
 import { baseUrlForHost } from "../lib/provider.ts";
 import { clearDms } from "./dms.ts";
+import { clearFeed } from "./feed.ts";
 import { installPresenceListener, resetPresenceSubscriptions } from "./presence-controller.ts";
 import { clearPresence } from "./presence.ts";
 import {
@@ -114,6 +116,8 @@ export async function doLogout(opts: { keyStore?: KeyStore } = {}): Promise<bool
   // Tear down the live WS + reactive state. The local DM sent-store (localStorage)
   // is intentionally preserved so re-login restores the sender's own history.
   clearDms();
+  clearFeed();
+  resetFollowCache();
   clearPresence();
   resetPresenceSubscriptions();
   clearSession();
