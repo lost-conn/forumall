@@ -5,6 +5,7 @@
  */
 import { type Component, type JSX, Show, createResource } from "solid-js";
 import { DeviceKeys } from "../components/DeviceKeys.tsx";
+import { DmsPage as DmsPageImpl } from "../components/dms/DmsPage.tsx";
 import { GroupsPage } from "../components/groups/GroupsPage.tsx";
 import { doLogout } from "../stores/auth-controller.ts";
 import { session, sessionClient } from "../stores/session.ts";
@@ -41,11 +42,8 @@ export const LoginPage: Component = () => (
 /** Groups & channels screen (P8): browse, create, manage, membership, invites. */
 export const GroupsRoutePage: Component = () => <GroupsPage />;
 
-export const DmsPage: Component = () => (
-  <Placeholder title="Direct messages" sub="Your DM conversations.">
-    <div class="card max-w-xl text-sm text-muted">DM list + thread go here.</div>
-  </Placeholder>
-);
+/** Direct messages screen (§7.4 / §8.3): conversation list + live thread. */
+export const DmsPage: Component = () => <DmsPageImpl />;
 
 interface MeProfile {
   handle: string;

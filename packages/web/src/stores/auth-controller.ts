@@ -26,6 +26,7 @@ import type { KeyStore } from "../lib/key-store.ts";
 import { keyStore as defaultKeyStore } from "../lib/key-store.ts";
 import { OfscpWsClient } from "../lib/ofscp-ws.ts";
 import { baseUrlForHost } from "../lib/provider.ts";
+import { clearDms } from "./dms.ts";
 import {
   clearSession,
   sessionClient,
@@ -105,7 +106,9 @@ export async function doLogout(opts: { keyStore?: KeyStore } = {}): Promise<bool
   if (client && stored) {
     revoked = await authLogout(client, stored, { keyStore: store });
   }
-  // Tear down the live WS + reactive state.
+  // Tear down the live WS + reactive state. The local DM sent-store (localStorage)
+  // is intentionally preserved so re-login restores the sender's own history.
+  clearDms();
   clearSession();
   return revoked;
 }

@@ -45,4 +45,34 @@ if (!root) throw new Error("#root not found");
   upsertMessage(channelId, message);
 };
 
+// Test/debug hook: read the live session's OWN DM inbox for a conversation via a
+// SIGNED `GET /api/dms/{dmId}/messages` and return just the message texts. The
+// e2e DM suite uses this to prove the §8.3 invariant directly against the server:
+// the SENDER's inbox does NOT contain its own sent message (no sender copy), while
+// the recipient's does. It exposes no key material — only the active client's own
+// signed read path, which already lives in this browser (mirrors the hooks above).
+(
+  globalThis as unknown as { __forumall_dmInbox?: (dmId: string) => Promise<string[]> }
+).__forumall_dmInbox = async (dmId: string): Promise<string[]> => {
+  const client = sessionClient();
+  if (!client) return [];
+  try {
+    const res = await client.get<{ items: { content?: { text?: string } }[] }>(
+      `/api/dms/${dmId}/messages?direction=forward`,
+    );
+    return (res.data.items ?? []).map((m) => m.content?.text ?? "");
+  } catch (err) {
+    // A 404 (no inbox conversation row for this caller) → empty inbox.
+    if (
+      err &&
+      typeof err === "object" &&
+      "status" in err &&
+      (err as { status: number }).status === 404
+    ) {
+      return [];
+    }
+    throw err;
+  }
+};
+
 render(() => <App />, root);
