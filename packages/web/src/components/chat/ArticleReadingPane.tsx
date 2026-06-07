@@ -49,6 +49,9 @@ const QUICK_REACTIONS: { key: string; unicode: string }[] = [
 
 export const ArticleReadingPane: Component<{
   article: ChatMessage;
+  /** Long-form kind being read. Memos render as a plain post (no markdown title);
+   *  articles render their markdown title + body. Defaults to "article". */
+  kind?: "article" | "memo";
   groupId: string;
   channelId: string;
   canPost: boolean;
@@ -57,6 +60,7 @@ export const ArticleReadingPane: Component<{
   onBack: () => void;
 }> = (props) => {
   const a = () => props.article;
+  const kind = () => props.kind ?? "article";
   const parts = createMemo(() => splitArticle(a().content.text ?? ""));
   const promotedFrom = createMemo(() => {
     const t = a().tags?.find((x) => x.startsWith(PROMOTE_TAG_PREFIX));
@@ -122,8 +126,8 @@ export const ArticleReadingPane: Component<{
           Back to channel
         </button>
         <span class="fa-meta flex items-center gap-1.5">
-          <Icon name="article" size={13} />
-          article
+          <Icon name={kind() === "memo" ? "memo" : "article"} size={13} />
+          {kind()}
         </span>
         <button
           type="button"
@@ -151,9 +155,11 @@ export const ArticleReadingPane: Component<{
             )}
           </Show>
 
-          <h1 class="fa-h1 mb-3" data-testid="article-title">
-            {parts().title}
-          </h1>
+          <Show when={kind() === "article"}>
+            <h1 class="fa-h1 mb-3" data-testid="article-title">
+              {parts().title}
+            </h1>
+          </Show>
 
           <div class="mb-5 flex flex-wrap items-center gap-2">
             <span class="fa-ava fa-ava--sm">
@@ -164,12 +170,25 @@ export const ArticleReadingPane: Component<{
             <For each={otherTags()}>{(t) => <span class="fa-tag">{t}</span>}</For>
           </div>
 
-          {/* renderMarkdown is XSS-safe (escapes input, allowlists schemes). */}
-          <div
-            class="prose-chat text-sm text-ink"
-            data-testid="article-body"
-            innerHTML={renderMarkdown(parts().body)}
-          />
+          {/* Articles render sanitized markdown (XSS-safe: escapes input,
+              allowlists schemes); memos render as plain text. */}
+          <Show
+            when={kind() === "article"}
+            fallback={
+              <p
+                class="whitespace-pre-wrap break-words text-sm text-ink"
+                data-testid="article-body"
+              >
+                {a().content.text ?? ""}
+              </p>
+            }
+          >
+            <div
+              class="prose-chat text-sm text-ink"
+              data-testid="article-body"
+              innerHTML={renderMarkdown(parts().body)}
+            />
+          </Show>
 
           {/* Reactions */}
           <div class="fa-rx mt-6">
@@ -253,7 +272,7 @@ export const ArticleReadingPane: Component<{
               class="flex-1 resize-none bg-transparent text-sm text-ink outline-none placeholder:text-faint"
               rows={1}
               data-testid="article-reply-input"
-              placeholder="Reply to this article…"
+              placeholder={`Reply to this ${kind()}…`}
               value={replyText()}
               onInput={(e) => setReplyText(e.currentTarget.value)}
               onKeyDown={(e) => {

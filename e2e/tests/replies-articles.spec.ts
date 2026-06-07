@@ -1,7 +1,8 @@
 /**
  * Overboard features e2e (single provider, two browser contexts): replies
- * (inline + nested under a memo), composing an article (WYSIWYG → markdown),
- * and the user-profile modal.
+ * (inline chat replies; memo replies hidden from the channel + shown in the
+ * memo's reading pane), composing an article (WYSIWYG → markdown), and the
+ * user-profile modal.
  *
  * Drives the real SolidJS client against a real ephemeral @forumall/server with
  * A = owner and B = member sharing one public group + text channel.
@@ -103,7 +104,7 @@ test("inline reply: A replies to a message → reply shows quoted parent; B sees
   await b.context().close();
 });
 
-test("memo + nested reply: a memo's reply is nested under it, not in the main flow", async ({
+test("memo reply: hidden from the channel stream, shown in the memo's reading pane", async ({
   page,
   browser,
   appServer,
@@ -118,24 +119,26 @@ test("memo + nested reply: a memo's reply is nested under it, not in the main fl
 
   const memoRow = a.locator('[data-testid="message-row"]').filter({ hasText: memoText }).first();
   await expect(memoRow).toBeVisible({ timeout: 10_000 });
-  // The type label badge was removed — kind is now implicit from the memo card layout.
 
-  // Reply to the memo.
+  // Reply to the memo from the channel reply action.
   await memoRow.hover();
   await memoRow.getByTestId("reply-button").click();
   const memoReply = `memo-reply-${Date.now().toString(36)}`;
   await compose(a, memoReply);
 
-  // The reply appears (nested under the memo, auto-expanded for long-form).
+  // The reply does NOT appear in the channel stream (memo/article replies live
+  // in the reading pane, never inline).
   await expect(a.locator('[data-testid="message-row"]').filter({ hasText: memoReply })).toHaveCount(
-    1,
+    0,
     { timeout: 10_000 },
   );
-  // B sees both the memo and its nested reply.
-  await expect(b.locator('[data-testid="message-row"]').filter({ hasText: memoReply })).toHaveCount(
-    1,
-    { timeout: 10_000 },
-  );
+
+  // Opening the memo's reading pane reveals the reply.
+  await memoRow.getByTestId("open-memo").click();
+  await expect(a.getByTestId("article-reading")).toBeVisible({ timeout: 10_000 });
+  await expect(a.getByTestId("article-reply").filter({ hasText: memoReply })).toHaveCount(1, {
+    timeout: 10_000,
+  });
 
   await b.context().close();
 });

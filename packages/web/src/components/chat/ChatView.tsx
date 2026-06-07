@@ -13,10 +13,9 @@
  *
  * Replies (§7.2):
  *  - a reply carries `reference = { type: "reply", id }`;
- *  - replies to a **memo/article** are pulled OUT of the main flow and nested
- *    under their parent (always), with a lazy "load replies" expander;
- *  - replies to a **chat message** render inline with a quoted-parent snippet
- *    by default, or nested under the parent in "threaded" view (header toggle).
+ *  - replies to a **memo/article** are hidden from the channel stream; they live
+ *    in that post's reading pane, opened by clicking the memo/article card;
+ *  - replies to a **chat message** render inline with a quoted-parent snippet.
  */
 import type { Attachment, Channel } from "@forumall/shared";
 import {
@@ -77,7 +76,7 @@ const TYPING_THROTTLE_MS = 2500;
 /** Idle window after the last keystroke before emitting `typing.stop` (ms). */
 const TYPING_IDLE_MS = 3000;
 
-/** Message kinds whose replies are pulled out of the main flow and nested. */
+/** Message kinds whose replies live in a reading pane, not the channel stream. */
 function isLongForm(type: string | undefined): boolean {
   return type === "memo" || type === "article";
 }
@@ -113,7 +112,6 @@ export const ChatView: Component<{
   const [handle, setHandle] = createSignal<ChannelHandle | null>(null);
   const [loadingOlder, setLoadingOlder] = createSignal(false);
   const [historyError, setHistoryError] = createSignal<string | null>(null);
-  const [threadMode, setThreadMode] = createSignal(false);
   const [replyTarget, setReplyTarget] = createSignal<ChatMessage | null>(null);
   const [typeFilter, setTypeFilter] = createSignal<"all" | "message" | "memo" | "article">("all");
   const [sortMode, setSortMode] = createSignal<"recent" | "oldest" | "top">("recent");
@@ -178,14 +176,16 @@ export const ChatView: Component<{
     return map;
   });
 
-  /** Is this message nested under its parent (hidden from the main flow)? */
+  /** Is this message hidden from the channel's main flow?
+   *  Replies to a memo/article live in that post's reading pane (opened from the
+   *  card), never inline in the stream. Chat replies always render inline with a
+   *  quoted-parent reference. */
   const isNested = (m: ChatMessage): boolean => {
     const pid = m.reference?.id;
     if (!pid) return false;
     const parent = byId().get(pid);
     if (!parent) return false; // orphan reply (parent out of window) → stays inline
-    if (isLongForm(parent.type)) return true; // memo/article replies always nest
-    return threadMode(); // chat replies nest only in threaded view
+    return isLongForm(parent.type);
   };
 
   const roots = createMemo(() => messages().filter((m) => !isNested(m)));
@@ -248,16 +248,6 @@ export const ChatView: Component<{
                   <span class="truncate text-xs text-faint">— {props.channel.topic}</span>
                 </Show>
                 <div class="ml-auto flex items-center gap-2">
-                  <button
-                    type="button"
-                    class="btn-ghost px-2 py-1 text-xs"
-                    data-testid="thread-toggle"
-                    aria-pressed={threadMode()}
-                    onClick={() => setThreadMode((v) => !v)}
-                    title="Toggle threaded / inline reply view"
-                  >
-                    {threadMode() ? "Threaded" : "Inline"}
-                  </button>
                   <FollowToggle channelId={props.channel.id} groupId={props.channel.groupId} />
                 </div>
               </div>
@@ -352,13 +342,11 @@ export const ChatView: Component<{
                         </Show>
                         <MessageNode
                           message={msg}
-                          depth={0}
                           channelId={channelId()}
                           groupId={groupId()}
                           canModerate={props.canModerate}
                           canPromote={(props.canPostArticle ?? props.canPost) === true}
                           byId={byId}
-                          repliesByParent={repliesByParent}
                           onReply={setReplyTarget}
                           onPromote={setPromoteSource}
                           onOpenArticle={setOpenArticle}
@@ -399,6 +387,7 @@ export const ChatView: Component<{
         {(art) => (
           <ArticleReadingPane
             article={art()}
+            kind={art().type === "memo" ? "memo" : "article"}
             groupId={groupId()}
             channelId={channelId()}
             canPost={props.canPost}
@@ -413,49 +402,21 @@ export const ChatView: Component<{
 };
 
 // ---------------------------------------------------------------------------
-// Message node (a message + its nested reply thread)
+// Message node (a channel message + an optional quoted-parent reference)
 // ---------------------------------------------------------------------------
 
 const MessageNode: Component<{
   message: ChatMessage;
-  depth: number;
   channelId: string;
   groupId: string;
   canModerate: boolean;
   canPromote: boolean;
   byId: Accessor<Map<string, ChatMessage>>;
-  repliesByParent: Accessor<Map<string, ChatMessage[]>>;
   onReply: (m: ChatMessage) => void;
   onPromote: (m: ChatMessage) => void;
   onOpenArticle: (m: ChatMessage) => void;
 }> = (props) => {
   const m = () => props.message;
-  const [expanded, setExpanded] = createSignal(props.depth === 0 && isLongForm(props.message.type));
-  const [loadingReplies, setLoadingReplies] = createSignal(false);
-
-  const loaded = () => props.repliesByParent().get(m().id) ?? [];
-  // Show a "load replies" affordance when the server reports more replies than
-  // we currently have loaded (parent + replies can be far apart in the window).
-  const missingReplies = () => Math.max(0, (m().replyCount ?? 0) - loaded().length);
-
-  const expandAndLoad = async (): Promise<void> => {
-    setExpanded(true);
-    if (missingReplies() > 0 && !loadingReplies()) {
-      const client = sessionClient();
-      if (!client) return;
-      setLoadingReplies(true);
-      try {
-        await loadReplies({
-          client,
-          groupId: props.groupId,
-          channelId: props.channelId,
-          messageId: m().id,
-        });
-      } finally {
-        setLoadingReplies(false);
-      }
-    }
-  };
 
   const replyParent = () => {
     const pid = m().reference?.id;
@@ -463,10 +424,7 @@ const MessageNode: Component<{
   };
 
   return (
-    <li
-      class="flex flex-col gap-1"
-      classList={{ "ml-4 border-l border-border pl-3": props.depth > 0 }}
-    >
+    <li class="flex flex-col gap-1">
       <Show when={m().reference}>
         <ReplyQuote parent={replyParent()} />
       </Show>
@@ -482,49 +440,6 @@ const MessageNode: Component<{
         onPromote={() => props.onPromote(m())}
         onOpenArticle={() => props.onOpenArticle(m())}
       />
-
-      {/* Nested replies (memo/article always; chat in threaded mode). */}
-      <Show when={loaded().length > 0 || missingReplies() > 0}>
-        <div class="mt-1 flex flex-col gap-2">
-          <Show when={isLongForm(m().type) || missingReplies() > 0}>
-            <button
-              type="button"
-              class="self-start text-xs text-accent hover:underline"
-              data-testid="thread-expander"
-              onClick={() => (expanded() ? setExpanded(false) : void expandAndLoad())}
-            >
-              {expanded()
-                ? "Hide replies"
-                : loadingReplies()
-                  ? "Loading…"
-                  : `Show ${m().replyCount ?? loaded().length} ${
-                      (m().replyCount ?? loaded().length) === 1 ? "reply" : "replies"
-                    }`}
-            </button>
-          </Show>
-          <Show when={expanded()}>
-            <ul class="flex flex-col gap-3">
-              <For each={loaded()}>
-                {(reply) => (
-                  <MessageNode
-                    message={reply}
-                    depth={props.depth + 1}
-                    channelId={props.channelId}
-                    groupId={props.groupId}
-                    canModerate={props.canModerate}
-                    canPromote={props.canPromote}
-                    byId={props.byId}
-                    repliesByParent={props.repliesByParent}
-                    onReply={props.onReply}
-                    onPromote={props.onPromote}
-                    onOpenArticle={props.onOpenArticle}
-                  />
-                )}
-              </For>
-            </ul>
-          </Show>
-        </div>
-      </Show>
     </li>
   );
 };
@@ -926,12 +841,18 @@ const MessageBody: Component<{ message: ChatMessage; onOpenArticle?: () => void 
         </div>
       </Match>
       <Match when={type() === "memo"}>
-        {/* Memo renders as a phosphor-bordered card (social-style post). */}
-        <div class="mt-1 rounded-md border-[1.5px] border-accent bg-surface p-3.5">
+        {/* Memo renders as a phosphor-bordered card (social-style post). Clicking
+            it opens the reading pane, where its replies + reply composer live. */}
+        <button
+          type="button"
+          class="mt-1 block w-full rounded-md border-[1.5px] border-accent bg-surface p-3.5 text-left transition-colors hover:bg-surface-2"
+          data-testid="open-memo"
+          onClick={() => props.onOpenArticle?.()}
+        >
           <p class="text-sm text-ink whitespace-pre-wrap break-words" data-testid="message-text">
             {text()}
           </p>
-        </div>
+        </button>
       </Match>
       <Match when={type() === "message"}>
         <p class="text-sm text-ink whitespace-pre-wrap break-words" data-testid="message-text">
