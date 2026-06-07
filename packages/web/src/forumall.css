@@ -230,6 +230,28 @@
   border-style: solid;
   border-color: currentColor;
 }
+
+/* Tailwind/UnoCSS-style control reset: without it, bare <button>/<select>
+   elements show the UA `buttonface` background (a light fill that reads as a
+   stray box in dark mode) and don't inherit type. Explicit utility/`.fa-*`
+   backgrounds (btn-accent, card, …) have higher specificity and still win. */
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+button,
+select {
+  background-color: transparent;
+  background-image: none;
+  cursor: pointer;
+}
+button:disabled {
+  cursor: not-allowed;
+}
+
 .fa,
 body.fa {
   background: var(--bg);
