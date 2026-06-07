@@ -9,6 +9,7 @@ import { useQuery } from "@tanstack/solid-query";
 import { type Component, For, Match, Show, Switch, createMemo, createSignal } from "solid-js";
 import { can, joinGroup, leaveGroup } from "../../lib/groups-api.ts";
 import { session, sessionClient } from "../../stores/session.ts";
+import { Icon, type IconName } from "../Icon.tsx";
 import { ChatView } from "../chat/ChatView.tsx";
 import { CreateChannelModal, ManageChannelModal } from "./ChannelModals.tsx";
 import { GroupSettingsModal } from "./GroupSettingsModal.tsx";
@@ -20,7 +21,10 @@ import { ErrorLine, errorMessage } from "./ui.tsx";
 
 type Tab = "channels" | "members" | "requests" | "invites";
 
-const CHANNEL_GLYPH: Record<string, string> = { text: "#", call: "🔊" };
+/** Pick the line icon for a channel by type (call channels → speaker). */
+function channelIcon(type: string): IconName {
+  return type === "call" ? "speaker" : "hash";
+}
 
 export const GroupView: Component<{ groupId: string }> = (props) => {
   const groupId = () => props.groupId;
@@ -245,8 +249,8 @@ export const GroupView: Component<{ groupId: string }> = (props) => {
                                   data-testid="channel-row"
                                   data-channel-name={ch.name ?? ch.id}
                                 >
-                                  <span class="w-4 text-center text-faint">
-                                    {CHANNEL_GLYPH[ch.type] ?? "#"}
+                                  <span class="text-faint">
+                                    <Icon name={channelIcon(ch.type)} size={15} />
                                   </span>
                                   <button
                                     type="button"

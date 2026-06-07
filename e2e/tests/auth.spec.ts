@@ -54,7 +54,7 @@ test("register → restore on reload → device keys → logout (key revoked)", 
 
   // Landed authenticated: the app shell shows the actor `handle@host`.
   const actor = `${handle}@localhost:${appServer.port}`;
-  await expect(page.locator(".app-nav")).toContainText(actor, { timeout: 15_000 });
+  await expect(page.getByTestId("space-rail")).toContainText(actor, { timeout: 15_000 });
 
   // -- Assertion 5: the PRIVATE key never left the device -------------------
   // Read the private seed the browser generated + stored in IndexedDB, then
@@ -95,7 +95,7 @@ test("register → restore on reload → device keys → logout (key revoked)", 
   await page.reload();
   await expect(page.getByTestId("connect-form")).toHaveCount(0);
   await expect(page.getByTestId("credentials-form")).toHaveCount(0);
-  await expect(page.locator(".app-nav")).toContainText(actor, { timeout: 15_000 });
+  await expect(page.getByTestId("space-rail")).toContainText(actor, { timeout: 15_000 });
 
   // -- Assertion 3: settings → device keys listed, current device marked ----
   await page.goto("/settings");
@@ -137,7 +137,7 @@ test("register → restore on reload → device keys → logout (key revoked)", 
   await expect(
     page.getByTestId("connect-form").or(page.getByTestId("credentials-form")),
   ).toBeVisible({ timeout: 15_000 });
-  await expect(page.locator(".app-nav")).toHaveCount(0);
+  await expect(page.getByTestId("space-rail")).toHaveCount(0);
   const remainingKeys = await page.evaluate(async () => {
     const open = indexedDB.open("forumall");
     const db: IDBDatabase = await new Promise((res, rej) => {

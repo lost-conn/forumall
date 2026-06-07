@@ -1,90 +1,106 @@
-import { OFSCP_VERSION } from "@forumall/shared";
 import { A, useLocation } from "@solidjs/router";
-import { For, type ParentComponent, Show } from "solid-js";
+import { useQuery } from "@tanstack/solid-query";
+import { type Component, For, type JSX, type ParentComponent, Show } from "solid-js";
 import { session } from "../stores/session";
+import { Icon, type IconName } from "./Icon";
+import { myGroupsQuery } from "./groups/queries";
 import { SelfPresenceControl } from "./social/SelfPresenceControl";
 import { UserProfileCard } from "./social/UserProfileCard";
 
-interface NavItem {
-  href: string;
-  label: string;
-  glyph: string;
-}
-
-const NAV: NavItem[] = [
-  { href: "/", label: "Home", glyph: "◆" },
-  { href: "/discover", label: "Discover", glyph: "✦" },
-  { href: "/groups", label: "Groups", glyph: "❑" },
-  { href: "/dms", label: "Direct messages", glyph: "✉" },
-  { href: "/contacts", label: "Contacts", glyph: "☺" },
-  { href: "/settings", label: "Settings", glyph: "⚙" },
+/** Phone bottom-tab + space-rail nav targets (icon-driven). */
+const MOBILE_NAV: { href: string; label: string; icon: IconName }[] = [
+  { href: "/", label: "Home", icon: "home" },
+  { href: "/groups", label: "Forum", icon: "hash" },
+  { href: "/dms", label: "DMs", icon: "at" },
+  { href: "/discover", label: "Discover", icon: "globe" },
+  { href: "/settings", label: "You", icon: "gear" },
 ];
 
-/**
- * Phone bottom tab bar (shown < md). A 5-item subset of the rail — Home · Forum
- * (Groups) · DMs · Discover · You (Settings) — matching the handoff mobile shell.
- */
-const MOBILE_NAV: { href: string; label: string; glyph: string }[] = [
-  { href: "/", label: "Home", glyph: "◆" },
-  { href: "/groups", label: "Forum", glyph: "❑" },
-  { href: "/dms", label: "DMs", glyph: "✉" },
-  { href: "/discover", label: "Discover", glyph: "✦" },
-  { href: "/settings", label: "You", glyph: "⚙" },
-];
-
-const CONNECTION_DOT: Record<string, string> = {
-  connected: "bg-success",
-  connecting: "bg-cyan animate-pulse",
-  authenticating: "bg-cyan animate-pulse",
-  reconnecting: "bg-danger animate-pulse",
-  closed: "bg-faint",
-  idle: "bg-faint",
-};
-
-/** App layout: a left nav rail + a content outlet, themed via UnoCSS tokens. */
+/** App layout: a narrow icon "space rail" + a content outlet (+ phone tab bar). */
 export const AppShell: ParentComponent = (props) => {
   const location = useLocation();
   const isActive = (href: string) =>
     href === "/" ? location.pathname === "/" : location.pathname.startsWith(href);
 
+  const groups = useQuery(myGroupsQuery);
+
   return (
     <div class="app-shell">
-      <nav class="app-nav hidden md:flex">
-        <div class="mb-4 flex items-center gap-2.5 px-2">
-          <img src="/forumall-mark.svg" alt="Forumall" class="h-8 w-8" width="32" height="32" />
-          <div class="leading-tight">
-            <div class="font-display text-sm font-bold tracking-tight">Forumall</div>
-            <div class="eyebrow text-[10px]">OFSCP v{OFSCP_VERSION}</div>
-          </div>
+      {/* Space rail (hidden < md) */}
+      <nav
+        class="hidden w-16 shrink-0 flex-col items-center gap-2.5 border-r border-border bg-surface py-3 md:flex"
+        data-testid="space-rail"
+      >
+        <A
+          href="/"
+          title="Home"
+          class="grid h-11 w-11 place-items-center rounded-md border-[1.5px] transition-colors"
+          classList={{
+            "border-accent": isActive("/"),
+            "border-transparent hover:bg-surface-2": !isActive("/"),
+          }}
+        >
+          <img src="/forumall-mark.svg" alt="Forumall" class="h-7 w-7" width="28" height="28" />
+        </A>
+
+        <RailButton href="/dms" label="Inbox & DMs" icon="inbox" active={isActive("/dms")} />
+
+        <div class="my-0.5 h-0 w-6 border-t border-border" />
+
+        {/* Group "spaces" — avatars linking into each group. */}
+        <div class="flex w-full flex-col items-center gap-2 overflow-y-auto">
+          <For each={groups.data ?? []}>
+            {(grp) => {
+              const active = () => location.pathname.startsWith(`/groups/${grp.id}`);
+              return (
+                <A
+                  href={`/groups/${grp.id}`}
+                  title={grp.name}
+                  class="fa-ava transition-colors"
+                  classList={{ "fa-ava--phosphor": active() }}
+                >
+                  {grp.name.slice(0, 1).toUpperCase()}
+                </A>
+              );
+            }}
+          </For>
+          <A
+            href="/groups"
+            title="Groups"
+            class="grid h-11 w-11 place-items-center rounded-md border-[1.5px] border-dashed border-border-strong text-muted transition-colors hover:(border-accent text-accent)"
+            classList={{ "border-accent text-accent": location.pathname === "/groups" }}
+            data-testid="rail-groups"
+          >
+            <Icon name="plus" size={18} />
+          </A>
         </div>
 
-        <For each={NAV}>
-          {(item) => (
-            <A
-              href={item.href}
-              class="nav-link"
-              classList={{ "nav-link-active": isActive(item.href) }}
-            >
-              <span class="w-4 text-center text-faint">{item.glyph}</span>
-              <span>{item.label}</span>
-            </A>
-          )}
-        </For>
-
-        <div class="mt-auto pt-4">
+        <div class="mt-auto flex flex-col items-center gap-2.5">
+          <RailButton
+            href="/discover"
+            label="Discover instances"
+            icon="globe"
+            active={isActive("/discover")}
+          />
+          <RailButton
+            href="/contacts"
+            label="Contacts"
+            icon="users"
+            active={isActive("/contacts")}
+          />
           <Show when={session.actor}>
             <SelfPresenceControl />
+            {/* Signed-in identity — exposed to AT users + the e2e login gate. */}
+            <span class="sr-only" data-testid="rail-actor">
+              {session.actor}
+            </span>
           </Show>
-          <div class="px-2">
-            <div class="badge w-full justify-start">
-              <span
-                class={`h-2 w-2 rounded-full ${CONNECTION_DOT[session.connection] ?? "bg-faint"}`}
-              />
-              <Show when={session.actor} fallback={<span>Signed out</span>}>
-                <span class="truncate">{session.actor}</span>
-              </Show>
-            </div>
-          </div>
+          <RailButton
+            href="/settings"
+            label="Settings"
+            icon="gear"
+            active={isActive("/settings")}
+          />
         </div>
       </nav>
 
@@ -102,7 +118,7 @@ export const AppShell: ParentComponent = (props) => {
               class="flex flex-1 flex-col items-center justify-center gap-0.5 font-mono text-[10px] uppercase tracking-wide text-muted"
               classList={{ "text-accent": isActive(item.href) }}
             >
-              <span class="text-base leading-none">{item.glyph}</span>
+              <Icon name={item.icon} size={20} />
               <span>{item.label}</span>
             </A>
           )}
@@ -114,3 +130,24 @@ export const AppShell: ParentComponent = (props) => {
     </div>
   );
 };
+
+/** One icon button in the space rail, with the phosphor active state. */
+const RailButton: Component<{
+  href: string;
+  label: string;
+  icon: IconName;
+  active: boolean;
+}> = (props): JSX.Element => (
+  <A
+    href={props.href}
+    title={props.label}
+    aria-label={props.label}
+    class="grid h-11 w-11 place-items-center rounded-md border-[1.5px] transition-colors"
+    classList={{
+      "border-accent bg-accent-soft text-accent": props.active,
+      "border-transparent text-muted hover:(bg-surface-2 text-ink)": !props.active,
+    }}
+  >
+    <Icon name={props.icon} size={20} />
+  </A>
+);

@@ -43,24 +43,22 @@ export const SelfPresenceControl: Component = () => {
   };
 
   return (
-    <div class="relative px-2 pb-1" data-testid="self-presence">
+    <div class="relative" data-testid="self-presence">
       <button
         type="button"
-        class="badge w-full justify-start gap-2"
+        class="grid h-11 w-11 place-items-center rounded-md border-[1.5px] border-transparent text-ink transition-colors hover:bg-surface-2"
         onClick={() => setOpen((v) => !v)}
         data-testid="self-presence-toggle"
         data-availability={current()}
+        title={`Presence: ${currentOption().label}`}
+        aria-label={`Set presence (currently ${currentOption().label})`}
       >
-        <span class={`h-2 w-2 shrink-0 rounded-full ${currentOption().dot}`} />
-        <span class="truncate">{currentOption().label}</span>
-        <Show when={presence.self.status}>
-          <span class="truncate text-faint">· {presence.self.status}</span>
-        </Show>
+        <span class={`h-3 w-3 rounded-full ${currentOption().dot}`} />
       </button>
 
       <Show when={open()}>
         <div
-          class="absolute bottom-full left-2 right-2 z-50 mb-1 rounded-lg border border-border bg-surface p-2 shadow-lg"
+          class="absolute bottom-0 left-full z-50 ml-2 w-56 rounded-lg border-[1.5px] border-border-strong bg-surface p-2 shadow-[3px_3px_0_var(--shadow-col)]"
           data-testid="self-presence-menu"
         >
           <ul class="flex flex-col gap-0.5">

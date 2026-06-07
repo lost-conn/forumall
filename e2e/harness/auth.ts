@@ -13,7 +13,7 @@
  * stays authenticated. Driving the UI (rather than seeding storage) keeps the
  * helper honest: it exercises the same keygen the product ships.
  */
-import type { Page } from "@playwright/test";
+import { type Page, expect } from "@playwright/test";
 
 /** A unique, schema-valid handle (lowercase alnum, 3–32 chars). */
 export function uniqueHandle(prefix = "e2e"): string {
@@ -49,10 +49,11 @@ export async function registerUser(
   await page.locator('input[name="password"]').fill(TEST_PASSWORD);
   await page.getByTestId("auth-submit").click();
 
-  // Landed authenticated: the shell shows the actor `handle@host`.
+  // Landed authenticated: the space rail mounts and carries the actor `handle@host`.
   const host = new URL(baseURL).host;
   const actor = `${handle}@${host}`;
-  await page.locator(".app-nav").getByText(actor).waitFor({ state: "visible", timeout: 15_000 });
+  await page.getByTestId("space-rail").waitFor({ state: "visible", timeout: 15_000 });
+  await expect(page.getByTestId("space-rail")).toContainText(actor, { timeout: 15_000 });
 
   return { handle, actor };
 }

@@ -240,7 +240,7 @@ test("guest redeem: a grantsGuest invite provisions a guest with no account", as
   await guest.waitForURL(/\/groups\/[^/]+$/, { timeout: 15_000 });
   await expect(guest.getByTestId("group-name-heading")).toBeVisible({ timeout: 15_000 });
   // The guest holds a live session (the app shell shows an actor).
-  await expect(guest.locator(".app-nav")).toContainText("@", { timeout: 15_000 });
+  await expect(guest.getByTestId("space-rail")).toContainText("@", { timeout: 15_000 });
 
   await context.close();
   void groupId;
