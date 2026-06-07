@@ -499,33 +499,6 @@ body.fa {
   border-color: var(--line-strong);
 }
 
-/* content-type marks */
-.fa-type {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font: var(--t-mono-sm);
-  text-transform: uppercase;
-  letter-spacing: .06em;
-  padding: 2px 7px;
-  border-radius: var(--r-sm);
-  border: var(--bw) solid;
-}
-.fa-type--chat {
-  color: var(--c-chat);
-  border-color: var(--line-strong);
-}
-.fa-type--article {
-  color: var(--c-article);
-  border-color: var(--c-article);
-  background: var(--ember-soft);
-}
-.fa-type--memo {
-  color: var(--c-memo);
-  border-color: var(--c-memo);
-  background: var(--phosphor-soft);
-}
-
 /* instance / federation pill */
 .fa-pill {
   display: inline-flex;

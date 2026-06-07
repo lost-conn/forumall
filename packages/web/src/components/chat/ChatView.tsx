@@ -82,13 +82,6 @@ function isLongForm(type: string | undefined): boolean {
   return type === "memo" || type === "article";
 }
 
-/** Per-type tag metadata (label · icon · fa-type modifier) shown by name + time. */
-const TYPE_META: Record<string, { label: string; icon: IconName; cls: string }> = {
-  message: { label: "chat", icon: "chat", cls: "fa-type--chat" },
-  memo: { label: "memo", icon: "memo", cls: "fa-type--memo" },
-  article: { label: "article", icon: "article", cls: "fa-type--article" },
-};
-
 /** Tag marker carrying an article's promote lineage: `promoted-from:#channel`. */
 const PROMOTE_TAG_PREFIX = "promoted-from:";
 
@@ -673,14 +666,6 @@ const MessageRow: Component<{
             {displayName(m().author)}
           </button>
           <span class="fa-meta">{formatTime(m().createdAt)}</span>
-          <Show when={TYPE_META[m().type ?? "message"]}>
-            {(meta) => (
-              <span class={`fa-type ${meta().cls}`} data-testid="message-kind">
-                <Icon name={meta().icon} size={11} />
-                {meta().label}
-              </span>
-            )}
-          </Show>
           <Show when={m().editedAt && !isDeleted()}>
             <span class="fa-meta" data-testid="message-edited">
               (edited)

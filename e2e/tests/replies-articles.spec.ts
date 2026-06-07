@@ -118,7 +118,7 @@ test("memo + nested reply: a memo's reply is nested under it, not in the main fl
 
   const memoRow = a.locator('[data-testid="message-row"]').filter({ hasText: memoText }).first();
   await expect(memoRow).toBeVisible({ timeout: 10_000 });
-  await expect(memoRow.getByTestId("message-kind")).toHaveText("memo");
+  // The type label badge was removed — kind is now implicit from the memo card layout.
 
   // Reply to the memo.
   await memoRow.hover();
