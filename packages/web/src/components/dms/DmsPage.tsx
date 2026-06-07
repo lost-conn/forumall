@@ -18,7 +18,9 @@ import { A, useNavigate, useParams } from "@solidjs/router";
 import {
   type Component,
   For,
+  Match,
   Show,
+  Switch,
   createEffect,
   createMemo,
   createResource,
@@ -42,6 +44,27 @@ import { subscribePresence } from "../../stores/presence-controller.ts";
 import { session, sessionClient, sessionWs } from "../../stores/session.ts";
 import { PresenceDot } from "../social/PresenceDot.tsx";
 import { type ConversationHandle, openConversation, retrySendDm, sendDm } from "./dm-controller.ts";
+
+/**
+ * Inbox tabs. DMs are fully wired; Mentions and Thread-replies are presented but
+ * not yet populated — surfacing them requires a server-side notifications/mentions
+ * feed (none exists today; §10 notifications are outbound webhooks only). Tracked
+ * as its own backend epic on the Forumall board.
+ */
+type InboxTab = "dms" | "mentions" | "replies";
+const INBOX_TABS: [InboxTab, string][] = [
+  ["dms", "DMs"],
+  ["mentions", "Mentions"],
+  ["replies", "Replies"],
+];
+
+/** Placeholder for an inbox tab whose backing feed isn't built yet. */
+const InboxPlaceholder: Component<{ testid: string; title: string; detail: string }> = (props) => (
+  <div class="px-3 py-6 text-center" data-testid={props.testid}>
+    <div class="eyebrow mb-1">{props.title}</div>
+    <p class="text-xs text-faint">{props.detail}</p>
+  </div>
+);
 
 /** The current user's local sent-store, recreated when the actor changes. */
 function useSentStore(): () => DmSentStore | null {
@@ -120,6 +143,7 @@ export const DmsPage: Component = () => {
 
   const conversations = createMemo(dmConversations);
   const selected = () => params.dmId;
+  const [tab, setTab] = createSignal<InboxTab>("dms");
 
   // Subscribe to live presence for every DM counterparty while the screen is
   // mounted; re-run when the list changes (ref-counted controller de-dupes).
@@ -133,35 +157,76 @@ export const DmsPage: Component = () => {
 
   return (
     <div class="flex min-h-0 flex-1" data-testid="dms-page">
-      {/* Conversation list rail */}
+      {/* Inbox rail: DMs · Mentions · Thread-replies */}
       <aside class="flex w-72 shrink-0 flex-col border-r border-border bg-surface">
-        <div class="flex items-center justify-between px-4 py-4">
-          <h1 class="text-sm font-semibold tracking-tight">Direct messages</h1>
-          <button
-            type="button"
-            class="grid h-7 w-7 place-items-center rounded-lg bg-accent text-white hover:bg-accent-hi"
-            onClick={() => setShowNew(true)}
-            aria-label="New direct message"
-            data-testid="open-new-dm"
-          >
-            +
-          </button>
-        </div>
-        <div class="min-h-0 flex-1 overflow-auto px-2 pb-3">
-          <Show
-            when={conversations().length > 0}
-            fallback={
-              <p class="px-2 text-sm text-muted" data-testid="dms-empty">
-                No conversations yet. Start one with the + button.
-              </p>
-            }
-          >
-            <ul class="flex flex-col gap-0.5" data-testid="dm-conversations">
-              <For each={conversations()}>
-                {(conv) => <ConversationRow conv={conv} active={selected() === conv.dmId} />}
-              </For>
-            </ul>
+        <div class="flex items-center justify-between px-4 pt-4 pb-2">
+          <h1 class="font-display text-base font-bold tracking-tight">Inbox</h1>
+          <Show when={tab() === "dms"}>
+            <button
+              type="button"
+              class="grid h-7 w-7 place-items-center rounded-md border-[1.5px] border-border-strong bg-accent font-bold text-accent-ink shadow-[2px_2px_0_var(--shadow-col)] transition-transform hover:-translate-x-px hover:-translate-y-px active:(translate-x-0.5 translate-y-0.5 shadow-none)"
+              onClick={() => setShowNew(true)}
+              aria-label="New direct message"
+              data-testid="open-new-dm"
+            >
+              +
+            </button>
           </Show>
+        </div>
+
+        <div class="flex flex-wrap gap-1.5 px-3 pb-3" data-testid="inbox-tabs">
+          <For each={INBOX_TABS}>
+            {([id, label]) => (
+              <button
+                type="button"
+                data-testid={`inbox-tab-${id}`}
+                aria-pressed={tab() === id}
+                onClick={() => setTab(id)}
+                class="rounded-md border-[1.5px] px-2.5 py-1 text-[11px] font-mono font-bold uppercase tracking-wide transition-colors"
+                classList={{
+                  "border-accent bg-accent-soft text-accent": tab() === id,
+                  "border-border-strong text-muted hover:(bg-surface-2 text-ink)": tab() !== id,
+                }}
+              >
+                {label}
+              </button>
+            )}
+          </For>
+        </div>
+
+        <div class="min-h-0 flex-1 overflow-auto px-2 pb-3">
+          <Switch>
+            <Match when={tab() === "dms"}>
+              <Show
+                when={conversations().length > 0}
+                fallback={
+                  <p class="px-2 text-sm text-muted" data-testid="dms-empty">
+                    No conversations yet. Start one with the + button.
+                  </p>
+                }
+              >
+                <ul class="flex flex-col gap-0.5" data-testid="dm-conversations">
+                  <For each={conversations()}>
+                    {(conv) => <ConversationRow conv={conv} active={selected() === conv.dmId} />}
+                  </For>
+                </ul>
+              </Show>
+            </Match>
+            <Match when={tab() === "mentions"}>
+              <InboxPlaceholder
+                testid="inbox-mentions-empty"
+                title="Mentions"
+                detail="When someone @-mentions you, it'll show up here."
+              />
+            </Match>
+            <Match when={tab() === "replies"}>
+              <InboxPlaceholder
+                testid="inbox-replies-empty"
+                title="Thread-replies"
+                detail="Replies to your messages and threads you follow will collect here."
+              />
+            </Match>
+          </Switch>
         </div>
         <TrustNotice />
       </aside>
@@ -215,12 +280,15 @@ const ConversationRow: Component<{ conv: DmConversationSummary; active: boolean 
     data-dm-id={props.conv.dmId}
     data-counterparty={props.conv.counterparty}
   >
-    <span class="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-gradient-to-br from-accent to-cyan text-xs font-bold text-white">
+    <span
+      class="fa-ava fa-ava--sm"
+      classList={{ "fa-ava__fed": isRemoteActor(props.conv.counterparty) }}
+    >
       {displayName(props.conv.counterparty).slice(0, 1).toUpperCase()}
     </span>
     <span class="min-w-0 flex-1">
       <span
-        class="flex items-center gap-1.5 truncate font-medium text-ink"
+        class="flex items-center gap-1.5 truncate font-mono text-[13px] text-ink"
         data-testid="dm-conv-name"
       >
         <PresenceDot actor={props.conv.counterparty} />
@@ -310,15 +378,29 @@ const ThreadView: Component<{
 
   return (
     <div class="flex min-h-0 flex-1 flex-col" data-testid="dm-thread" data-dm-id={props.dmId}>
-      <header class="flex items-center gap-2 border-b border-border px-6 py-3">
-        <span class="grid h-7 w-7 place-items-center rounded-full bg-gradient-to-br from-accent to-cyan text-xs font-bold text-white">
-          {displayName(counterparty()).slice(0, 1).toUpperCase()}
-        </span>
-        <h2 class="text-sm font-semibold tracking-tight" data-testid="dm-thread-name">
-          {counterparty() || props.dmId}
-        </h2>
-        <Show when={counterparty()}>
-          <PresenceDot actor={counterparty()} showStatus />
+      <header class="flex flex-col gap-2 border-b border-border px-6 py-3">
+        <div class="flex items-center gap-2">
+          <span
+            class="fa-ava fa-ava--sm"
+            classList={{ "fa-ava__fed": isRemoteActor(counterparty()) }}
+          >
+            {displayName(counterparty()).slice(0, 1).toUpperCase()}
+          </span>
+          <h2 class="font-mono text-sm text-ink" data-testid="dm-thread-name">
+            {counterparty() || props.dmId}
+          </h2>
+          <Show when={counterparty()}>
+            <PresenceDot actor={counterparty()} showStatus />
+          </Show>
+        </div>
+        <Show when={counterparty() && isRemoteActor(counterparty())}>
+          <div
+            class="flex items-center gap-1.5 rounded-md border-[1.5px] border-ember bg-ember-soft px-2.5 py-1 text-[11px] font-mono uppercase tracking-wide text-ember"
+            data-testid="dm-federated-banner"
+          >
+            <span aria-hidden="true">⤫</span>
+            This conversation crosses the network
+          </div>
         </Show>
       </header>
 
@@ -376,18 +458,19 @@ const DmMessageRow: Component<{
   return (
     <li
       class="flex flex-col gap-1"
+      classList={{ "items-end": mine(), "items-start": !mine() }}
       data-testid="dm-message"
       data-message-id={m().id}
       data-mine={mine() ? "1" : "0"}
       data-pending={m().pending ? "1" : undefined}
     >
       <div class="flex items-baseline gap-2">
-        <span class="text-xs font-semibold text-ink" data-testid="dm-message-author">
+        <span class="font-mono text-[11px] text-muted" data-testid="dm-message-author">
           {mine() ? "You" : displayName(m().author)}
         </span>
-        <span class="text-[10px] text-faint">{formatTime(m().createdAt)}</span>
+        <span class="fa-meta">{formatTime(m().createdAt)}</span>
         <Show when={m().pending}>
-          <span class="text-[10px] text-cyan" data-testid="dm-message-pending">
+          <span class="text-[10px] text-accent" data-testid="dm-message-pending">
             sending…
           </span>
         </Show>
@@ -421,7 +504,14 @@ const DmMessageRow: Component<{
           </button>
         </Show>
       </div>
-      <p class="text-sm text-ink whitespace-pre-wrap break-words" data-testid="dm-message-text">
+      <p
+        class="max-w-[80%] whitespace-pre-wrap break-words rounded-md border-[1.5px] px-3 py-2 text-sm"
+        classList={{
+          "border-accent bg-accent-soft text-ink": mine(),
+          "border-border-strong bg-surface text-ink": !mine(),
+        }}
+        data-testid="dm-message-text"
+      >
         {m().content.text ?? ""}
       </p>
     </li>
@@ -606,6 +696,13 @@ const TrustNotice: Component = () => (
 function displayName(actor: string): string {
   const at = actor.indexOf("@");
   return at > 0 ? actor.slice(0, at) : actor;
+}
+
+/** Whether `actor` lives on a different provider than the signed-in user. */
+function isRemoteActor(actor: string): boolean {
+  const home = session.host;
+  if (!home || !actor) return false;
+  return !isLocalActor(actor, home);
 }
 
 /** Short HH:MM time for a message timestamp; empty when absent/unparseable. */
