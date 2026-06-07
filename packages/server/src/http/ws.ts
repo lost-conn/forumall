@@ -842,6 +842,11 @@ export function createWsHandlers(deps: WsHandlerDeps) {
     }
     const type = typeResult.data;
     const ref = reference.success ? reference.data : undefined;
+    // Tags (§5.3, e.g. an article's topic tags / promote lineage marker) are an
+    // open-world passthrough on the command; accept a plain string array.
+    const tags = Array.isArray(extra.tags)
+      ? extra.tags.filter((t): t is string => typeof t === "string")
+      : undefined;
 
     // --- Authorization (§5.2.1) -------------------------------------------
     // The channel must exist in the named group, be readable by the actor, and
@@ -876,6 +881,7 @@ export function createWsHandlers(deps: WsHandlerDeps) {
         content,
         ...(attachments.success ? { attachments: attachments.data } : {}),
         ...(ref ? { reference: ref } : {}),
+        ...(tags && tags.length > 0 ? { tags } : {}),
         ...(clientMessageId !== undefined ? { clientMessageId } : {}),
       });
     } catch (err) {

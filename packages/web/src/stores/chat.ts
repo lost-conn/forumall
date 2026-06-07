@@ -37,6 +37,8 @@ export interface ChatMessage {
   reference?: { type: string; id: string };
   /** Advisory count of replies to this message (§7.2), when the server sends it. */
   replyCount?: number;
+  /** §5.3 tags (article topics; a `promoted-from:#channel` lineage marker). */
+  tags?: string[];
   createdAt?: string;
   editedAt?: string;
   deletedAt?: string;

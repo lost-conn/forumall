@@ -135,6 +135,7 @@ export async function openChannel(deps: OpenChannelDeps): Promise<ChannelHandle>
       attachments: (m as { attachments?: never }).attachments,
       reference: (m as { reference?: { type: string; id: string } }).reference,
       replyCount: (m as { replyCount?: number }).replyCount,
+      tags: (m as { tags?: string[] }).tags,
       createdAt: m.createdAt,
       editedAt: m.editedAt,
       cursor: data.cursor,
@@ -165,6 +166,7 @@ export async function openChannel(deps: OpenChannelDeps): Promise<ChannelHandle>
       type: (m as { type?: string }).type,
       content: m.content,
       reference: (m as { reference?: { type: string; id: string } }).reference,
+      tags: (m as { tags?: string[] }).tags,
       createdAt: m.createdAt,
       editedAt: m.editedAt,
       cursor: data.cursor,
@@ -217,6 +219,7 @@ export async function openChannel(deps: OpenChannelDeps): Promise<ChannelHandle>
       attachments: m.attachments,
       reference: m.reference,
       replyCount: (m as { replyCount?: number }).replyCount,
+      tags: m.tags,
       createdAt: m.createdAt,
       editedAt: m.editedAt,
       deletedAt: m.deletedAt,
@@ -255,6 +258,7 @@ export async function openChannel(deps: OpenChannelDeps): Promise<ChannelHandle>
           attachments: m.attachments,
           reference: m.reference,
           replyCount: (m as { replyCount?: number }).replyCount,
+          tags: m.tags,
           createdAt: m.createdAt,
           editedAt: m.editedAt,
           deletedAt: m.deletedAt,
@@ -293,6 +297,8 @@ export interface SendArgs {
   /** §5.3 reply pointer to a parent message id. */
   reference?: { type: string; id: string };
   attachments?: import("@forumall/shared").Attachment[];
+  /** §5.3 tags (e.g. article topics / a `promoted-from:#channel` lineage marker). */
+  tags?: string[];
 }
 
 /**
@@ -302,7 +308,7 @@ export interface SendArgs {
  * echo in place — see the `pendingSends` correlation in {@link openChannel}.
  */
 export function sendMessage(args: SendArgs): string {
-  const { ws, groupId, channelId, author, text, mime, type, reference, attachments } = args;
+  const { ws, groupId, channelId, author, text, mime, type, reference, attachments, tags } = args;
   const kind = type ?? "message";
   const clientMessageId = newClientMessageId();
   addOptimistic(channelId, {
@@ -312,6 +318,7 @@ export function sendMessage(args: SendArgs): string {
     content: { mime: mime ?? "text/plain", text },
     ...(reference ? { reference } : {}),
     ...(attachments && attachments.length > 0 ? { attachments } : {}),
+    ...(tags && tags.length > 0 ? { tags } : {}),
     createdAt: rfc3339Timestamp(),
     clientMessageId,
   });
@@ -324,6 +331,7 @@ export function sendMessage(args: SendArgs): string {
       content: { mime: mime ?? "text/plain", text },
       ...(reference ? { reference } : {}),
       ...(attachments && attachments.length > 0 ? { attachments } : {}),
+      ...(tags && tags.length > 0 ? { tags } : {}),
     });
     pendingSends.set(sentFrameId, { channelId, clientMessageId });
   } catch {
@@ -357,6 +365,7 @@ export async function loadReplies(deps: {
       attachments: m.attachments,
       reference: m.reference,
       replyCount: (m as { replyCount?: number }).replyCount,
+      tags: m.tags,
       createdAt: m.createdAt,
       editedAt: m.editedAt,
       deletedAt: m.deletedAt,

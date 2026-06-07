@@ -80,6 +80,15 @@ function isLongForm(type: string | undefined): boolean {
   return type === "memo" || type === "article";
 }
 
+/** Tag marker carrying an article's promote lineage: `promoted-from:#channel`. */
+const PROMOTE_TAG_PREFIX = "promoted-from:";
+
+/** The source channel an article was promoted from, if its tags carry the marker. */
+function promotedFrom(message: ChatMessage): string | undefined {
+  const tag = message.tags?.find((t) => t.startsWith(PROMOTE_TAG_PREFIX));
+  return tag ? tag.slice(PROMOTE_TAG_PREFIX.length) : undefined;
+}
+
 /** Header content-type filter: [filter value, label]. "message" reads as "Chat". */
 const TYPE_FILTERS: ["all" | "message" | "memo" | "article", string][] = [
   ["all", "All"],
@@ -106,6 +115,7 @@ export const ChatView: Component<{
   const [replyTarget, setReplyTarget] = createSignal<ChatMessage | null>(null);
   const [typeFilter, setTypeFilter] = createSignal<"all" | "message" | "memo" | "article">("all");
   const [sortMode, setSortMode] = createSignal<"recent" | "oldest" | "top">("recent");
+  const [promoteSource, setPromoteSource] = createSignal<ChatMessage | null>(null);
 
   // (Re)open the channel whenever it changes. Tear down the previous wiring.
   createEffect(
@@ -308,9 +318,11 @@ export const ChatView: Component<{
                   channelId={channelId()}
                   groupId={groupId()}
                   canModerate={props.canModerate}
+                  canPromote={(props.canPostArticle ?? props.canPost) === true}
                   byId={byId}
                   repliesByParent={repliesByParent}
                   onReply={setReplyTarget}
+                  onPromote={setPromoteSource}
                 />
               )}
             </For>
@@ -337,6 +349,8 @@ export const ChatView: Component<{
           canPostArticle={props.canPostArticle ?? props.canPost}
           replyTarget={replyTarget}
           onClearReply={() => setReplyTarget(null)}
+          promoteSource={promoteSource}
+          onClearPromote={() => setPromoteSource(null)}
         />
       </Show>
     </div>
@@ -353,9 +367,11 @@ const MessageNode: Component<{
   channelId: string;
   groupId: string;
   canModerate: boolean;
+  canPromote: boolean;
   byId: Accessor<Map<string, ChatMessage>>;
   repliesByParent: Accessor<Map<string, ChatMessage[]>>;
   onReply: (m: ChatMessage) => void;
+  onPromote: (m: ChatMessage) => void;
 }> = (props) => {
   const m = () => props.message;
   const [expanded, setExpanded] = createSignal(props.depth === 0 && isLongForm(props.message.type));
@@ -404,8 +420,10 @@ const MessageNode: Component<{
         channelId={props.channelId}
         groupId={props.groupId}
         canModerate={props.canModerate}
+        canPromote={props.canPromote}
         reactions={() => reactionsFor(props.channelId, m().id)}
         onReply={() => props.onReply(m())}
+        onPromote={() => props.onPromote(m())}
       />
 
       {/* Nested replies (memo/article always; chat in threaded mode). */}
@@ -437,9 +455,11 @@ const MessageNode: Component<{
                     channelId={props.channelId}
                     groupId={props.groupId}
                     canModerate={props.canModerate}
+                    canPromote={props.canPromote}
                     byId={props.byId}
                     repliesByParent={props.repliesByParent}
                     onReply={props.onReply}
+                    onPromote={props.onPromote}
                   />
                 )}
               </For>
@@ -479,8 +499,10 @@ const MessageRow: Component<{
   channelId: string;
   groupId: string;
   canModerate: boolean;
+  canPromote: boolean;
   reactions: () => ReactionGroup[];
   onReply: () => void;
+  onPromote: () => void;
 }> = (props) => {
   const m = () => props.message;
   const isAuthor = () => m().author === session.actor;
@@ -632,6 +654,17 @@ const MessageRow: Component<{
             >
               Reply
             </button>
+            <Show when={props.canPromote && (m().type ?? "message") === "message"}>
+              <button
+                type="button"
+                class="rounded px-1.5 py-0.5 text-xs text-faint hover:(bg-surface-2 text-ember)"
+                data-testid="promote-button"
+                title="Promote this message to an article"
+                onClick={() => props.onPromote()}
+              >
+                Promote
+              </button>
+            </Show>
             <div class="relative">
               <button
                 type="button"
@@ -787,6 +820,17 @@ const MessageBody: Component<{ message: ChatMessage }> = (props) => {
             `renderMarkdown` HTML-escapes all input + allowlists link schemes, so
             the produced HTML is trusted/sanitized (see lib/markdown.ts). */}
         <div class="mt-1 rounded-md border-[1.5px] border-border-strong bg-surface p-3.5">
+          <Show when={promotedFrom(props.message)}>
+            {(from) => (
+              <div
+                class="mb-2 inline-flex items-center gap-1.5 rounded-sm border-[1.5px] border-ember bg-ember-soft px-2 py-0.5 text-[11px] font-mono uppercase tracking-wide text-ember"
+                data-testid="promote-lineage"
+              >
+                <span aria-hidden="true">↳</span>
+                promoted from {from()}
+              </div>
+            )}
+          </Show>
           <div
             class="prose-chat text-sm text-ink"
             data-testid="message-article"
@@ -872,6 +916,8 @@ const Composer: Component<{
   canPostArticle: boolean;
   replyTarget: Accessor<ChatMessage | null>;
   onClearReply: () => void;
+  promoteSource: Accessor<ChatMessage | null>;
+  onClearPromote: () => void;
 }> = (props) => {
   const channelId = () => props.channel.id;
   const groupId = () => props.channel.groupId;
@@ -881,6 +927,32 @@ const Composer: Component<{
   const [pendingAttachments, setPendingAttachments] = createSignal<Attachment[]>([]);
   const [uploading, setUploading] = createSignal(false);
   const [sendError, setSendError] = createSignal<string | null>(null);
+  // Promote chat→article: the prefill markdown + lineage source channel, set when
+  // a chat message's "Promote" action fires. `editorKey` forces the contenteditable
+  // ArticleEditor to remount so its `initial` prop re-seeds on each promote.
+  const [promotePrefill, setPromotePrefill] = createSignal<string | undefined>();
+  const [promotedFromChannel, setPromotedFromChannel] = createSignal<string | null>(null);
+  const [editorKey, setEditorKey] = createSignal(1);
+  const channelLabel = (): string => `#${props.channel.name ?? props.channel.id}`;
+
+  // When a promote is requested, switch to the article composer and seed it with
+  // the source text + a lineage marker (rendered as a badge on the published
+  // article via the `promoted-from:` tag).
+  createEffect(
+    on(props.promoteSource, (src) => {
+      if (!src) return;
+      setKind("article");
+      setPromotePrefill(src.content.text ?? "");
+      setPromotedFromChannel(channelLabel());
+      setEditorKey((k) => k + 1);
+    }),
+  );
+
+  const clearPromote = (): void => {
+    setPromotePrefill(undefined);
+    setPromotedFromChannel(null);
+    props.onClearPromote();
+  };
 
   let lastTypingStart = 0;
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
@@ -915,6 +987,7 @@ const Composer: Component<{
     if (body.length === 0 && atts.length === 0) return;
     setSendError(null);
     const target = props.replyTarget();
+    const lineage = k === "article" ? promotedFromChannel() : null;
     try {
       sendMessage({
         ws,
@@ -925,6 +998,7 @@ const Composer: Component<{
         type: k,
         mime: k === "article" ? "text/markdown" : "text/plain",
         ...(target ? { reference: { type: "reply", id: target.id } } : {}),
+        ...(lineage ? { tags: [`${PROMOTE_TAG_PREFIX}${lineage}`] } : {}),
         attachments: atts,
       });
       setText("");
@@ -932,6 +1006,7 @@ const Composer: Component<{
       setKind("message");
       setPendingAttachments([]);
       props.onClearReply();
+      clearPromote();
       stopTyping();
     } catch (err) {
       setSendError(err instanceof Error ? err.message : "Could not send the message.");
@@ -969,7 +1044,10 @@ const Composer: Component<{
         }}
         data-testid={`compose-kind-${k}`}
         aria-pressed={kind() === k}
-        onClick={() => setKind(k)}
+        onClick={() => {
+          setKind(k);
+          if (k !== "article") clearPromote();
+        }}
       >
         {label}
       </button>
@@ -1033,7 +1111,35 @@ const Composer: Component<{
       <Switch>
         <Match when={kind() === "article"}>
           <div class="flex flex-col gap-2">
-            <ArticleEditor onChange={setArticleMarkdown} placeholder="Write an article…" />
+            <Show when={promotedFromChannel()}>
+              {(from) => (
+                <div
+                  class="flex items-center gap-2 rounded-md border-[1.5px] border-ember bg-ember-soft px-3 py-1.5 text-[11px] font-mono uppercase tracking-wide text-ember"
+                  data-testid="promote-pill"
+                >
+                  <span aria-hidden="true">↳</span>
+                  <span>Promoting a {from()} message to an article</span>
+                  <button
+                    type="button"
+                    class="ml-auto text-ember opacity-70 hover:opacity-100"
+                    aria-label="Cancel promote"
+                    data-testid="cancel-promote"
+                    onClick={clearPromote}
+                  >
+                    ✕
+                  </button>
+                </div>
+              )}
+            </Show>
+            <Show when={editorKey()} keyed>
+              {(_key) => (
+                <ArticleEditor
+                  initial={promotePrefill()}
+                  onChange={setArticleMarkdown}
+                  placeholder="Write an article…"
+                />
+              )}
+            </Show>
             <button
               type="button"
               class="btn-accent self-end px-4 py-2 text-sm"
