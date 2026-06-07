@@ -166,7 +166,7 @@ export const DmsPage: Component = () => {
           <Show when={tab() === "all" || tab() === "dms"}>
             <button
               type="button"
-              class="grid h-7 w-7 place-items-center rounded-md border-[1.5px] border-border-strong bg-accent font-bold text-accent-ink shadow-[2px_2px_0_var(--shadow-col)] transition-transform hover:-translate-x-px hover:-translate-y-px active:(translate-x-0.5 translate-y-0.5 shadow-none)"
+              class="btn-accent h-7 w-7 p-0 text-base"
               onClick={() => setShowNew(true)}
               aria-label="New direct message"
               data-testid="open-new-dm"

@@ -87,7 +87,7 @@ export default defineConfig({
     // box-shadow + background-color, on the Terminal Garden 120ms cubic curve.
     "btn-base": "transition duration-[120ms] ease-[cubic-bezier(0.2,0.8,0.2,1)]",
     "btn-accent":
-      "btn-base inline-flex items-center justify-center gap-2 rounded-md border-[1.5px] border-border-strong bg-accent px-4 py-2 text-xs font-mono font-bold uppercase tracking-wide text-accent-ink shadow-[3px_3px_0_var(--on-accent-shadow-col)] hover:(-translate-x-px -translate-y-px shadow-[4px_4px_0_var(--on-accent-shadow-col)]) active:(translate-x-0.5 translate-y-0.5 shadow-[0_0_0_var(--shadow-col)]) disabled:(opacity-50 cursor-not-allowed shadow-none translate-x-0 translate-y-0)",
+      "btn-base inline-flex items-center justify-center gap-2 rounded-md border-[1.5px] border-border-strong bg-accent px-4 py-2 text-xs font-mono font-bold uppercase tracking-wide text-accent-ink shadow-[3px_3px_0_var(--shadow-col)] hover:(-translate-x-px -translate-y-px shadow-[4px_4px_0_var(--shadow-col)]) active:(translate-x-0.5 translate-y-0.5 shadow-[0_0_0_var(--shadow-col)]) disabled:(opacity-50 cursor-not-allowed shadow-none translate-x-0 translate-y-0)",
     // Ghost: transparent + dashed border, no shadow. Solidifies + fills on hover,
     // and still presses in slightly on :active to keep the tactile feel.
     "btn-ghost":

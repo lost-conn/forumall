@@ -40,11 +40,6 @@
   --shadow-col: rgba(238, 233, 213, 0.24);
   --shadow-hard: 3px 3px 0 var(--shadow-col);
   --shadow-hard-sm: 2px 2px 0 var(--shadow-col);
-  /* on-accent: a DARK hard offset so the edge reads against the bright accent
-     fill. `--on-accent-shadow-col` is the bare color so utilities can compose
-     the offset at any size (3px base, 4px hover-grow). */
-  --on-accent-shadow-col: #11120b;
-  --on-accent-shadow: 3px 3px 0 var(--on-accent-shadow-col);
 }
 
 /* ----------------------------------------------------------- color: LIGHT (OS light, or forced) */
@@ -73,8 +68,6 @@
     --shadow-col: var(--ink);
     --shadow-hard: 3px 3px 0 var(--shadow-col);
     --shadow-hard-sm: 2px 2px 0 var(--shadow-col);
-    --on-accent-shadow-col: #15140d;
-    --on-accent-shadow: 3px 3px 0 var(--on-accent-shadow-col);
   }
 }
 :root[data-theme="light"] {
@@ -98,8 +91,6 @@
   --shadow-col: var(--ink);
   --shadow-hard: 3px 3px 0 var(--shadow-col);
   --shadow-hard-sm: 2px 2px 0 var(--shadow-col);
-  --on-accent-shadow-col: #15140d;
-  --on-accent-shadow: 3px 3px 0 var(--on-accent-shadow-col);
 }
 
 /* ----------------------------------------------------------- accent pairs (cool + warm) — compare via [data-accent] on <html> */
@@ -345,101 +336,6 @@ body.fa {
   color: var(--ink-3);
   white-space: nowrap;
 } /* timestamps, counts */
-
-/* ----------------------------------------------------------- buttons */
-.fa-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-  font-family: var(--font-mono);
-  font-weight: 700;
-  font-size: 12.5px;
-  text-transform: uppercase;
-  letter-spacing: .04em;
-  padding: var(--control-pad-y) 15px;
-  border: var(--bw) solid var(--line-strong);
-  border-radius: var(--r-md);
-  background: var(--surface);
-  color: var(--ink);
-  cursor: pointer;
-  box-shadow: var(--shadow-hard-sm);
-  transition: transform var(--dur) var(--ease), box-shadow var(--dur) var(--ease), background
-    var(--dur) var(--ease);
-  white-space: nowrap;
-  text-decoration: none;
-}
-.fa-btn:hover {
-  transform: translate(-1px, -1px);
-  box-shadow: 4px 4px 0 var(--shadow-col);
-}
-.fa-btn:active {
-  transform: translate(2px, 2px);
-  box-shadow: 0 0 0 var(--shadow-col);
-} /* press into page */
-.fa-btn--primary {
-  background: var(--phosphor);
-  color: var(--phosphor-ink);
-  border-color: var(--line-strong);
-  box-shadow: var(--on-accent-shadow);
-}
-.fa-btn--primary:active {
-  box-shadow: 0 0 0 var(--shadow-col);
-}
-.fa-btn--ember {
-  background: var(--ember);
-  color: var(--ember-ink);
-  box-shadow: var(--on-accent-shadow);
-}
-.fa-btn--ghost {
-  background: transparent;
-  border-style: dashed;
-  box-shadow: none;
-}
-.fa-btn--ghost:hover {
-  transform: none;
-  background: var(--surface);
-  border-style: solid;
-}
-.fa-btn--ghost:active {
-  transform: translate(1px, 1px);
-}
-.fa-btn--sm {
-  padding: 5px 10px;
-  font-size: 11px;
-}
-.fa-btn--lg {
-  padding: 12px 22px;
-  font-size: 14px;
-}
-.fa-btn--danger {
-  background: var(--danger);
-  color: #fff;
-}
-.fa-btn[disabled] {
-  opacity: 0.45;
-  cursor: not-allowed;
-  box-shadow: none;
-  transform: none;
-}
-
-/* icon button */
-.fa-iconbtn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 34px;
-  height: 34px;
-  border: var(--bw) solid var(--line-strong);
-  border-radius: var(--r-md);
-  background: var(--surface);
-  color: var(--ink);
-  cursor: pointer;
-  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
-}
-.fa-iconbtn:hover {
-  background: var(--phosphor-soft);
-}
 
 /* ----------------------------------------------------------- fields */
 .fa-field {
