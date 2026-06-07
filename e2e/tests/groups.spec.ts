@@ -146,6 +146,7 @@ test("invite flow: manager mints a link, a signed-in user redeems → member", a
   await createChannel(page, { name: "general", tier: "group" });
 
   // Manager mints an invite and grabs the shareable link.
+  await page.getByTestId("space-menu-toggle").click();
   await page.getByTestId("tab-invites").click();
   await page.getByTestId("invite-role").fill("member");
   await page.getByTestId("create-invite").click();
@@ -163,6 +164,7 @@ test("invite flow: manager mints a link, a signed-in user redeems → member", a
 
   // Now a member: the member list (members-only for a `group`-tier group) loads
   // and includes the second user.
+  await b.page.getByTestId("space-menu-toggle").click();
   await b.page.getByTestId("tab-members").click();
   await b.page.getByTestId("members-list").waitFor({ state: "visible" });
   await expect(b.page.getByTestId("members-list")).toContainText(b.actor);
@@ -191,6 +193,7 @@ test("join-request flow: request to join → manager approves → member", async
   await expect(b.page.getByTestId("join-pending")).toBeVisible({ timeout: 10_000 });
 
   // Manager sees the pending request and approves it.
+  await page.getByTestId("space-menu-toggle").click();
   await page.getByTestId("tab-requests").click();
   await page.getByTestId("requests-list").waitFor({ state: "visible", timeout: 10_000 });
   await expect(page.getByTestId("requests-list")).toContainText(b.actor);
@@ -200,6 +203,7 @@ test("join-request flow: request to join → manager approves → member", async
 
   // The second user reloads and is now a member (sees themselves in members).
   await b.page.reload();
+  await b.page.getByTestId("space-menu-toggle").click();
   await b.page.getByTestId("tab-members").click();
   await b.page.getByTestId("members-list").waitFor({ state: "visible" });
   await expect(b.page.getByTestId("members-list")).toContainText(b.actor);
@@ -223,6 +227,7 @@ test("guest redeem: a grantsGuest invite provisions a guest with no account", as
   await createChannel(page, { name: "general", tier: "group" });
 
   // Mint a guest-granting invite.
+  await page.getByTestId("space-menu-toggle").click();
   await page.getByTestId("tab-invites").click();
   await page.getByTestId("invite-grants-guest").check();
   await page.getByTestId("create-invite").click();

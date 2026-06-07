@@ -58,6 +58,8 @@ export const AppShell: ParentComponent = (props) => {
                   title={grp.name}
                   class="fa-ava transition-colors"
                   classList={{ "fa-ava--phosphor": active() }}
+                  data-testid="my-group-item"
+                  data-group-name={grp.name}
                 >
                   {grp.name.slice(0, 1).toUpperCase()}
                 </A>
