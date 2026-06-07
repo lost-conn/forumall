@@ -99,6 +99,7 @@ test("register → restore on reload → device keys → logout (key revoked)", 
 
   // -- Assertion 3: settings → device keys listed, current device marked ----
   await page.goto("/settings");
+  await page.getByTestId("settings-nav-devices").click();
   await expect(page.getByTestId("device-keys-list")).toBeVisible();
   await expect(page.getByTestId("device-key-row")).toHaveCount(1);
   await expect(page.getByTestId("current-device")).toBeVisible();
@@ -179,9 +180,11 @@ test("register → restore on reload → device keys → logout (key revoked)", 
   // The app restores a signing client (key + session present locally) and lands
   // "authenticated" client-side, but every signed call now 401s server-side.
   await page.goto("/settings");
+  await page.getByTestId("settings-nav-devices").click();
   // The signed GET /api/auth/device-keys is rejected → the list never renders
   // and the error surfaces.
   await expect(page.getByTestId("device-keys-error")).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId("settings-nav-account").click();
   await expect(page.getByTestId("account")).toContainText(/could not load account/i);
 
   // And a direct signed probe confirms the revoked key yields 401 (not 200).

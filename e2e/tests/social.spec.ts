@@ -104,6 +104,7 @@ test("presence flips live: B sees A online, then dnd, then offline on disconnect
   // default is `sharedGroups`, which A & B don't satisfy — this isolates the pure
   // presence mechanics from the visibility tiers, which the next tests cover).
   await page.goto("/settings");
+  await page.getByTestId("settings-nav-privacy").click();
   await page.getByTestId("presence-visibility").selectOption("public");
   await page.getByTestId("privacy-save").click();
   await expect(page.getByTestId("privacy-saved")).toBeVisible({ timeout: 10_000 });
@@ -139,6 +140,7 @@ test("contacts-tier presence: non-contact sees offline; after accept sees real p
 
   // A restricts presence to contacts only.
   await page.goto("/settings");
+  await page.getByTestId("settings-nav-privacy").click();
   await page.getByTestId("presence-visibility").selectOption("contacts");
   await page.getByTestId("privacy-save").click();
   await expect(page.getByTestId("privacy-saved")).toBeVisible({ timeout: 10_000 });
@@ -178,6 +180,7 @@ test("`nobody` hides presence: visible viewer flips to offline", async ({
 
   // A makes presence public so B can see it; B watches via a contact request.
   await page.goto("/settings");
+  await page.getByTestId("settings-nav-privacy").click();
   await page.getByTestId("presence-visibility").selectOption("public");
   await page.getByTestId("privacy-save").click();
   await expect(page.getByTestId("privacy-saved")).toBeVisible({ timeout: 10_000 });

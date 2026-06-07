@@ -229,65 +229,67 @@ export const PrivacySettingsCard: Component = () => {
           Could not load your privacy settings.
         </p>
       </Show>
-      <div class="flex flex-col gap-3">
-        <PolicySelect
-          label="Presence visibility"
-          testid="presence-visibility"
-          value={presenceVisibility()}
-          onChange={setPresenceVisibility}
-        />
-        <PolicySelect
-          label="Profile visibility"
-          testid="profile-visibility"
-          value={profileVisibility()}
-          onChange={setProfileVisibility}
-        />
-        <PolicySelect
-          label="Membership visibility"
-          testid="membership-visibility"
-          value={membershipVisibility()}
-          onChange={setMembershipVisibility}
-        />
-        <label class="flex flex-col gap-1 text-xs text-muted">
-          Allow list (actors, one per line)
-          <textarea
-            class="input min-h-16 resize-y font-mono text-xs"
-            value={allowList()}
-            onInput={(e) => setAllowList(e.currentTarget.value)}
-            data-testid="privacy-allowlist"
+      <Show when={loaded()} fallback={<p class="text-sm text-muted">Loading…</p>}>
+        <div class="flex flex-col gap-3">
+          <PolicySelect
+            label="Presence visibility"
+            testid="presence-visibility"
+            value={presenceVisibility()}
+            onChange={setPresenceVisibility}
           />
-        </label>
-        <label class="flex flex-col gap-1 text-xs text-muted">
-          Deny list (actors, one per line)
-          <textarea
-            class="input min-h-16 resize-y font-mono text-xs"
-            value={denyList()}
-            onInput={(e) => setDenyList(e.currentTarget.value)}
-            data-testid="privacy-denylist"
+          <PolicySelect
+            label="Profile visibility"
+            testid="profile-visibility"
+            value={profileVisibility()}
+            onChange={setProfileVisibility}
           />
-        </label>
-        <div class="flex items-center gap-3">
-          <button
-            type="button"
-            class="btn-accent px-4 py-2 text-sm"
-            onClick={() => void save()}
-            disabled={saving()}
-            data-testid="privacy-save"
-          >
-            {saving() ? "Saving…" : "Save privacy"}
-          </button>
-          <Show when={saved()}>
-            <span class="text-xs text-success" data-testid="privacy-saved">
-              Saved.
-            </span>
-          </Show>
-          <Show when={error()}>
-            <span class="text-xs text-danger" data-testid="privacy-error">
-              {error()}
-            </span>
-          </Show>
+          <PolicySelect
+            label="Membership visibility"
+            testid="membership-visibility"
+            value={membershipVisibility()}
+            onChange={setMembershipVisibility}
+          />
+          <label class="flex flex-col gap-1 text-xs text-muted">
+            Allow list (actors, one per line)
+            <textarea
+              class="input min-h-16 resize-y font-mono text-xs"
+              value={allowList()}
+              onInput={(e) => setAllowList(e.currentTarget.value)}
+              data-testid="privacy-allowlist"
+            />
+          </label>
+          <label class="flex flex-col gap-1 text-xs text-muted">
+            Deny list (actors, one per line)
+            <textarea
+              class="input min-h-16 resize-y font-mono text-xs"
+              value={denyList()}
+              onInput={(e) => setDenyList(e.currentTarget.value)}
+              data-testid="privacy-denylist"
+            />
+          </label>
+          <div class="flex items-center gap-3">
+            <button
+              type="button"
+              class="btn-accent px-4 py-2 text-sm"
+              onClick={() => void save()}
+              disabled={saving()}
+              data-testid="privacy-save"
+            >
+              {saving() ? "Saving…" : "Save privacy"}
+            </button>
+            <Show when={saved()}>
+              <span class="text-xs text-success" data-testid="privacy-saved">
+                Saved.
+              </span>
+            </Show>
+            <Show when={error()}>
+              <span class="text-xs text-danger" data-testid="privacy-error">
+                {error()}
+              </span>
+            </Show>
+          </div>
         </div>
-      </div>
+      </Show>
     </section>
   );
 };
