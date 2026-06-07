@@ -90,6 +90,19 @@ function promotedFrom(message: ChatMessage): string | undefined {
   return tag ? tag.slice(PROMOTE_TAG_PREFIX.length) : undefined;
 }
 
+/** A plaintext one-glance excerpt of an article body for the channel card.
+ *  Strips markdown markers — leading block markers (heading/blockquote/list) and
+ *  horizontal rules per line, then inline emphasis/code anywhere — but keeps
+ *  in-word hyphens, then collapses whitespace. */
+function articleExcerpt(body: string): string {
+  return body
+    .replace(/^\s*(?:#{1,6}|>|[-*+])\s+/gm, "")
+    .replace(/^\s*(?:[-*_]\s*){3,}$/gm, "")
+    .replace(/[*`_]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 /** Header content-type filter: [filter value, label, icon]. "message" reads as "Chat". */
 const TYPE_FILTERS: ["all" | "message" | "memo" | "article", string, IconName][] = [
   ["all", "All", "more"],
@@ -814,10 +827,7 @@ const MessageBody: Component<{ message: ChatMessage; onOpenArticle?: () => void 
             class="my-[7px] mb-[11px] line-clamp-3 text-sm text-muted"
             data-testid="message-article"
           >
-            {splitArticle(text())
-              .body.replace(/[#>*`_-]/g, "")
-              .replace(/\s+/g, " ")
-              .trim()}
+            {articleExcerpt(splitArticle(text()).body)}
           </p>
           <div class="flex flex-wrap items-center justify-between gap-2.5">
             <div class="flex flex-wrap items-center gap-[7px]">
