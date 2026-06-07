@@ -148,11 +148,12 @@ test("compose an article via the WYSIWYG → renders as markdown", async ({
   const { a } = await twoUsersInChannel(page, browser, appServer.baseUrl);
 
   await a.getByTestId("compose-kind-article").click();
+  await a.getByTestId("open-article-editor").click();
   const editor = a.getByTestId("article-input");
   await editor.click();
   const body = `article-body-${Date.now().toString(36)}`;
   await a.keyboard.type(body);
-  await a.getByTestId("send-button").click();
+  await a.getByTestId("article-editor-publish").click();
 
   const article = a.getByTestId("message-article").first();
   await expect(article).toBeVisible({ timeout: 10_000 });

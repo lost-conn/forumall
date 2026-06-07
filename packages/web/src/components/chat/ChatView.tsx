@@ -47,7 +47,7 @@ import { session, sessionClient, sessionWs } from "../../stores/session.ts";
 import { Icon, type IconName } from "../Icon.tsx";
 import { FollowToggle } from "../feed/FollowToggle.tsx";
 import { openUserProfile } from "../social/user-profile-store.ts";
-import { ArticleEditor } from "./ArticleEditor.tsx";
+import { ArticleEditorOverlay } from "./ArticleEditorOverlay.tsx";
 import { ArticleReadingPane } from "./ArticleReadingPane.tsx";
 import {
   type ChannelHandle,
@@ -991,36 +991,61 @@ const Composer: Component<{
   const channelId = () => props.channel.id;
   const groupId = () => props.channel.groupId;
   const [text, setText] = createSignal("");
-  const [articleMarkdown, setArticleMarkdown] = createSignal("");
   const [kind, setKind] = createSignal<ComposeKind>("message");
   const [pendingAttachments, setPendingAttachments] = createSignal<Attachment[]>([]);
   const [uploading, setUploading] = createSignal(false);
   const [sendError, setSendError] = createSignal<string | null>(null);
-  // Promote chat→article: the prefill markdown + lineage source channel, set when
-  // a chat message's "Promote" action fires. `editorKey` forces the contenteditable
-  // ArticleEditor to remount so its `initial` prop re-seeds on each promote.
-  const [promotePrefill, setPromotePrefill] = createSignal<string | undefined>();
+  // Article composer → a full-screen editor overlay. Promote chat→article opens
+  // it prefilled with the source text + a lineage source channel (published as a
+  // `promoted-from:` tag → rendered as a badge on the article).
+  const [editorOpen, setEditorOpen] = createSignal(false);
+  const [editorPrefill, setEditorPrefill] = createSignal<string>("");
   const [promotedFromChannel, setPromotedFromChannel] = createSignal<string | null>(null);
-  const [editorKey, setEditorKey] = createSignal(1);
-  const channelLabel = (): string => `#${props.channel.name ?? props.channel.id}`;
+  const channelName = (): string => props.channel.name ?? props.channel.id;
+  const channelLabel = (): string => `#${channelName()}`;
 
-  // When a promote is requested, switch to the article composer and seed it with
-  // the source text + a lineage marker (rendered as a badge on the published
-  // article via the `promoted-from:` tag).
+  // When a promote is requested, open the article editor seeded with the source.
   createEffect(
     on(props.promoteSource, (src) => {
       if (!src) return;
       setKind("article");
-      setPromotePrefill(src.content.text ?? "");
+      setEditorPrefill(src.content.text ?? "");
       setPromotedFromChannel(channelLabel());
-      setEditorKey((k) => k + 1);
+      setEditorOpen(true);
     }),
   );
 
   const clearPromote = (): void => {
-    setPromotePrefill(undefined);
     setPromotedFromChannel(null);
     props.onClearPromote();
+  };
+
+  const openEditor = (): void => {
+    setEditorPrefill("");
+    setEditorOpen(true);
+  };
+
+  /** Publish an article from the overlay: assemble markdown + tags, then send. */
+  const publishArticle = (args: { title: string; body: string; tags: string[] }): void => {
+    const ws = sessionWs();
+    if (!ws) return;
+    const md = `${args.title ? `# ${args.title}\n\n` : ""}${args.body}`.trim();
+    if (!md) return;
+    const lineage = promotedFromChannel();
+    const tags = [...args.tags, ...(lineage ? [`${PROMOTE_TAG_PREFIX}${lineage}`] : [])];
+    sendMessage({
+      ws,
+      groupId: groupId(),
+      channelId: channelId(),
+      author: session.actor ?? "",
+      text: md,
+      type: "article",
+      mime: "text/markdown",
+      ...(tags.length > 0 ? { tags } : {}),
+    });
+    setEditorOpen(false);
+    setKind("message");
+    clearPromote();
   };
 
   let lastTypingStart = 0;
@@ -1051,12 +1076,11 @@ const Composer: Component<{
     const ws = sessionWs();
     if (!ws) return;
     const k = kind();
-    const body = k === "article" ? articleMarkdown().trim() : text().trim();
+    const body = text().trim();
     const atts = pendingAttachments();
     if (body.length === 0 && atts.length === 0) return;
     setSendError(null);
     const target = props.replyTarget();
-    const lineage = k === "article" ? promotedFromChannel() : null;
     try {
       sendMessage({
         ws,
@@ -1065,13 +1089,11 @@ const Composer: Component<{
         author: session.actor ?? "",
         text: body,
         type: k,
-        mime: k === "article" ? "text/markdown" : "text/plain",
+        mime: "text/plain",
         ...(target ? { reference: { type: "reply", id: target.id } } : {}),
-        ...(lineage ? { tags: [`${PROMOTE_TAG_PREFIX}${lineage}`] } : {}),
         attachments: atts,
       });
       setText("");
-      setArticleMarkdown("");
       setKind("message");
       setPendingAttachments([]);
       props.onClearReply();
@@ -1180,43 +1202,20 @@ const Composer: Component<{
 
       <Switch>
         <Match when={kind() === "article"}>
-          <div class="flex flex-col gap-2">
-            <Show when={promotedFromChannel()}>
-              {(from) => (
-                <div
-                  class="flex items-center gap-2 rounded-md border-[1.5px] border-ember bg-ember-soft px-3 py-1.5 text-[11px] font-mono uppercase tracking-wide text-ember"
-                  data-testid="promote-pill"
-                >
-                  <span aria-hidden="true">↳</span>
-                  <span>Promoting a {from()} message to an article</span>
-                  <button
-                    type="button"
-                    class="ml-auto text-ember opacity-70 hover:opacity-100"
-                    aria-label="Cancel promote"
-                    data-testid="cancel-promote"
-                    onClick={clearPromote}
-                  >
-                    ✕
-                  </button>
-                </div>
-              )}
-            </Show>
-            <Show when={editorKey()} keyed>
-              {(_key) => (
-                <ArticleEditor
-                  initial={promotePrefill()}
-                  onChange={setArticleMarkdown}
-                  placeholder="Write an article…"
-                />
-              )}
-            </Show>
+          {/* Articles are written in the full editor (opens an overlay). */}
+          <div class="flex items-center gap-2.5 rounded-md border-[1.5px] border-border-strong bg-surface px-3 py-2">
+            <span class="text-faint">
+              <Icon name="article" size={17} />
+            </span>
+            <span class="flex-1 text-sm text-faint">Articles are written in the full editor…</span>
             <button
               type="button"
-              class="btn-accent self-end px-4 py-2 text-sm"
-              data-testid="send-button"
-              onClick={doSend}
+              class="btn-accent px-4 py-2 text-xs"
+              data-testid="open-article-editor"
+              onClick={openEditor}
             >
-              Publish article
+              <Icon name="article" size={14} />
+              Open editor
             </button>
           </div>
         </Match>
@@ -1281,6 +1280,19 @@ const Composer: Component<{
         <p class="mt-1 text-xs text-danger" data-testid="composer-error">
           {sendError()}
         </p>
+      </Show>
+
+      <Show when={editorOpen()}>
+        <ArticleEditorOverlay
+          channelName={channelName()}
+          initialBody={editorPrefill()}
+          promotedFrom={promotedFromChannel()}
+          onClose={() => {
+            setEditorOpen(false);
+            clearPromote();
+          }}
+          onPublish={publishArticle}
+        />
       </Show>
     </div>
   );
