@@ -38,11 +38,7 @@ export async function registerUser(
 ): Promise<{ handle: string; actor: string }> {
   await page.goto(baseURL);
 
-  // Stage 1: connect (host defaults to the current origin's host).
-  await page.getByTestId("connect-form").waitFor({ state: "visible" });
-  await page.getByTestId("connect-submit").click();
-
-  // Stage 2: register.
+  // The welcome card auto-probes the origin's provider; register on it.
   await page.getByTestId("credentials-form").waitFor({ state: "visible" });
   await page.getByTestId("tab-register").click();
   await page.getByRole("textbox", { name: /handle/i }).fill(handle);

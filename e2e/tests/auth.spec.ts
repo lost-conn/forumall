@@ -40,12 +40,7 @@ test("register → restore on reload → device keys → logout (key revoked)", 
 
   await page.goto("/");
 
-  // Stage 1: connect to provider. The host defaults to the current origin's
-  // host; just confirm it.
-  await expect(page.getByTestId("connect-form")).toBeVisible();
-  await page.getByTestId("connect-submit").click();
-
-  // Stage 2: register.
+  // The welcome card auto-probes the origin's provider; register on it.
   await expect(page.getByTestId("credentials-form")).toBeVisible();
   await page.getByTestId("tab-register").click();
   await page.getByRole("textbox", { name: /handle/i }).fill(handle);
