@@ -57,6 +57,30 @@ localhost path is for trying the single-provider experience only.)
 
 You can also skip Docker entirely for local testing — see **Run from source**.
 
+### Deployment modes
+
+The default is **combined**: one process serves the OFSCP API + WebSocket **and**
+the web client at the same origin (the 5-minute deploy above). You can also split
+the two when you'd rather host them apart:
+
+- **Combined** (default) — `SERVE_STATIC=true`. Provider and UI in one process,
+  one port, one origin. Nothing to configure.
+- **Provider-only** — set `SERVE_STATIC=false`. The process serves only `/api`
+  (HTTP + WS); non-API routes `404`. Host the client elsewhere. CORS is wildcard
+  and credential-less (the Ed25519 signature is the credential, not a cookie), so
+  a browser client on another origin calls the API directly.
+- **Client-only** — build the web bundle pointed at your provider and host the
+  static `packages/web/dist` on any static host / CDN:
+
+  ```sh
+  VITE_PROVIDER_HOST=forum.example.com bun run build
+  # deploy packages/web/dist/ to your static host
+  ```
+
+  `VITE_PROVIDER_HOST` bakes in the provider the client targets by default; users
+  can still override it on the first-run connect screen. Without it the client
+  defaults to its own origin (correct for the combined mode).
+
 ---
 
 ## Run from source (Bun, for development)
@@ -66,7 +90,7 @@ Forumall is a [Bun](https://bun.sh) workspace monorepo.
 ```sh
 bun install
 
-# Dev: server + web client with hot reload
+# Dev: server (:3000) + web client (:5173, HMR) together
 bun run dev
 
 # Or just the server (serves the API; build the web bundle separately for the UI)
@@ -78,6 +102,12 @@ With **no env vars at all** the server boots on `http://localhost:3000`, writes
 its state under `./data`, and logs a startup summary plus a warning that `DOMAIN`
 is unset (so you don't accidentally federate under a localhost authority). To run
 against a real authority, set `DOMAIN` (and optionally `PORT`).
+
+The `:5173` dev client proxies `/api` (HTTP + WS) to the server (override the
+upstream with `VITE_PROXY_TARGET`). Because the client signs with its own origin
+as the authority (§4.4.2), run the server with `DOMAIN=localhost:5173` when
+developing against the `:5173` client so signatures verify; or open the server
+directly at `http://localhost:3000`, which is served same-origin.
 
 ### Repo layout
 
@@ -105,6 +135,7 @@ Highlights:
 | `DOMAIN` | `localhost:<PORT>` | Public authority / OFSCP `iss` + the TLS hostname. **Set this.** |
 | `PORT` | `3000` | In-container listen port (Caddy proxies to it). |
 | `DATA_DIR` | `./data` (`/data` in Docker) | Root of all state (DB + media). |
+| `SERVE_STATIC` | `true` | Serve the web client (combined mode); `false` = provider-only. See [Deployment modes](#deployment-modes). |
 | `MAX_UPLOAD_BYTES` | `26214400` (25 MiB) | Max attachment size (advertised + enforced). |
 | `CONTACT` | _(unset)_ | Admin contact published in discovery. |
 | `FEDERATION_ALLOW` / `FEDERATION_DENY` | empty (open) | Federation allow/deny lists. |

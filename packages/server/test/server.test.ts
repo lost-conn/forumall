@@ -320,6 +320,22 @@ describe("static SPA", () => {
     ProblemDetailsSchema.parse(await res.json());
   });
 
+  test("provider-only (SERVE_STATIC=false): non-API routes 404 even with a build", async () => {
+    const webDir = join(tmp, "provideronly-web");
+    const { app } = freshApp("provideronly", { WEB_DIR: webDir, SERVE_STATIC: "false" });
+    // A real build is present, but static serving is disabled.
+    await Bun.write(join(webDir, "index.html"), "<!doctype html><title>SPA</title>");
+
+    const res = await app.request("/some/spa/route");
+    expect(res.status).toBe(404);
+    expect(res.headers.get("content-type")).toContain(PROBLEM_CT);
+    ProblemDetailsSchema.parse(await res.json());
+
+    // ...but the API is fully live.
+    const health = await app.request("/api/health");
+    expect(health.status).toBe(200);
+  });
+
   test("static asset is served when present", async () => {
     const webDir = join(tmp, "asset-web");
     const { app } = freshApp("asset", { WEB_DIR: webDir });

@@ -140,6 +140,14 @@ const RawEnvSchema = z.object({
   ENABLE_DISCOVER_FEED: BoolEnvSchema.default(false),
 
   /**
+   * Serve the built web client (`webDir`) as static for non-API routes. `true`
+   * (default) is the combined single-process mode. Set `false` for a
+   * provider-only deployment (API + WS only) — non-API routes then 404 and the
+   * client is hosted separately. Independent of `webDir` existing.
+   */
+  SERVE_STATIC: BoolEnvSchema.default(true),
+
+  /**
    * Insecure-localhost federation transport (dev / self-host / testing only).
    * When `false` (default) the production federation transport is used: every
    * provider-to-provider fetch goes to `https://{domain}/...` over TLS. When
@@ -194,6 +202,8 @@ export interface Config {
    * app still boots (static routes just 404).
    */
   readonly webDir: string;
+  /** Whether to serve `webDir` as static (combined mode); `false` = provider-only. */
+  readonly serveStatic: boolean;
   /** Max attachment upload size in bytes (advertised + enforced). */
   readonly maxUploadBytes: number;
   /** Optional admin contact for discovery; omitted when unset. */
@@ -274,6 +284,7 @@ export function loadConfig(env: Env = process.env): Config {
     mediaDir,
     dbPath,
     webDir,
+    serveStatic: raw.SERVE_STATIC,
     maxUploadBytes: raw.MAX_UPLOAD_BYTES,
     argon2: Object.freeze({
       memoryKib: raw.ARGON2_MEMORY_KIB,

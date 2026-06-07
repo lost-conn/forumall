@@ -42,8 +42,16 @@ export function baseUrlForHost(host: string): string {
   return `${insecure ? "http" : "https"}://${host}`;
 }
 
-/** The default provider host to suggest on first run: the current origin's host. */
+/**
+ * The default provider host to suggest on first run. A client hosted separately
+ * from its provider can bake in the target at build time via `VITE_PROVIDER_HOST`
+ * (e.g. `providera.com`); otherwise it falls back to the current origin's host,
+ * which is correct for the combined single-process deployment. Either way the
+ * user can still override the host on the first-run connect screen.
+ */
 export function defaultProviderHost(): string {
+  const configured = import.meta.env.VITE_PROVIDER_HOST;
+  if (typeof configured === "string" && configured.length > 0) return configured;
   return typeof location !== "undefined" ? location.host : "";
 }
 

@@ -156,16 +156,19 @@ export function createApp(config: Config, deps: AppDeps): AppWithWebSocket {
 
   // Static web client (SPA) for everything that isn't an API route. Registered
   // after `/api` so it never shadows the API. A `null` result (no web build)
-  // falls through to the notFound handler.
-  const serveStatic = createStaticHandler(config.webDir);
-  app.get("*", async (c, next) => {
-    if (c.req.path.startsWith("/api/") || c.req.path === "/api") {
+  // falls through to the notFound handler. Skipped entirely in provider-only
+  // mode (`SERVE_STATIC=false`), where the client is hosted separately.
+  if (config.serveStatic) {
+    const serveStatic = createStaticHandler(config.webDir);
+    app.get("*", async (c, next) => {
+      if (c.req.path.startsWith("/api/") || c.req.path === "/api") {
+        return next();
+      }
+      const res = await serveStatic(c.req.path);
+      if (res) return res;
       return next();
-    }
-    const res = await serveStatic(c.req.path);
-    if (res) return res;
-    return next();
-  });
+    });
+  }
 
   app.notFound(notFound);
   app.onError(onError);
