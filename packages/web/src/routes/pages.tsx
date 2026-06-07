@@ -9,6 +9,7 @@ import { DmsPage as DmsPageImpl } from "../components/dms/DmsPage.tsx";
 import { DiscoverPage } from "../components/feed/DiscoverPage.tsx";
 import { HomeFeed } from "../components/feed/HomeFeed.tsx";
 import { GroupsPage } from "../components/groups/GroupsPage.tsx";
+import { AppearanceSettings } from "../components/social/AppearanceSettings.tsx";
 import { ContactsPage } from "../components/social/ContactsPage.tsx";
 import {
   PrivacySettingsCard,
@@ -101,6 +102,8 @@ export const SettingsPage: Component = () => {
             )}
           </Show>
         </section>
+
+        <AppearanceSettings />
 
         <ProfileSettings />
 

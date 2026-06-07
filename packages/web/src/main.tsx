@@ -7,6 +7,7 @@ import "uno.css";
 import "./forumall.css";
 import { render } from "solid-js/web";
 import { App } from "./App.tsx";
+import { applyAppearance } from "./stores/appearance.ts";
 import { type ChatMessage, upsertMessage } from "./stores/chat.ts";
 import { presence } from "./stores/presence.ts";
 import { sessionClient, sessionWs } from "./stores/session.ts";
@@ -141,5 +142,8 @@ if (!root) throw new Error("#root not found");
   self: { ...presence.self },
   byActor: JSON.parse(JSON.stringify(presence.byActor)),
 });
+
+// Reflect the persisted theme/density/accent onto <html> before first paint.
+applyAppearance();
 
 render(() => <App />, root);
