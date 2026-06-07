@@ -44,6 +44,7 @@ import {
   typingFor,
 } from "../../stores/chat.ts";
 import { session, sessionClient, sessionWs } from "../../stores/session.ts";
+import { Icon, type IconName } from "../Icon.tsx";
 import { FollowToggle } from "../feed/FollowToggle.tsx";
 import { openUserProfile } from "../social/user-profile-store.ts";
 import { ArticleEditor } from "./ArticleEditor.tsx";
@@ -80,6 +81,13 @@ function isLongForm(type: string | undefined): boolean {
   return type === "memo" || type === "article";
 }
 
+/** Per-type tag metadata (label · icon · fa-type modifier) shown by name + time. */
+const TYPE_META: Record<string, { label: string; icon: IconName; cls: string }> = {
+  message: { label: "chat", icon: "chat", cls: "fa-type--chat" },
+  memo: { label: "memo", icon: "memo", cls: "fa-type--memo" },
+  article: { label: "article", icon: "article", cls: "fa-type--article" },
+};
+
 /** Tag marker carrying an article's promote lineage: `promoted-from:#channel`. */
 const PROMOTE_TAG_PREFIX = "promoted-from:";
 
@@ -89,12 +97,12 @@ function promotedFrom(message: ChatMessage): string | undefined {
   return tag ? tag.slice(PROMOTE_TAG_PREFIX.length) : undefined;
 }
 
-/** Header content-type filter: [filter value, label]. "message" reads as "Chat". */
-const TYPE_FILTERS: ["all" | "message" | "memo" | "article", string][] = [
-  ["all", "All"],
-  ["message", "Chat"],
-  ["article", "Articles"],
-  ["memo", "Memos"],
+/** Header content-type filter: [filter value, label, icon]. "message" reads as "Chat". */
+const TYPE_FILTERS: ["all" | "message" | "memo" | "article", string, IconName | null][] = [
+  ["all", "All", null],
+  ["message", "Chat", "chat"],
+  ["article", "Articles", "article"],
+  ["memo", "Memos", "memo"],
 ];
 
 export const ChatView: Component<{
@@ -247,34 +255,40 @@ export const ChatView: Component<{
         {/* Content-type filter + sort (client-side over the loaded stream). */}
         <div class="flex flex-wrap items-center gap-1.5" data-testid="type-filter">
           <For each={TYPE_FILTERS}>
-            {([id, label]) => (
+            {([id, label, icon]) => (
               <button
                 type="button"
                 data-testid={`filter-${id}`}
                 aria-pressed={typeFilter() === id}
                 onClick={() => setTypeFilter(id)}
-                class="rounded-md border-[1.5px] px-2.5 py-1 text-[11px] font-mono font-bold uppercase tracking-wide transition-colors"
+                class="inline-flex items-center gap-1.5 rounded-md border-[1.5px] px-3 py-1 font-mono text-[12.5px] transition-transform hover:-translate-y-px"
                 classList={{
-                  "border-accent bg-accent-soft text-accent": typeFilter() === id,
-                  "border-border-strong text-muted hover:(bg-surface-2 text-ink)":
-                    typeFilter() !== id,
+                  "border-border-strong bg-accent text-accent-ink": typeFilter() === id,
+                  "border-border-strong bg-surface text-ink": typeFilter() !== id,
                 }}
               >
+                <Show when={icon}>{(name) => <Icon name={name()} size={13} />}</Show>
                 {label}
               </button>
             )}
           </For>
-          <select
-            class="ml-auto rounded-md border-[1.5px] border-border-strong bg-surface-2 px-2 py-1 text-[11px] font-mono font-bold uppercase tracking-wide text-muted outline-none focus:(outline outline-2 outline-accent)"
-            data-testid="sort-select"
-            aria-label="Sort messages"
-            value={sortMode()}
-            onChange={(e) => setSortMode(e.currentTarget.value as "recent" | "oldest" | "top")}
+          <label
+            class="ml-auto inline-flex items-center gap-1.5 rounded-md border-[1.5px] border-border-strong bg-surface px-2.5 py-1 font-mono text-[12.5px] text-muted focus-within:(outline outline-2 outline-accent)"
+            title="Sort messages"
           >
-            <option value="recent">Recent</option>
-            <option value="oldest">Oldest</option>
-            <option value="top">Top</option>
-          </select>
+            <Icon name="sort" size={14} />
+            <select
+              class="cursor-pointer bg-transparent text-ink outline-none"
+              data-testid="sort-select"
+              aria-label="Sort messages"
+              value={sortMode()}
+              onChange={(e) => setSortMode(e.currentTarget.value as "recent" | "oldest" | "top")}
+            >
+              <option value="recent">Recent</option>
+              <option value="oldest">Oldest</option>
+              <option value="top">Top</option>
+            </select>
+          </label>
         </div>
       </header>
 
@@ -597,17 +611,13 @@ const MessageRow: Component<{
         >
           {displayName(m().author)}
         </button>
-        <Show when={isLongForm(m().type)}>
-          <span
-            class="fa-type"
-            classList={{
-              "fa-type--article": m().type === "article",
-              "fa-type--memo": m().type === "memo",
-            }}
-            data-testid="message-kind"
-          >
-            {m().type}
-          </span>
+        <Show when={TYPE_META[m().type ?? "message"]}>
+          {(meta) => (
+            <span class={`fa-type ${meta().cls}`} data-testid="message-kind">
+              <Icon name={meta().icon} size={11} />
+              {meta().label}
+            </span>
+          )}
         </Show>
         <span class="text-[10px] text-faint">{formatTime(m().createdAt)}</span>
         <Show when={m().editedAt && !isDeleted()}>
@@ -1033,14 +1043,14 @@ const Composer: Component<{
     if (idleTimer) clearTimeout(idleTimer);
   });
 
-  const kindButton = (k: ComposeKind, label: string, show = true) => (
+  const kindButton = (k: ComposeKind, label: string, icon: IconName, show = true) => (
     <Show when={show}>
       <button
         type="button"
-        class="rounded-md border-[1.5px] px-3 py-1 text-[11px] font-mono font-bold uppercase tracking-wide transition-colors"
+        class="inline-flex items-center gap-1.5 rounded-sm border-[1.5px] border-border-strong px-3 py-1 font-mono text-[12.5px] transition-colors"
         classList={{
-          "border-accent bg-accent-soft text-accent": kind() === k,
-          "border-border-strong text-muted hover:(bg-surface-2 text-ink)": kind() !== k,
+          "bg-accent text-accent-ink": kind() === k,
+          "bg-surface text-muted hover:text-ink": kind() !== k,
         }}
         data-testid={`compose-kind-${k}`}
         aria-pressed={kind() === k}
@@ -1049,6 +1059,7 @@ const Composer: Component<{
           if (k !== "article") clearPromote();
         }}
       >
+        <Icon name={icon} size={13} />
         {label}
       </button>
     </Show>
@@ -1080,10 +1091,10 @@ const Composer: Component<{
       </Show>
 
       {/* Message-kind selector */}
-      <div class="mb-2 flex items-center gap-1" data-testid="compose-kind">
-        {kindButton("message", "Chat")}
-        {kindButton("memo", "Memo", props.canPostMemo)}
-        {kindButton("article", "Article", props.canPostArticle)}
+      <div class="mb-2 flex items-center gap-1.5" data-testid="compose-kind">
+        {kindButton("message", "Message", "chat")}
+        {kindButton("memo", "Memo", "memo", props.canPostMemo)}
+        {kindButton("article", "Article", "article", props.canPostArticle)}
       </div>
 
       <Show when={pendingAttachments().length > 0}>
@@ -1151,16 +1162,16 @@ const Composer: Component<{
           </div>
         </Match>
         <Match when={true}>
-          <div class="flex items-end gap-2">
+          <div class="flex items-end gap-2.5 rounded-md border-[1.5px] border-border-strong bg-surface px-3 py-2 focus-within:(outline outline-2 outline-accent outline-offset-1)">
             <button
               type="button"
-              class="btn-ghost shrink-0 px-3 py-2 text-sm"
+              class="shrink-0 pb-0.5 text-faint transition-colors hover:text-ink disabled:opacity-50"
               data-testid="attach-button"
               disabled={uploading()}
               onClick={() => fileInput?.click()}
               aria-label="Attach a file"
             >
-              {uploading() ? "…" : "📎"}
+              <Icon name="plus" size={18} />
             </button>
             <input
               ref={fileInput}
@@ -1173,16 +1184,17 @@ const Composer: Component<{
               }}
             />
             <textarea
-              class="input flex-1 resize-y"
+              class="flex-1 resize-none bg-transparent text-sm text-ink outline-none placeholder:text-faint"
               classList={{
-                "max-h-40 min-h-10": kind() === "message",
-                "min-h-24": kind() === "memo",
+                "max-h-40 min-h-6": kind() === "message",
+                "min-h-20": kind() === "memo",
               }}
+              rows={1}
               data-testid="composer-input"
               placeholder={
                 kind() === "memo"
-                  ? "Write a memo…"
-                  : `Message #${props.channel.name ?? props.channel.id}`
+                  ? "Share a memo…"
+                  : `Message #${props.channel.name ?? props.channel.id}…`
               }
               value={text()}
               onInput={(e) => onType(e.currentTarget.value)}
@@ -1196,11 +1208,12 @@ const Composer: Component<{
             />
             <button
               type="button"
-              class="btn-accent shrink-0 px-4 py-2 text-sm"
+              class="btn-accent shrink-0 px-4 py-2 text-xs"
               data-testid="send-button"
               onClick={doSend}
             >
-              Send
+              <Icon name="send" size={14} />
+              {kind() === "memo" ? "Post" : "Send"}
             </button>
           </div>
         </Match>

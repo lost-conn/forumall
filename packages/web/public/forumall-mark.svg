@@ -1,6 +1,6 @@
 <svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Forumall">
   
-  <path d="M9 7 H55 a4 4 0 0 1 4 4 V39 a4 4 0 0 1 -4 4 H29 L17 56 V43 H9 a4 4 0 0 1 -4 -4 V11 a4 4 0 0 1 4 -4 Z" fill="#7CB518" stroke="#15140D" stroke-width="3.4" stroke-linejoin="miter"></path>
+  <path d="M9 7 H55 a4 4 0 0 1 4 4 V39 a4 4 0 0 1 -4 4 H29 L17 56 V43 H9 a4 4 0 0 1 -4 -4 V11 a4 4 0 0 1 4 -4 Z" fill="#22B89C" stroke="#15140D" stroke-width="3.4" stroke-linejoin="miter"></path>
   
   <polyline points="17,17 27,25 17,33" fill="none" stroke="#15140D" stroke-width="4.2" stroke-linecap="square" stroke-linejoin="miter"></polyline>
   
