@@ -48,6 +48,7 @@ import { Icon, type IconName } from "../Icon.tsx";
 import { FollowToggle } from "../feed/FollowToggle.tsx";
 import { openUserProfile } from "../social/user-profile-store.ts";
 import { ArticleEditor } from "./ArticleEditor.tsx";
+import { ArticleReadingPane } from "./ArticleReadingPane.tsx";
 import {
   type ChannelHandle,
   addReactionCmd,
@@ -124,6 +125,18 @@ export const ChatView: Component<{
   const [typeFilter, setTypeFilter] = createSignal<"all" | "message" | "memo" | "article">("all");
   const [sortMode, setSortMode] = createSignal<"recent" | "oldest" | "top">("recent");
   const [promoteSource, setPromoteSource] = createSignal<ChatMessage | null>(null);
+  const [openArticle, setOpenArticle] = createSignal<ChatMessage | null>(null);
+
+  // Reset the open article when the channel changes.
+  createEffect(on(channelId, () => setOpenArticle(null)));
+
+  const loadArticleReplies = async (messageId: string): Promise<void> => {
+    const client = sessionClient();
+    if (!client) return;
+    await loadReplies({ client, groupId: groupId(), channelId: channelId(), messageId }).catch(
+      () => {},
+    );
+  };
 
   // (Re)open the channel whenever it changes. Tear down the previous wiring.
   createEffect(
@@ -224,148 +237,174 @@ export const ChatView: Component<{
 
   return (
     <div class="flex min-h-0 flex-1 flex-col" data-testid="chat-view" data-channel-id={channelId()}>
-      <header class="flex flex-col gap-2.5 border-b border-border px-6 py-3">
-        <div class="flex items-center gap-2">
-          <span class="font-mono text-faint">#</span>
-          <h2
-            class="font-display text-base font-bold tracking-tight"
-            data-testid="chat-channel-name"
-          >
-            {props.channel.name ?? props.channel.id}
-          </h2>
-          <span class="fa-meta hidden sm:inline">a stream of messages</span>
-          <Show when={props.channel.topic}>
-            <span class="truncate text-xs text-faint">— {props.channel.topic}</span>
-          </Show>
-          <div class="ml-auto flex items-center gap-2">
-            <button
-              type="button"
-              class="btn-ghost px-2 py-1 text-xs"
-              data-testid="thread-toggle"
-              aria-pressed={threadMode()}
-              onClick={() => setThreadMode((v) => !v)}
-              title="Toggle threaded / inline reply view"
-            >
-              {threadMode() ? "Threaded" : "Inline"}
-            </button>
-            <FollowToggle channelId={props.channel.id} groupId={props.channel.groupId} />
-          </div>
-        </div>
-
-        {/* Content-type filter + sort (client-side over the loaded stream). */}
-        <div class="flex flex-wrap items-center gap-1.5" data-testid="type-filter">
-          <For each={TYPE_FILTERS}>
-            {([id, label, icon]) => (
-              <button
-                type="button"
-                data-testid={`filter-${id}`}
-                aria-pressed={typeFilter() === id}
-                onClick={() => setTypeFilter(id)}
-                class="inline-flex items-center gap-1.5 rounded-md border-[1.5px] px-3 py-1 font-mono text-[12.5px] transition-transform hover:-translate-y-px"
-                classList={{
-                  "border-border-strong bg-accent text-accent-ink": typeFilter() === id,
-                  "border-border-strong bg-surface text-ink": typeFilter() !== id,
-                }}
-              >
-                <Show when={icon}>{(name) => <Icon name={name()} size={13} />}</Show>
-                {label}
-              </button>
-            )}
-          </For>
-          <label
-            class="ml-auto inline-flex items-center gap-1.5 rounded-md border-[1.5px] border-border-strong bg-surface px-2.5 py-1 font-mono text-[12.5px] text-muted focus-within:(outline outline-2 outline-accent)"
-            title="Sort messages"
-          >
-            <Icon name="sort" size={14} />
-            <select
-              class="cursor-pointer bg-transparent text-ink outline-none"
-              data-testid="sort-select"
-              aria-label="Sort messages"
-              value={sortMode()}
-              onChange={(e) => setSortMode(e.currentTarget.value as "recent" | "oldest" | "top")}
-            >
-              <option value="recent">Recent</option>
-              <option value="oldest">Oldest</option>
-              <option value="top">Top</option>
-            </select>
-          </label>
-        </div>
-      </header>
-
-      <div ref={scrollEl} class="min-h-0 flex-1 overflow-auto px-6 py-4" data-testid="message-list">
-        <Show when={olderCursorFor(channelId())}>
-          <div class="mb-3 flex justify-center">
-            <button
-              type="button"
-              class="btn-ghost px-3 py-1 text-xs"
-              onClick={() => void loadOlder()}
-              disabled={loadingOlder()}
-              data-testid="load-older"
-            >
-              {loadingOlder() ? "Loading…" : "Load older messages"}
-            </button>
-          </div>
-        </Show>
-
-        <Show when={historyError()}>
-          <p class="text-sm text-danger" data-testid="chat-history-error">
-            Could not load messages: {historyError()}
-          </p>
-        </Show>
-
-        <Show
-          when={visibleRoots().length > 0}
-          fallback={
-            <p class="text-sm text-muted" data-testid="chat-empty">
-              {typeFilter() === "all"
-                ? "No messages yet. Say hello."
-                : "Nothing here for this filter yet."}
-            </p>
-          }
-        >
-          <ul class="flex flex-col gap-3">
-            <For each={visibleRoots()}>
-              {(msg) => (
-                <MessageNode
-                  message={msg}
-                  depth={0}
-                  channelId={channelId()}
-                  groupId={groupId()}
-                  canModerate={props.canModerate}
-                  canPromote={(props.canPostArticle ?? props.canPost) === true}
-                  byId={byId}
-                  repliesByParent={repliesByParent}
-                  onReply={setReplyTarget}
-                  onPromote={setPromoteSource}
-                />
-              )}
-            </For>
-          </ul>
-        </Show>
-      </div>
-
-      <TypingLine actors={typingActors()} />
-
       <Show
-        when={props.canPost}
+        when={openArticle()}
         fallback={
-          <div
-            class="border-t border-border px-6 py-3 text-xs text-faint"
-            data-testid="chat-readonly"
-          >
-            You don't have permission to post in this channel.
-          </div>
+          <>
+            <header class="flex flex-col gap-2.5 border-b border-border px-6 py-3">
+              <div class="flex items-center gap-2">
+                <span class="font-mono text-faint">#</span>
+                <h2
+                  class="font-display text-base font-bold tracking-tight"
+                  data-testid="chat-channel-name"
+                >
+                  {props.channel.name ?? props.channel.id}
+                </h2>
+                <span class="fa-meta hidden sm:inline">a stream of messages</span>
+                <Show when={props.channel.topic}>
+                  <span class="truncate text-xs text-faint">— {props.channel.topic}</span>
+                </Show>
+                <div class="ml-auto flex items-center gap-2">
+                  <button
+                    type="button"
+                    class="btn-ghost px-2 py-1 text-xs"
+                    data-testid="thread-toggle"
+                    aria-pressed={threadMode()}
+                    onClick={() => setThreadMode((v) => !v)}
+                    title="Toggle threaded / inline reply view"
+                  >
+                    {threadMode() ? "Threaded" : "Inline"}
+                  </button>
+                  <FollowToggle channelId={props.channel.id} groupId={props.channel.groupId} />
+                </div>
+              </div>
+
+              {/* Content-type filter + sort (client-side over the loaded stream). */}
+              <div class="flex flex-wrap items-center gap-1.5" data-testid="type-filter">
+                <For each={TYPE_FILTERS}>
+                  {([id, label, icon]) => (
+                    <button
+                      type="button"
+                      data-testid={`filter-${id}`}
+                      aria-pressed={typeFilter() === id}
+                      onClick={() => setTypeFilter(id)}
+                      class="inline-flex items-center gap-1.5 rounded-md border-[1.5px] px-3 py-1 font-mono text-[12.5px] transition-transform hover:-translate-y-px"
+                      classList={{
+                        "border-border-strong bg-accent text-accent-ink": typeFilter() === id,
+                        "border-border-strong bg-surface text-ink": typeFilter() !== id,
+                      }}
+                    >
+                      <Show when={icon}>{(name) => <Icon name={name()} size={13} />}</Show>
+                      {label}
+                    </button>
+                  )}
+                </For>
+                <label
+                  class="ml-auto inline-flex items-center gap-1.5 rounded-md border-[1.5px] border-border-strong bg-surface px-2.5 py-1 font-mono text-[12.5px] text-muted focus-within:(outline outline-2 outline-accent)"
+                  title="Sort messages"
+                >
+                  <Icon name="sort" size={14} />
+                  <select
+                    class="cursor-pointer bg-transparent text-ink outline-none"
+                    data-testid="sort-select"
+                    aria-label="Sort messages"
+                    value={sortMode()}
+                    onChange={(e) =>
+                      setSortMode(e.currentTarget.value as "recent" | "oldest" | "top")
+                    }
+                  >
+                    <option value="recent">Recent</option>
+                    <option value="oldest">Oldest</option>
+                    <option value="top">Top</option>
+                  </select>
+                </label>
+              </div>
+            </header>
+
+            <div
+              ref={scrollEl}
+              class="min-h-0 flex-1 overflow-auto px-6 py-4"
+              data-testid="message-list"
+            >
+              <Show when={olderCursorFor(channelId())}>
+                <div class="mb-3 flex justify-center">
+                  <button
+                    type="button"
+                    class="btn-ghost px-3 py-1 text-xs"
+                    onClick={() => void loadOlder()}
+                    disabled={loadingOlder()}
+                    data-testid="load-older"
+                  >
+                    {loadingOlder() ? "Loading…" : "Load older messages"}
+                  </button>
+                </div>
+              </Show>
+
+              <Show when={historyError()}>
+                <p class="text-sm text-danger" data-testid="chat-history-error">
+                  Could not load messages: {historyError()}
+                </p>
+              </Show>
+
+              <Show
+                when={visibleRoots().length > 0}
+                fallback={
+                  <p class="text-sm text-muted" data-testid="chat-empty">
+                    {typeFilter() === "all"
+                      ? "No messages yet. Say hello."
+                      : "Nothing here for this filter yet."}
+                  </p>
+                }
+              >
+                <ul class="flex flex-col gap-3">
+                  <For each={visibleRoots()}>
+                    {(msg) => (
+                      <MessageNode
+                        message={msg}
+                        depth={0}
+                        channelId={channelId()}
+                        groupId={groupId()}
+                        canModerate={props.canModerate}
+                        canPromote={(props.canPostArticle ?? props.canPost) === true}
+                        byId={byId}
+                        repliesByParent={repliesByParent}
+                        onReply={setReplyTarget}
+                        onPromote={setPromoteSource}
+                        onOpenArticle={setOpenArticle}
+                      />
+                    )}
+                  </For>
+                </ul>
+              </Show>
+            </div>
+
+            <TypingLine actors={typingActors()} />
+
+            <Show
+              when={props.canPost}
+              fallback={
+                <div
+                  class="border-t border-border px-6 py-3 text-xs text-faint"
+                  data-testid="chat-readonly"
+                >
+                  You don't have permission to post in this channel.
+                </div>
+              }
+            >
+              <Composer
+                channel={props.channel}
+                canPostMemo={props.canPostMemo ?? props.canPost}
+                canPostArticle={props.canPostArticle ?? props.canPost}
+                replyTarget={replyTarget}
+                onClearReply={() => setReplyTarget(null)}
+                promoteSource={promoteSource}
+                onClearPromote={() => setPromoteSource(null)}
+              />
+            </Show>
+          </>
         }
       >
-        <Composer
-          channel={props.channel}
-          canPostMemo={props.canPostMemo ?? props.canPost}
-          canPostArticle={props.canPostArticle ?? props.canPost}
-          replyTarget={replyTarget}
-          onClearReply={() => setReplyTarget(null)}
-          promoteSource={promoteSource}
-          onClearPromote={() => setPromoteSource(null)}
-        />
+        {(art) => (
+          <ArticleReadingPane
+            article={art()}
+            groupId={groupId()}
+            channelId={channelId()}
+            canPost={props.canPost}
+            replies={() => repliesByParent().get(art().id) ?? []}
+            onLoadReplies={() => void loadArticleReplies(art().id)}
+            onBack={() => setOpenArticle(null)}
+          />
+        )}
       </Show>
     </div>
   );
@@ -386,6 +425,7 @@ const MessageNode: Component<{
   repliesByParent: Accessor<Map<string, ChatMessage[]>>;
   onReply: (m: ChatMessage) => void;
   onPromote: (m: ChatMessage) => void;
+  onOpenArticle: (m: ChatMessage) => void;
 }> = (props) => {
   const m = () => props.message;
   const [expanded, setExpanded] = createSignal(props.depth === 0 && isLongForm(props.message.type));
@@ -438,6 +478,7 @@ const MessageNode: Component<{
         reactions={() => reactionsFor(props.channelId, m().id)}
         onReply={() => props.onReply(m())}
         onPromote={() => props.onPromote(m())}
+        onOpenArticle={() => props.onOpenArticle(m())}
       />
 
       {/* Nested replies (memo/article always; chat in threaded mode). */}
@@ -474,6 +515,7 @@ const MessageNode: Component<{
                     repliesByParent={props.repliesByParent}
                     onReply={props.onReply}
                     onPromote={props.onPromote}
+                    onOpenArticle={props.onOpenArticle}
                   />
                 )}
               </For>
@@ -517,6 +559,7 @@ const MessageRow: Component<{
   reactions: () => ReactionGroup[];
   onReply: () => void;
   onPromote: () => void;
+  onOpenArticle: () => void;
 }> = (props) => {
   const m = () => props.message;
   const isAuthor = () => m().author === session.actor;
@@ -776,7 +819,7 @@ const MessageRow: Component<{
           </div>
         </Match>
         <Match when={true}>
-          <MessageBody message={m()} />
+          <MessageBody message={m()} onOpenArticle={props.onOpenArticle} />
         </Match>
       </Switch>
 
@@ -813,7 +856,7 @@ const MessageRow: Component<{
 };
 
 /** Render a message body by §5.3 type, with a safe fallback for unknown types. */
-const MessageBody: Component<{ message: ChatMessage }> = (props) => {
+const MessageBody: Component<{ message: ChatMessage; onOpenArticle?: () => void }> = (props) => {
   const text = () => props.message.content.text ?? "";
   const type = () => props.message.type ?? "message";
   return (
@@ -826,7 +869,7 @@ const MessageBody: Component<{ message: ChatMessage }> = (props) => {
       }
     >
       <Match when={type() === "article"}>
-        {/* Article renders as a bordered reading card (ember content-type).
+        {/* Article renders as a bordered card; click → the reading pane.
             `renderMarkdown` HTML-escapes all input + allowlists link schemes, so
             the produced HTML is trusted/sanitized (see lib/markdown.ts). */}
         <div class="mt-1 rounded-md border-[1.5px] border-border-strong bg-surface p-3.5">
@@ -841,11 +884,27 @@ const MessageBody: Component<{ message: ChatMessage }> = (props) => {
               </div>
             )}
           </Show>
+          {/* Full markdown excerpt (clamped); the body's own heading reads as the
+              title. `renderMarkdown` is XSS-safe (escapes input + allowlists). */}
           <div
-            class="prose-chat text-sm text-ink"
+            class="prose-chat max-h-32 overflow-hidden text-sm text-ink"
             data-testid="message-article"
             innerHTML={renderMarkdown(text())}
           />
+          <div class="mt-2.5 flex items-center gap-2">
+            <For each={(props.message.tags ?? []).filter((t) => !t.startsWith(PROMOTE_TAG_PREFIX))}>
+              {(t) => <span class="fa-tag">{t}</span>}
+            </For>
+            <button
+              type="button"
+              class="ml-auto inline-flex items-center gap-1.5 font-mono text-[12px] text-accent hover:underline"
+              data-testid="open-article"
+              onClick={() => props.onOpenArticle?.()}
+            >
+              <Icon name="reply" size={12} />
+              {props.message.replyCount ? `${props.message.replyCount} replies` : "Open article"}
+            </button>
+          </div>
         </div>
       </Match>
       <Match when={type() === "memo"}>
