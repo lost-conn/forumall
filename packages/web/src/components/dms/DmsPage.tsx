@@ -492,7 +492,7 @@ const DmMessageRow: Component<{
   const mine = () => m().mine === true || m().author === session.actor;
   return (
     <li
-      class="flex items-end gap-[9px]"
+      class="flex items-start gap-[9px]"
       classList={{ "justify-end": mine() }}
       data-testid="dm-message"
       data-message-id={m().id}
