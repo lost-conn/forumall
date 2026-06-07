@@ -68,21 +68,30 @@ export default defineConfig({
   },
   shortcuts: {
     // Layout primitives (unchanged class names → free restyle)
-    "app-shell": "min-h-screen w-full flex bg-canvas text-ink font-sans",
+    "app-shell": "h-screen w-full overflow-hidden flex bg-canvas text-ink font-sans",
     "app-nav": "w-60 shrink-0 flex flex-col gap-1 border-r border-border bg-surface px-3 py-4",
-    "app-content": "flex-1 min-w-0 flex flex-col",
+    "app-content": "flex-1 min-w-0 min-h-0 flex flex-col",
 
     // Nav items — mono, hard active state
     "nav-link":
       "flex items-center gap-2.5 rounded-md px-3 py-2 text-[13px] font-mono text-muted transition-colors hover:(bg-surface-2 text-ink)",
     "nav-link-active": "bg-accent-soft text-accent shadow-[inset_0_0_0_1.5px_var(--phosphor)]",
 
-    // Buttons — uppercase mono, 1.5px border, single hard offset shadow,
-    // lift on hover and press *into* the page on :active (the signature interaction)
+    // Buttons — uppercase mono, 1.5px border, single hard offset shadow.
+    // The signature interaction (§ "Terminal Garden"): the hard offset shadow
+    // GROWS on hover (3px→4px) while the button lifts (translate -1px,-1px), then
+    // COLLAPSES to 0 on :active while the button presses INTO the page
+    // (translate 2px,2px). Driven on the 120ms cubic-bezier(.2,.8,.2,1) curve,
+    // transitioning transform + box-shadow + background together.
+    // `transition` (the default property set) already covers transform +
+    // box-shadow + background-color, on the Terminal Garden 120ms cubic curve.
+    "btn-base": "transition duration-[120ms] ease-[cubic-bezier(0.2,0.8,0.2,1)]",
     "btn-accent":
-      "inline-flex items-center justify-center gap-2 rounded-md border-[1.5px] border-border-strong bg-accent px-4 py-2 text-xs font-mono font-bold uppercase tracking-wide text-accent-ink shadow-[3px_3px_0_var(--shadow-col)] transition-transform hover:-translate-x-px hover:-translate-y-px active:(translate-x-0.5 translate-y-0.5 shadow-none) disabled:(opacity-50 cursor-not-allowed)",
+      "btn-base inline-flex items-center justify-center gap-2 rounded-md border-[1.5px] border-border-strong bg-accent px-4 py-2 text-xs font-mono font-bold uppercase tracking-wide text-accent-ink shadow-[3px_3px_0_var(--on-accent-shadow-col)] hover:(-translate-x-px -translate-y-px shadow-[4px_4px_0_var(--on-accent-shadow-col)]) active:(translate-x-0.5 translate-y-0.5 shadow-[0_0_0_var(--shadow-col)]) disabled:(opacity-50 cursor-not-allowed shadow-none translate-x-0 translate-y-0)",
+    // Ghost: transparent + dashed border, no shadow. Solidifies + fills on hover,
+    // and still presses in slightly on :active to keep the tactile feel.
     "btn-ghost":
-      "inline-flex items-center justify-center gap-2 rounded-md border-[1.5px] border-dashed border-border-strong px-4 py-2 text-xs font-mono font-bold uppercase tracking-wide text-ink transition-colors hover:(bg-surface border-solid)",
+      "btn-base inline-flex items-center justify-center gap-2 rounded-md border-[1.5px] border-dashed border-border-strong px-4 py-2 text-xs font-mono font-bold uppercase tracking-wide text-ink hover:(bg-surface border-solid) active:(translate-x-px translate-y-px) disabled:(opacity-50 cursor-not-allowed)",
 
     // Form + surfaces
     input:

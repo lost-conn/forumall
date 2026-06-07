@@ -79,7 +79,7 @@ export const MembersPanel: Component<{ group: Group; myRole: () => string | unde
           when={!members.error}
           fallback={<p class="text-sm text-danger">Could not load members.</p>}
         >
-          <ul class="flex flex-col divide-y divide-border" data-testid="members-list">
+          <ul class="flex flex-col divide-y divide-dashed divide-border" data-testid="members-list">
             <For each={members.data ?? []}>
               {(m) => {
                 const isSelf = () => m.user === session.actor;

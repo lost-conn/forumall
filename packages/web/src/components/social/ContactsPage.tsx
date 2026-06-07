@@ -197,7 +197,7 @@ export const ContactsPage: Component = () => {
           <Show when={incoming().length > 0}>
             <section class="card" data-testid="incoming-requests">
               <h2 class="mb-3 text-sm font-semibold tracking-tight">Incoming requests</h2>
-              <ul class="flex flex-col divide-y divide-border">
+              <ul class="flex flex-col divide-y divide-dashed divide-border">
                 <For each={incoming()}>
                   {(c) => (
                     <ContactRow contact={c}>
@@ -240,7 +240,7 @@ export const ContactsPage: Component = () => {
           <Show when={outgoing().length > 0}>
             <section class="card" data-testid="outgoing-requests">
               <h2 class="mb-3 text-sm font-semibold tracking-tight">Pending sent requests</h2>
-              <ul class="flex flex-col divide-y divide-border">
+              <ul class="flex flex-col divide-y divide-dashed divide-border">
                 <For each={outgoing()}>
                   {(c) => (
                     <ContactRow contact={c}>
@@ -279,7 +279,10 @@ export const ContactsPage: Component = () => {
                 </p>
               }
             >
-              <ul class="flex flex-col divide-y divide-border" data-testid="contacts-list">
+              <ul
+                class="flex flex-col divide-y divide-dashed divide-border"
+                data-testid="contacts-list"
+              >
                 <For each={accepted()}>
                   {(c) => (
                     <ContactRow contact={c}>

@@ -52,7 +52,7 @@ export const SettingsShell: Component = () => {
   return (
     <div class="flex min-h-0 flex-1" data-testid="settings-page">
       {/* setnav */}
-      <nav class="w-56 shrink-0 overflow-auto border-r border-border bg-surface px-3 py-4 fa-scroll">
+      <nav class="w-[210px] shrink-0 overflow-auto border-r border-border bg-surface px-2.5 py-2 fa-scroll">
         <For each={NAV}>
           {(grp) => (
             <>
@@ -61,7 +61,7 @@ export const SettingsShell: Component = () => {
                 {([id, label, icon]) => (
                   <button
                     type="button"
-                    class="mb-0.5 flex w-full items-center gap-2.5 rounded-md border-[1.5px] px-3 py-2 text-left font-mono text-[13px] transition-colors"
+                    class="mb-0.5 flex w-full items-center gap-2.5 rounded-md border-[1.5px] px-2.5 py-1.5 text-left font-mono text-[13px] transition-colors"
                     classList={{
                       "border-accent bg-accent-soft text-accent": section() === id,
                       "border-transparent text-muted hover:(bg-surface-2 text-ink)":
@@ -104,7 +104,7 @@ export const SettingsShell: Component = () => {
       </nav>
 
       {/* setbody */}
-      <div class="min-h-0 flex-1 overflow-auto px-8 py-8 fa-scroll">
+      <div class="min-h-0 flex-1 overflow-auto px-7 py-[26px] fa-scroll">
         <div class="mx-auto max-w-2xl">
           <Switch>
             <Match when={section() === "account"}>
@@ -174,39 +174,87 @@ export const SettingsShell: Component = () => {
  * per-instance policy + a public mod-log (the design's Allow/Limit/Block) are a
  * §13 moderation epic beyond v0.1 — surfaced here as an informational page.
  */
-const FederationInfo: Component = () => (
-  <div data-testid="federation-info">
-    <div class="mb-1 flex items-center justify-between gap-3">
-      <h1 class="fa-h1">Federation</h1>
-      <span class="pill">
-        <Icon name="globe" size={13} />
-        Open · talks to all
-      </span>
-    </div>
-    <p class="mb-5 text-sm text-muted">
-      This provider federates with remote instances per its allow/deny policy.
-    </p>
-    <div class="card-raised mb-4 flex items-center gap-3">
-      <span class="text-accent">
-        <Icon name="globe" size={20} />
-      </span>
-      <div class="flex-1">
-        <div class="font-display text-sm font-bold tracking-tight">Default policy</div>
-        <div class="fa-meta">How remote instances are treated</div>
+const POLICY_OPTIONS: [string, string][] = [
+  ["allow", "Allow all"],
+  ["approve", "Approve"],
+  ["block", "Block all"],
+];
+
+const FederationInfo: Component = () => {
+  // Read-only: v0.1 mandates only a binary allow/deny policy, set server-side.
+  const policy = "allow";
+  return (
+    <div data-testid="federation-info">
+      <div class="mb-1.5 flex items-center justify-between gap-3">
+        <h1 class="fa-h1">Federation</h1>
+        <span class="pill">
+          <Icon name="globe" size={13} />
+          Open · talks to all
+        </span>
       </div>
-      <span class="badge">Allow all</span>
+      <p class="mb-[18px] text-sm text-muted">
+        Decide which instances your community federates with. You're in control.
+      </p>
+
+      {/* Default policy card */}
+      <div class="card mb-5 flex items-center gap-[14px]">
+        <span class="text-accent">
+          <Icon name="globe" size={20} />
+        </span>
+        <div class="flex-1">
+          <div class="font-display text-sm font-bold tracking-tight">Default policy</div>
+          <div class="fa-meta">How to treat instances not listed below</div>
+        </div>
+        <div class="flex flex-wrap gap-[5px]">
+          <For each={POLICY_OPTIONS}>
+            {([key, label]) => (
+              <span
+                class="inline-flex items-center rounded-[6px] border-[1.5px] border-border-strong px-[9px] py-1 font-mono text-[11.5px]"
+                classList={{
+                  "bg-accent text-accent-ink": policy === key,
+                  "bg-surface text-ink": policy !== key,
+                }}
+              >
+                {label}
+              </span>
+            )}
+          </For>
+        </div>
+      </div>
+
+      {/* Instance policies */}
+      <div class="mb-2 flex items-center justify-between">
+        <span class="eyebrow">Instance policies</span>
+      </div>
+      <div class="card overflow-hidden p-0">
+        <div class="px-[14px] py-[18px] text-center">
+          <p class="text-xs text-faint" data-testid="federation-instances-empty">
+            Per-instance allow / limit / block lists are configured server-side via{" "}
+            <code class="rounded-sm border-[1.5px] border-border bg-surface-2 px-1 py-0.5 font-mono">
+              FEDERATION_ALLOW
+            </code>{" "}
+            /{" "}
+            <code class="rounded-sm border-[1.5px] border-border bg-surface-2 px-1 py-0.5 font-mono">
+              FEDERATION_DENY
+            </code>
+            .
+          </p>
+        </div>
+      </div>
+
+      {/* Public moderation log row */}
+      <div class="mt-[18px] flex items-center gap-3 border-b border-dashed border-border py-3">
+        <div class="flex-1">
+          <div class="font-body text-[13.5px] text-ink">Publish a public moderation log</div>
+          <div class="fa-meta mt-[3px]">Transparency for members &amp; peer instances</div>
+        </div>
+        <span class="fa-switch" aria-hidden="true">
+          <span class="fa-switch__knob" />
+        </span>
+      </div>
+      <p class="mt-3 text-xs text-faint">
+        Runtime per-instance controls and a public moderation log are planned (§13 moderation).
+      </p>
     </div>
-    <p class="text-xs text-faint">
-      Policy is configured server-side via the{" "}
-      <code class="rounded-sm border-[1.5px] border-border bg-surface-2 px-1 py-0.5 font-mono">
-        FEDERATION_ALLOW
-      </code>{" "}
-      /{" "}
-      <code class="rounded-sm border-[1.5px] border-border bg-surface-2 px-1 py-0.5 font-mono">
-        FEDERATION_DENY
-      </code>{" "}
-      environment. Runtime per-instance controls and a public moderation log are planned (§13
-      moderation).
-    </p>
-  </div>
-);
+  );
+};

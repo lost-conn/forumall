@@ -48,7 +48,7 @@ import { Icon, type IconName } from "../Icon.tsx";
 import { FollowToggle } from "../feed/FollowToggle.tsx";
 import { openUserProfile } from "../social/user-profile-store.ts";
 import { ArticleEditorOverlay } from "./ArticleEditorOverlay.tsx";
-import { ArticleReadingPane } from "./ArticleReadingPane.tsx";
+import { ArticleReadingPane, splitArticle } from "./ArticleReadingPane.tsx";
 import {
   type ChannelHandle,
   addReactionCmd,
@@ -99,8 +99,8 @@ function promotedFrom(message: ChatMessage): string | undefined {
 }
 
 /** Header content-type filter: [filter value, label, icon]. "message" reads as "Chat". */
-const TYPE_FILTERS: ["all" | "message" | "memo" | "article", string, IconName | null][] = [
-  ["all", "All", null],
+const TYPE_FILTERS: ["all" | "message" | "memo" | "article", string, IconName][] = [
+  ["all", "All", "more"],
   ["message", "Chat", "chat"],
   ["article", "Articles", "article"],
   ["memo", "Memos", "memo"],
@@ -241,7 +241,7 @@ export const ChatView: Component<{
         when={openArticle()}
         fallback={
           <>
-            <header class="flex flex-col gap-2.5 border-b border-border px-6 py-3">
+            <header class="flex flex-col gap-2.5 border-b border-border px-[18px] py-3">
               <div class="flex items-center gap-2">
                 <span class="font-mono text-faint">#</span>
                 <h2
@@ -278,13 +278,15 @@ export const ChatView: Component<{
                       data-testid={`filter-${id}`}
                       aria-pressed={typeFilter() === id}
                       onClick={() => setTypeFilter(id)}
-                      class="inline-flex items-center gap-1.5 rounded-md border-[1.5px] px-3 py-1 font-mono text-[12.5px] transition-transform hover:-translate-y-px"
+                      class="inline-flex items-center gap-1.5 rounded-[6px] border-[1.5px] border-border-strong px-[11px] py-[5px] font-mono text-[12.5px] transition-transform hover:-translate-y-px"
                       classList={{
-                        "border-border-strong bg-accent text-accent-ink": typeFilter() === id,
-                        "border-border-strong bg-surface text-ink": typeFilter() !== id,
+                        "bg-accent text-accent-ink": typeFilter() === id,
+                        "bg-surface text-ink": typeFilter() !== id,
                       }}
                     >
-                      <Show when={icon}>{(name) => <Icon name={name()} size={13} />}</Show>
+                      <Show when={id !== "all"}>
+                        <Icon name={icon} size={13} />
+                      </Show>
                       {label}
                     </button>
                   )}
@@ -313,7 +315,7 @@ export const ChatView: Component<{
 
             <div
               ref={scrollEl}
-              class="min-h-0 flex-1 overflow-auto px-6 py-4"
+              class="min-h-0 flex-1 overflow-auto px-[18px] pt-1.5 pb-3.5"
               data-testid="message-list"
             >
               <Show when={olderCursorFor(channelId())}>
@@ -348,20 +350,27 @@ export const ChatView: Component<{
               >
                 <ul class="flex flex-col gap-3">
                   <For each={visibleRoots()}>
-                    {(msg) => (
-                      <MessageNode
-                        message={msg}
-                        depth={0}
-                        channelId={channelId()}
-                        groupId={groupId()}
-                        canModerate={props.canModerate}
-                        canPromote={(props.canPostArticle ?? props.canPost) === true}
-                        byId={byId}
-                        repliesByParent={repliesByParent}
-                        onReply={setReplyTarget}
-                        onPromote={setPromoteSource}
-                        onOpenArticle={setOpenArticle}
-                      />
+                    {(msg, index) => (
+                      <>
+                        {/* Dashed separator between message groups (mirrors the
+                            prototype's per-message `fa-divider--dashed`). */}
+                        <Show when={index() > 0}>
+                          <li aria-hidden="true" class="fa-divider fa-divider--dashed" />
+                        </Show>
+                        <MessageNode
+                          message={msg}
+                          depth={0}
+                          channelId={channelId()}
+                          groupId={groupId()}
+                          canModerate={props.canModerate}
+                          canPromote={(props.canPostArticle ?? props.canPost) === true}
+                          byId={byId}
+                          repliesByParent={repliesByParent}
+                          onReply={setReplyTarget}
+                          onPromote={setPromoteSource}
+                          onOpenArticle={setOpenArticle}
+                        />
+                      </>
                     )}
                   </For>
                 </ul>
@@ -374,7 +383,7 @@ export const ChatView: Component<{
               when={props.canPost}
               fallback={
                 <div
-                  class="border-t border-border px-6 py-3 text-xs text-faint"
+                  class="border-t border-border px-[18px] py-3 text-xs text-faint"
                   data-testid="chat-readonly"
                 >
                   You don't have permission to post in this channel.
@@ -639,218 +648,228 @@ const MessageRow: Component<{
 
   return (
     <div
-      class="group/msg flex flex-col gap-1"
+      class="group/msg flex gap-[11px]"
       data-testid="message-row"
       data-message-id={m().id}
       data-message-type={m().type ?? "message"}
       data-pending={m().pending ? "1" : undefined}
     >
-      <div class="flex items-baseline gap-2">
-        <button
-          type="button"
-          class="text-xs font-semibold text-ink hover:underline"
-          data-testid="message-author"
-          onClick={() => openUserProfile(m().author)}
-        >
-          {displayName(m().author)}
-        </button>
-        <Show when={TYPE_META[m().type ?? "message"]}>
-          {(meta) => (
-            <span class={`fa-type ${meta().cls}`} data-testid="message-kind">
-              <Icon name={meta().icon} size={11} />
-              {meta().label}
-            </span>
-          )}
-        </Show>
-        <span class="text-[10px] text-faint">{formatTime(m().createdAt)}</span>
-        <Show when={m().editedAt && !isDeleted()}>
-          <span class="text-[10px] text-faint" data-testid="message-edited">
-            (edited)
-          </span>
-        </Show>
-        <Show when={m().pending}>
-          <span class="text-[10px] text-cyan" data-testid="message-pending">
-            sending…
-          </span>
-        </Show>
-        <Show when={m().failed}>
+      <button
+        type="button"
+        class="fa-ava transition-colors hover:border-accent"
+        aria-label={`${displayName(m().author)} profile`}
+        onClick={() => openUserProfile(m().author)}
+      >
+        {displayName(m().author).slice(0, 1).toUpperCase()}
+      </button>
+      <div class="flex min-w-0 flex-1 flex-col gap-1">
+        <div class="flex flex-wrap items-center gap-2">
           <button
             type="button"
-            class="text-[10px] text-danger underline"
-            data-testid="message-retry"
-            onClick={() => {
-              const w = ws();
-              if (w && m().clientMessageId) {
-                retrySend({
-                  ws: w,
-                  groupId: props.groupId,
-                  channelId: props.channelId,
-                  author: m().author,
-                  text: m().content.text ?? "",
-                  clientMessageId: m().clientMessageId as string,
-                });
-              }
-            }}
+            class="fa-msg__name hover:underline"
+            data-testid="message-author"
+            onClick={() => openUserProfile(m().author)}
           >
-            failed — retry
+            {displayName(m().author)}
           </button>
-        </Show>
-
-        {/* Hover actions */}
-        <Show when={!isDeleted()}>
-          <span class="ml-auto flex items-center gap-1 opacity-0 transition-opacity group-hover/msg:opacity-100">
+          <span class="fa-meta">{formatTime(m().createdAt)}</span>
+          <Show when={TYPE_META[m().type ?? "message"]}>
+            {(meta) => (
+              <span class={`fa-type ${meta().cls}`} data-testid="message-kind">
+                <Icon name={meta().icon} size={11} />
+                {meta().label}
+              </span>
+            )}
+          </Show>
+          <Show when={m().editedAt && !isDeleted()}>
+            <span class="fa-meta" data-testid="message-edited">
+              (edited)
+            </span>
+          </Show>
+          <Show when={m().pending}>
+            <span class="text-[10px] text-cyan" data-testid="message-pending">
+              sending…
+            </span>
+          </Show>
+          <Show when={m().failed}>
             <button
               type="button"
-              class="rounded px-1.5 py-0.5 text-xs text-faint hover:(bg-surface-2 text-ink)"
-              data-testid="reply-button"
-              onClick={() => props.onReply()}
+              class="text-[10px] text-danger underline"
+              data-testid="message-retry"
+              onClick={() => {
+                const w = ws();
+                if (w && m().clientMessageId) {
+                  retrySend({
+                    ws: w,
+                    groupId: props.groupId,
+                    channelId: props.channelId,
+                    author: m().author,
+                    text: m().content.text ?? "",
+                    clientMessageId: m().clientMessageId as string,
+                  });
+                }
+              }}
             >
-              Reply
+              failed — retry
             </button>
-            <Show when={props.canPromote && (m().type ?? "message") === "message"}>
-              <button
-                type="button"
-                class="rounded px-1.5 py-0.5 text-xs text-faint hover:(bg-surface-2 text-ember)"
-                data-testid="promote-button"
-                title="Promote this message to an article"
-                onClick={() => props.onPromote()}
-              >
-                Promote
-              </button>
-            </Show>
-            <div class="relative">
+          </Show>
+
+          {/* Hover actions */}
+          <Show when={!isDeleted()}>
+            <span class="ml-auto flex items-center gap-1 opacity-0 transition-opacity group-hover/msg:opacity-100">
               <button
                 type="button"
                 class="rounded px-1.5 py-0.5 text-xs text-faint hover:(bg-surface-2 text-ink)"
-                data-testid="react-button"
-                onClick={() => setShowReactPicker((v) => !v)}
-                aria-label="Add reaction"
+                data-testid="reply-button"
+                onClick={() => props.onReply()}
               >
-                ☺
+                Reply
               </button>
-              <Show when={showReactPicker()}>
-                <div
-                  class="absolute right-0 bottom-full z-10 mb-1 flex gap-0.5 rounded-lg border border-border bg-surface p-1 shadow-lg"
-                  data-testid="reaction-picker"
+              <Show when={props.canPromote && (m().type ?? "message") === "message"}>
+                <button
+                  type="button"
+                  class="rounded px-1.5 py-0.5 text-xs text-faint hover:(bg-surface-2 text-ember)"
+                  data-testid="promote-button"
+                  title="Promote this message to an article"
+                  onClick={() => props.onPromote()}
                 >
-                  <For each={QUICK_REACTIONS}>
-                    {(r) => (
-                      <button
-                        type="button"
-                        class="rounded px-1 py-0.5 text-sm hover:bg-surface-2"
-                        data-testid="reaction-pick"
-                        data-reaction-key={r.key}
-                        onClick={() => toggleReaction(r.key, r.unicode)}
-                      >
-                        {r.unicode}
-                      </button>
-                    )}
-                  </For>
-                </div>
+                  Promote
+                </button>
+              </Show>
+              <div class="relative">
+                <button
+                  type="button"
+                  class="rounded px-1.5 py-0.5 text-xs text-faint hover:(bg-surface-2 text-ink)"
+                  data-testid="react-button"
+                  onClick={() => setShowReactPicker((v) => !v)}
+                  aria-label="Add reaction"
+                >
+                  ☺
+                </button>
+                <Show when={showReactPicker()}>
+                  <div
+                    class="absolute right-0 bottom-full z-10 mb-1 flex gap-0.5 rounded-lg border border-border bg-surface p-1 shadow-lg"
+                    data-testid="reaction-picker"
+                  >
+                    <For each={QUICK_REACTIONS}>
+                      {(r) => (
+                        <button
+                          type="button"
+                          class="rounded px-1 py-0.5 text-sm hover:bg-surface-2"
+                          data-testid="reaction-pick"
+                          data-reaction-key={r.key}
+                          onClick={() => toggleReaction(r.key, r.unicode)}
+                        >
+                          {r.unicode}
+                        </button>
+                      )}
+                    </For>
+                  </div>
+                </Show>
+              </div>
+              <Show when={isAuthor()}>
+                <button
+                  type="button"
+                  class="rounded px-1.5 py-0.5 text-xs text-faint hover:(bg-surface-2 text-ink)"
+                  data-testid="edit-message"
+                  onClick={startEdit}
+                >
+                  Edit
+                </button>
+              </Show>
+              <Show when={isAuthor() || props.canModerate}>
+                <button
+                  type="button"
+                  class="rounded px-1.5 py-0.5 text-xs text-faint hover:(bg-surface-2 text-danger)"
+                  data-testid="delete-message"
+                  onClick={doDelete}
+                >
+                  Delete
+                </button>
+              </Show>
+            </span>
+          </Show>
+        </div>
+
+        <Switch>
+          <Match when={isDeleted()}>
+            <p class="text-sm italic text-faint" data-testid="message-tombstone">
+              message deleted
+            </p>
+          </Match>
+          <Match when={editing()}>
+            <div class="flex flex-col gap-1">
+              <textarea
+                class="input min-h-16 resize-y"
+                data-testid="edit-input"
+                value={editText()}
+                onInput={(e) => setEditText(e.currentTarget.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    submitEdit();
+                  }
+                  if (e.key === "Escape") setEditing(false);
+                }}
+              />
+              <div class="flex gap-2">
+                <button
+                  type="button"
+                  class="btn-accent px-3 py-1 text-xs"
+                  data-testid="save-edit"
+                  onClick={submitEdit}
+                >
+                  Save
+                </button>
+                <button
+                  type="button"
+                  class="btn-ghost px-3 py-1 text-xs"
+                  onClick={() => setEditing(false)}
+                >
+                  Cancel
+                </button>
+              </div>
+              <Show when={editError()}>
+                <p class="text-xs text-danger" data-testid="edit-error">
+                  {editError()}
+                </p>
               </Show>
             </div>
-            <Show when={isAuthor()}>
-              <button
-                type="button"
-                class="rounded px-1.5 py-0.5 text-xs text-faint hover:(bg-surface-2 text-ink)"
-                data-testid="edit-message"
-                onClick={startEdit}
-              >
-                Edit
-              </button>
-            </Show>
-            <Show when={isAuthor() || props.canModerate}>
-              <button
-                type="button"
-                class="rounded px-1.5 py-0.5 text-xs text-faint hover:(bg-surface-2 text-danger)"
-                data-testid="delete-message"
-                onClick={doDelete}
-              >
-                Delete
-              </button>
-            </Show>
-          </span>
+          </Match>
+          <Match when={true}>
+            <MessageBody message={m()} onOpenArticle={props.onOpenArticle} />
+          </Match>
+        </Switch>
+
+        {/* Attachments */}
+        <Show when={!isDeleted() && (m().attachments?.length ?? 0) > 0}>
+          <div class="flex flex-wrap gap-2" data-testid="attachments">
+            <For each={m().attachments ?? []}>{(att) => <AttachmentView attachment={att} />}</For>
+          </div>
+        </Show>
+
+        {/* Reactions */}
+        <Show when={props.reactions().length > 0}>
+          <div class="fa-rx" data-testid="reactions">
+            <For each={props.reactions()}>
+              {(g) => (
+                <button
+                  type="button"
+                  class="fa-rx__chip"
+                  classList={{ "fa-rx__chip--on": myReactionKeys().has(g.key) }}
+                  data-testid="reaction-chip"
+                  data-reaction-key={g.key}
+                  title={g.authors.map(displayName).join(", ")}
+                  onClick={() => toggleReaction(g.key, g.unicode ?? g.key)}
+                >
+                  <span>{g.unicode ?? g.key}</span>
+                  <span data-testid="reaction-count">{g.authors.length}</span>
+                </button>
+              )}
+            </For>
+          </div>
         </Show>
       </div>
-
-      <Switch>
-        <Match when={isDeleted()}>
-          <p class="text-sm italic text-faint" data-testid="message-tombstone">
-            message deleted
-          </p>
-        </Match>
-        <Match when={editing()}>
-          <div class="flex flex-col gap-1">
-            <textarea
-              class="input min-h-16 resize-y"
-              data-testid="edit-input"
-              value={editText()}
-              onInput={(e) => setEditText(e.currentTarget.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  submitEdit();
-                }
-                if (e.key === "Escape") setEditing(false);
-              }}
-            />
-            <div class="flex gap-2">
-              <button
-                type="button"
-                class="btn-accent px-3 py-1 text-xs"
-                data-testid="save-edit"
-                onClick={submitEdit}
-              >
-                Save
-              </button>
-              <button
-                type="button"
-                class="btn-ghost px-3 py-1 text-xs"
-                onClick={() => setEditing(false)}
-              >
-                Cancel
-              </button>
-            </div>
-            <Show when={editError()}>
-              <p class="text-xs text-danger" data-testid="edit-error">
-                {editError()}
-              </p>
-            </Show>
-          </div>
-        </Match>
-        <Match when={true}>
-          <MessageBody message={m()} onOpenArticle={props.onOpenArticle} />
-        </Match>
-      </Switch>
-
-      {/* Attachments */}
-      <Show when={!isDeleted() && (m().attachments?.length ?? 0) > 0}>
-        <div class="flex flex-wrap gap-2" data-testid="attachments">
-          <For each={m().attachments ?? []}>{(att) => <AttachmentView attachment={att} />}</For>
-        </div>
-      </Show>
-
-      {/* Reactions */}
-      <Show when={props.reactions().length > 0}>
-        <div class="fa-rx" data-testid="reactions">
-          <For each={props.reactions()}>
-            {(g) => (
-              <button
-                type="button"
-                class="fa-rx__chip"
-                classList={{ "fa-rx__chip--on": myReactionKeys().has(g.key) }}
-                data-testid="reaction-chip"
-                data-reaction-key={g.key}
-                title={g.authors.map(displayName).join(", ")}
-                onClick={() => toggleReaction(g.key, g.unicode ?? g.key)}
-              >
-                <span>{g.unicode ?? g.key}</span>
-                <span data-testid="reaction-count">{g.authors.length}</span>
-              </button>
-            )}
-          </For>
-        </div>
-      </Show>
     </div>
   );
 };
@@ -869,14 +888,13 @@ const MessageBody: Component<{ message: ChatMessage; onOpenArticle?: () => void 
       }
     >
       <Match when={type() === "article"}>
-        {/* Article renders as a bordered card; click → the reading pane.
-            `renderMarkdown` HTML-escapes all input + allowlists link schemes, so
-            the produced HTML is trusted/sanitized (see lib/markdown.ts). */}
-        <div class="mt-1 rounded-md border-[1.5px] border-border-strong bg-surface p-3.5">
+        {/* Article renders as a bordered card with a clickable title + excerpt +
+            a tags/replies foot, mirroring the prototype's article message card. */}
+        <div class="mt-0.5 rounded-md border-[1.5px] border-border-strong bg-surface px-3.5 py-3.5">
           <Show when={promotedFrom(props.message)}>
             {(from) => (
               <div
-                class="mb-2 inline-flex items-center gap-1.5 rounded-sm border-[1.5px] border-ember bg-ember-soft px-2 py-0.5 text-[11px] font-mono uppercase tracking-wide text-ember"
+                class="mb-2 inline-flex items-center gap-1.5 rounded-sm border-[1.5px] border-dashed border-ember bg-ember-soft px-2 py-0.5 text-[11px] font-mono uppercase tracking-wide text-ember"
                 data-testid="promote-lineage"
               >
                 <span aria-hidden="true">↳</span>
@@ -884,27 +902,42 @@ const MessageBody: Component<{ message: ChatMessage; onOpenArticle?: () => void 
               </div>
             )}
           </Show>
-          {/* Full markdown excerpt (clamped); the body's own heading reads as the
-              title. `renderMarkdown` is XSS-safe (escapes input + allowlists). */}
-          <div
-            class="prose-chat max-h-32 overflow-hidden text-sm text-ink"
+          <button
+            type="button"
+            class="block text-left font-display text-base font-semibold text-ink transition-colors hover:text-accent"
+            data-testid="open-article"
+            onClick={() => props.onOpenArticle?.()}
+          >
+            {splitArticle(text()).title}
+          </button>
+          <p
+            class="my-[7px] mb-[11px] line-clamp-3 text-sm text-muted"
             data-testid="message-article"
-            innerHTML={renderMarkdown(text())}
-          />
-          <div class="mt-2.5 flex items-center gap-2">
-            <For each={(props.message.tags ?? []).filter((t) => !t.startsWith(PROMOTE_TAG_PREFIX))}>
-              {(t) => <span class="fa-tag">{t}</span>}
-            </For>
+          >
+            {splitArticle(text())
+              .body.replace(/[#>*`_-]/g, "")
+              .replace(/\s+/g, " ")
+              .trim()}
+          </p>
+          <div class="flex flex-wrap items-center justify-between gap-2.5">
+            <div class="flex flex-wrap items-center gap-[7px]">
+              <For
+                each={(props.message.tags ?? []).filter((t) => !t.startsWith(PROMOTE_TAG_PREFIX))}
+              >
+                {(t) => <span class="fa-tag">{t}</span>}
+              </For>
+            </div>
             <button
               type="button"
-              class="ml-auto inline-flex items-center gap-1.5 font-mono text-[12px] text-accent hover:underline"
-              data-testid="open-article"
+              class="inline-flex items-center gap-1.5 font-mono text-[11px] text-accent hover:underline"
+              data-testid="open-article-replies"
               onClick={() => props.onOpenArticle?.()}
             >
               <Icon name="reply" size={12} />
               {props.message.replyCount ? `${props.message.replyCount} replies` : "Open article"}
             </button>
           </div>
+          <div class="fa-divider fa-divider--dashed my-[11px]" />
         </div>
       </Match>
       <Match when={type() === "memo"}>
@@ -960,7 +993,7 @@ const AttachmentView: Component<{ attachment: Attachment }> = (props) => {
 
 const TypingLine: Component<{ actors: string[] }> = (props) => (
   <Show when={props.actors.length > 0}>
-    <div class="px-6 py-1 text-xs text-faint" data-testid="typing-indicator">
+    <div class="px-[18px] py-1 text-xs text-faint" data-testid="typing-indicator">
       {typingText(props.actors)}
     </div>
   </Show>
@@ -1128,7 +1161,7 @@ const Composer: Component<{
     <Show when={show}>
       <button
         type="button"
-        class="inline-flex items-center gap-1.5 rounded-sm border-[1.5px] border-border-strong px-3 py-1 font-mono text-[12.5px] transition-colors"
+        class="inline-flex items-center gap-1.5 rounded-sm border-[1.5px] border-border-strong px-3 py-[5px] font-mono text-[12.5px] transition-colors"
         classList={{
           "bg-accent text-accent-ink": kind() === k,
           "bg-surface text-muted hover:text-ink": kind() !== k,
@@ -1147,7 +1180,7 @@ const Composer: Component<{
   );
 
   return (
-    <div class="border-t border-border px-6 py-3" data-testid="composer">
+    <div class="border-t border-border px-[18px] pt-2.5 pb-3.5" data-testid="composer">
       {/* Reply context pill */}
       <Show when={props.replyTarget()}>
         {(t) => (
@@ -1172,7 +1205,7 @@ const Composer: Component<{
       </Show>
 
       {/* Message-kind selector */}
-      <div class="mb-2 flex items-center gap-1.5" data-testid="compose-kind">
+      <div class="mb-[9px] flex items-center gap-[5px]" data-testid="compose-kind">
         {kindButton("message", "Message", "chat")}
         {kindButton("memo", "Memo", "memo", props.canPostMemo)}
         {kindButton("article", "Article", "article", props.canPostArticle)}
@@ -1203,14 +1236,14 @@ const Composer: Component<{
       <Switch>
         <Match when={kind() === "article"}>
           {/* Articles are written in the full editor (opens an overlay). */}
-          <div class="flex items-center gap-2.5 rounded-md border-[1.5px] border-border-strong bg-surface px-3 py-2">
+          <div class="flex items-center gap-[9px] rounded-md border-[1.5px] border-border-strong bg-surface px-3 py-2">
             <span class="text-faint">
               <Icon name="article" size={17} />
             </span>
             <span class="flex-1 text-sm text-faint">Articles are written in the full editor…</span>
             <button
               type="button"
-              class="btn-accent px-4 py-2 text-xs"
+              class="btn-accent shrink-0 px-2.5 py-[5px] text-[11px]"
               data-testid="open-article-editor"
               onClick={openEditor}
             >
@@ -1220,10 +1253,10 @@ const Composer: Component<{
           </div>
         </Match>
         <Match when={true}>
-          <div class="flex items-end gap-2.5 rounded-md border-[1.5px] border-border-strong bg-surface px-3 py-2 focus-within:(outline outline-2 outline-accent outline-offset-1)">
+          <div class="flex items-center gap-[9px] rounded-md border-[1.5px] border-border-strong bg-surface px-3 py-2 focus-within:(outline outline-2 outline-accent outline-offset-1)">
             <button
               type="button"
-              class="shrink-0 pb-0.5 text-faint transition-colors hover:text-ink disabled:opacity-50"
+              class="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-sm text-faint transition-colors hover:text-ink disabled:opacity-50"
               data-testid="attach-button"
               disabled={uploading()}
               onClick={() => fileInput?.click()}
@@ -1266,7 +1299,16 @@ const Composer: Component<{
             />
             <button
               type="button"
-              class="btn-accent shrink-0 px-4 py-2 text-xs"
+              class="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-sm text-faint transition-colors hover:text-ink"
+              data-testid="emoji-button"
+              aria-label="Add emoji"
+              tabindex={-1}
+            >
+              <Icon name="smile" size={18} />
+            </button>
+            <button
+              type="button"
+              class="btn-accent shrink-0 px-2.5 py-[5px] text-[11px]"
               data-testid="send-button"
               onClick={doSend}
             >

@@ -160,7 +160,7 @@ export const DmsPage: Component = () => {
   return (
     <div class="flex min-h-0 flex-1" data-testid="dms-page">
       {/* Inbox rail: DMs · Mentions · Thread-replies */}
-      <aside class="flex w-72 shrink-0 flex-col border-r border-border bg-surface">
+      <aside class="flex w-[300px] shrink-0 flex-col border-r border-border bg-surface">
         <div class="flex items-center justify-between px-4 pt-4 pb-2">
           <h1 class="font-display text-base font-bold tracking-tight">Inbox</h1>
           <Show when={tab() === "all" || tab() === "dms"}>
@@ -208,7 +208,7 @@ export const DmsPage: Component = () => {
                   </p>
                 }
               >
-                <ul class="flex flex-col gap-1" data-testid="dm-conversations">
+                <ul class="flex flex-col gap-0.5" data-testid="dm-conversations">
                   <For each={conversations()}>
                     {(conv) => <ConversationRow conv={conv} active={selected() === conv.dmId} />}
                   </For>
@@ -274,7 +274,7 @@ export const DmsPage: Component = () => {
 const ConversationRow: Component<{ conv: DmConversationSummary; active: boolean }> = (props) => (
   <A
     href={`/dms/${props.conv.dmId}`}
-    class="flex gap-2.5 rounded-md border-[1.5px] px-3 py-2.5 transition-colors"
+    class="flex gap-[11px] rounded-md border-[1.5px] p-[11px] transition-colors"
     classList={{
       "border-accent bg-accent-soft": props.active,
       "border-transparent hover:bg-surface-2": !props.active,
@@ -283,16 +283,13 @@ const ConversationRow: Component<{ conv: DmConversationSummary; active: boolean 
     data-dm-id={props.conv.dmId}
     data-counterparty={props.conv.counterparty}
   >
-    <span
-      class="fa-ava fa-ava--sm"
-      classList={{ "fa-ava__fed": isRemoteActor(props.conv.counterparty) }}
-    >
+    <span class="fa-ava" classList={{ "fa-ava__fed": isRemoteActor(props.conv.counterparty) }}>
       {displayName(props.conv.counterparty).slice(0, 1).toUpperCase()}
     </span>
     <span class="min-w-0 flex-1">
       <span class="flex items-center gap-1.5" data-testid="dm-conv-name">
         <PresenceDot actor={props.conv.counterparty} />
-        <span class="min-w-0 flex-1 truncate font-body text-[13px] font-semibold text-ink">
+        <span class="min-w-0 flex-1 truncate font-body text-[13.5px] font-semibold text-ink">
           {displayName(props.conv.counterparty)}
         </span>
         <span class="inline-flex items-center gap-1 font-mono text-[10px] text-faint">
@@ -392,20 +389,52 @@ const ThreadView: Component<{
           >
             {displayName(counterparty()).slice(0, 1).toUpperCase()}
           </span>
-          <h2 class="font-mono text-sm text-ink" data-testid="dm-thread-name">
-            {counterparty() || props.dmId}
+          <h2
+            class="font-display text-base font-semibold tracking-tight text-ink"
+            data-testid="dm-thread-name"
+          >
+            {displayName(counterparty()) || props.dmId}
           </h2>
+          <Show when={counterparty() && isRemoteActor(counterparty())}>
+            <span class="fa-handle text-accent">@{domainOf(counterparty())}</span>
+            <span class="fa-tag">
+              <Icon name="lock" size={11} />
+              encrypted
+            </span>
+          </Show>
           <Show when={counterparty()}>
             <PresenceDot actor={counterparty()} showStatus />
+          </Show>
+          <Show when={counterparty()}>
+            <div class="ml-auto flex items-center gap-1.5">
+              <button
+                type="button"
+                class="grid h-[30px] w-[30px] place-items-center rounded-sm text-muted hover:(bg-surface-2 text-ink)"
+                title="Voice call"
+                aria-label="Voice call"
+                tabindex={-1}
+              >
+                <Icon name="speaker" size={16} />
+              </button>
+              <button
+                type="button"
+                class="grid h-[30px] w-[30px] place-items-center rounded-sm text-muted hover:(bg-surface-2 text-ink)"
+                title="Video call"
+                aria-label="Video call"
+                tabindex={-1}
+              >
+                <Icon name="video" size={16} />
+              </button>
+            </div>
           </Show>
         </div>
         <Show when={counterparty() && isRemoteActor(counterparty())}>
           <div
-            class="flex items-center gap-1.5 rounded-md border-[1.5px] border-ember bg-ember-soft px-2.5 py-1 text-[11px] font-mono uppercase tracking-wide text-ember"
+            class="flex items-center gap-[9px] rounded-md border-[1.5px] border-dashed border-accent bg-accent-soft px-3 py-[9px] text-[11px] font-mono text-accent"
             data-testid="dm-federated-banner"
           >
-            <span aria-hidden="true">⤫</span>
-            This conversation crosses the network
+            <Icon name="globe" size={15} />
+            This person is on another instance — messages cross the network.
           </div>
         </Show>
       </header>
@@ -463,63 +492,68 @@ const DmMessageRow: Component<{
   const mine = () => m().mine === true || m().author === session.actor;
   return (
     <li
-      class="flex flex-col gap-1"
-      classList={{ "items-end": mine(), "items-start": !mine() }}
+      class="flex items-end gap-[9px]"
+      classList={{ "justify-end": mine() }}
       data-testid="dm-message"
       data-message-id={m().id}
       data-mine={mine() ? "1" : "0"}
       data-pending={m().pending ? "1" : undefined}
     >
-      <div class="flex items-baseline gap-2">
-        <span class="font-mono text-[11px] text-muted" data-testid="dm-message-author">
-          {mine() ? "You" : displayName(m().author)}
+      <Show when={!mine()}>
+        <span class="fa-ava fa-ava--sm" classList={{ "fa-ava__fed": isRemoteActor(m().author) }}>
+          {displayName(m().author).slice(0, 1).toUpperCase()}
         </span>
-        <span class="fa-meta">{formatTime(m().createdAt)}</span>
-        <Show when={m().pending}>
-          <span class="text-[10px] text-accent" data-testid="dm-message-pending">
-            sending…
-          </span>
-        </Show>
-        <Show when={m().failed}>
-          <button
-            type="button"
-            class="text-[10px] text-danger underline"
-            data-testid="dm-message-retry"
-            onClick={() => {
-              const client = sessionClient();
-              const store = props.sentStore();
-              const me = session.actor;
-              if (client && store && me && m().clientMessageId) {
-                const counterparty = props.counterparty;
-                void resolveDeliveryClient(counterparty).then((deliveryClient) =>
-                  retrySendDm({
-                    client,
-                    ...(deliveryClient ? { deliveryClient } : {}),
-                    dmId: props.dmId,
-                    me,
-                    counterparty,
-                    text: m().content.text ?? "",
-                    sentStore: store,
-                    clientMessageId: m().clientMessageId as string,
-                  }),
-                );
-              }
-            }}
-          >
-            failed — retry
-          </button>
+      </Show>
+      <div class="flex max-w-[70%] flex-col gap-1" classList={{ "items-end": mine() }}>
+        <p
+          class="whitespace-pre-wrap break-words rounded-md border-[1.5px] px-[13px] py-[9px] text-sm leading-[1.45]"
+          classList={{
+            "border-accent bg-accent-soft text-ink": mine(),
+            "border-border-strong bg-surface text-ink": !mine(),
+          }}
+          data-testid="dm-message-text"
+        >
+          {m().content.text ?? ""}
+        </p>
+        <Show when={m().pending || m().failed}>
+          <div class="flex items-center gap-2">
+            <Show when={m().pending}>
+              <span class="text-[10px] text-accent" data-testid="dm-message-pending">
+                sending…
+              </span>
+            </Show>
+            <Show when={m().failed}>
+              <button
+                type="button"
+                class="text-[10px] text-danger underline"
+                data-testid="dm-message-retry"
+                onClick={() => {
+                  const client = sessionClient();
+                  const store = props.sentStore();
+                  const me = session.actor;
+                  if (client && store && me && m().clientMessageId) {
+                    const counterparty = props.counterparty;
+                    void resolveDeliveryClient(counterparty).then((deliveryClient) =>
+                      retrySendDm({
+                        client,
+                        ...(deliveryClient ? { deliveryClient } : {}),
+                        dmId: props.dmId,
+                        me,
+                        counterparty,
+                        text: m().content.text ?? "",
+                        sentStore: store,
+                        clientMessageId: m().clientMessageId as string,
+                      }),
+                    );
+                  }
+                }}
+              >
+                failed — retry
+              </button>
+            </Show>
+          </div>
         </Show>
       </div>
-      <p
-        class="max-w-[80%] whitespace-pre-wrap break-words rounded-md border-[1.5px] px-3 py-2 text-sm"
-        classList={{
-          "border-accent bg-accent-soft text-ink": mine(),
-          "border-border-strong bg-surface text-ink": !mine(),
-        }}
-        data-testid="dm-message-text"
-      >
-        {m().content.text ?? ""}
-      </p>
     </li>
   );
 };

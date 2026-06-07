@@ -40,7 +40,11 @@
   --shadow-col: rgba(238, 233, 213, 0.24);
   --shadow-hard: 3px 3px 0 var(--shadow-col);
   --shadow-hard-sm: 2px 2px 0 var(--shadow-col);
-  --on-accent-shadow: 3px 3px 0 #11120b;
+  /* on-accent: a DARK hard offset so the edge reads against the bright accent
+     fill. `--on-accent-shadow-col` is the bare color so utilities can compose
+     the offset at any size (3px base, 4px hover-grow). */
+  --on-accent-shadow-col: #11120b;
+  --on-accent-shadow: 3px 3px 0 var(--on-accent-shadow-col);
 }
 
 /* ----------------------------------------------------------- color: LIGHT (OS light, or forced) */
@@ -69,7 +73,8 @@
     --shadow-col: var(--ink);
     --shadow-hard: 3px 3px 0 var(--shadow-col);
     --shadow-hard-sm: 2px 2px 0 var(--shadow-col);
-    --on-accent-shadow: 3px 3px 0 #15140d;
+    --on-accent-shadow-col: #15140d;
+    --on-accent-shadow: 3px 3px 0 var(--on-accent-shadow-col);
   }
 }
 :root[data-theme="light"] {
@@ -93,7 +98,8 @@
   --shadow-col: var(--ink);
   --shadow-hard: 3px 3px 0 var(--shadow-col);
   --shadow-hard-sm: 2px 2px 0 var(--shadow-col);
-  --on-accent-shadow: 3px 3px 0 #15140d;
+  --on-accent-shadow-col: #15140d;
+  --on-accent-shadow: 3px 3px 0 var(--on-accent-shadow-col);
 }
 
 /* ----------------------------------------------------------- accent pairs (cool + warm) — compare via [data-accent] on <html> */
@@ -231,6 +237,21 @@
   border-color: currentColor;
 }
 
+/* Full-bleed app: kill the UA body margin (the stray "white border" around the
+   app) and let html/body/#root fill the viewport so the canvas bg reaches every
+   edge. The shell itself is viewport-locked (h-screen + overflow-hidden); only
+   the inner message/content panel scrolls. Mirrors the prototype's
+   `html, body { height: 100%; margin: 0 } #root { height: 100% }`. */
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+body {
+  background: var(--bg);
+}
+
 /* Tailwind/UnoCSS-style control reset: without it, bare <button>/<select>
    elements show the UA `buttonface` background (a light fill that reads as a
    stray box in dark mode) and don't inherit type. Explicit utility/`.fa-*`
@@ -250,6 +271,27 @@ select {
 }
 button:disabled {
   cursor: not-allowed;
+}
+
+/* Tailwind/UnoCSS-style link reset: the app navigates with router <A> anchors,
+   which keep the UA-default blue + underline. Terminal Garden links are never
+   underlined — they signal with color (`.pr-link` is phosphor, no underline) —
+   so kill the underline and inherit color globally. Components that want an
+   accent link set the color via a class (higher specificity still wins). This
+   is the global root cause behind underlined group-letter avatars and inbox
+   conversation rows. */
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+/* Tailwind/UnoCSS-style list reset: bare <ul>/<ol> otherwise carry the UA
+   default 40px left padding + bullets, which pushed channel/inbox rows in. */
+ul,
+ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
 
 .fa,
@@ -519,6 +561,13 @@ body.fa {
   font-weight: 700;
   color: var(--ink);
   overflow: hidden;
+  text-decoration: none;
+}
+/* Space-rail group tile: sized to the 44px rail grid so groups line up with the
+   home button and nav buttons (mirrors the prototype's `.pr-space .fa-ava`). */
+.fa-ava--rail {
+  width: 44px;
+  height: 44px;
 }
 .fa-ava--phosphor {
   background: var(--phosphor);

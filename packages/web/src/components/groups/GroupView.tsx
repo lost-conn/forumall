@@ -37,7 +37,13 @@ type MgmtPanel = "members" | "requests" | "invites" | null;
 
 /** Pick the line icon for a channel by type (call channels → speaker). */
 function channelIcon(type: string): IconName {
-  return type === "call" ? "speaker" : "hash";
+  return type === "call" || type === "voice"
+    ? "speaker"
+    : type === "article"
+      ? "article"
+      : type === "memo"
+        ? "memo"
+        : "hash";
 }
 
 /** Local-part of the signed-in actor for the identity footer. */
@@ -159,12 +165,12 @@ export const GroupView: Component<{ groupId: string }> = (props) => {
         {(grp) => (
           <div class="flex min-h-0 flex-1">
             {/* ---- pr-side: channel list ---- */}
-            <aside class="flex w-60 shrink-0 flex-col border-r border-border bg-surface">
+            <aside class="flex w-[244px] shrink-0 flex-col border-r border-border bg-surface">
               {/* Space header + management dropdown */}
               <div class="relative">
                 <button
                   type="button"
-                  class="flex w-full items-center gap-2 border-b border-border px-3.5 py-3 text-left hover:bg-surface-2"
+                  class="flex w-full items-center gap-2 border-b border-border px-3.5 py-[13px] text-left hover:bg-surface-2"
                   data-testid="space-menu-toggle"
                   aria-expanded={menuOpen()}
                   onClick={() => setMenuOpen((v) => !v)}
@@ -269,11 +275,11 @@ export const GroupView: Component<{ groupId: string }> = (props) => {
                       </p>
                     }
                   >
-                    <ul class="flex flex-col gap-0.5" data-testid="channels-list">
+                    <ul class="m-0 flex list-none flex-col gap-0.5 p-0" data-testid="channels-list">
                       <For each={channels.data ?? []}>
                         {(ch) => (
                           <li
-                            class="group flex items-center gap-2 rounded-md border-[1.5px] border-transparent px-2 py-1.5 font-mono text-[13px] transition-colors"
+                            class="group flex items-center gap-[9px] rounded-md border-[1.5px] border-transparent px-[9px] py-1.5 font-mono text-[13px] transition-colors"
                             classList={{
                               "border-accent bg-accent-soft text-accent": openChat()?.id === ch.id,
                               "text-muted hover:(bg-surface-2 text-ink)": openChat()?.id !== ch.id,
@@ -329,13 +335,28 @@ export const GroupView: Component<{ groupId: string }> = (props) => {
               </div>
 
               {/* Identity footer */}
-              <div class="flex items-center gap-2 border-t border-border bg-surface-2 px-3 py-2">
+              <div class="flex items-center gap-[9px] border-t border-border bg-surface-2 px-[11px] py-[9px]">
                 <span class="fa-ava fa-ava--sm">{selfName().slice(0, 1).toUpperCase()}</span>
-                <div class="min-w-0 flex-1 leading-tight">
-                  <div class="truncate font-mono text-[12px] text-ink">{selfName()}</div>
-                  <div class="truncate font-mono text-[10px] text-accent">@{session.host}</div>
+                <div class="min-w-0 flex-1 leading-[1.15]">
+                  <div class="truncate font-body text-[13px] font-semibold text-ink">
+                    {selfName()}
+                  </div>
+                  <div class="truncate font-mono text-[11px] text-accent">@{session.host}</div>
                 </div>
-                <A href="/settings" class="text-muted hover:text-ink" title="Settings">
+                <button
+                  type="button"
+                  class="grid h-[30px] w-[30px] place-items-center rounded-sm text-muted hover:(bg-surface text-ink)"
+                  title="Microphone"
+                  aria-label="Microphone"
+                  tabindex={-1}
+                >
+                  <Icon name="mic" size={15} />
+                </button>
+                <A
+                  href="/settings"
+                  class="grid h-[30px] w-[30px] place-items-center rounded-sm text-muted hover:(bg-surface text-ink)"
+                  title="Settings"
+                >
                   <Icon name="gear" size={15} />
                 </A>
               </div>

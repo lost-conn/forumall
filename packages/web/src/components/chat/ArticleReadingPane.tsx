@@ -125,6 +125,15 @@ export const ArticleReadingPane: Component<{
           <Icon name="article" size={13} />
           article
         </span>
+        <button
+          type="button"
+          class="ml-auto grid h-[30px] w-[30px] place-items-center rounded-sm text-muted hover:(bg-surface-2 text-ink)"
+          title="More"
+          aria-label="More options"
+          tabindex={-1}
+        >
+          <Icon name="more" size={18} />
+        </button>
       </header>
 
       {/* Body */}
@@ -133,7 +142,7 @@ export const ArticleReadingPane: Component<{
           <Show when={promotedFrom()}>
             {(from) => (
               <div
-                class="mb-3 inline-flex items-center gap-1.5 rounded-sm border-[1.5px] border-ember bg-ember-soft px-2 py-0.5 text-[11px] font-mono uppercase tracking-wide text-ember"
+                class="mb-3 inline-flex items-center gap-1.5 rounded-sm border-[1.5px] border-dashed border-ember bg-ember-soft px-2 py-0.5 text-[11px] font-mono uppercase tracking-wide text-ember"
                 data-testid="promote-lineage"
               >
                 <Icon name="hash" size={12} />
@@ -204,7 +213,7 @@ export const ArticleReadingPane: Component<{
             </div>
           </div>
 
-          <div class="fa-divider my-6" />
+          <div class="fa-divider fa-divider--dashed my-6" />
 
           {/* Replies */}
           <div class="eyebrow mb-3" data-testid="article-replies-count">

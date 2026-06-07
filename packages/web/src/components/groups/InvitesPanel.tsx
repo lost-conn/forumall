@@ -161,7 +161,7 @@ export const InvitesPanel: Component<{ group: Group; enabled: () => boolean }> =
           when={(invites.data ?? []).length > 0}
           fallback={<p class="text-sm text-muted">No active invites.</p>}
         >
-          <ul class="flex flex-col divide-y divide-border" data-testid="invites-list">
+          <ul class="flex flex-col divide-y divide-dashed divide-border" data-testid="invites-list">
             <For each={invites.data ?? []}>
               {(inv) => (
                 <li class="flex items-center gap-3 py-2.5" data-testid="invite-row">

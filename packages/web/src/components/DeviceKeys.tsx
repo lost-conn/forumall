@@ -100,7 +100,10 @@ export const DeviceKeys: Component = () => {
           when={keys() && (keys() as DeviceKey[]).length > 0}
           fallback={<p class="text-sm text-muted">No device keys.</p>}
         >
-          <ul class="flex flex-col divide-y divide-border" data-testid="device-keys-list">
+          <ul
+            class="flex flex-col divide-y divide-dashed divide-border"
+            data-testid="device-keys-list"
+          >
             <For each={keys()}>
               {(key) => {
                 const isCurrent = () => key.key_id === session.keyId;

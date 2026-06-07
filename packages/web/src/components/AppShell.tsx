@@ -13,7 +13,7 @@ const MOBILE_NAV: { href: string; label: string; icon: IconName }[] = [
   { href: "/groups", label: "Forum", icon: "hash" },
   { href: "/dms", label: "DMs", icon: "at" },
   { href: "/discover", label: "Discover", icon: "globe" },
-  { href: "/settings", label: "You", icon: "gear" },
+  { href: "/settings", label: "You", icon: "users" },
 ];
 
 /** App layout: a narrow icon "space rail" + a content outlet (+ phone tab bar). */
@@ -34,10 +34,10 @@ export const AppShell: ParentComponent = (props) => {
         <A
           href="/"
           title="Home"
-          class="grid h-11 w-11 place-items-center rounded-md border-[1.5px] transition-colors"
+          class="grid h-11 w-11 place-items-center rounded-md border-[1.5px] bg-accent-soft transition-colors"
           classList={{
             "border-accent": isActive("/"),
-            "border-transparent hover:bg-surface-2": !isActive("/"),
+            "border-border-strong": !isActive("/"),
           }}
         >
           <img src="/forumall-mark.svg" alt="Forumall" class="h-7 w-7" width="28" height="28" />
@@ -56,7 +56,7 @@ export const AppShell: ParentComponent = (props) => {
                 <A
                   href={`/groups/${grp.id}`}
                   title={grp.name}
-                  class="fa-ava transition-colors"
+                  class="fa-ava fa-ava--rail transition-colors"
                   classList={{ "fa-ava--phosphor": active() }}
                   data-testid="my-group-item"
                   data-group-name={grp.name}
@@ -110,14 +110,14 @@ export const AppShell: ParentComponent = (props) => {
 
       {/* Phone bottom tab bar (hidden ≥ md). */}
       <nav
-        class="fixed inset-x-0 bottom-0 z-40 flex h-14 border-t-[1.5px] border-border-strong bg-surface md:hidden"
+        class="fixed inset-x-0 bottom-0 z-40 flex h-14 border-t-[1.5px] border-border bg-surface md:hidden"
         data-testid="mobile-tabbar"
       >
         <For each={MOBILE_NAV}>
           {(item) => (
             <A
               href={item.href}
-              class="flex flex-1 flex-col items-center justify-center gap-0.5 font-mono text-[10px] uppercase tracking-wide text-muted"
+              class="flex flex-1 flex-col items-center justify-center gap-0.5 font-mono text-[9.5px] text-faint"
               classList={{ "text-accent": isActive(item.href) }}
             >
               <Icon name={item.icon} size={20} />

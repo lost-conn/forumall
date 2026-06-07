@@ -28,6 +28,7 @@ const TOOLBAR: ToolItem[] = [
   { icon: "code", wrap: ["`", "`"] },
   { sep: true },
   { icon: "link", wrap: ["[", "](https://)"] },
+  { icon: "image", wrap: ["![", "](https://)"] },
 ];
 
 export const ArticleEditorOverlay: Component<{
@@ -43,6 +44,10 @@ export const ArticleEditorOverlay: Component<{
   const [mode, setMode] = createSignal<"write" | "preview">("write");
   const [tags, setTags] = createSignal<string[]>([]);
   const [tagDraft, setTagDraft] = createSignal("");
+  // Publish-setting toggles (visual; reactions/replies default on, pin off).
+  const [allowReactions, setAllowReactions] = createSignal(true);
+  const [allowReplies, setAllowReplies] = createSignal(true);
+  const [pinToChannel, setPinToChannel] = createSignal(false);
   let textarea: HTMLTextAreaElement | undefined;
 
   const previewMarkdown = () =>
@@ -77,7 +82,7 @@ export const ArticleEditorOverlay: Component<{
   return (
     <div class="fixed inset-0 z-[90] flex flex-col bg-canvas" data-testid="article-editor-overlay">
       {/* Top bar */}
-      <div class="flex items-center gap-3 border-b border-border px-4 py-2.5">
+      <div class="flex items-center gap-3 border-b border-border px-[18px] py-[11px]">
         <button
           type="button"
           class="text-muted hover:text-ink"
@@ -96,24 +101,26 @@ export const ArticleEditorOverlay: Component<{
           <div class="inline-flex overflow-hidden rounded-md border-[1.5px] border-border-strong">
             <button
               type="button"
-              class="px-3 py-1.5 font-mono text-[12px]"
+              class="inline-flex items-center gap-1.5 px-3 py-1.5 font-mono text-[12px]"
               classList={{
                 "bg-accent text-accent-ink": mode() === "write",
                 "bg-surface text-muted": mode() !== "write",
               }}
               onClick={() => setMode("write")}
             >
+              <Icon name="article" size={13} />
               Write
             </button>
             <button
               type="button"
-              class="border-l-[1.5px] border-border-strong px-3 py-1.5 font-mono text-[12px]"
+              class="inline-flex items-center gap-1.5 border-l-[1.5px] border-border-strong px-3 py-1.5 font-mono text-[12px]"
               classList={{
                 "bg-accent text-accent-ink": mode() === "preview",
                 "bg-surface text-muted": mode() !== "preview",
               }}
               onClick={() => setMode("preview")}
             >
+              <Icon name="search" size={13} />
               Preview
             </button>
           </div>
@@ -193,11 +200,11 @@ export const ArticleEditorOverlay: Component<{
         </div>
 
         {/* Publish settings */}
-        <div class="w-64 shrink-0 overflow-auto border-l border-border bg-surface p-4 fa-scroll">
+        <div class="w-[244px] shrink-0 overflow-auto border-l border-border bg-surface px-[14px] py-4 fa-scroll">
           <div class="eyebrow mb-3">Publish settings</div>
           <Show when={props.promotedFrom}>
             {(from) => (
-              <div class="mb-4 inline-flex items-center gap-1.5 rounded-sm border-[1.5px] border-ember bg-ember-soft px-2 py-0.5 text-[11px] font-mono uppercase tracking-wide text-ember">
+              <div class="mb-4 inline-flex items-center gap-1.5 rounded-sm border-[1.5px] border-dashed border-ember bg-ember-soft px-2 py-0.5 text-[11px] font-mono uppercase tracking-wide text-ember">
                 <Icon name="hash" size={12} />
                 from {from()}
               </div>
@@ -223,7 +230,7 @@ export const ArticleEditorOverlay: Component<{
             </For>
           </div>
           <input
-            class="input text-xs"
+            class="input mb-[18px] text-xs"
             data-testid="article-editor-tag"
             placeholder="Add a tag + Enter"
             value={tagDraft()}
@@ -235,8 +242,32 @@ export const ArticleEditorOverlay: Component<{
               }
             }}
           />
+
+          <SettingRow label="Allow reactions" on={allowReactions()} set={setAllowReactions} />
+          <SettingRow label="Allow replies" on={allowReplies()} set={setAllowReplies} />
+          <SettingRow label="Pin to channel" on={pinToChannel()} set={setPinToChannel} />
         </div>
       </div>
     </div>
   );
 };
+
+/** A dashed-divider toggle row mirroring the prototype's `.pr-setrow` + `.fa-switch`. */
+const SettingRow: Component<{ label: string; on: boolean; set: (v: boolean) => void }> = (
+  props,
+) => (
+  <div class="flex items-center gap-3 border-b border-dashed border-border py-3">
+    <span class="flex-1 font-body text-[13.5px] text-ink">{props.label}</span>
+    <button
+      type="button"
+      class="fa-switch"
+      classList={{ "fa-switch--on": props.on }}
+      role="switch"
+      aria-checked={props.on}
+      aria-label={props.label}
+      onClick={() => props.set(!props.on)}
+    >
+      <span class="fa-switch__knob" />
+    </button>
+  </div>
+);

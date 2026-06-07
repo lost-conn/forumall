@@ -56,7 +56,10 @@ export const RequestsPanel: Component<{ group: Group; enabled: () => boolean }> 
             </p>
           }
         >
-          <ul class="flex flex-col divide-y divide-border" data-testid="requests-list">
+          <ul
+            class="flex flex-col divide-y divide-dashed divide-border"
+            data-testid="requests-list"
+          >
             <For each={requests.data ?? []}>
               {(r) => (
                 <li class="flex items-center gap-3 py-3" data-testid="request-row">
