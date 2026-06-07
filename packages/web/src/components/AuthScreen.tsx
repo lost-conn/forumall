@@ -41,12 +41,10 @@ export const AuthScreen: Component = () => {
     <div class="grid min-h-screen place-items-center bg-canvas px-4">
       <div class="w-full max-w-md">
         <div class="mb-7 flex items-center gap-3">
-          <span class="grid h-11 w-11 place-items-center rounded-xl bg-gradient-to-br from-accent to-cyan text-lg font-bold text-white">
-            F
-          </span>
+          <img src="/forumall-mark.svg" alt="Forumall" class="h-11 w-11" width="44" height="44" />
           <div>
-            <div class="text-xl font-semibold tracking-tight text-ink">Forumall</div>
-            <div class="text-xs text-faint">Federated communities over OFSCP</div>
+            <div class="font-display text-xl font-bold tracking-tight text-ink">Forumall</div>
+            <div class="eyebrow text-[11px]">Federated communities over OFSCP</div>
           </div>
         </div>
 
@@ -90,7 +88,7 @@ const ConnectStage: Component = () => {
   return (
     <form class="card flex flex-col gap-4" onSubmit={connect} data-testid="connect-form">
       <div>
-        <h1 class="text-lg font-semibold tracking-tight">Connect to your provider</h1>
+        <h1 class="font-display text-lg font-bold tracking-tight">Connect to your provider</h1>
         <p class="mt-1 text-sm text-muted">
           Enter the domain of the OFSCP provider that hosts your account.
         </p>
@@ -168,7 +166,7 @@ const CredentialsStage: Component<{ info: ProviderInfo }> = (props) => {
     <form class="card flex flex-col gap-4" onSubmit={submit} data-testid="credentials-form">
       <div class="flex items-start justify-between gap-3">
         <div>
-          <h1 class="text-lg font-semibold tracking-tight">
+          <h1 class="font-display text-lg font-bold tracking-tight">
             {mode() === "register" ? "Create your account" : "Welcome back"}
           </h1>
           <p class="mt-1 text-sm text-muted">
@@ -200,13 +198,13 @@ const CredentialsStage: Component<{ info: ProviderInfo }> = (props) => {
         </button>
       </div>
 
-      <div class="grid grid-cols-2 gap-1 rounded-lg bg-surface-2 p-1 text-sm">
+      <div class="grid grid-cols-2 gap-1.5">
         <button
           type="button"
-          class="rounded-md px-3 py-1.5 font-medium transition-colors"
+          class="rounded-md border-[1.5px] px-3 py-1.5 text-[11px] font-mono font-bold uppercase tracking-wide transition-colors"
           classList={{
-            "bg-accent text-white": mode() === "register",
-            "text-muted hover:text-ink": mode() !== "register",
+            "border-accent bg-accent-soft text-accent": mode() === "register",
+            "border-border-strong text-muted hover:(bg-surface-2 text-ink)": mode() !== "register",
           }}
           onClick={() => setMode("register")}
           data-testid="tab-register"
@@ -215,10 +213,10 @@ const CredentialsStage: Component<{ info: ProviderInfo }> = (props) => {
         </button>
         <button
           type="button"
-          class="rounded-md px-3 py-1.5 font-medium transition-colors"
+          class="rounded-md border-[1.5px] px-3 py-1.5 text-[11px] font-mono font-bold uppercase tracking-wide transition-colors"
           classList={{
-            "bg-accent text-white": mode() === "login",
-            "text-muted hover:text-ink": mode() !== "login",
+            "border-accent bg-accent-soft text-accent": mode() === "login",
+            "border-border-strong text-muted hover:(bg-surface-2 text-ink)": mode() !== "login",
           }}
           onClick={() => setMode("login")}
           data-testid="tab-login"

@@ -20,6 +20,18 @@ const NAV: NavItem[] = [
   { href: "/settings", label: "Settings", glyph: "⚙" },
 ];
 
+/**
+ * Phone bottom tab bar (shown < md). A 5-item subset of the rail — Home · Forum
+ * (Groups) · DMs · Discover · You (Settings) — matching the handoff mobile shell.
+ */
+const MOBILE_NAV: { href: string; label: string; glyph: string }[] = [
+  { href: "/", label: "Home", glyph: "◆" },
+  { href: "/groups", label: "Forum", glyph: "❑" },
+  { href: "/dms", label: "DMs", glyph: "✉" },
+  { href: "/discover", label: "Discover", glyph: "✦" },
+  { href: "/settings", label: "You", glyph: "⚙" },
+];
+
 const CONNECTION_DOT: Record<string, string> = {
   connected: "bg-success",
   connecting: "bg-cyan animate-pulse",
@@ -37,7 +49,7 @@ export const AppShell: ParentComponent = (props) => {
 
   return (
     <div class="app-shell">
-      <nav class="app-nav">
+      <nav class="app-nav hidden md:flex">
         <div class="mb-4 flex items-center gap-2.5 px-2">
           <img src="/forumall-mark.svg" alt="Forumall" class="h-8 w-8" width="32" height="32" />
           <div class="leading-tight">
@@ -76,7 +88,26 @@ export const AppShell: ParentComponent = (props) => {
         </div>
       </nav>
 
-      <main class="app-content">{props.children}</main>
+      <main class="app-content pb-14 md:pb-0">{props.children}</main>
+
+      {/* Phone bottom tab bar (hidden ≥ md). */}
+      <nav
+        class="fixed inset-x-0 bottom-0 z-40 flex h-14 border-t-[1.5px] border-border-strong bg-surface md:hidden"
+        data-testid="mobile-tabbar"
+      >
+        <For each={MOBILE_NAV}>
+          {(item) => (
+            <A
+              href={item.href}
+              class="flex flex-1 flex-col items-center justify-center gap-0.5 font-mono text-[10px] uppercase tracking-wide text-muted"
+              classList={{ "text-accent": isActive(item.href) }}
+            >
+              <span class="text-base leading-none">{item.glyph}</span>
+              <span>{item.label}</span>
+            </A>
+          )}
+        </For>
+      </nav>
 
       {/* Global, opened from anywhere via openUserProfile(actor). */}
       <UserProfileCard />
