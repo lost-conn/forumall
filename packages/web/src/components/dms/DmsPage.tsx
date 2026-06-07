@@ -42,6 +42,7 @@ import {
 } from "../../stores/dms.ts";
 import { subscribePresence } from "../../stores/presence-controller.ts";
 import { session, sessionClient, sessionWs } from "../../stores/session.ts";
+import { Icon, type IconName } from "../Icon.tsx";
 import { PresenceDot } from "../social/PresenceDot.tsx";
 import { type ConversationHandle, openConversation, retrySendDm, sendDm } from "./dm-controller.ts";
 
@@ -51,11 +52,12 @@ import { type ConversationHandle, openConversation, retrySendDm, sendDm } from "
  * feed (none exists today; §10 notifications are outbound webhooks only). Tracked
  * as its own backend epic on the Forumall board.
  */
-type InboxTab = "dms" | "mentions" | "replies";
-const INBOX_TABS: [InboxTab, string][] = [
-  ["dms", "DMs"],
-  ["mentions", "Mentions"],
-  ["replies", "Replies"],
+type InboxTab = "all" | "dms" | "mentions" | "threads";
+const INBOX_TABS: [InboxTab, string, IconName][] = [
+  ["all", "All", "inbox"],
+  ["dms", "DMs", "at"],
+  ["mentions", "Mentions", "bell"],
+  ["threads", "Threads", "reply"],
 ];
 
 /** Placeholder for an inbox tab whose backing feed isn't built yet. */
@@ -143,7 +145,7 @@ export const DmsPage: Component = () => {
 
   const conversations = createMemo(dmConversations);
   const selected = () => params.dmId;
-  const [tab, setTab] = createSignal<InboxTab>("dms");
+  const [tab, setTab] = createSignal<InboxTab>("all");
 
   // Subscribe to live presence for every DM counterparty while the screen is
   // mounted; re-run when the list changes (ref-counted controller de-dupes).
@@ -161,7 +163,7 @@ export const DmsPage: Component = () => {
       <aside class="flex w-72 shrink-0 flex-col border-r border-border bg-surface">
         <div class="flex items-center justify-between px-4 pt-4 pb-2">
           <h1 class="font-display text-base font-bold tracking-tight">Inbox</h1>
-          <Show when={tab() === "dms"}>
+          <Show when={tab() === "all" || tab() === "dms"}>
             <button
               type="button"
               class="grid h-7 w-7 place-items-center rounded-md border-[1.5px] border-border-strong bg-accent font-bold text-accent-ink shadow-[2px_2px_0_var(--shadow-col)] transition-transform hover:-translate-x-px hover:-translate-y-px active:(translate-x-0.5 translate-y-0.5 shadow-none)"
@@ -176,18 +178,19 @@ export const DmsPage: Component = () => {
 
         <div class="flex flex-wrap gap-1.5 px-3 pb-3" data-testid="inbox-tabs">
           <For each={INBOX_TABS}>
-            {([id, label]) => (
+            {([id, label, icon]) => (
               <button
                 type="button"
                 data-testid={`inbox-tab-${id}`}
                 aria-pressed={tab() === id}
                 onClick={() => setTab(id)}
-                class="rounded-md border-[1.5px] px-2.5 py-1 text-[11px] font-mono font-bold uppercase tracking-wide transition-colors"
+                class="inline-flex items-center gap-1.5 rounded-md border-[1.5px] border-border-strong px-2.5 py-1 font-mono text-[12px] transition-transform hover:-translate-y-px"
                 classList={{
-                  "border-accent bg-accent-soft text-accent": tab() === id,
-                  "border-border-strong text-muted hover:(bg-surface-2 text-ink)": tab() !== id,
+                  "bg-accent text-accent-ink": tab() === id,
+                  "bg-surface text-ink": tab() !== id,
                 }}
               >
+                <Icon name={icon} size={12} />
                 {label}
               </button>
             )}
@@ -196,7 +199,7 @@ export const DmsPage: Component = () => {
 
         <div class="min-h-0 flex-1 overflow-auto px-2 pb-3">
           <Switch>
-            <Match when={tab() === "dms"}>
+            <Match when={tab() === "all" || tab() === "dms"}>
               <Show
                 when={conversations().length > 0}
                 fallback={
@@ -205,7 +208,7 @@ export const DmsPage: Component = () => {
                   </p>
                 }
               >
-                <ul class="flex flex-col gap-0.5" data-testid="dm-conversations">
+                <ul class="flex flex-col gap-1" data-testid="dm-conversations">
                   <For each={conversations()}>
                     {(conv) => <ConversationRow conv={conv} active={selected() === conv.dmId} />}
                   </For>
@@ -219,7 +222,7 @@ export const DmsPage: Component = () => {
                 detail="When someone @-mentions you, it'll show up here."
               />
             </Match>
-            <Match when={tab() === "replies"}>
+            <Match when={tab() === "threads"}>
               <InboxPlaceholder
                 testid="inbox-replies-empty"
                 title="Thread-replies"
@@ -271,10 +274,10 @@ export const DmsPage: Component = () => {
 const ConversationRow: Component<{ conv: DmConversationSummary; active: boolean }> = (props) => (
   <A
     href={`/dms/${props.conv.dmId}`}
-    class="flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm transition-colors"
+    class="flex gap-2.5 rounded-md border-[1.5px] px-3 py-2.5 transition-colors"
     classList={{
-      "bg-surface-2 text-ink": props.active,
-      "text-muted hover:(bg-surface-2 text-ink)": !props.active,
+      "border-accent bg-accent-soft": props.active,
+      "border-transparent hover:bg-surface-2": !props.active,
     }}
     data-testid="dm-conversation"
     data-dm-id={props.conv.dmId}
@@ -287,15 +290,18 @@ const ConversationRow: Component<{ conv: DmConversationSummary; active: boolean 
       {displayName(props.conv.counterparty).slice(0, 1).toUpperCase()}
     </span>
     <span class="min-w-0 flex-1">
-      <span
-        class="flex items-center gap-1.5 truncate font-mono text-[13px] text-ink"
-        data-testid="dm-conv-name"
-      >
+      <span class="flex items-center gap-1.5" data-testid="dm-conv-name">
         <PresenceDot actor={props.conv.counterparty} />
-        <span class="truncate">{props.conv.counterparty}</span>
+        <span class="min-w-0 flex-1 truncate font-body text-[13px] font-semibold text-ink">
+          {displayName(props.conv.counterparty)}
+        </span>
+        <span class="inline-flex items-center gap-1 font-mono text-[10px] text-faint">
+          <Icon name="at" size={10} />
+          direct
+        </span>
       </span>
       <Show when={props.conv.lastMessageText}>
-        <span class="block truncate text-xs text-faint" data-testid="dm-conv-last">
+        <span class="mt-0.5 block truncate text-xs text-faint" data-testid="dm-conv-last">
           {props.conv.lastMessageText}
         </span>
       </Show>
@@ -556,11 +562,15 @@ const DmComposer: Component<{
 
   return (
     <div class="border-t border-border px-6 py-3" data-testid="dm-composer">
-      <div class="flex items-end gap-2">
+      <div class="flex items-end gap-2.5 rounded-md border-[1.5px] border-border-strong bg-surface px-3 py-2 focus-within:(outline outline-2 outline-accent outline-offset-1)">
+        <span class="pb-0.5 text-faint" title="Not end-to-end encrypted">
+          <Icon name="lock" size={16} />
+        </span>
         <textarea
-          class="input max-h-40 min-h-10 flex-1 resize-y"
+          class="max-h-40 min-h-6 flex-1 resize-none bg-transparent text-sm text-ink outline-none placeholder:text-faint"
+          rows={1}
           data-testid="dm-composer-input"
-          placeholder={`Message ${props.counterparty || "…"}`}
+          placeholder={`Message ${displayName(props.counterparty) || "…"}…`}
           value={text()}
           onInput={(e) => setText(e.currentTarget.value)}
           onKeyDown={(e) => {
@@ -572,10 +582,11 @@ const DmComposer: Component<{
         />
         <button
           type="button"
-          class="btn-accent shrink-0 px-4 py-2 text-sm"
+          class="btn-accent shrink-0 px-4 py-2 text-xs"
           data-testid="dm-send-button"
           onClick={doSend}
         >
+          <Icon name="send" size={14} />
           Send
         </button>
       </div>
