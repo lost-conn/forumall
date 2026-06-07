@@ -80,6 +80,14 @@ function isLongForm(type: string | undefined): boolean {
   return type === "memo" || type === "article";
 }
 
+/** Header content-type filter: [filter value, label]. "message" reads as "Chat". */
+const TYPE_FILTERS: ["all" | "message" | "memo" | "article", string][] = [
+  ["all", "All"],
+  ["message", "Chat"],
+  ["article", "Articles"],
+  ["memo", "Memos"],
+];
+
 export const ChatView: Component<{
   channel: Channel;
   canPost: boolean;
@@ -96,6 +104,8 @@ export const ChatView: Component<{
   const [historyError, setHistoryError] = createSignal<string | null>(null);
   const [threadMode, setThreadMode] = createSignal(false);
   const [replyTarget, setReplyTarget] = createSignal<ChatMessage | null>(null);
+  const [typeFilter, setTypeFilter] = createSignal<"all" | "message" | "memo" | "article">("all");
+  const [sortMode, setSortMode] = createSignal<"recent" | "oldest" | "top">("recent");
 
   // (Re)open the channel whenever it changes. Tear down the previous wiring.
   createEffect(
@@ -156,6 +166,21 @@ export const ChatView: Component<{
 
   const roots = createMemo(() => messages().filter((m) => !isNested(m)));
 
+  // Header type-filter + sort, derived over the already-loaded roots (the store
+  // is kept chronological — ts ascending — so "recent" is the identity order).
+  const reactionTotal = (msg: ChatMessage): number =>
+    reactionsFor(channelId(), msg.id).reduce((sum, g) => sum + g.authors.length, 0);
+
+  const visibleRoots = createMemo(() => {
+    const f = typeFilter();
+    const filtered = f === "all" ? roots() : roots().filter((m) => (m.type ?? "message") === f);
+    const s = sortMode();
+    if (s === "recent") return filtered;
+    const arr = [...filtered];
+    if (s === "oldest") return arr.reverse();
+    return arr.sort((a, b) => reactionTotal(b) - reactionTotal(a)); // "top"
+  });
+
   const loadOlder = async (): Promise<void> => {
     const h = handle();
     if (!h || loadingOlder()) return;
@@ -181,26 +206,65 @@ export const ChatView: Component<{
 
   return (
     <div class="flex min-h-0 flex-1 flex-col" data-testid="chat-view" data-channel-id={channelId()}>
-      <header class="flex items-center gap-2 border-b border-border px-6 py-3">
-        <span class="text-faint">#</span>
-        <h2 class="text-sm font-semibold tracking-tight" data-testid="chat-channel-name">
-          {props.channel.name ?? props.channel.id}
-        </h2>
-        <Show when={props.channel.topic}>
-          <span class="truncate text-xs text-faint">— {props.channel.topic}</span>
-        </Show>
-        <div class="ml-auto flex items-center gap-2">
-          <button
-            type="button"
-            class="btn-ghost px-2 py-1 text-xs"
-            data-testid="thread-toggle"
-            aria-pressed={threadMode()}
-            onClick={() => setThreadMode((v) => !v)}
-            title="Toggle threaded / inline reply view"
+      <header class="flex flex-col gap-2.5 border-b border-border px-6 py-3">
+        <div class="flex items-center gap-2">
+          <span class="font-mono text-faint">#</span>
+          <h2
+            class="font-display text-base font-bold tracking-tight"
+            data-testid="chat-channel-name"
           >
-            {threadMode() ? "Threaded" : "Inline"}
-          </button>
-          <FollowToggle channelId={props.channel.id} groupId={props.channel.groupId} />
+            {props.channel.name ?? props.channel.id}
+          </h2>
+          <span class="fa-meta hidden sm:inline">a stream of messages</span>
+          <Show when={props.channel.topic}>
+            <span class="truncate text-xs text-faint">— {props.channel.topic}</span>
+          </Show>
+          <div class="ml-auto flex items-center gap-2">
+            <button
+              type="button"
+              class="btn-ghost px-2 py-1 text-xs"
+              data-testid="thread-toggle"
+              aria-pressed={threadMode()}
+              onClick={() => setThreadMode((v) => !v)}
+              title="Toggle threaded / inline reply view"
+            >
+              {threadMode() ? "Threaded" : "Inline"}
+            </button>
+            <FollowToggle channelId={props.channel.id} groupId={props.channel.groupId} />
+          </div>
+        </div>
+
+        {/* Content-type filter + sort (client-side over the loaded stream). */}
+        <div class="flex flex-wrap items-center gap-1.5" data-testid="type-filter">
+          <For each={TYPE_FILTERS}>
+            {([id, label]) => (
+              <button
+                type="button"
+                data-testid={`filter-${id}`}
+                aria-pressed={typeFilter() === id}
+                onClick={() => setTypeFilter(id)}
+                class="rounded-md border-[1.5px] px-2.5 py-1 text-[11px] font-mono font-bold uppercase tracking-wide transition-colors"
+                classList={{
+                  "border-accent bg-accent-soft text-accent": typeFilter() === id,
+                  "border-border-strong text-muted hover:(bg-surface-2 text-ink)":
+                    typeFilter() !== id,
+                }}
+              >
+                {label}
+              </button>
+            )}
+          </For>
+          <select
+            class="ml-auto rounded-md border-[1.5px] border-border-strong bg-surface-2 px-2 py-1 text-[11px] font-mono font-bold uppercase tracking-wide text-muted outline-none focus:(outline outline-2 outline-accent)"
+            data-testid="sort-select"
+            aria-label="Sort messages"
+            value={sortMode()}
+            onChange={(e) => setSortMode(e.currentTarget.value as "recent" | "oldest" | "top")}
+          >
+            <option value="recent">Recent</option>
+            <option value="oldest">Oldest</option>
+            <option value="top">Top</option>
+          </select>
         </div>
       </header>
 
@@ -226,15 +290,17 @@ export const ChatView: Component<{
         </Show>
 
         <Show
-          when={roots().length > 0}
+          when={visibleRoots().length > 0}
           fallback={
             <p class="text-sm text-muted" data-testid="chat-empty">
-              No messages yet. Say hello.
+              {typeFilter() === "all"
+                ? "No messages yet. Say hello."
+                : "Nothing here for this filter yet."}
             </p>
           }
         >
           <ul class="flex flex-col gap-3">
-            <For each={roots()}>
+            <For each={visibleRoots()}>
               {(msg) => (
                 <MessageNode
                   message={msg}
@@ -510,7 +576,14 @@ const MessageRow: Component<{
           {displayName(m().author)}
         </button>
         <Show when={isLongForm(m().type)}>
-          <span class="badge text-[10px] uppercase" data-testid="message-kind">
+          <span
+            class="fa-type"
+            classList={{
+              "fa-type--article": m().type === "article",
+              "fa-type--memo": m().type === "memo",
+            }}
+            data-testid="message-kind"
+          >
             {m().type}
           </span>
         </Show>
@@ -673,18 +746,13 @@ const MessageRow: Component<{
 
       {/* Reactions */}
       <Show when={props.reactions().length > 0}>
-        <div class="flex flex-wrap gap-1" data-testid="reactions">
+        <div class="fa-rx" data-testid="reactions">
           <For each={props.reactions()}>
             {(g) => (
               <button
                 type="button"
-                class="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs transition-colors"
-                classList={{
-                  "border-accent bg-accent-lo/20 text-ink": myReactionKeys().has(g.key),
-                  "border-border bg-surface-2 text-muted hover:text-ink": !myReactionKeys().has(
-                    g.key,
-                  ),
-                }}
+                class="fa-rx__chip"
+                classList={{ "fa-rx__chip--on": myReactionKeys().has(g.key) }}
                 data-testid="reaction-chip"
                 data-reaction-key={g.key}
                 title={g.authors.map(displayName).join(", ")}
@@ -715,15 +783,26 @@ const MessageBody: Component<{ message: ChatMessage }> = (props) => {
       }
     >
       <Match when={type() === "article"}>
-        {/* `renderMarkdown` HTML-escapes all input + allowlists link schemes, so
+        {/* Article renders as a bordered reading card (ember content-type).
+            `renderMarkdown` HTML-escapes all input + allowlists link schemes, so
             the produced HTML is trusted/sanitized (see lib/markdown.ts). */}
-        <div
-          class="prose-chat text-sm text-ink"
-          data-testid="message-article"
-          innerHTML={renderMarkdown(text())}
-        />
+        <div class="mt-1 rounded-md border-[1.5px] border-border-strong bg-surface p-3.5">
+          <div
+            class="prose-chat text-sm text-ink"
+            data-testid="message-article"
+            innerHTML={renderMarkdown(text())}
+          />
+        </div>
       </Match>
-      <Match when={type() === "message" || type() === "memo"}>
+      <Match when={type() === "memo"}>
+        {/* Memo renders as a phosphor-bordered card (social-style post). */}
+        <div class="mt-1 rounded-md border-[1.5px] border-accent bg-surface p-3.5">
+          <p class="text-sm text-ink whitespace-pre-wrap break-words" data-testid="message-text">
+            {text()}
+          </p>
+        </div>
+      </Match>
+      <Match when={type() === "message"}>
         <p class="text-sm text-ink whitespace-pre-wrap break-words" data-testid="message-text">
           {text()}
         </p>
@@ -883,10 +962,10 @@ const Composer: Component<{
     <Show when={show}>
       <button
         type="button"
-        class="rounded px-2 py-0.5 text-xs"
+        class="rounded-md border-[1.5px] px-3 py-1 text-[11px] font-mono font-bold uppercase tracking-wide transition-colors"
         classList={{
-          "bg-accent text-white": kind() === k,
-          "text-muted hover:text-ink": kind() !== k,
+          "border-accent bg-accent-soft text-accent": kind() === k,
+          "border-border-strong text-muted hover:(bg-surface-2 text-ink)": kind() !== k,
         }}
         data-testid={`compose-kind-${k}`}
         aria-pressed={kind() === k}

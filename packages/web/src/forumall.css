@@ -220,6 +220,15 @@
 *::before,
 *::after {
   box-sizing: border-box;
+  /* Tailwind/UnoCSS-style border reset: preset-wind's width utilities (border,
+     border-[1.5px], …) set only border-width, leaving border-style at the UA
+     default of `none` (invisible). Establish a solid baseline so every `card`,
+     `input`, `badge`, `btn-*`, `tag-*`, and content card actually shows its
+     border. Width utilities (specificity ≥ 0,1,0) still win over this `*` reset,
+     so borderless elements stay borderless. */
+  border-width: 0;
+  border-style: solid;
+  border-color: currentColor;
 }
 .fa,
 body.fa {

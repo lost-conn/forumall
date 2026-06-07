@@ -37,10 +37,10 @@ if (!root) throw new Error("#root not found");
 };
 
 // Test/debug hook: inject a message straight into the chat store's timeline for a
-// channel. The product cannot compose `article`/unknown-`type` messages (the WS
-// `message.create` path forces `type: "message"`), so the e2e suite uses this to
-// fabricate those variants and assert the §5.3/§2.3 rendering (markdown + the
-// unknown-type text fallback). It only touches the in-memory render store — no
+// channel. The product CAN compose `message`/`memo`/`article` (the composer plumbs
+// `type` through the WS `message.create`), but it cannot compose an UNKNOWN `type`,
+// so the e2e suite uses this to fabricate that variant and assert the §2.3
+// forward-compat text fallback. It only touches the in-memory render store — no
 // network, no key material — mirroring `__forumall_signedFetch` above.
 (
   globalThis as unknown as {
