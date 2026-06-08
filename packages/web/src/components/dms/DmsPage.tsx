@@ -159,8 +159,12 @@ export const DmsPage: Component = () => {
 
   return (
     <div class="flex min-h-0 flex-1" data-testid="dms-page">
-      {/* Inbox rail: DMs · Mentions · Thread-replies */}
-      <aside class="flex w-[300px] shrink-0 flex-col border-r border-border bg-surface">
+      {/* Inbox rail: DMs · Mentions · Thread-replies. Mobile master-detail: the
+          rail and the thread swap; on < md only one shows at a time. */}
+      <aside
+        class="w-full shrink-0 flex-col border-r border-border bg-surface md:flex md:w-[300px]"
+        classList={{ flex: !selected(), hidden: !!selected() }}
+      >
         <div class="flex items-center justify-between px-4 pt-4 pb-2">
           <h1 class="font-display text-base font-bold tracking-tight">Inbox</h1>
           <Show when={tab() === "all" || tab() === "dms"}>
@@ -238,7 +242,7 @@ export const DmsPage: Component = () => {
       <Show
         when={selected()}
         fallback={
-          <div class="flex flex-1 items-center justify-center text-sm text-muted">
+          <div class="hidden flex-1 items-center justify-center text-sm text-muted md:flex">
             <p data-testid="dm-no-selection">Select or start a conversation.</p>
           </div>
         }
@@ -383,6 +387,14 @@ const ThreadView: Component<{
     <div class="flex min-h-0 flex-1 flex-col" data-testid="dm-thread" data-dm-id={props.dmId}>
       <header class="flex flex-col gap-2 border-b border-border px-6 py-3">
         <div class="flex items-center gap-2">
+          <A
+            href="/dms"
+            class="-ml-1 grid h-8 w-8 shrink-0 place-items-center rounded-sm text-muted hover:(bg-surface-2 text-ink) md:hidden"
+            aria-label="Back to inbox"
+            data-testid="mobile-back-to-inbox"
+          >
+            <Icon name="chevLeft" size={18} />
+          </A>
           <span
             class="fa-ava fa-ava--sm"
             classList={{ "fa-ava__fed": isRemoteActor(counterparty()) }}

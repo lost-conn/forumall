@@ -666,12 +666,12 @@ const MessageRow: Component<{
             </button>
           </Show>
 
-          {/* Hover actions */}
+          {/* Message actions — always visible on touch; hover-revealed on desktop. */}
           <Show when={!isDeleted()}>
-            <span class="ml-auto flex items-center gap-1 opacity-0 transition-opacity group-hover/msg:opacity-100">
+            <span class="ml-auto flex items-center gap-1 opacity-100 transition-opacity md:opacity-0 md:group-hover/msg:opacity-100">
               <button
                 type="button"
-                class="rounded px-1.5 py-0.5 text-xs text-faint hover:(bg-surface-2 text-ink)"
+                class="rounded px-2 py-1 text-xs text-faint hover:(bg-surface-2 text-ink) md:px-1.5 md:py-0.5"
                 data-testid="reply-button"
                 onClick={() => props.onReply()}
               >
@@ -680,7 +680,7 @@ const MessageRow: Component<{
               <Show when={props.canPromote && (m().type ?? "message") === "message"}>
                 <button
                   type="button"
-                  class="rounded px-1.5 py-0.5 text-xs text-faint hover:(bg-surface-2 text-ember)"
+                  class="rounded px-2 py-1 text-xs text-faint hover:(bg-surface-2 text-ember) md:px-1.5 md:py-0.5"
                   data-testid="promote-button"
                   title="Promote this message to an article"
                   onClick={() => props.onPromote()}
@@ -691,7 +691,7 @@ const MessageRow: Component<{
               <div class="relative">
                 <button
                   type="button"
-                  class="rounded px-1.5 py-0.5 text-xs text-faint hover:(bg-surface-2 text-ink)"
+                  class="rounded px-2 py-1 text-xs text-faint hover:(bg-surface-2 text-ink) md:px-1.5 md:py-0.5"
                   data-testid="react-button"
                   onClick={() => setShowReactPicker((v) => !v)}
                   aria-label="Add reaction"
@@ -707,7 +707,7 @@ const MessageRow: Component<{
                       {(r) => (
                         <button
                           type="button"
-                          class="rounded px-1 py-0.5 text-sm hover:bg-surface-2"
+                          class="rounded px-2 py-1 text-base hover:bg-surface-2 md:px-1 md:py-0.5 md:text-sm"
                           data-testid="reaction-pick"
                           data-reaction-key={r.key}
                           onClick={() => toggleReaction(r.key, r.unicode)}
@@ -722,7 +722,7 @@ const MessageRow: Component<{
               <Show when={isAuthor()}>
                 <button
                   type="button"
-                  class="rounded px-1.5 py-0.5 text-xs text-faint hover:(bg-surface-2 text-ink)"
+                  class="rounded px-2 py-1 text-xs text-faint hover:(bg-surface-2 text-ink) md:px-1.5 md:py-0.5"
                   data-testid="edit-message"
                   onClick={startEdit}
                 >
@@ -732,7 +732,7 @@ const MessageRow: Component<{
               <Show when={isAuthor() || props.canModerate}>
                 <button
                   type="button"
-                  class="rounded px-1.5 py-0.5 text-xs text-faint hover:(bg-surface-2 text-danger)"
+                  class="rounded px-2 py-1 text-xs text-faint hover:(bg-surface-2 text-danger) md:px-1.5 md:py-0.5"
                   data-testid="delete-message"
                   onClick={doDelete}
                 >

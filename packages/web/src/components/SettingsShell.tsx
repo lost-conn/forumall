@@ -50,9 +50,9 @@ export const SettingsShell: Component = () => {
   const [me] = createResource(fetchMe);
 
   return (
-    <div class="flex min-h-0 flex-1" data-testid="settings-page">
-      {/* setnav */}
-      <nav class="w-[210px] shrink-0 overflow-auto border-r border-border bg-surface px-2.5 py-2 fa-scroll">
+    <div class="flex min-h-0 flex-1 flex-col md:flex-row" data-testid="settings-page">
+      {/* setnav — a top strip on mobile (capped + scrollable), a sidebar on desktop. */}
+      <nav class="max-h-44 w-full shrink-0 overflow-auto border-b border-border bg-surface px-2.5 py-2 fa-scroll md:max-h-none md:w-[210px] md:border-r md:border-b-0">
         <For each={NAV}>
           {(grp) => (
             <>
@@ -104,7 +104,7 @@ export const SettingsShell: Component = () => {
       </nav>
 
       {/* setbody */}
-      <div class="min-h-0 flex-1 overflow-auto px-7 py-[26px] fa-scroll">
+      <div class="min-h-0 flex-1 overflow-auto px-4 py-5 fa-scroll md:px-7 md:py-[26px]">
         <div class="mx-auto max-w-2xl">
           <Switch>
             <Match when={section() === "account"}>

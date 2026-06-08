@@ -65,6 +65,15 @@ export const GroupView: Component<{ groupId: string }> = (props) => {
   const [showCreateChannel, setShowCreateChannel] = createSignal(false);
   const [manageChannel, setManageChannel] = createSignal<Channel | null>(null);
   const [openChat, setOpenChat] = createSignal<Channel | null>(null);
+  // Mobile master-detail: on < md, show EITHER the channel list or the chat pane.
+  // Start on the list (so the create-channel + manage controls are reachable and
+  // the user picks a channel); opening one flips to the chat pane. Desktop keeps
+  // both side-by-side (the responsive classes neutralize this).
+  const [mobileChannels, setMobileChannels] = createSignal(true);
+  const openChannel = (ch: Channel): void => {
+    setOpenChat(ch);
+    setMobileChannels(false);
+  };
   const [showSettings, setShowSettings] = createSignal(false);
   const [joinBusy, setJoinBusy] = createSignal(false);
   const [joinError, setJoinError] = createSignal<string | null>(null);
@@ -165,7 +174,10 @@ export const GroupView: Component<{ groupId: string }> = (props) => {
         {(grp) => (
           <div class="flex min-h-0 flex-1">
             {/* ---- pr-side: channel list ---- */}
-            <aside class="flex w-[244px] shrink-0 flex-col border-r border-border bg-surface">
+            <aside
+              class="w-full shrink-0 flex-col border-r border-border bg-surface md:flex md:w-[244px]"
+              classList={{ flex: mobileChannels(), hidden: !mobileChannels() }}
+            >
               {/* Space header + management dropdown */}
               <div class="relative">
                 <button
@@ -293,7 +305,7 @@ export const GroupView: Component<{ groupId: string }> = (props) => {
                               class="min-w-0 flex-1 truncate text-left disabled:cursor-default"
                               data-testid="open-channel"
                               disabled={ch.type !== "text"}
-                              onClick={() => ch.type === "text" && setOpenChat(ch)}
+                              onClick={() => ch.type === "text" && openChannel(ch)}
                             >
                               <span class="truncate" data-testid="channel-name-label">
                                 {ch.name ?? ch.id}
@@ -305,7 +317,7 @@ export const GroupView: Component<{ groupId: string }> = (props) => {
                             <Show when={canManage()}>
                               <button
                                 type="button"
-                                class="text-faint opacity-0 transition-opacity hover:text-ink group-hover:opacity-100"
+                                class="p-1 text-faint opacity-100 transition-opacity hover:text-ink md:p-0 md:opacity-0 md:group-hover:opacity-100"
                                 onClick={() => setManageChannel(ch)}
                                 data-testid="manage-channel"
                                 aria-label="Manage channel"
@@ -363,7 +375,20 @@ export const GroupView: Component<{ groupId: string }> = (props) => {
             </aside>
 
             {/* ---- main pane ---- */}
-            <div class="flex min-h-0 flex-1 flex-col">
+            <div
+              class="min-h-0 flex-1 flex-col md:flex"
+              classList={{ flex: !mobileChannels(), hidden: mobileChannels() }}
+            >
+              {/* Mobile-only back bar to return to the channel list. */}
+              <button
+                type="button"
+                class="flex items-center gap-1 border-b border-border px-4 py-2.5 text-left text-sm text-muted hover:text-ink md:hidden"
+                onClick={() => setMobileChannels(true)}
+                data-testid="mobile-back-to-channels"
+              >
+                <Icon name="chevLeft" size={16} />
+                Channels
+              </button>
               <Show when={!isMember()}>
                 <JoinCard
                   group={grp()}

@@ -24,6 +24,7 @@ export type IconName =
   | "lock"
   | "home"
   | "chevDown"
+  | "chevLeft"
   | "chevRight"
   | "pin"
   | "at"
@@ -148,6 +149,7 @@ const PATHS: Record<IconName, () => JSX.Element> = {
   ),
   chevDown: () => <path d="m6 9 6 6 6-6" />,
   chevRight: () => <path d="m9 6 6 6-6 6" />,
+  chevLeft: () => <path d="m15 18-6-6 6-6" />,
   pin: () => <path d="M12 3v6M8 9h8l-2 5H10L8 9ZM12 14v7" />,
   at: () => (
     <>
