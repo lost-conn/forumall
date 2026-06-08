@@ -1,9 +1,9 @@
 # Forumall
 
-**A self-hostable [OFSCP](../ofscp/docs/ofscp_spec.md) provider _and_ web client in one.**
+**A self-hostable [OFSCP](https://github.com/lost-conn/ofscp) provider _and_ web client in one.**
 
 Forumall is a reference implementation of the
-[Open Federated Social Communications Protocol (OFSCP) v0.1](../ofscp/docs/ofscp_spec.md):
+[Open Federated Social Communications Protocol (OFSCP) v0.1](https://github.com/lost-conn/ofscp/blob/main/docs/ofscp_spec.md):
 a single program that is **both** the server (an OFSCP provider — groups,
 channels, messaging, DMs, presence, follows, and cross-provider federation)
 **and** the client (a SolidJS web app served by that same server). It is built to
