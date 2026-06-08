@@ -1,0 +1,30 @@
+# jkbase deploy manifest for Forumall. See docs/deploy-jkbase.md.
+#
+# Forumall is a single process that serves the OFSCP API, the WebSocket
+# endpoint, AND the built web client — so the whole host routes to the one
+# server container; there is no separate static [hosting] block.
+
+[project]
+name = "forumall"
+
+[servers.forumall]
+# Build the whole repo (build.sh at the root drives it) with the Bun toolchain.
+source = "."
+language = "bun"
+port = 3000
+
+[servers.forumall.health_check]
+path = "/api/health"
+interval = "10s"
+timeout = "5s"
+
+# SQLite database + uploaded media. Persists across deploys; mounted at the
+# DATA_DIR the server writes to (set in build.sh's manifest.json).
+[[servers.forumall.volumes]]
+name = "data"
+mount = "/data"
+
+# Everything — API, WS, .well-known, /invite, media, and the web client — is
+# served by the one process.
+[routes]
+"/*" = { service = "server", name = "forumall" }
