@@ -190,6 +190,8 @@ export const groups = sqliteTable("groups", {
   tier: text("tier").notNull(),
   /** Action→roles permission map, stored as JSON (`GroupPermissions`). */
   permissions: text("permissions").notNull(),
+  /** Custom role catalogue, stored as JSON (`RoleDefinition[]`, §5.2). */
+  roles: text("roles").notNull(),
   /** Extension metadata list, stored as JSON (`MetadataList`). */
   metadata: text("metadata").notNull(),
   /** Creation time (epoch millis); rendered as RFC 3339 `createdAt`. */

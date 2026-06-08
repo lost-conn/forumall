@@ -11,9 +11,24 @@ import { MetadataListSchema, Rfc3339DateTimeSchema, TierSchema, UserRefSchema } 
 // Enums / shared (defs/groups.json)
 // ---------------------------------------------------------------------------
 
-/** Membership role — open string; canonical: owner/admin/member (`Role`). */
+/** Membership role — open string; canonical: owner/admin/member/guest (`Role`). */
 export const RoleSchema = z.string().min(1);
 export type Role = z.infer<typeof RoleSchema>;
+
+/**
+ * A role a group defines (`RoleDefinition`, §5.2). Declares a role's name + UI
+ * hints so clients can offer it for assignment and render it — including custom
+ * roles beyond canonical owner/admin/member/guest. A role's *permissions* are
+ * resolved from the group's `permissions` map, not from this object.
+ */
+export const RoleDefinitionSchema = z
+  .object({
+    name: RoleSchema,
+    label: z.string().optional(),
+    color: z.string().optional(),
+  })
+  .passthrough();
+export type RoleDefinition = z.infer<typeof RoleDefinitionSchema>;
 
 /** Group join policy (`JoinPolicy`). */
 export const JoinPolicySchema = z.enum(["open", "request", "invite"]);
@@ -23,7 +38,11 @@ export type JoinPolicy = z.infer<typeof JoinPolicySchema>;
 export const ChannelTypeSchema = z.enum(["text", "call"]);
 export type ChannelType = z.infer<typeof ChannelTypeSchema>;
 
-/** Action → permitted-roles map (`GroupPermissions`). Open action set. */
+/**
+ * Action → permitted-roles map (`GroupPermissions`). Open action set. Each list
+ * is the **exact** set of roles allowed to perform the action (no rank
+ * inheritance, §5.2); `owner` is the implicit super-role and always allowed.
+ */
 export const GroupPermissionsSchema = z
   .object({
     post: z.array(RoleSchema).optional(),
@@ -77,6 +96,7 @@ export const GroupSchema = z
     joinPolicy: JoinPolicySchema,
     tier: TierSchema,
     permissions: GroupPermissionsSchema,
+    roles: z.array(RoleDefinitionSchema).optional(),
     createdAt: Rfc3339DateTimeSchema,
     updatedAt: Rfc3339DateTimeSchema,
     metadata: MetadataListSchema,
@@ -92,6 +112,7 @@ export const GroupCreateRequestSchema = z
     tier: TierSchema.optional(),
     joinPolicy: JoinPolicySchema.optional(),
     permissions: GroupPermissionsSchema.optional(),
+    roles: z.array(RoleDefinitionSchema).optional(),
     metadata: MetadataListSchema.optional(),
   })
   .passthrough();
@@ -105,6 +126,7 @@ export const GroupUpdateRequestSchema = z
     tier: TierSchema.optional(),
     joinPolicy: JoinPolicySchema.optional(),
     permissions: GroupPermissionsSchema.optional(),
+    roles: z.array(RoleDefinitionSchema).optional(),
     metadata: MetadataListSchema.optional(),
   })
   .passthrough();

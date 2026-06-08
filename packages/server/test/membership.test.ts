@@ -421,6 +421,71 @@ describe("PATCH /api/groups/{groupId}/members/{userRef} (§5.7)", () => {
     );
     expect(res.status).toBe(404);
   });
+
+  test("assigning a custom role from the group's catalogue → 200", async () => {
+    const { app, db } = freshApp("role-custom-ok");
+    const alice = await registerUserWithKey(app, "alice");
+    const bob = await registerUserWithKey(app, "bob");
+    const group = await createGroup(app, alice, {
+      name: "G",
+      tier: "public",
+      roles: [{ name: "admin" }, { name: "moderator" }, { name: "member" }],
+    });
+    seedMember(db, group.id, bob.actor, "member");
+
+    const res = await signedRequest(
+      app,
+      alice,
+      "PATCH",
+      `/api/groups/${group.id}/members/${ref(bob.actor)}`,
+      { role: "moderator" },
+    );
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as Member).role).toBe("moderator");
+  });
+
+  test("assigning a role not in the catalogue → 400", async () => {
+    const { app, db } = freshApp("role-unknown");
+    const alice = await registerUserWithKey(app, "alice");
+    const bob = await registerUserWithKey(app, "bob");
+    const group = await createGroup(app, alice, { name: "G", tier: "public" });
+    seedMember(db, group.id, bob.actor, "member");
+
+    const res = await signedRequest(
+      app,
+      alice,
+      "PATCH",
+      `/api/groups/${group.id}/members/${ref(bob.actor)}`,
+      { role: "wizard" },
+    );
+    expect(res.status).toBe(400);
+  });
+
+  test("manager may not assign a role more privileged than their own → 403 (subset rule)", async () => {
+    const { app, db } = freshApp("role-escalate");
+    const alice = await registerUserWithKey(app, "alice");
+    const mgr = await registerUserWithKey(app, "mgruser");
+    const bob = await registerUserWithKey(app, "bob");
+    const group = await createGroup(app, alice, {
+      name: "G",
+      tier: "public",
+      // `lead` may manage but not moderate; `admin` holds moderate too.
+      permissions: { post: ["member"], moderate: ["admin"], manage: ["lead", "admin"] },
+      roles: [{ name: "admin" }, { name: "lead" }, { name: "member" }],
+    });
+    seedMember(db, group.id, mgr.actor, "lead");
+    seedMember(db, group.id, bob.actor, "member");
+
+    // lead can manage, but assigning `admin` would grant `moderate` (which lead lacks).
+    const res = await signedRequest(
+      app,
+      mgr,
+      "PATCH",
+      `/api/groups/${group.id}/members/${ref(bob.actor)}`,
+      { role: "admin" },
+    );
+    expect(res.status).toBe(403);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -449,14 +514,38 @@ describe("DELETE /api/groups/{groupId}/members/{userRef} (§5.7)", () => {
     ).toHaveLength(0);
   });
 
-  test("kicking an equal/higher-ranked member → 403", async () => {
-    const { app, db } = freshApp("kick-equal");
+  test("kicking a member who holds a permission the caller lacks → 403 (subset rule)", async () => {
+    const { app, db } = freshApp("kick-subset");
+    const alice = await registerUserWithKey(app, "alice");
+    const mod = await registerUserWithKey(app, "moduser");
+    const admin = await registerUserWithKey(app, "adminuser");
+    const group = await createGroup(app, alice, {
+      name: "G",
+      tier: "public",
+      // `mod` may moderate but not manage; `admin` holds manage too.
+      permissions: { post: ["member"], moderate: ["mod", "admin"], manage: ["admin"] },
+      roles: [{ name: "admin" }, { name: "mod" }, { name: "member" }],
+    });
+    seedMember(db, group.id, mod.actor, "mod");
+    seedMember(db, group.id, admin.actor, "admin");
+
+    const res = await signedRequest(
+      app,
+      mod,
+      "DELETE",
+      `/api/groups/${group.id}/members/${ref(admin.actor)}`,
+    );
+    expect(res.status).toBe(403);
+  });
+
+  test("equal roles may kick each other → 204 (subset satisfied)", async () => {
+    const { app, db } = freshApp("kick-equal-ok");
     const alice = await registerUserWithKey(app, "alice");
     const mod = await registerUserWithKey(app, "moduser");
     const other = await registerUserWithKey(app, "otheradmin");
     const group = await createGroup(app, alice, { name: "G", tier: "public" });
     seedMember(db, group.id, mod.actor, "admin");
-    seedMember(db, group.id, other.actor, "admin"); // equal rank
+    seedMember(db, group.id, other.actor, "admin");
 
     const res = await signedRequest(
       app,
@@ -464,7 +553,7 @@ describe("DELETE /api/groups/{groupId}/members/{userRef} (§5.7)", () => {
       "DELETE",
       `/api/groups/${group.id}/members/${ref(other.actor)}`,
     );
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(204);
   });
 
   test("kicking the owner → 403", async () => {

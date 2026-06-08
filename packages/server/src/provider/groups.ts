@@ -16,6 +16,7 @@ import {
   type GroupUpdateRequest,
   type JoinPolicy,
   type MetadataList,
+  type RoleDefinition,
   rfc3339Timestamp,
 } from "@forumall/shared";
 import { eq } from "drizzle-orm";
@@ -40,11 +41,24 @@ const GROUP_ID_BYTES = 16;
 /** RECOMMENDED defaults when create-request fields are omitted (§5.5). */
 const DEFAULT_TIER = "private";
 const DEFAULT_JOIN_POLICY: JoinPolicy = "invite";
+// Exact-membership (§5.2): each action lists every role that holds it (owner is
+// implicit). `admin` must be listed for `post` since there is no rank inheritance.
 const DEFAULT_PERMISSIONS: GroupPermissions = {
-  post: ["member"],
+  post: ["admin", "member"],
   moderate: ["admin"],
   manage: ["admin"],
 };
+
+/**
+ * RECOMMENDED default role catalogue (§5.2). The canonical roles a fresh group
+ * offers for assignment; `owner` is implicit (the reserved super-role) and is
+ * not listed. Custom roles are added by editing the group's `roles`.
+ */
+const DEFAULT_ROLES: RoleDefinition[] = [
+  { name: "admin", color: "#9837be" },
+  { name: "member", color: "#37a8be" },
+  { name: "guest", color: "#8a8f98" },
+];
 
 function toBase64Url(bytes: Uint8Array): string {
   return Buffer.from(bytes)
@@ -64,6 +78,7 @@ function mintGroupId(): string {
 /** Map a stored row to the canonical, schema-valid `Group` (§5.2). */
 export function rowToGroup(row: GroupRow): Group {
   const permissions = JSON.parse(row.permissions) as GroupPermissions;
+  const roles = JSON.parse(row.roles) as RoleDefinition[];
   const metadata = JSON.parse(row.metadata) as MetadataList;
   return GroupSchema.parse({
     id: row.id,
@@ -73,6 +88,7 @@ export function rowToGroup(row: GroupRow): Group {
     joinPolicy: row.joinPolicy as JoinPolicy,
     tier: row.tier,
     permissions,
+    roles,
     createdAt: rfc3339Timestamp(new Date(row.createdAt)),
     updatedAt: rfc3339Timestamp(new Date(row.updatedAt)),
     metadata,
@@ -99,6 +115,7 @@ export function createGroup(db: Db, owner: string, req: GroupCreateRequest): Gro
     joinPolicy: req.joinPolicy ?? DEFAULT_JOIN_POLICY,
     tier: req.tier ?? DEFAULT_TIER,
     permissions: JSON.stringify(req.permissions ?? DEFAULT_PERMISSIONS),
+    roles: JSON.stringify(req.roles ?? DEFAULT_ROLES),
     metadata: JSON.stringify(req.metadata ?? []),
     createdAt: now,
     updatedAt: now,
@@ -131,6 +148,7 @@ export function updateGroup(db: Db, groupId: string, req: GroupUpdateRequest): G
   if (req.tier !== undefined) patch.tier = req.tier;
   if (req.joinPolicy !== undefined) patch.joinPolicy = req.joinPolicy;
   if (req.permissions !== undefined) patch.permissions = JSON.stringify(req.permissions);
+  if (req.roles !== undefined) patch.roles = JSON.stringify(req.roles);
   if (req.metadata !== undefined) patch.metadata = JSON.stringify(req.metadata);
 
   db.drizzle.update(groups).set(patch).where(eq(groups.id, groupId)).run();

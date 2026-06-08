@@ -9,11 +9,15 @@
  *    ownership first, else 409.
  *  - `GET /members` (optional auth): paginated `{ items, page: { nextCursor } }`
  *    (§7.2). Visible to members; public/discoverable groups expose it publicly.
- *  - `PATCH /members/{userRef}` (signed; `manage`): change a member's role.
- *    Transferring `owner` is owner-only and demotes the old owner to `admin`
- *    (single-owner invariant). → 200 Member.
- *  - `DELETE /members/{userRef}` (signed; `moderate`): kick; the target MUST NOT
- *    outrank the caller; the owner cannot be kicked. → 204.
+ *  - `PATCH /members/{userRef}` (signed; `manage`): change a member's role. The
+ *    subset rule (§5.7) applies to both the current and the assigned role (the
+ *    caller must hold every permission each holds); the assigned role must be
+ *    known (canonical or in the group's `roles`). Transferring `owner` is
+ *    owner-only and demotes the old owner to `admin` (single-owner invariant).
+ *    → 200 Member.
+ *  - `DELETE /members/{userRef}` (signed; `moderate`): kick; the subset rule
+ *    (§5.7) applies (caller must hold every permission the target holds); the
+ *    owner cannot be kicked. → 204.
  *  - `GET /requests` (signed; `manage`/`moderate`): list pending requests.
  *  - `POST /requests/{requestId}/approve` (signed; `manage`/`moderate`): →
  *    200 Member. `POST /requests/{requestId}/deny`: → 204.
@@ -23,7 +27,7 @@
  */
 import { type Context, Hono } from "hono";
 
-import { getGroupRow } from "../provider/groups.ts";
+import { getGroupRow, rowToGroup } from "../provider/groups.ts";
 import {
   addMember,
   approveJoinRequest,
@@ -38,7 +42,13 @@ import {
   setMemberRole,
   transferOwnership,
 } from "../provider/membership.ts";
-import { canActor, getMembership, isMember, rankOf } from "../provider/permissions.ts";
+import {
+  CANONICAL_ROLES,
+  canActor,
+  getMembership,
+  isMember,
+  roleHoldsAll,
+} from "../provider/permissions.ts";
 import { AppError } from "./errors.ts";
 import { optionalSignature, requireSignature } from "./signature.ts";
 import type { AppBindings } from "./types.ts";
@@ -181,7 +191,8 @@ export function createMembershipRouter() {
       throw AppError.badRequest({ detail: "`role` is required and must be a non-empty string" });
     }
 
-    if (!getGroupRow(db, groupId)) throw AppError.notFound({ detail: "no such group" });
+    const groupRow = getGroupRow(db, groupId);
+    if (!groupRow) throw AppError.notFound({ detail: "no such group" });
 
     // Caller must satisfy group `manage`.
     if (!canActor(db, "manage", groupId, actor.actor)) {
@@ -214,6 +225,30 @@ export function createMembershipRouter() {
       });
     }
 
+    // The assigned role must be known: canonical or in the group's `roles`.
+    const group = rowToGroup(groupRow);
+    const knownRoles = new Set<string>([
+      ...CANONICAL_ROLES,
+      ...(group.roles ?? []).map((r) => r.name),
+    ]);
+    if (!knownRoles.has(role)) {
+      throw AppError.badRequest({ detail: `unknown role: ${role}` });
+    }
+
+    // Subset (self-protect) rule (§5.7): the caller must hold every permission
+    // held by both the member's current role and the role being assigned.
+    const callerRole = getMembership(db, groupId, actor.actor)?.role ?? "";
+    if (!roleHoldsAll(callerRole, targetRow.role, group)) {
+      throw AppError.forbidden({
+        detail: "you may not change a member more privileged than you",
+      });
+    }
+    if (!roleHoldsAll(callerRole, role, group)) {
+      throw AppError.forbidden({
+        detail: "you may not assign a role more privileged than your own",
+      });
+    }
+
     const updated = setMemberRole(db, groupId, target, role);
     return c.json(updated, 200);
   });
@@ -226,7 +261,8 @@ export function createMembershipRouter() {
     const groupId = requireParam(c, "groupId");
     const target = decodeUserRef(requireParam(c, "userRef"));
 
-    if (!getGroupRow(db, groupId)) throw AppError.notFound({ detail: "no such group" });
+    const groupRow = getGroupRow(db, groupId);
+    if (!groupRow) throw AppError.notFound({ detail: "no such group" });
 
     // Caller must satisfy group `moderate`.
     if (!canActor(db, "moderate", groupId, actor.actor)) {
@@ -241,11 +277,13 @@ export function createMembershipRouter() {
       throw AppError.forbidden({ detail: "the owner cannot be removed" });
     }
 
-    // The target MUST NOT outrank the caller (use role ranks). Equal rank is
-    // also disallowed — a moderator cannot kick a peer.
+    // Subset (self-protect) rule (§5.7): the caller must hold every permission
+    // the target holds, otherwise they may not remove them.
     const callerRole = getMembership(db, groupId, actor.actor)?.role ?? "";
-    if (rankOf(targetRow.role) >= rankOf(callerRole)) {
-      throw AppError.forbidden({ detail: "you may not remove a member who outranks you" });
+    if (!roleHoldsAll(callerRole, targetRow.role, rowToGroup(groupRow))) {
+      throw AppError.forbidden({
+        detail: "you may not remove a member more privileged than you",
+      });
     }
 
     removeMember(db, groupId, target);

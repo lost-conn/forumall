@@ -279,18 +279,15 @@ export async function fetchTiers(client: OfscpClient): Promise<TiersResponse> {
 // Client-side permission reflection (UI hints only; the server is authoritative)
 // ---------------------------------------------------------------------------
 
-const ROLE_RANK: Record<string, number> = { owner: 3, admin: 2, member: 1, guest: 0 };
-
-/** Rank of a role; unknown roles rank below every canonical role (deny). */
-export function rankOf(role: string | undefined): number {
-  return role != null ? (ROLE_RANK[role] ?? -1) : -1;
-}
+/** The canonical roles (§5.2); always available alongside a group's catalogue. */
+export const CANONICAL_ROLES = ["owner", "admin", "member", "guest"] as const;
 
 /**
- * Mirror of the server's §5.2 resolver (`provider/permissions.ts`): owner is
- * always allowed; otherwise the action is permitted iff the actor's role rank is
- * >= the minimum rank among the roles listed for that action. Used ONLY to decide
- * which controls to offer — the server re-checks every mutation.
+ * Mirror of the server's §5.2 resolver (`provider/permissions.ts`):
+ * exact-membership. Owner is always allowed; otherwise the action is permitted
+ * iff the actor's role is listed verbatim for that action (no rank inheritance).
+ * Used ONLY to decide which controls to offer — the server re-checks every
+ * mutation.
  */
 export function can(
   action: "post" | "moderate" | "manage" | string,
@@ -298,13 +295,39 @@ export function can(
   permissions: GroupPermissions | undefined,
 ): boolean {
   if (role === "owner") return true;
-  const allowed = permissions?.[action];
-  if (!allowed || allowed.length === 0) return false;
-  let minRank = Number.POSITIVE_INFINITY;
-  for (const r of allowed) {
-    const rank = rankOf(r);
-    if (rank >= 0 && rank < minRank) minRank = rank;
+  if (role == null) return false;
+  return permissions?.[action]?.includes(role) ?? false;
+}
+
+/**
+ * The set of actions a role is granted (its permission set, §5.2): every action
+ * whose list names the role. Owner implicitly holds every action in the map.
+ * Mirror of the server's `grantsOf`.
+ */
+export function grantsOf(role: string, permissions: GroupPermissions | undefined): Set<string> {
+  const actions = Object.keys(permissions ?? {});
+  if (role === "owner") return new Set(actions);
+  const held = new Set<string>();
+  for (const action of actions) {
+    if (permissions?.[action]?.includes(role)) held.add(action);
   }
-  if (!Number.isFinite(minRank)) return false;
-  return rankOf(role) >= minRank;
+  return held;
+}
+
+/**
+ * The §5.7 subset (self-protect) rule mirror: does `callerRole` hold every
+ * permission `targetRole` holds? Backs the UI hints for kick / role-change.
+ */
+export function roleHoldsAll(
+  callerRole: string | undefined,
+  targetRole: string,
+  permissions: GroupPermissions | undefined,
+): boolean {
+  if (callerRole === "owner") return true;
+  if (callerRole == null || targetRole === "owner") return false;
+  const caller = grantsOf(callerRole, permissions);
+  for (const action of grantsOf(targetRole, permissions)) {
+    if (!caller.has(action)) return false;
+  }
+  return true;
 }

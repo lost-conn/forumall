@@ -96,9 +96,19 @@ export const ErrorLine: Component<{ message: string | null; testid?: string }> =
   </Show>
 );
 
-/** A small role pill. */
-export const RoleBadge: Component<{ role: string }> = (props) => (
-  <span class="badge text-[10px] uppercase tracking-wide" data-testid="member-role">
+/** A small role pill, optionally tinted with the role's catalogue color. */
+export const RoleBadge: Component<{ role: string; color?: string }> = (props) => (
+  <span
+    class="badge inline-flex items-center gap-1 text-[10px] uppercase tracking-wide"
+    data-testid="member-role"
+  >
+    <Show when={props.color}>
+      <span
+        class="h-1.5 w-1.5 shrink-0 rounded-full"
+        style={{ "background-color": props.color }}
+        aria-hidden="true"
+      />
+    </Show>
     {props.role}
   </span>
 );

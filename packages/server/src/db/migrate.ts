@@ -543,6 +543,24 @@ const migrations: readonly Migration[] = [
       );
     },
   },
+  {
+    // Custom role catalogue (§5.2): a per-group `roles` JSON list backing custom
+    // roles. ADD COLUMN with a default, then backfill existing groups with the
+    // canonical catalogue so their member dropdowns offer roles to assign.
+    id: "0024_group_roles",
+    up: (sqlite) => {
+      const cols = sqlite
+        .query<{ name: string }, []>("PRAGMA table_info(groups)")
+        .all()
+        .map((c) => c.name);
+      if (!cols.includes("roles")) {
+        sqlite.exec("ALTER TABLE groups ADD COLUMN roles TEXT NOT NULL DEFAULT '[]';");
+        sqlite.exec(
+          `UPDATE groups SET roles = '[{"name":"admin","color":"#9837be"},{"name":"member","color":"#37a8be"},{"name":"guest","color":"#8a8f98"}]' WHERE roles = '[]';`,
+        );
+      }
+    },
+  },
 ];
 
 const LEDGER_DDL = `

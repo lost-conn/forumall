@@ -1,12 +1,15 @@
 /**
- * Group settings (P8, §5.5). Managers edit name/description/tier/joinPolicy and
- * the permission map; the owner can delete the group. Saves go through PATCH
- * `/api/groups/{id}`; delete through DELETE (owner only).
+ * Group settings (P8, §5.5 / §5.2). Managers edit name/description/tier/
+ * joinPolicy, the group's **role catalogue** (custom roles + colors) and the
+ * **permission matrix** (which roles hold each action); the owner can delete the
+ * group. Permissions use exact membership — a role holds an action iff it is
+ * ticked (no rank inheritance); `owner` implicitly holds everything. Saves go
+ * through PATCH `/api/groups/{id}`; delete through DELETE (owner only).
  */
-import type { Group, GroupPermissions, JoinPolicy } from "@forumall/shared";
+import type { Group, GroupPermissions, JoinPolicy, RoleDefinition } from "@forumall/shared";
 import { useNavigate } from "@solidjs/router";
 import { useQuery } from "@tanstack/solid-query";
-import { type Component, For, Show, createSignal } from "solid-js";
+import { type Component, For, Show, createMemo, createSignal } from "solid-js";
 import { deleteGroup, updateGroup } from "../../lib/groups-api.ts";
 import { sessionClient } from "../../stores/session.ts";
 import { tiersQuery, useInvalidateGroup } from "./queries.ts";
@@ -14,15 +17,10 @@ import { ErrorLine, Field, Modal, TierSelect, errorMessage } from "./ui.tsx";
 
 const JOIN_POLICIES: JoinPolicy[] = ["open", "request", "invite"];
 
-function roleList(s: string): string[] {
-  return s
-    .split(",")
-    .map((r) => r.trim())
-    .filter(Boolean);
-}
-function joinRoles(roles: readonly string[] | undefined): string {
-  return (roles ?? []).join(", ");
-}
+/** The canonical actions the matrix always offers (the group MAY have more). */
+const CANONICAL_ACTIONS = ["post", "moderate", "manage"];
+/** Palette cycled through when minting a fresh custom role. */
+const ROLE_COLORS = ["#be7d37", "#37be7d", "#377dbe", "#be37a8", "#bea837", "#7d37be"];
 
 export const GroupSettingsModal: Component<{
   group: Group;
@@ -37,11 +35,66 @@ export const GroupSettingsModal: Component<{
   const [description, setDescription] = createSignal(props.group.description ?? "");
   const [tier, setTier] = createSignal(props.group.tier);
   const [joinPolicy, setJoinPolicy] = createSignal<JoinPolicy>(props.group.joinPolicy);
-  const [post, setPost] = createSignal(joinRoles(props.group.permissions.post));
-  const [moderate, setModerate] = createSignal(joinRoles(props.group.permissions.moderate));
-  const [manage, setManage] = createSignal(joinRoles(props.group.permissions.manage));
+
+  // --- Role catalogue + permission matrix -----------------------------------
+  // Seed the catalogue from the group, merging in any role referenced by the
+  // permission map but missing from `roles` (so it stays visible/editable).
+  const initialPerms = props.group.permissions ?? {};
+  const seededRoles: RoleDefinition[] = [...(props.group.roles ?? [])];
+  const seededNames = new Set(seededRoles.map((r) => r.name));
+  for (const action of Object.keys(initialPerms)) {
+    for (const role of initialPerms[action] ?? []) {
+      if (role !== "owner" && !seededNames.has(role)) {
+        seededRoles.push({ name: role });
+        seededNames.add(role);
+      }
+    }
+  }
+
+  const [roles, setRoles] = createSignal<RoleDefinition[]>(seededRoles);
+  // perms: action -> roles[]. Cloned so edits don't mutate the query cache.
+  const [perms, setPerms] = createSignal<Record<string, string[]>>(
+    Object.fromEntries(Object.keys(initialPerms).map((a) => [a, [...(initialPerms[a] ?? [])]])),
+  );
+  const [newRole, setNewRole] = createSignal("");
   const [busy, setBusy] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
+
+  const actions = createMemo(() => [...new Set([...CANONICAL_ACTIONS, ...Object.keys(perms())])]);
+
+  const isGranted = (action: string, role: string) => (perms()[action] ?? []).includes(role);
+  const toggle = (action: string, role: string) => {
+    setPerms((prev) => {
+      const current = prev[action] ?? [];
+      const next = current.includes(role) ? current.filter((r) => r !== role) : [...current, role];
+      return { ...prev, [action]: next };
+    });
+  };
+
+  const addRole = () => {
+    const trimmed = newRole().trim();
+    if (!trimmed) return;
+    if (trimmed === "owner" || roles().some((r) => r.name === trimmed)) {
+      setError(`Role "${trimmed}" already exists.`);
+      return;
+    }
+    const color = ROLE_COLORS[roles().length % ROLE_COLORS.length];
+    setRoles((prev) => [...prev, { name: trimmed, color }]);
+    setNewRole("");
+    setError(null);
+  };
+  const removeRole = (name: string) => {
+    setRoles((prev) => prev.filter((r) => r.name !== name));
+    // Strip the removed role from every action's grant list.
+    setPerms((prev) =>
+      Object.fromEntries(
+        Object.entries(prev).map(([a, list]) => [a, list.filter((r) => r !== name)]),
+      ),
+    );
+  };
+  const setColor = (name: string, color: string) => {
+    setRoles((prev) => prev.map((r) => (r.name === name ? { ...r, color } : r)));
+  };
 
   const save = async (e: Event) => {
     e.preventDefault();
@@ -50,17 +103,20 @@ export const GroupSettingsModal: Component<{
     try {
       const client = sessionClient();
       if (!client) throw new Error("not authenticated");
-      const permissions: GroupPermissions = {
-        post: roleList(post()),
-        moderate: roleList(moderate()),
-        manage: roleList(manage()),
-      };
+      // Only persist grants for roles still in the catalogue; drop empty actions.
+      const known = new Set(roles().map((r) => r.name));
+      const permissions: GroupPermissions = {};
+      for (const action of actions()) {
+        const list = (perms()[action] ?? []).filter((r) => known.has(r));
+        permissions[action] = list;
+      }
       await updateGroup(client, props.group.id, {
         name: name().trim(),
         description: description().trim(),
         tier: tier(),
         joinPolicy: joinPolicy(),
         permissions,
+        roles: roles(),
       });
       invalidate(props.group.id);
       props.onClose();
@@ -122,30 +178,106 @@ export const GroupSettingsModal: Component<{
           </select>
         </Field>
 
-        <details class="text-xs text-muted">
-          <summary class="cursor-pointer select-none">Permissions</summary>
-          <div class="mt-3 flex flex-col gap-3">
-            <Field label="Post">
+        <details class="text-xs text-muted" data-testid="roles-permissions">
+          <summary class="cursor-pointer select-none">Roles &amp; permissions</summary>
+
+          {/* Role catalogue */}
+          <div class="mt-3 flex flex-col gap-2">
+            <p class="text-faint">
+              Roles you can assign to members. <span class="text-ink">owner</span> always holds
+              every permission.
+            </p>
+            <ul class="flex flex-col gap-1.5" data-testid="role-catalogue">
+              <For each={roles()}>
+                {(r) => (
+                  <li class="flex items-center gap-2">
+                    <input
+                      type="color"
+                      class="h-6 w-6 shrink-0 cursor-pointer rounded border border-border bg-transparent p-0"
+                      value={r.color ?? "#888888"}
+                      onInput={(e) => setColor(r.name, e.currentTarget.value)}
+                      disabled={busy()}
+                      aria-label={`Color for ${r.name}`}
+                    />
+                    <span class="flex-1 font-mono text-ink">{r.name}</span>
+                    <button
+                      type="button"
+                      class="btn-ghost px-2 py-0.5 text-[10px] hover:(border-danger text-danger)"
+                      onClick={() => removeRole(r.name)}
+                      disabled={busy()}
+                      data-testid="remove-role"
+                    >
+                      Remove
+                    </button>
+                  </li>
+                )}
+              </For>
+            </ul>
+            <div class="flex items-center gap-2">
               <input
-                class="input font-mono text-xs"
-                value={post()}
-                onInput={(e) => setPost(e.currentTarget.value)}
+                class="input flex-1 text-xs"
+                placeholder="New role name (e.g. moderator)"
+                value={newRole()}
+                onInput={(e) => setNewRole(e.currentTarget.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    addRole();
+                  }
+                }}
+                disabled={busy()}
+                data-testid="new-role-name"
               />
-            </Field>
-            <Field label="Moderate">
-              <input
-                class="input font-mono text-xs"
-                value={moderate()}
-                onInput={(e) => setModerate(e.currentTarget.value)}
-              />
-            </Field>
-            <Field label="Manage">
-              <input
-                class="input font-mono text-xs"
-                value={manage()}
-                onInput={(e) => setManage(e.currentTarget.value)}
-              />
-            </Field>
+              <button
+                type="button"
+                class="btn-ghost px-3 py-1 text-xs"
+                onClick={addRole}
+                disabled={busy()}
+                data-testid="add-role"
+              >
+                Add role
+              </button>
+            </div>
+          </div>
+
+          {/* Permission matrix: action × role (exact membership) */}
+          <div class="mt-4 overflow-x-auto">
+            <table class="w-full border-collapse text-left" data-testid="permission-matrix">
+              <thead>
+                <tr class="text-faint">
+                  <th class="py-1 pr-3 font-medium">Action</th>
+                  <For each={roles()}>
+                    {(r) => (
+                      <th class="px-2 py-1 text-center font-mono font-normal text-ink">{r.name}</th>
+                    )}
+                  </For>
+                </tr>
+              </thead>
+              <tbody>
+                <For each={actions()}>
+                  {(action) => (
+                    <tr class="border-t border-dashed border-border">
+                      <td class="py-1.5 pr-3 font-mono text-ink">{action}</td>
+                      <For each={roles()}>
+                        {(r) => (
+                          <td class="px-2 py-1.5 text-center">
+                            <input
+                              type="checkbox"
+                              class="cursor-pointer accent-accent"
+                              checked={isGranted(action, r.name)}
+                              onChange={() => toggle(action, r.name)}
+                              disabled={busy()}
+                              data-testid={`perm-${action}-${r.name}`}
+                              aria-label={`${r.name} may ${action}`}
+                            />
+                          </td>
+                        )}
+                      </For>
+                    </tr>
+                  )}
+                </For>
+              </tbody>
+            </table>
           </div>
         </details>
 

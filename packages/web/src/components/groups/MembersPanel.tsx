@@ -7,15 +7,16 @@
 import type { Group, Member } from "@forumall/shared";
 import { useQuery } from "@tanstack/solid-query";
 import { type Component, For, Show, createMemo, createSignal, onCleanup } from "solid-js";
-import { can, removeMember, setMemberRole } from "../../lib/groups-api.ts";
+import { can, removeMember, roleHoldsAll, setMemberRole } from "../../lib/groups-api.ts";
 import { subscribePresence } from "../../stores/presence-controller.ts";
 import { session, sessionClient, sessionWs } from "../../stores/session.ts";
 import { PresenceDot } from "../social/PresenceDot.tsx";
 import { membersQuery, useInvalidateGroup } from "./queries.ts";
 import { ErrorLine, RoleBadge, errorMessage } from "./ui.tsx";
 
-/** Roles a manager can assign (transfer owner is a distinct, owner-only action). */
-const ASSIGNABLE = ["admin", "member", "guest"];
+/** Canonical fallback when a group has no `roles` catalogue (transfer owner is a
+ * distinct, owner-only action and is never an option here). */
+const FALLBACK_ASSIGNABLE = ["admin", "member", "guest"];
 
 export const MembersPanel: Component<{ group: Group; myRole: () => string | undefined }> = (
   props,
@@ -29,6 +30,15 @@ export const MembersPanel: Component<{ group: Group; myRole: () => string | unde
   const canManage = () => can("manage", props.myRole(), props.group.permissions);
   const canModerate = () => can("moderate", props.myRole(), props.group.permissions);
   const isOwner = () => props.myRole() === "owner";
+
+  /** Assignable roles from the group's catalogue (owner excluded — it transfers). */
+  const assignable = createMemo(() => {
+    const names = (props.group.roles ?? []).map((r) => r.name).filter((r) => r !== "owner");
+    return names.length ? names : FALLBACK_ASSIGNABLE;
+  });
+  const roleColor = (role: string) => props.group.roles?.find((r) => r.name === role)?.color;
+  /** Subset (self-protect) rule (§5.7): may I act on a member with this role? */
+  const mayActOn = (role: string) => roleHoldsAll(props.myRole(), role, props.group.permissions);
 
   // Subscribe to live presence for every visible member while the panel is shown;
   // the ref-counted controller de-dupes overlap with other views (DMs, contacts).
@@ -102,8 +112,15 @@ export const MembersPanel: Component<{ group: Group; myRole: () => string | unde
                         </Show>
                       </div>
                     </div>
-                    <RoleBadge role={m.role} />
-                    <Show when={!isSelf() && m.role !== "owner" && (canManage() || canModerate())}>
+                    <RoleBadge role={m.role} color={roleColor(m.role)} />
+                    <Show
+                      when={
+                        !isSelf() &&
+                        m.role !== "owner" &&
+                        mayActOn(m.role) &&
+                        (canManage() || canModerate())
+                      }
+                    >
                       <div class="flex items-center gap-1.5">
                         <Show when={canManage()}>
                           <select
@@ -113,7 +130,7 @@ export const MembersPanel: Component<{ group: Group; myRole: () => string | unde
                             onChange={(e) => changeRole(m, e.currentTarget.value)}
                             data-testid="member-role-select"
                           >
-                            <For each={[...new Set([m.role, ...ASSIGNABLE])]}>
+                            <For each={[...new Set([m.role, ...assignable()])]}>
                               {(r) => <option value={r}>{r}</option>}
                             </For>
                           </select>

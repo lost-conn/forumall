@@ -26,7 +26,7 @@ import { type Argon2Params, type Config, loadConfig } from "../src/config.ts";
 import { openDb } from "../src/db/index.ts";
 import { migrate } from "../src/db/migrate.ts";
 import { groupMembers } from "../src/db/schema.ts";
-import { can } from "../src/provider/permissions.ts";
+import { can, roleHoldsAll } from "../src/provider/permissions.ts";
 
 const FAST_ARGON2: Argon2Params = { memoryKib: 1024, iterations: 1, parallelism: 1 };
 const DOMAIN = "providera.test";
@@ -131,14 +131,16 @@ describe("POST /api/groups (§5.5)", () => {
     expect(group.owner).toBe(alice.actor);
     expect(group.id.startsWith("grp_")).toBe(true);
 
-    // RECOMMENDED defaults (§5.5).
+    // RECOMMENDED defaults (§5.5). Exact-membership: `post` lists admin too.
     expect(group.tier).toBe("private");
     expect(group.joinPolicy).toBe("invite");
     expect(group.permissions).toEqual({
-      post: ["member"],
+      post: ["admin", "member"],
       moderate: ["admin"],
       manage: ["admin"],
     });
+    // Default role catalogue (§5.2); owner is implicit and not listed.
+    expect((group.roles ?? []).map((r) => r.name)).toEqual(["admin", "member", "guest"]);
 
     // A group_members row exists for the creator as owner.
     const member = db.drizzle
@@ -187,9 +189,9 @@ describe("POST /api/groups (§5.5)", () => {
 // can() unit tests (§5.2 permission resolver)
 // ---------------------------------------------------------------------------
 
-describe("can() permission resolver (§5.2)", () => {
+describe("can() permission resolver (§5.2, exact membership)", () => {
   const group = {
-    permissions: { post: ["member"], moderate: ["admin"], manage: ["admin"] },
+    permissions: { post: ["admin", "member"], moderate: ["admin"], manage: ["admin"] },
   };
 
   test("owner can do everything (always allowed)", () => {
@@ -198,10 +200,10 @@ describe("can() permission resolver (§5.2)", () => {
     expect(can("manage", "owner", group)).toBe(true);
   });
 
-  test("admin can moderate + manage (min admin) and post (rank-inheritance)", () => {
+  test("admin holds exactly the actions it is listed for", () => {
     expect(can("moderate", "admin", group)).toBe(true);
     expect(can("manage", "admin", group)).toBe(true);
-    expect(can("post", "admin", group)).toBe(true); // admin >= member
+    expect(can("post", "admin", group)).toBe(true); // admin is listed for post
   });
 
   test("member can post but not moderate/manage", () => {
@@ -210,16 +212,28 @@ describe("can() permission resolver (§5.2)", () => {
     expect(can("manage", "member", group)).toBe(false);
   });
 
-  test("guest is denied post when only member+ may post", () => {
+  test("guest is denied post when not listed", () => {
     expect(can("post", "guest", group)).toBe(false);
   });
 
-  test("rank-inheritance: post:[member] ⇒ admin & owner also post", () => {
+  test("no rank inheritance: post:[member] does NOT grant admin", () => {
     const g = { permissions: { post: ["member"] } };
     expect(can("post", "member", g)).toBe(true);
-    expect(can("post", "admin", g)).toBe(true);
-    expect(can("post", "owner", g)).toBe(true);
+    expect(can("post", "admin", g)).toBe(false); // admin not listed
+    expect(can("post", "owner", g)).toBe(true); // owner is always allowed
     expect(can("post", "guest", g)).toBe(false);
+  });
+
+  test("non-nested powers: a role may moderate without posting", () => {
+    const g = { permissions: { post: ["member"], moderate: ["watcher"] } };
+    expect(can("moderate", "watcher", g)).toBe(true);
+    expect(can("post", "watcher", g)).toBe(false);
+  });
+
+  test("custom role is granted exactly what it is listed for", () => {
+    const g = { permissions: { post: ["member", "contributor"], moderate: ["admin"] } };
+    expect(can("post", "contributor", g)).toBe(true);
+    expect(can("moderate", "contributor", g)).toBe(false);
   });
 
   test("action absent from map → only owner permitted (fail closed)", () => {
@@ -228,8 +242,34 @@ describe("can() permission resolver (§5.2)", () => {
     expect(can("manage", "owner", g)).toBe(true);
   });
 
-  test("unknown role is treated as lowest rank (deny)", () => {
+  test("unknown role holds nothing (deny)", () => {
     expect(can("post", "stranger", group)).toBe(false);
+  });
+});
+
+describe("roleHoldsAll() subset rule (§5.7)", () => {
+  const group = {
+    permissions: { post: ["admin", "member"], moderate: ["admin"], manage: ["admin"] },
+  };
+
+  test("owner holds all; nothing holds against owner", () => {
+    expect(roleHoldsAll("owner", "admin", group)).toBe(true);
+    expect(roleHoldsAll("admin", "owner", group)).toBe(false);
+  });
+
+  test("equal roles satisfy the subset (admin may act on admin)", () => {
+    expect(roleHoldsAll("admin", "admin", group)).toBe(true);
+  });
+
+  test("admin holds all of member; member does not hold all of admin", () => {
+    expect(roleHoldsAll("admin", "member", group)).toBe(true);
+    expect(roleHoldsAll("member", "admin", group)).toBe(false);
+  });
+
+  test("a role lacking a permission the target holds cannot act on it", () => {
+    // `watcher` may moderate but not post; `member` may post → watcher ⊉ member.
+    const g = { permissions: { post: ["member"], moderate: ["watcher"] } };
+    expect(roleHoldsAll("watcher", "member", g)).toBe(false);
   });
 });
 
