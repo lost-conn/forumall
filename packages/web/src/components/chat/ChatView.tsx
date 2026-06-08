@@ -241,6 +241,21 @@ export const ChatView: Component<{
     ),
   );
 
+  // Jump to the original post when a reply reference is clicked: scroll its row
+  // into view and flash a transient highlight. No-op if the parent is older than
+  // the loaded history (its row isn't in the DOM).
+  const [highlightId, setHighlightId] = createSignal<string | null>(null);
+  let highlightTimer: ReturnType<typeof setTimeout> | undefined;
+  const scrollToMessage = (id: string): void => {
+    const el = scrollEl?.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(id)}"]`);
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    setHighlightId(id);
+    clearTimeout(highlightTimer);
+    highlightTimer = setTimeout(() => setHighlightId(null), 1600);
+  };
+  onCleanup(() => clearTimeout(highlightTimer));
+
   return (
     <div class="flex min-h-0 flex-1 flex-col" data-testid="chat-view" data-channel-id={channelId()}>
       <Show
@@ -360,6 +375,8 @@ export const ChatView: Component<{
                           canModerate={props.canModerate}
                           canPromote={(props.canPostArticle ?? props.canPost) === true}
                           byId={byId}
+                          highlightId={highlightId}
+                          onJumpTo={scrollToMessage}
                           onReply={setReplyTarget}
                           onPromote={setPromoteSource}
                           onOpenArticle={setOpenArticle}
@@ -425,6 +442,8 @@ const MessageNode: Component<{
   canModerate: boolean;
   canPromote: boolean;
   byId: Accessor<Map<string, ChatMessage>>;
+  highlightId: Accessor<string | null>;
+  onJumpTo: (id: string) => void;
   onReply: (m: ChatMessage) => void;
   onPromote: (m: ChatMessage) => void;
   onOpenArticle: (m: ChatMessage) => void;
@@ -439,7 +458,7 @@ const MessageNode: Component<{
   return (
     <li class="flex flex-col gap-1">
       <Show when={m().reference}>
-        <ReplyQuote parent={replyParent()} />
+        <ReplyQuote parent={replyParent()} onJump={props.onJumpTo} />
       </Show>
 
       <MessageRow
@@ -448,6 +467,7 @@ const MessageNode: Component<{
         groupId={props.groupId}
         canModerate={props.canModerate}
         canPromote={props.canPromote}
+        highlighted={() => props.highlightId() === m().id}
         reactions={() => reactionsFor(props.channelId, m().id)}
         onReply={() => props.onReply(m())}
         onPromote={() => props.onPromote(m())}
@@ -457,8 +477,13 @@ const MessageNode: Component<{
   );
 };
 
-/** A small quoted snippet of the message being replied to (inline replies). */
-const ReplyQuote: Component<{ parent?: ChatMessage }> = (props) => {
+/**
+ * A small quoted snippet of the message being replied to (inline replies).
+ * Clickable when the parent is loaded into the view — jumps to + highlights the
+ * original post; rendered as inert text when the parent isn't reachable
+ * (deleted, or older than the loaded history).
+ */
+const ReplyQuote: Component<{ parent?: ChatMessage; onJump?: (id: string) => void }> = (props) => {
   const snippet = (): string => {
     const p = props.parent;
     if (!p) return "a message";
@@ -468,11 +493,22 @@ const ReplyQuote: Component<{ parent?: ChatMessage }> = (props) => {
     const clipped = text.length > 80 ? `${text.slice(0, 80)}…` : text;
     return clipped ? `${author}: ${clipped}` : author;
   };
+  const jumpable = () => props.parent !== undefined && !props.parent.deletedAt;
   return (
-    <div class="flex items-center gap-1 text-xs text-faint" data-testid="reply-quote">
+    <button
+      type="button"
+      class="flex max-w-full items-center gap-1 text-left text-xs text-faint transition-colors enabled:cursor-pointer enabled:hover:text-accent disabled:cursor-default"
+      data-testid="reply-quote"
+      disabled={!jumpable()}
+      title={jumpable() ? "Jump to the original message" : undefined}
+      onClick={() => {
+        const p = props.parent;
+        if (p) props.onJump?.(p.id);
+      }}
+    >
       <span aria-hidden="true">↳</span>
       <span class="truncate">replying to {snippet()}</span>
-    </div>
+    </button>
   );
 };
 
@@ -486,6 +522,7 @@ const MessageRow: Component<{
   groupId: string;
   canModerate: boolean;
   canPromote: boolean;
+  highlighted: () => boolean;
   reactions: () => ReactionGroup[];
   onReply: () => void;
   onPromote: () => void;
@@ -569,10 +606,12 @@ const MessageRow: Component<{
 
   return (
     <div
-      class="group/msg flex gap-[11px]"
+      class="group/msg -mx-1.5 flex gap-[11px] rounded-md px-1.5 py-0.5 transition-colors duration-500"
+      classList={{ "bg-accent/10 ring-1 ring-accent/30 duration-150": props.highlighted() }}
       data-testid="message-row"
       data-message-id={m().id}
       data-message-type={m().type ?? "message"}
+      data-message-highlighted={props.highlighted() ? "1" : undefined}
       data-pending={m().pending ? "1" : undefined}
     >
       <button

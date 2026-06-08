@@ -101,6 +101,11 @@ test("inline reply: A replies to a message → reply shows quoted parent; B sees
     timeout: 10_000,
   });
 
+  // Clicking the reply reference jumps to + flashes the original post (only the
+  // reply carries a reply-quote, so the first one is it).
+  await a.getByTestId("reply-quote").first().click();
+  await expect(parentRow).toHaveAttribute("data-message-highlighted", "1", { timeout: 5_000 });
+
   await b.context().close();
 });
 
