@@ -337,6 +337,35 @@ describe("profile + bio gating (§6.2/6.3)", () => {
     expect(body.bio).toBe("Hello!");
   });
 
+  test("avatar must be an https URI: empty string → 400, omitted → 200, valid → 200", async () => {
+    const b = boot("profile-avatar");
+    const alice = await registerUserWithKey(b, "alice");
+
+    // An empty-string avatar fails the https URI constraint (the reported bug:
+    // the client must omit a blank avatar rather than send "").
+    const blank = await signedReq(b, alice, "PATCH", "/api/me/profile", {
+      displayName: "Alice",
+      avatar: "",
+    });
+    expect(blank.status).toBe(400);
+
+    // Omitting avatar entirely succeeds (text fields still update).
+    const omitted = await signedReq(b, alice, "PATCH", "/api/me/profile", {
+      displayName: "Alice",
+      bio: "hi",
+    });
+    expect(omitted.status).toBe(200);
+
+    // A valid https avatar is accepted and surfaced.
+    const valid = await signedReq(b, alice, "PATCH", "/api/me/profile", {
+      avatar: "https://cdn.example/a.png",
+    });
+    expect(valid.status).toBe(200);
+    expect(((await valid.json()) as Record<string, unknown>).avatar).toBe(
+      "https://cdn.example/a.png",
+    );
+  });
+
   test("bio hidden under nobody, base profile still returned", async () => {
     const b = boot("profile-nobody");
     const alice = await registerUserWithKey(b, "alice");

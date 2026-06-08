@@ -205,3 +205,30 @@ test("`nobody` hides presence: visible viewer flips to offline", async ({
 
   await b.page.context().close();
 });
+
+test("profile save: blank avatar saves; non-https avatar shows a clear error", async ({
+  page,
+  appServer,
+}) => {
+  await registerUser(page, appServer.baseUrl, uniqueHandle());
+
+  await page.goto("/settings");
+  await page.getByTestId("settings-nav-profile").click();
+
+  // The reported bug: saving with a blank avatar must succeed, not 400.
+  await page.getByTestId("profile-display-name").fill("Aria");
+  await page.getByTestId("profile-bio").fill("hello there");
+  await page.getByTestId("profile-avatar").fill("");
+  await page.getByTestId("profile-save").click();
+  await expect(page.getByTestId("profile-saved")).toBeVisible({ timeout: 10_000 });
+
+  // A non-https avatar is caught client-side with a clear message.
+  await page.getByTestId("profile-avatar").fill("notaurl");
+  await page.getByTestId("profile-save").click();
+  await expect(page.getByTestId("profile-error")).toBeVisible({ timeout: 10_000 });
+
+  // A valid https avatar saves.
+  await page.getByTestId("profile-avatar").fill("https://cdn.example/a.png");
+  await page.getByTestId("profile-save").click();
+  await expect(page.getByTestId("profile-saved")).toBeVisible({ timeout: 10_000 });
+});

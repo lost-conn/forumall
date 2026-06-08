@@ -90,10 +90,18 @@ export const ProfileSettings: Component = () => {
     setSaved(false);
     setError(null);
     try {
+      // `avatar` is constrained to an https:// URI server-side, so an empty
+      // field must be omitted (not sent as "") or the update is rejected. Catch a
+      // malformed URL here with a clear message instead of the generic 400.
+      const avatarUrl = avatar().trim();
+      if (avatarUrl && !/^https:\/\//.test(avatarUrl)) {
+        setError("Avatar must be an https:// URL.");
+        return;
+      }
       await updateProfile(clientOrThrow(), {
         displayName: displayName().trim(),
-        avatar: avatar().trim(),
         bio: bio().trim(),
+        ...(avatarUrl ? { avatar: avatarUrl } : {}),
       });
       setSaved(true);
     } catch (err) {
