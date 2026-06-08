@@ -147,3 +147,11 @@ if (!root) throw new Error("#root not found");
 applyAppearance();
 
 render(() => <App />, root);
+
+// Register the PWA service worker (production builds only — never under the Vite
+// dev server, where it would fight HMR). Failures are non-fatal.
+if (import.meta.env.PROD && "serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    void navigator.serviceWorker.register("/sw.js").catch(() => undefined);
+  });
+}
