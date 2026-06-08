@@ -827,7 +827,9 @@ const MessageRow: Component<{
 };
 
 /** Render a message body by §5.3 type, with a safe fallback for unknown types. */
-const MessageBody: Component<{ message: ChatMessage; onOpenArticle?: () => void }> = (props) => {
+export const MessageBody: Component<{ message: ChatMessage; onOpenArticle?: () => void }> = (
+  props,
+) => {
   const text = () => props.message.content.text ?? "";
   const type = () => props.message.type ?? "message";
   return (
@@ -913,7 +915,7 @@ const MessageBody: Component<{ message: ChatMessage; onOpenArticle?: () => void 
 };
 
 /** Render one attachment: images inline, everything else as a download link. */
-const AttachmentView: Component<{ attachment: Attachment }> = (props) => {
+export const AttachmentView: Component<{ attachment: Attachment }> = (props) => {
   const url = () => resolveAttachmentUrl(props.attachment.url);
   return (
     <Show

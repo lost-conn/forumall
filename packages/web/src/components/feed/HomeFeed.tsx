@@ -7,10 +7,12 @@
  * into the shared chat store. This view renders the DERIVED merged timeline
  * (`stores/feed.ts#mergedTimeline`) — every followed channel's messages, ordered
  * newest-first and de-duped by id — so a live message, an in-place edit, or a
- * tombstone on ANY followed channel updates here automatically. Each item shows
- * its source channel / group + author, and renders by §5.3 message type (markdown
- * for `article`s, text otherwise, a safe fallback for unknown types).
+ * tombstone on ANY followed channel updates here automatically. Each item is
+ * rendered with the **same layout as a channel message** (the shared
+ * {@link MessageBody}/{@link AttachmentView} from the chat view) so Home reads
+ * identically to a channel, plus a source channel/group badge for context.
  */
+import { useNavigate } from "@solidjs/router";
 import {
   type Component,
   For,
@@ -22,10 +24,12 @@ import {
   onCleanup,
   onMount,
 } from "solid-js";
-import { renderMarkdown } from "../../lib/markdown.ts";
+import { reactionsFor } from "../../stores/chat.ts";
 import { type FeedItem, activeFollows, feed, mergedTimeline } from "../../stores/feed.ts";
 import { clearFeed } from "../../stores/feed.ts";
 import { session, sessionClient, sessionWs } from "../../stores/session.ts";
+import { AttachmentView, MessageBody } from "../chat/ChatView.tsx";
+import { openUserProfile } from "../social/user-profile-store.ts";
 import { type FeedHandle, startFeed } from "./feed-controller.ts";
 
 export const HomeFeed: Component = () => {
@@ -119,58 +123,106 @@ export const HomeFeed: Component = () => {
   );
 };
 
-/** One merged-feed item: source channel/group + author + body (typed render). */
+/**
+ * One merged-feed item, rendered with the same layout as a channel message
+ * (avatar + author/time header + typed {@link MessageBody} + attachments +
+ * reactions) so Home reads identically to a channel. The only feed addition is
+ * the source channel/group badge (it links back to the group); message actions
+ * (reply/edit/react) are channel-local and intentionally omitted here.
+ */
 const FeedRow: Component<{ item: FeedItem }> = (props) => {
   const item = () => props.item;
   const isDeleted = () => item().deletedAt !== undefined;
+  const navigate = useNavigate();
+  const reactions = () => reactionsFor(item().channelId, item().id);
+  const openSource = (): void => {
+    const gid = item().groupId;
+    if (gid) navigate(`/groups/${gid}`);
+  };
   return (
     <li
-      class="rounded-xl border border-border bg-surface p-4"
+      class="group/msg flex gap-[11px]"
       data-testid="feed-item"
       data-channel-id={item().channelId}
       data-message-id={item().id}
     >
-      <div class="mb-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
-        <span class="inline-flex items-center gap-1 rounded-md bg-surface-2 px-2 py-0.5 text-muted">
-          <span class="text-faint">#</span>
-          <span class="text-ink" data-testid="feed-item-channel">
-            {item().channelName ?? item().channelId}
-          </span>
-          <Show when={item().groupName}>
-            <span class="text-faint">· {item().groupName}</span>
+      <button
+        type="button"
+        class="fa-ava transition-colors hover:border-accent"
+        aria-label={`${displayName(item().author)} profile`}
+        onClick={() => openUserProfile(item().author)}
+      >
+        {displayName(item().author).slice(0, 1).toUpperCase()}
+      </button>
+
+      <div class="flex min-w-0 flex-1 flex-col gap-1">
+        <div class="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            class="fa-msg__name"
+            onClick={() => openUserProfile(item().author)}
+            data-testid="feed-item-author"
+          >
+            {displayName(item().author)}
+          </button>
+          <span class="fa-meta">{formatTime(item().createdAt)}</span>
+          <Show when={item().editedAt && !isDeleted()}>
+            <span class="fa-meta" data-testid="feed-item-edited">
+              (edited)
+            </span>
           </Show>
-        </span>
-        <span class="font-semibold text-ink" data-testid="feed-item-author">
-          {displayName(item().author)}
-        </span>
-        <span class="text-faint">{formatTime(item().createdAt)}</span>
-        <Show when={item().editedAt && !isDeleted()}>
-          <span class="text-faint" data-testid="feed-item-edited">
-            (edited)
-          </span>
+          {/* Source channel/group — feed-specific context; links back to the group. */}
+          <button
+            type="button"
+            class="ml-auto inline-flex items-center gap-1 rounded-md bg-surface-2 px-2 py-0.5 text-xs text-muted transition-colors hover:text-ink"
+            onClick={openSource}
+            data-testid="feed-item-channel"
+          >
+            <span class="text-faint">#</span>
+            <span class="text-ink">{item().channelName ?? item().channelId}</span>
+            <Show when={item().groupName}>
+              <span class="text-faint">· {item().groupName}</span>
+            </Show>
+          </button>
+        </div>
+
+        <Switch>
+          <Match when={isDeleted()}>
+            <p class="text-sm italic text-faint" data-testid="feed-item-tombstone">
+              message deleted
+            </p>
+          </Match>
+          <Match when={true}>
+            <MessageBody message={item()} onOpenArticle={openSource} />
+          </Match>
+        </Switch>
+
+        <Show when={!isDeleted() && (item().attachments?.length ?? 0) > 0}>
+          <div class="flex flex-wrap gap-2">
+            <For each={item().attachments ?? []}>
+              {(att) => <AttachmentView attachment={att} />}
+            </For>
+          </div>
+        </Show>
+
+        <Show when={reactions().length > 0}>
+          <div class="fa-rx">
+            <For each={reactions()}>
+              {(g) => (
+                <span
+                  class="fa-rx__chip"
+                  classList={{
+                    "fa-rx__chip--on": session.actor != null && g.authors.includes(session.actor),
+                  }}
+                >
+                  <span>{g.unicode ?? g.key}</span>
+                  <span>{g.authors.length}</span>
+                </span>
+              )}
+            </For>
+          </div>
         </Show>
       </div>
-
-      <Switch>
-        <Match when={isDeleted()}>
-          <p class="text-sm italic text-faint" data-testid="feed-item-tombstone">
-            message deleted
-          </p>
-        </Match>
-        <Match when={(item().type ?? "message") === "article"}>
-          {/* `renderMarkdown` escapes input + allowlists link schemes (sanitized). */}
-          <div
-            class="prose-chat text-sm text-ink"
-            data-testid="feed-item-article"
-            innerHTML={renderMarkdown(item().content.text ?? "")}
-          />
-        </Match>
-        <Match when={true}>
-          <p class="whitespace-pre-wrap break-words text-sm text-ink" data-testid="feed-item-text">
-            {item().content.text ?? ""}
-          </p>
-        </Match>
-      </Switch>
     </li>
   );
 };
