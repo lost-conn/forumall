@@ -1,0 +1,49 @@
+# jkbase deployment manifest for Forumall (Bun buildpack path).
+#
+# Forumall is one process: a Bun server (packages/server) serves the OFSCP API,
+# the WebSocket endpoint, /.well-known/ofscp/*, /invite/*, AND the built Solid
+# web client — all on one port. jkbase builds it from source with its Bun
+# buildpack (no Dockerfile) and we route *every* path to the container ("/*").
+# jkbase terminates TLS and manages the domain.
+#
+# Deploy (from repo root):
+#   jkbase project create forumall
+#   jkbase secret set DOMAIN=<served-host>     # MUST equal the public host
+#   jkbase secret set DATA_DIR=/data
+#   jkbase secret set MEDIA_DIR=/data/media
+#   jkbase deploy
+#
+# DOMAIN is load-bearing (OFSCP authority binding, §4.4.2): the provider signs
+# under config.domain, never the transport Host. The runtime clears the env, so
+# DATA_DIR/MEDIA_DIR (Dockerfile ENVs) are supplied as secrets here.
+
+[project]
+name = "forumall"
+
+# No [hosting] block: Forumall is a server-only project (the catch-all route below
+# sends every path to the container). jkbase builds a sidecar-only content image —
+# no static site, no source tree packaged.
+
+# The Forumall server, built by the Bun buildpack. Detected via bun.lock /
+# language="bun"; fetch runs `bun install`, compile runs `bun run build` (the
+# @forumall/web Vite bundle). The launch command is set explicitly below rather
+# than via a root `start` script, so Forumall's package.json stays untouched —
+# the buildpack can't auto-derive a monorepo's nested server entry. State (SQLite
+# + media) lives under /data on a persistent volume.
+[servers.app]
+source = "."
+language = "bun"
+port = 3000
+# Absolute cmd[0]: the runtime chroots + clears the env, so PATH can't be relied on.
+command = ["/opt/bun/bin/bun", "run", "packages/server/src/index.ts"]
+volumes = [{ name = "data", mount = "/data" }]
+
+[servers.app.health_check]
+path = "/api/health"
+interval = "10s"
+timeout = "5s"
+
+# Everything to the container: API, WebSocket, /.well-known/ofscp/*, /invite/*,
+# and the SPA. "/*" trims to prefix "/" → matches every path, before static.
+[routes]
+"/*" = { service = "server", name = "app" }
