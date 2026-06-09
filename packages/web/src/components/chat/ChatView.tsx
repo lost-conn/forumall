@@ -699,8 +699,13 @@ const MessageRow: Component<{
                   ☺
                 </button>
                 <Show when={showReactPicker()}>
+                  {/* Open DOWNWARD (top-full): the message list is an
+                      overflow-auto scroll container, so a picker opening upward
+                      (bottom-full) off the newest, top-of-stream message gets
+                      clipped by the container's top edge / the channel header.
+                      Opening down keeps it inside the scroll viewport. */}
                   <div
-                    class="absolute right-0 bottom-full z-10 mb-1 flex gap-0.5 rounded-lg border border-border bg-surface p-1 shadow-lg"
+                    class="absolute top-full right-0 z-10 mt-1 flex gap-0.5 rounded-lg border border-border bg-surface p-1 shadow-lg"
                     data-testid="reaction-picker"
                   >
                     <For each={QUICK_REACTIONS}>
