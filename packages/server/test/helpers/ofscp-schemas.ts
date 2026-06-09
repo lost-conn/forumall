@@ -15,11 +15,14 @@
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import addFormats from "ajv-formats";
 import Ajv2020 from "ajv/dist/2020.js";
 
-/** Absolute path to the sibling ofscp repo (SSOT for schemas + samples). */
-export const OFSCP_REPO = "/home/notyou/projects/personal/ofscp";
+/** Absolute path to the sibling ofscp repo (SSOT for schemas + samples).
+ *  Resolved relative to this file (`packages/server/test/helpers/` → up five to
+ *  the repo's parent) so it works on any machine, not just the author's box. */
+export const OFSCP_REPO = fileURLToPath(new URL("../../../../../ofscp", import.meta.url));
 const SCHEMA_ROOT = join(OFSCP_REPO, "schemas", "v0.1");
 
 function loadJson(absPath: string): unknown {

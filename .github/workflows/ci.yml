@@ -23,6 +23,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The conformance + schema tests read golden vectors and JSON Schemas by
+      # path from the sibling `ofscp` repo (the protocol SSOT; never copied in).
+      # The test resolves `../../../../ofscp` → a sibling of this checkout, i.e.
+      # $GITHUB_WORKSPACE/../ofscp. actions/checkout can't write outside the
+      # workspace, so clone it there directly. Pinned-to-main matches local dev.
+      - name: Check out OFSCP spec repo (sibling SSOT for conformance)
+        run: git clone --depth 1 https://github.com/lost-conn/ofscp.git "${GITHUB_WORKSPACE}/../ofscp"
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync, readdirSync } from "node:fs";
 import { basename, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { z } from "zod";
 
 import {
@@ -89,8 +90,10 @@ import {
 } from "../src/schemas/index.ts";
 
 // The canonical OFSCP samples live in the sibling ofscp repo. Reference by
-// path (do NOT copy them in) so this stays pinned to the SSOT.
-const SAMPLES_DIR = "/home/notyou/projects/personal/ofscp/tests";
+// path (do NOT copy them in) so this stays pinned to the SSOT. Resolve it
+// relative to this file (sibling of the repo root) so it works on any machine
+// — same anchor as conformance.test.ts.
+const SAMPLES_DIR = fileURLToPath(new URL("../../../../ofscp/tests", import.meta.url));
 
 /**
  * Maps each `<name>.sample.json` to the schema that should accept it. This map

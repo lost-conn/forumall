@@ -296,12 +296,23 @@ test("article renders as markdown; an unknown type falls back to text (no crash)
     [channelId],
   );
 
-  // Article → markdown (a real <h1> + <strong> + sanitized <a>).
-  const article = a.getByTestId("message-article").first();
-  await expect(article).toBeVisible({ timeout: 10_000 });
-  await expect(article.locator("h1")).toHaveText("Heading");
-  await expect(article.locator("strong")).toHaveText("bold");
-  await expect(article.locator('a[href="https://example.com"]')).toBeVisible();
+  // Article markdown renders in the reading pane. The channel card shows a
+  // plaintext excerpt by design (markdown moved into the pane in the reading-pane
+  // redesign); opening the article renders the real markdown — a true <h1> title
+  // + <strong> + sanitized <a> (§5.3/§2.3).
+  const artRow = a.locator('[data-testid="message-row"][data-message-id="art_1"]');
+  await expect(artRow).toBeVisible({ timeout: 10_000 });
+  await artRow.getByTestId("open-article").click();
+
+  const reading = a.getByTestId("article-reading");
+  await expect(reading).toBeVisible({ timeout: 10_000 });
+  await expect(reading.getByTestId("article-title")).toHaveText("Heading");
+  const articleBody = reading.getByTestId("article-body");
+  await expect(articleBody.locator("strong")).toHaveText("bold");
+  await expect(articleBody.locator('a[href="https://example.com"]')).toBeVisible();
+
+  // Back to the channel stream for the unknown-type assertion below.
+  await reading.getByTestId("article-back").click();
 
   // Unknown type → generic text fallback, body intact, no crash (the article
   // above still rendered, so the app didn't throw on the unknown type).
