@@ -41,6 +41,7 @@ import {
   upsertConversation,
 } from "../../stores/dms.ts";
 import { subscribePresence } from "../../stores/presence-controller.ts";
+import { displayNameFor, warmProfile, warmProfiles } from "../../stores/profiles.ts";
 import { session, sessionClient, sessionWs } from "../../stores/session.ts";
 import { Icon, type IconName } from "../Icon.tsx";
 import { PresenceDot } from "../social/PresenceDot.tsx";
@@ -152,6 +153,7 @@ export const DmsPage: Component = () => {
   let disposeSub: (() => void) | null = null;
   createMemo(() => {
     const actors = conversations().map((c) => c.counterparty);
+    warmProfiles(actors);
     disposeSub?.();
     disposeSub = subscribePresence(sessionWs(), actors, session.actor);
   });
@@ -288,13 +290,13 @@ const ConversationRow: Component<{ conv: DmConversationSummary; active: boolean 
     data-counterparty={props.conv.counterparty}
   >
     <span class="fa-ava" classList={{ "fa-ava__fed": isRemoteActor(props.conv.counterparty) }}>
-      {displayName(props.conv.counterparty).slice(0, 1).toUpperCase()}
+      {displayNameFor(props.conv.counterparty).slice(0, 1).toUpperCase()}
     </span>
     <span class="min-w-0 flex-1">
       <span class="flex items-center gap-1.5" data-testid="dm-conv-name">
         <PresenceDot actor={props.conv.counterparty} />
         <span class="min-w-0 flex-1 truncate font-body text-[13.5px] font-semibold text-ink">
-          {displayName(props.conv.counterparty)}
+          {displayNameFor(props.conv.counterparty)}
         </span>
         <span class="inline-flex items-center gap-1 font-mono text-[10px] text-faint">
           <Icon name="at" size={10} />
@@ -369,6 +371,13 @@ const ThreadView: Component<{
 
   onCleanup(() => handle()?.close());
 
+  // Warm the display-name cache for the counterparty + every message author in
+  // this thread (covers the remote sender on a federated DM).
+  createEffect(() => {
+    warmProfile(counterparty());
+    warmProfiles(dmThread(props.dmId).map((m) => m.author));
+  });
+
   const messages = createMemo(() => dmThread(props.dmId));
 
   let scrollEl: HTMLDivElement | undefined;
@@ -399,13 +408,13 @@ const ThreadView: Component<{
             class="fa-ava fa-ava--sm"
             classList={{ "fa-ava__fed": isRemoteActor(counterparty()) }}
           >
-            {displayName(counterparty()).slice(0, 1).toUpperCase()}
+            {displayNameFor(counterparty()).slice(0, 1).toUpperCase()}
           </span>
           <h2
             class="font-display text-base font-semibold tracking-tight text-ink"
             data-testid="dm-thread-name"
           >
-            {displayName(counterparty()) || props.dmId}
+            {counterparty() ? displayNameFor(counterparty()) : props.dmId}
           </h2>
           <Show when={counterparty() && isRemoteActor(counterparty())}>
             <span class="fa-handle text-accent">@{domainOf(counterparty())}</span>
@@ -513,7 +522,7 @@ const DmMessageRow: Component<{
     >
       <Show when={!mine()}>
         <span class="fa-ava fa-ava--sm" classList={{ "fa-ava__fed": isRemoteActor(m().author) }}>
-          {displayName(m().author).slice(0, 1).toUpperCase()}
+          {displayNameFor(m().author).slice(0, 1).toUpperCase()}
         </span>
       </Show>
       <div class="flex max-w-[70%] flex-col gap-1" classList={{ "items-end": mine() }}>
@@ -616,7 +625,7 @@ const DmComposer: Component<{
           class="max-h-40 min-h-6 flex-1 resize-none bg-transparent text-sm text-ink outline-none placeholder:text-faint"
           rows={1}
           data-testid="dm-composer-input"
-          placeholder={`Message ${displayName(props.counterparty) || "…"}…`}
+          placeholder={`Message ${props.counterparty ? displayNameFor(props.counterparty) : "…"}…`}
           value={text()}
           onInput={(e) => setText(e.currentTarget.value)}
           onKeyDown={(e) => {
@@ -748,12 +757,6 @@ const TrustNotice: Component = () => (
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/** Display the local-part of an actor `handle@host` (full actor as a fallback). */
-function displayName(actor: string): string {
-  const at = actor.indexOf("@");
-  return at > 0 ? actor.slice(0, at) : actor;
-}
 
 /** Whether `actor` lives on a different provider than the signed-in user. */
 function isRemoteActor(actor: string): boolean {

@@ -9,6 +9,7 @@ import { useQuery } from "@tanstack/solid-query";
 import { type Component, For, Show, createMemo, createSignal, onCleanup } from "solid-js";
 import { can, removeMember, roleHoldsAll, setMemberRole } from "../../lib/groups-api.ts";
 import { subscribePresence } from "../../stores/presence-controller.ts";
+import { displayNameFor, warmProfiles } from "../../stores/profiles.ts";
 import { session, sessionClient, sessionWs } from "../../stores/session.ts";
 import { PresenceDot } from "../social/PresenceDot.tsx";
 import { membersQuery, useInvalidateGroup } from "./queries.ts";
@@ -45,6 +46,7 @@ export const MembersPanel: Component<{ group: Group; myRole: () => string | unde
   let disposeSub: (() => void) | null = null;
   createMemo(() => {
     const actors = (members.data ?? []).map((m: Member) => m.user);
+    warmProfiles(actors);
     disposeSub?.();
     disposeSub = subscribePresence(sessionWs(), actors, session.actor);
   });
@@ -96,20 +98,26 @@ export const MembersPanel: Component<{ group: Group; myRole: () => string | unde
                 return (
                   <li class="flex items-center gap-3 py-3" data-testid="member-row">
                     <span class="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-surface-2 text-xs font-semibold text-muted">
-                      {m.user.slice(0, 2).toUpperCase()}
+                      {displayNameFor(m.user).slice(0, 2).toUpperCase()}
                     </span>
                     <div class="min-w-0 flex-1">
                       <div
-                        class="flex items-center gap-2 truncate text-sm text-ink font-mono"
-                        data-testid="member-handle"
+                        class="flex items-center gap-2 truncate text-sm text-ink"
+                        data-testid="member-name"
                       >
                         <Show when={!isSelf()}>
                           <PresenceDot actor={m.user} />
                         </Show>
-                        <span class="truncate">{m.user}</span>
+                        <span class="truncate font-semibold">{displayNameFor(m.user)}</span>
                         <Show when={isSelf()}>
                           <span class="ml-1.5 text-xs text-faint">(you)</span>
                         </Show>
+                      </div>
+                      <div
+                        class="truncate font-mono text-xs text-faint"
+                        data-testid="member-handle"
+                      >
+                        {m.user}
                       </div>
                     </div>
                     <RoleBadge role={m.role} color={roleColor(m.role)} />

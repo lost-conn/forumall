@@ -42,6 +42,7 @@ import {
   reactionsFor,
   typingFor,
 } from "../../stores/chat.ts";
+import { displayNameFor, warmProfiles } from "../../stores/profiles.ts";
 import { session, sessionClient, sessionWs } from "../../stores/session.ts";
 import { Icon, type IconName } from "../Icon.tsx";
 import { FollowToggle } from "../feed/FollowToggle.tsx";
@@ -169,6 +170,19 @@ export const ChatView: Component<{
 
   const messages = createMemo(() => messagesFor(channelId()));
   const typingActors = createMemo(() => typingFor(channelId()).filter((u) => u !== session.actor));
+
+  // Warm the display-name cache for everyone named in the channel: message
+  // authors, reaction authors, and anyone currently typing. Reactive + deduped,
+  // so it covers history backfill, live arrivals, and resume with no extra reqs.
+  createEffect(() => {
+    const actors = new Set<string>();
+    for (const m of messages()) {
+      actors.add(m.author);
+      for (const g of reactionsFor(channelId(), m.id)) for (const a of g.authors) actors.add(a);
+    }
+    for (const a of typingActors()) actors.add(a);
+    warmProfiles(actors);
+  });
 
   // Index loaded messages + group replies by parent so we can render threads.
   const byId = createMemo(() => {
@@ -488,7 +502,7 @@ const ReplyQuote: Component<{ parent?: ChatMessage; onJump?: (id: string) => voi
     const p = props.parent;
     if (!p) return "a message";
     if (p.deletedAt) return "a deleted message";
-    const author = displayName(p.author);
+    const author = displayNameFor(p.author);
     const text = (p.content.text ?? "").replace(/\s+/g, " ").trim();
     const clipped = text.length > 80 ? `${text.slice(0, 80)}…` : text;
     return clipped ? `${author}: ${clipped}` : author;
@@ -617,10 +631,10 @@ const MessageRow: Component<{
       <button
         type="button"
         class="fa-ava transition-colors hover:border-accent"
-        aria-label={`${displayName(m().author)} profile`}
+        aria-label={`${displayNameFor(m().author)} profile`}
         onClick={() => openUserProfile(m().author)}
       >
-        {displayName(m().author).slice(0, 1).toUpperCase()}
+        {displayNameFor(m().author).slice(0, 1).toUpperCase()}
       </button>
       <div class="flex min-w-0 flex-1 flex-col gap-1">
         <div class="flex flex-wrap items-center gap-2">
@@ -630,7 +644,7 @@ const MessageRow: Component<{
             data-testid="message-author"
             onClick={() => openUserProfile(m().author)}
           >
-            {displayName(m().author)}
+            {displayNameFor(m().author)}
           </button>
           <span class="fa-meta">{formatTime(m().createdAt)}</span>
           <Show when={m().editedAt && !isDeleted()}>
@@ -816,7 +830,7 @@ const MessageRow: Component<{
                   classList={{ "fa-rx__chip--on": myReactionKeys().has(g.key) }}
                   data-testid="reaction-chip"
                   data-reaction-key={g.key}
-                  title={g.authors.map(displayName).join(", ")}
+                  title={g.authors.map(displayNameFor).join(", ")}
                   onClick={() => toggleReaction(g.key, g.unicode ?? g.key)}
                 >
                   <span>{g.unicode ?? g.key}</span>
@@ -962,7 +976,7 @@ const TypingLine: Component<{ actors: string[] }> = (props) => (
 );
 
 function typingText(actors: string[]): string {
-  const names = actors.map(displayName);
+  const names = actors.map(displayNameFor);
   if (names.length === 1) return `${names[0]} is typing…`;
   if (names.length === 2) return `${names[0]} and ${names[1]} are typing…`;
   return `${names.length} people are typing…`;
@@ -1151,7 +1165,7 @@ const Composer: Component<{
             data-testid="composer-reply-pill"
           >
             <span class="truncate text-muted">
-              Replying to <span class="text-ink">{displayName(t().author)}</span>
+              Replying to <span class="text-ink">{displayNameFor(t().author)}</span>
             </span>
             <button
               type="button"
@@ -1305,12 +1319,6 @@ const Composer: Component<{
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/** Display the local-part of an actor `handle@host` (full actor as a fallback). */
-function displayName(actor: string): string {
-  const at = actor.indexOf("@");
-  return at > 0 ? actor.slice(0, at) : actor;
-}
 
 /** Short HH:MM time for a message timestamp; empty when absent/unparseable. */
 function formatTime(iso?: string): string {

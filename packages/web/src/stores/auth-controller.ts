@@ -31,6 +31,7 @@ import { clearDms } from "./dms.ts";
 import { clearFeed } from "./feed.ts";
 import { installPresenceListener, resetPresenceSubscriptions } from "./presence-controller.ts";
 import { clearPresence } from "./presence.ts";
+import { clearProfiles } from "./profiles.ts";
 import {
   clearSession,
   sessionClient,
@@ -119,6 +120,7 @@ export async function doLogout(opts: { keyStore?: KeyStore } = {}): Promise<bool
   clearFeed();
   resetFollowCache();
   clearPresence();
+  clearProfiles();
   resetPresenceSubscriptions();
   clearSession();
   return revoked;
