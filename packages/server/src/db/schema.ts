@@ -223,6 +223,13 @@ export const groupMembers = sqliteTable(
     user: text("user").notNull(),
     /** Membership role: `owner` | `admin` | `member` | `guest`. */
     role: text("role").notNull(),
+    /**
+     * Per-group display-name override (Discord-server-nickname style): overrides
+     * the member's GLOBAL `UserProfile.displayName` within THIS group only.
+     * Nullable — NULL/absent means "use the global display name". Added in
+     * migration 0025.
+     */
+    displayNameOverride: text("display_name_override"),
     /** Join time (epoch millis); rendered as RFC 3339 `joinedAt`. */
     joinedAt: integer("joined_at", { mode: "number" })
       .notNull()

@@ -93,6 +93,8 @@ export function rowToMember(row: GroupMemberRow): Member {
     user: row.user,
     role: row.role,
     joinedAt: rfc3339Timestamp(new Date(row.joinedAt)),
+    // Emit the per-group nickname only when set (NULL → use the global name).
+    ...(row.displayNameOverride != null ? { displayNameOverride: row.displayNameOverride } : {}),
   });
 }
 
@@ -217,7 +219,13 @@ export function sharesGroupWith(db: Db, a: string, b: string): boolean {
  * canonical `Member`. Caller guarantees the user is not already a member.
  */
 export function addMember(db: Db, groupId: string, user: string, role = "member"): Member {
-  const row: GroupMemberRow = { groupId, user, role, joinedAt: Date.now() };
+  const row: GroupMemberRow = {
+    groupId,
+    user,
+    role,
+    displayNameOverride: null,
+    joinedAt: Date.now(),
+  };
   db.drizzle.insert(groupMembers).values(row).run();
   return rowToMember(row);
 }
@@ -235,6 +243,25 @@ export function setMemberRole(db: Db, groupId: string, user: string, role: strin
   db.drizzle
     .update(groupMembers)
     .set({ role })
+    .where(and(eq(groupMembers.groupId, groupId), eq(groupMembers.user, user)))
+    .run();
+  return rowToMember(getMemberRow(db, groupId, user) as GroupMemberRow);
+}
+
+/**
+ * Set (or clear) `user`'s per-group display-name override in `groupId`. Passing
+ * `null` clears it (the member reverts to their global display name). Caller
+ * guarantees the user is a member. Returns the updated canonical `Member`.
+ */
+export function setMemberDisplayName(
+  db: Db,
+  groupId: string,
+  user: string,
+  displayNameOverride: string | null,
+): Member {
+  db.drizzle
+    .update(groupMembers)
+    .set({ displayNameOverride })
     .where(and(eq(groupMembers.groupId, groupId), eq(groupMembers.user, user)))
     .run();
   return rowToMember(getMemberRow(db, groupId, user) as GroupMemberRow);

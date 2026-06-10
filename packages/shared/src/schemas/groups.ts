@@ -222,6 +222,14 @@ export const MemberSchema = z
     user: UserRefSchema,
     role: RoleSchema,
     joinedAt: Rfc3339DateTimeSchema,
+    /**
+     * Per-group display-name override (Discord-server-nickname style): when set,
+     * it overrides the member's GLOBAL `UserProfile.displayName` within THIS
+     * group only. Absent/null → use the global name. Conformance-safe: `Member`
+     * is `additionalProperties:true` and this schema stays `.passthrough()`, so
+     * the field is forward-compatible.
+     */
+    displayNameOverride: z.string().optional(),
   })
   .passthrough();
 export type Member = z.infer<typeof MemberSchema>;

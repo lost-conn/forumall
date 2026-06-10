@@ -6,10 +6,24 @@
  */
 import type { Group, Member } from "@forumall/shared";
 import { useQuery } from "@tanstack/solid-query";
-import { type Component, For, Show, createMemo, createSignal, onCleanup } from "solid-js";
-import { can, removeMember, roleHoldsAll, setMemberRole } from "../../lib/groups-api.ts";
+import {
+  type Component,
+  For,
+  Show,
+  createEffect,
+  createMemo,
+  createSignal,
+  onCleanup,
+} from "solid-js";
+import {
+  can,
+  removeMember,
+  roleHoldsAll,
+  setMemberDisplayName,
+  setMemberRole,
+} from "../../lib/groups-api.ts";
 import { subscribePresence } from "../../stores/presence-controller.ts";
-import { displayNameFor, warmProfiles } from "../../stores/profiles.ts";
+import { displayNameForInGroup, setGroupDisplayName, warmProfiles } from "../../stores/profiles.ts";
 import { session, sessionClient, sessionWs } from "../../stores/session.ts";
 import { PresenceDot } from "../social/PresenceDot.tsx";
 import { membersQuery, useInvalidateGroup } from "./queries.ts";
@@ -31,6 +45,13 @@ export const MembersPanel: Component<{ group: Group; myRole: () => string | unde
   const canManage = () => can("manage", props.myRole(), props.group.permissions);
   const canModerate = () => can("moderate", props.myRole(), props.group.permissions);
   const isOwner = () => props.myRole() === "owner";
+  /** May I set OTHER members' per-group nicknames? (server re-checks). */
+  const canSetNicknames = () =>
+    can("members.set-nickname", props.myRole(), props.group.permissions);
+
+  // Which member's nickname editor is open, and its draft text.
+  const [editingNick, setEditingNick] = createSignal<string | null>(null);
+  const [nickDraft, setNickDraft] = createSignal("");
 
   /** Assignable roles from the group's catalogue (owner excluded — it transfers). */
   const assignable = createMemo(() => {
@@ -43,14 +64,43 @@ export const MembersPanel: Component<{ group: Group; myRole: () => string | unde
 
   // Subscribe to live presence for every visible member while the panel is shown;
   // the ref-counted controller de-dupes overlap with other views (DMs, contacts).
+  // Also populate the per-group nickname cache from the loaded member list.
   let disposeSub: (() => void) | null = null;
   createMemo(() => {
-    const actors = (members.data ?? []).map((m: Member) => m.user);
+    const list = members.data ?? [];
+    const actors = list.map((m: Member) => m.user);
     warmProfiles(actors);
+    for (const m of list) setGroupDisplayName(groupId(), m.user, m.displayNameOverride);
     disposeSub?.();
     disposeSub = subscribePresence(sessionWs(), actors, session.actor);
   });
   onCleanup(() => disposeSub?.());
+
+  // Reflect live `member.updated` events into the nickname cache while open.
+  createEffect(() => {
+    const ws = sessionWs();
+    if (!ws) return;
+    const off = ws.on("member.updated", (e) => {
+      const data = (e as { data?: { groupId?: string; member?: Member } }).data;
+      if (!data?.member || data.groupId !== groupId()) return;
+      setGroupDisplayName(groupId(), data.member.user, data.member.displayNameOverride);
+      invalidate(groupId());
+    });
+    onCleanup(off);
+  });
+
+  const submitNick = async (m: Member, clear = false) => {
+    const client = sessionClient();
+    if (!client) return;
+    const value = clear ? null : nickDraft().trim() || null;
+    await mutate(`nick:${m.user}`, () => setMemberDisplayName(client, groupId(), m.user, value));
+    setEditingNick(null);
+    setNickDraft("");
+  };
+  const openNickEditor = (m: Member) => {
+    setNickDraft(m.displayNameOverride ?? "");
+    setEditingNick(m.user);
+  };
 
   const mutate = async (label: string, fn: () => Promise<unknown>) => {
     setBusy(label);
@@ -98,7 +148,7 @@ export const MembersPanel: Component<{ group: Group; myRole: () => string | unde
                 return (
                   <li class="flex items-center gap-3 py-3" data-testid="member-row">
                     <span class="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-surface-2 text-xs font-semibold text-muted">
-                      {displayNameFor(m.user).slice(0, 2).toUpperCase()}
+                      {displayNameForInGroup(m.user, groupId()).slice(0, 2).toUpperCase()}
                     </span>
                     <div class="min-w-0 flex-1">
                       <div
@@ -108,7 +158,9 @@ export const MembersPanel: Component<{ group: Group; myRole: () => string | unde
                         <Show when={!isSelf()}>
                           <PresenceDot actor={m.user} />
                         </Show>
-                        <span class="truncate font-semibold">{displayNameFor(m.user)}</span>
+                        <span class="truncate font-semibold">
+                          {displayNameForInGroup(m.user, groupId())}
+                        </span>
                         <Show when={isSelf()}>
                           <span class="ml-1.5 text-xs text-faint">(you)</span>
                         </Show>
@@ -119,8 +171,71 @@ export const MembersPanel: Component<{ group: Group; myRole: () => string | unde
                       >
                         {m.user}
                       </div>
+                      <Show when={editingNick() === m.user}>
+                        <form
+                          class="mt-1.5 flex items-center gap-1.5"
+                          data-testid="nickname-editor"
+                          onSubmit={(e) => {
+                            e.preventDefault();
+                            void submitNick(m);
+                          }}
+                        >
+                          <input
+                            class="min-w-0 flex-1 rounded-md border border-border bg-surface-2 px-2 py-1 text-xs text-ink"
+                            value={nickDraft()}
+                            placeholder="Nickname in this group"
+                            maxLength={64}
+                            disabled={busy() === `nick:${m.user}`}
+                            onInput={(e) => setNickDraft(e.currentTarget.value)}
+                            data-testid="nickname-input"
+                          />
+                          <button
+                            type="submit"
+                            class="btn-accent px-2 py-1 text-xs"
+                            disabled={busy() === `nick:${m.user}`}
+                            data-testid="nickname-save"
+                          >
+                            Save
+                          </button>
+                          <Show when={m.displayNameOverride}>
+                            <button
+                              type="button"
+                              class="btn-ghost px-2 py-1 text-xs"
+                              disabled={busy() === `nick:${m.user}`}
+                              onClick={() => void submitNick(m, true)}
+                              data-testid="nickname-clear"
+                            >
+                              Clear
+                            </button>
+                          </Show>
+                          <button
+                            type="button"
+                            class="btn-ghost px-2 py-1 text-xs"
+                            onClick={() => setEditingNick(null)}
+                          >
+                            Cancel
+                          </button>
+                        </form>
+                      </Show>
                     </div>
                     <RoleBadge role={m.role} color={roleColor(m.role)} />
+                    {/* Nickname: self always; others need members.set-nickname +
+                        the subset rule (server re-checks). */}
+                    <Show
+                      when={
+                        editingNick() !== m.user &&
+                        (isSelf() || (canSetNicknames() && mayActOn(m.role)))
+                      }
+                    >
+                      <button
+                        type="button"
+                        class="btn-ghost px-2 py-1 text-xs"
+                        onClick={() => openNickEditor(m)}
+                        data-testid="set-nickname"
+                      >
+                        {m.displayNameOverride ? "Edit nick" : "Nickname"}
+                      </button>
+                    </Show>
                     <Show
                       when={
                         !isSelf() &&

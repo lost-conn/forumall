@@ -21,6 +21,7 @@ import {
   Rfc3339DateTimeSchema,
   UserRefSchema,
 } from "./common.ts";
+import { MemberSchema } from "./groups.ts";
 import { ContentSchema, ReactionSchema } from "./messaging.ts";
 import { PresenceSchema } from "./privacy.ts";
 
@@ -60,6 +61,7 @@ export const WsEventTypeSchema = z.enum([
   "reaction.added",
   "reaction.removed",
   "channel.typing",
+  "member.updated",
   "dm.message",
   "presence.subscribed",
   "presence.unsubscribed",
@@ -100,6 +102,7 @@ export const WsTypeSchema = z.enum([
   "reaction.added",
   "reaction.removed",
   "channel.typing",
+  "member.updated",
   "dm.message",
   "presence.subscribed",
   "presence.unsubscribed",
@@ -456,6 +459,23 @@ export const WsChannelTypingSchema = wsFrame(
     .passthrough(),
 );
 export type WsChannelTyping = z.infer<typeof WsChannelTypingSchema>;
+
+/**
+ * `member.updated` event — a member's group-scoped state changed (e.g. their
+ * per-group `displayNameOverride` or `role`). Carries the full canonical
+ * `Member` for the group so clients can reconcile their member cache / chat
+ * author names live. Passthrough, like every other event.
+ */
+export const WsMemberUpdatedSchema = wsFrame(
+  "member.updated",
+  z
+    .object({
+      groupId: z.string().min(1),
+      member: MemberSchema,
+    })
+    .passthrough(),
+);
+export type WsMemberUpdated = z.infer<typeof WsMemberUpdatedSchema>;
 
 /** `dm.message` event. */
 export const WsDmMessageSchema = wsFrame(

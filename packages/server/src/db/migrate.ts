@@ -561,6 +561,24 @@ const migrations: readonly Migration[] = [
       }
     },
   },
+  {
+    // Per-group display name (Overboard "Per-group display name"): a nullable
+    // `display_name_override` on `group_members`. When set it overrides the
+    // member's GLOBAL `UserProfile.displayName` within THIS group only
+    // (Discord-server-nickname style); NULL/absent → use the global name.
+    // ADD COLUMN is safe on a STRICT table because the column is nullable with
+    // no default. Guarded so a re-run is a no-op.
+    id: "0025_group_members_display_name_override",
+    up: (sqlite) => {
+      const cols = sqlite
+        .query<{ name: string }, []>("PRAGMA table_info(group_members)")
+        .all()
+        .map((c) => c.name);
+      if (!cols.includes("display_name_override")) {
+        sqlite.exec("ALTER TABLE group_members ADD COLUMN display_name_override TEXT;");
+      }
+    },
+  },
 ];
 
 const LEDGER_DDL = `

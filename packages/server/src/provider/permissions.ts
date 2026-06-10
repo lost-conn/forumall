@@ -34,8 +34,16 @@ import type { Db } from "../db/index.ts";
 import { groupMembers } from "../db/schema.ts";
 import { getGroupRow, rowToGroup } from "./groups.ts";
 
-/** A canonical action that the permission map gates. Providers MAY add more. */
-export type Action = "post" | "moderate" | "manage";
+/**
+ * A canonical action that the permission map gates. Providers MAY add more.
+ *
+ * `members.set-nickname` is a Forumall extension action (Overboard "Per-group
+ * display name"): holding it lets a member set/clear ANOTHER member's per-group
+ * `displayNameOverride` (in addition to the subset/self-protect rule). Setting
+ * one's OWN nickname needs no permission. Like every action it is resolved by
+ * exact membership against `group.permissions["members.set-nickname"]`.
+ */
+export type Action = "post" | "moderate" | "manage" | "members.set-nickname";
 
 /** A postable message kind (§5.3); the per-channel `post:<kind>` actions. */
 export type MessageKind = "message" | "memo" | "article";

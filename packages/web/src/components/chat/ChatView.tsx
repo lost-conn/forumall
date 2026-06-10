@@ -32,6 +32,7 @@ import {
   onCleanup,
 } from "solid-js";
 import { isImageAttachment, resolveAttachmentUrl, uploadMedia } from "../../lib/chat-api.ts";
+import { listMembers } from "../../lib/groups-api.ts";
 import { renderMarkdown } from "../../lib/markdown.ts";
 import {
   type ChatMessage,
@@ -42,7 +43,7 @@ import {
   reactionsFor,
   typingFor,
 } from "../../stores/chat.ts";
-import { displayNameFor, warmProfiles } from "../../stores/profiles.ts";
+import { displayNameForInGroup, setGroupDisplayName, warmProfiles } from "../../stores/profiles.ts";
 import { session, sessionClient, sessionWs } from "../../stores/session.ts";
 import { Icon, type IconName } from "../Icon.tsx";
 import { FollowToggle } from "../feed/FollowToggle.tsx";
@@ -183,6 +184,34 @@ export const ChatView: Component<{
     for (const a of typingActors()) actors.add(a);
     warmProfiles(actors);
   });
+
+  // Per-group nicknames (Overboard "Per-group display name"): seed the cache from
+  // the group's member list when the group changes, then keep it live via
+  // `member.updated` events fanned to this channel's subscribers. Non-fatal.
+  createEffect(
+    on(groupId, (gid) => {
+      const client = sessionClient();
+      if (client && gid) {
+        void listMembers(client, gid)
+          .then((list) => {
+            for (const m of list) setGroupDisplayName(gid, m.user, m.displayNameOverride);
+          })
+          .catch(() => {});
+      }
+      const ws = sessionWs();
+      if (!ws) return;
+      const off = ws.on("member.updated", (e) => {
+        const data = (
+          e as {
+            data?: { groupId?: string; member?: { user: string; displayNameOverride?: string } };
+          }
+        ).data;
+        if (!data?.member || data.groupId !== gid) return;
+        setGroupDisplayName(gid, data.member.user, data.member.displayNameOverride);
+      });
+      onCleanup(off);
+    }),
+  );
 
   // Index loaded messages + group replies by parent so we can render threads.
   const byId = createMemo(() => {
@@ -402,7 +431,7 @@ export const ChatView: Component<{
               </Show>
             </div>
 
-            <TypingLine actors={typingActors()} />
+            <TypingLine actors={typingActors()} groupId={groupId()} />
 
             <Show
               when={props.canPost}
@@ -472,7 +501,7 @@ const MessageNode: Component<{
   return (
     <li class="flex flex-col gap-1">
       <Show when={m().reference}>
-        <ReplyQuote parent={replyParent()} onJump={props.onJumpTo} />
+        <ReplyQuote parent={replyParent()} groupId={props.groupId} onJump={props.onJumpTo} />
       </Show>
 
       <MessageRow
@@ -497,12 +526,16 @@ const MessageNode: Component<{
  * original post; rendered as inert text when the parent isn't reachable
  * (deleted, or older than the loaded history).
  */
-const ReplyQuote: Component<{ parent?: ChatMessage; onJump?: (id: string) => void }> = (props) => {
+const ReplyQuote: Component<{
+  parent?: ChatMessage;
+  groupId: string;
+  onJump?: (id: string) => void;
+}> = (props) => {
   const snippet = (): string => {
     const p = props.parent;
     if (!p) return "a message";
     if (p.deletedAt) return "a deleted message";
-    const author = displayNameFor(p.author);
+    const author = displayNameForInGroup(p.author, props.groupId);
     const text = (p.content.text ?? "").replace(/\s+/g, " ").trim();
     const clipped = text.length > 80 ? `${text.slice(0, 80)}…` : text;
     return clipped ? `${author}: ${clipped}` : author;
@@ -631,10 +664,10 @@ const MessageRow: Component<{
       <button
         type="button"
         class="fa-ava transition-colors hover:border-accent"
-        aria-label={`${displayNameFor(m().author)} profile`}
+        aria-label={`${displayNameForInGroup(m().author, props.groupId)} profile`}
         onClick={() => openUserProfile(m().author)}
       >
-        {displayNameFor(m().author).slice(0, 1).toUpperCase()}
+        {displayNameForInGroup(m().author, props.groupId).slice(0, 1).toUpperCase()}
       </button>
       <div class="flex min-w-0 flex-1 flex-col gap-1">
         <div class="flex flex-wrap items-center gap-2">
@@ -644,7 +677,7 @@ const MessageRow: Component<{
             data-testid="message-author"
             onClick={() => openUserProfile(m().author)}
           >
-            {displayNameFor(m().author)}
+            {displayNameForInGroup(m().author, props.groupId)}
           </button>
           <span class="fa-meta">{formatTime(m().createdAt)}</span>
           <Show when={m().editedAt && !isDeleted()}>
@@ -830,7 +863,7 @@ const MessageRow: Component<{
                   classList={{ "fa-rx__chip--on": myReactionKeys().has(g.key) }}
                   data-testid="reaction-chip"
                   data-reaction-key={g.key}
-                  title={g.authors.map(displayNameFor).join(", ")}
+                  title={g.authors.map((a) => displayNameForInGroup(a, props.groupId)).join(", ")}
                   onClick={() => toggleReaction(g.key, g.unicode ?? g.key)}
                 >
                   <span>{g.unicode ?? g.key}</span>
@@ -967,16 +1000,16 @@ export const AttachmentView: Component<{ attachment: Attachment }> = (props) => 
 // Typing indicator
 // ---------------------------------------------------------------------------
 
-const TypingLine: Component<{ actors: string[] }> = (props) => (
+const TypingLine: Component<{ actors: string[]; groupId: string }> = (props) => (
   <Show when={props.actors.length > 0}>
     <div class="px-[18px] py-1 text-xs text-faint" data-testid="typing-indicator">
-      {typingText(props.actors)}
+      {typingText(props.actors, props.groupId)}
     </div>
   </Show>
 );
 
-function typingText(actors: string[]): string {
-  const names = actors.map(displayNameFor);
+function typingText(actors: string[], groupId: string): string {
+  const names = actors.map((a) => displayNameForInGroup(a, groupId));
   if (names.length === 1) return `${names[0]} is typing…`;
   if (names.length === 2) return `${names[0]} and ${names[1]} are typing…`;
   return `${names.length} people are typing…`;
@@ -1165,7 +1198,8 @@ const Composer: Component<{
             data-testid="composer-reply-pill"
           >
             <span class="truncate text-muted">
-              Replying to <span class="text-ink">{displayNameFor(t().author)}</span>
+              Replying to{" "}
+              <span class="text-ink">{displayNameForInGroup(t().author, groupId())}</span>
             </span>
             <button
               type="button"

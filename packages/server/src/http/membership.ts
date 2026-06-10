@@ -27,6 +27,8 @@
  */
 import { type Context, Hono } from "hono";
 
+import type { Member } from "@forumall/shared";
+import { listChannelRows } from "../provider/channels.ts";
 import { getGroupRow, rowToGroup } from "../provider/groups.ts";
 import {
   addMember,
@@ -39,6 +41,7 @@ import {
   removeMember,
   requestToJoin,
   rowToMember,
+  setMemberDisplayName,
   setMemberRole,
   transferOwnership,
 } from "../provider/membership.ts";
@@ -49,9 +52,32 @@ import {
   isMember,
   roleHoldsAll,
 } from "../provider/permissions.ts";
+import type { Hub } from "../provider/ws-hub.ts";
 import { AppError } from "./errors.ts";
 import { optionalSignature, requireSignature } from "./signature.ts";
 import type { AppBindings } from "./types.ts";
+
+/** Max length of a per-group display-name override (mirrors a sane name limit). */
+const MAX_DISPLAY_NAME_OVERRIDE = 64;
+
+/**
+ * Fan out a `member.updated` event for a group-scoped membership change so live
+ * member lists and chat author names re-render. The hub fans by channel/actor,
+ * not by group, so we publish to every channel of the group (any group
+ * subscriber sees it there) and to the affected member's own connections.
+ */
+function fanOutMemberUpdated(
+  hub: Hub,
+  db: AppBindings["Variables"]["db"],
+  groupId: string,
+  member: Member,
+): void {
+  const event = { type: "member.updated", data: { groupId, member } } as const;
+  for (const channel of listChannelRows(db, groupId)) {
+    hub.publishToChannel(channel.id, event);
+  }
+  hub.publishToActor(member.user, event);
+}
 
 /** Tiers whose member list MAY be exposed publicly (§5.7). */
 const PUBLIC_TIERS = new Set(["public", "discoverable"]);
@@ -250,6 +276,77 @@ export function createMembershipRouter() {
     }
 
     const updated = setMemberRole(db, groupId, target, role);
+    return c.json(updated, 200);
+  });
+
+  // -- PATCH /api/groups/{groupId}/members/{userRef}/display-name (signed) --
+  // Per-group display name (Overboard "Per-group display name"). A member may
+  // set/clear their OWN nickname with no special permission; setting ANOTHER
+  // member's nickname requires the `members.set-nickname` action AND obeys the
+  // subset/self-protect rule (§5.7) — a caller may only rename a target whose
+  // powers are a subset of the caller's; the owner is protected.
+  router.patch("/members/:userRef/display-name", signed, async (c) => {
+    const { db, hub } = c.var;
+    const actor = c.var.actor;
+    if (!actor) throw AppError.unauthorized(); // unreachable
+    const groupId = requireParam(c, "groupId");
+    const target = decodeUserRef(requireParam(c, "userRef"));
+
+    const raw = await c.req.json().catch(() => {
+      throw AppError.badRequest({ detail: "request body must be valid JSON" });
+    });
+    // `displayNameOverride`: a non-empty string sets it; null/absent/empty clears it.
+    const value =
+      raw && typeof raw === "object"
+        ? (raw as { displayNameOverride?: unknown }).displayNameOverride
+        : undefined;
+    let nickname: string | null;
+    if (value == null || value === "") {
+      nickname = null;
+    } else if (typeof value === "string") {
+      const trimmed = value.trim();
+      if (trimmed.length === 0) {
+        nickname = null;
+      } else if (trimmed.length > MAX_DISPLAY_NAME_OVERRIDE) {
+        throw AppError.badRequest({
+          detail: `displayNameOverride must be ${MAX_DISPLAY_NAME_OVERRIDE} characters or fewer`,
+        });
+      } else {
+        nickname = trimmed;
+      }
+    } else {
+      throw AppError.badRequest({
+        detail: "`displayNameOverride` must be a string, or null/empty to clear",
+      });
+    }
+
+    const groupRow = getGroupRow(db, groupId);
+    if (!groupRow) throw AppError.notFound({ detail: "no such group" });
+
+    const targetRow = getMemberRow(db, groupId, target);
+    if (!targetRow) throw AppError.notFound({ detail: "no such member" });
+
+    // Setting one's OWN nickname needs no permission; setting another's requires
+    // the `members.set-nickname` action plus the subset/self-protect rule.
+    if (target !== actor.actor) {
+      if (!canActor(db, "members.set-nickname", groupId, actor.actor)) {
+        throw AppError.forbidden({ detail: "you may not set other members' nicknames" });
+      }
+      // The owner is protected; a caller may only rename a target whose powers
+      // are a subset of theirs (mirrors kick / role-change).
+      const callerRole = getMembership(db, groupId, actor.actor)?.role ?? "";
+      if (!roleHoldsAll(callerRole, targetRow.role, rowToGroup(groupRow))) {
+        throw AppError.forbidden({
+          detail: "you may not rename a member more privileged than you",
+        });
+      }
+    } else if (!isMember(db, groupId, actor.actor)) {
+      // Setting your own nickname still requires you to be a member of the group.
+      throw AppError.forbidden({ detail: "you are not a member of this group" });
+    }
+
+    const updated = setMemberDisplayName(db, groupId, target, nickname);
+    fanOutMemberUpdated(hub, db, groupId, updated);
     return c.json(updated, 200);
   });
 

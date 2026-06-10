@@ -35,9 +35,52 @@ interface CachedProfile {
 interface ProfilesStore {
   /** Resolved profiles by canonical actor (`handle@domain`). */
   byActor: Record<string, CachedProfile>;
+  /**
+   * Per-group display-name overrides (Overboard "Per-group display name"),
+   * keyed `"{groupId}\u0000{actor}"`. A present entry is the member's
+   * group-scoped nickname; absent → fall back to the global display name.
+   */
+  byGroupActor: Record<string, string>;
 }
 
-const [profiles, setProfiles] = createStore<ProfilesStore>({ byActor: {} });
+const [profiles, setProfiles] = createStore<ProfilesStore>({ byActor: {}, byGroupActor: {} });
+
+/** Composite key for the per-group nickname cache (NUL separator avoids clashes). */
+function groupActorKey(groupId: string, actor: string): string {
+  return `${groupId}\u0000${actor}`;
+}
+
+/**
+ * Record (or clear) a member's per-group display-name override. Pass `undefined`
+ * to clear the entry (the member reverts to their global name in that group).
+ * Populated from the member-list response and `member.updated` hub events.
+ */
+export function setGroupDisplayName(
+  groupId: string,
+  actor: string,
+  displayNameOverride: string | undefined,
+): void {
+  if (!groupId || !actor) return;
+  const key = groupActorKey(groupId, actor);
+  if (displayNameOverride && displayNameOverride.length > 0) {
+    setProfiles("byGroupActor", key, displayNameOverride);
+  } else if (key in profiles.byGroupActor) {
+    setProfiles("byGroupActor", key, undefined as unknown as string);
+  }
+}
+
+/**
+ * Reactive group-scoped display name for `actor` in `groupId`: the per-group
+ * `displayNameOverride` when set, else the global {@link displayNameFor}. Reading
+ * it subscribes to both caches, so names swap in live as data resolves.
+ */
+export function displayNameForInGroup(actor: string, groupId: string): string {
+  if (groupId) {
+    const override = profiles.byGroupActor[groupActorKey(groupId, actor)];
+    if (override && override.length > 0) return override;
+  }
+  return displayNameFor(actor);
+}
 
 /** In-flight fetches, so we never fire two requests for the same actor. */
 const inflight = new Map<string, Promise<void>>();
@@ -101,5 +144,5 @@ export function displayNameFor(actor: string): string {
 /** Reset the cache (logout). */
 export function clearProfiles(): void {
   inflight.clear();
-  setProfiles({ byActor: {} });
+  setProfiles({ byActor: {}, byGroupActor: {} });
 }

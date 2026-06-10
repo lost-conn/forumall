@@ -193,6 +193,25 @@ export async function setMemberRole(
   return res.data;
 }
 
+/**
+ * Set or clear a member's per-group display-name override (Overboard "Per-group
+ * display name"). Pass `null`/empty to clear. Setting your OWN nickname needs no
+ * permission; another member's requires the `members.set-nickname` action. The
+ * server is authoritative and re-checks every call (subset/self-protect rule).
+ */
+export async function setMemberDisplayName(
+  client: OfscpClient,
+  groupId: string,
+  userRef: string,
+  displayNameOverride: string | null,
+): Promise<Member> {
+  const res = await client.patch<Member>(
+    `/api/groups/${groupId}/members/${encodeUserRef(userRef)}/display-name`,
+    { displayNameOverride },
+  );
+  return res.data;
+}
+
 /** Remove (kick) a member (moderate, §5.7). */
 export async function removeMember(
   client: OfscpClient,
