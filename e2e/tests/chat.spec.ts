@@ -321,6 +321,83 @@ test("article renders as markdown; an unknown type falls back to text (no crash)
   );
 });
 
+test("scroll: recent mode pins to bottom; oldest doesn't; jump-to-latest returns to newest", async ({
+  page,
+  browser,
+  appServer,
+}) => {
+  const { a, b } = await twoUsersInChannel(page, browser, appServer.baseUrl);
+
+  // Post enough messages that the list overflows and becomes scrollable.
+  const tag = Date.now().toString(36);
+  const N = 25;
+  for (let i = 0; i < N; i++) await compose(a, `msg-${tag}-${i}`);
+
+  const list = a.getByTestId("message-list");
+  const newest = `msg-${tag}-${N - 1}`;
+  const newestRow = a.locator('[data-testid="message-row"]').filter({ hasText: newest }).first();
+  await expect(newestRow).toBeVisible({ timeout: 10_000 });
+
+  // 1) Recent mode lands at the bottom (the newest message is in the viewport).
+  await expect
+    .poll(() => list.evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight), {
+      timeout: 10_000,
+    })
+    .toBeLessThan(80);
+  await expect(newestRow).toBeInViewport();
+
+  // 2) Switch to "oldest" → the order reverses (newest is now the FIRST row), so
+  // the newest is no longer at the DOM bottom. The auto-pin must NOT fire here
+  // (that would land on the oldest message); we don't force-scroll. Assert the
+  // ordering flipped and the jump pill is hidden in non-recent modes.
+  await a.getByTestId("sort-select").selectOption("oldest");
+  await expect(a.getByTestId("jump-to-latest")).toHaveCount(0);
+  // First message row in the DOM is now the newest (oldest sort = reverse order).
+  await expect
+    .poll(() =>
+      a
+        .locator('[data-testid="message-row"]')
+        .first()
+        .evaluate((el) => el.textContent ?? ""),
+    )
+    .toContain(newest);
+
+  // Back to recent for the jump-to-latest assertions.
+  await a.getByTestId("sort-select").selectOption("recent");
+  await expect
+    .poll(() => list.evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight), {
+      timeout: 10_000,
+    })
+    .toBeLessThan(80);
+
+  // 3) Scroll UP (reading history) then have B post a new message. The jump pill
+  // appears; A is NOT yanked to the bottom.
+  await list.evaluate((el) => {
+    el.scrollTop = 0;
+  });
+  await expect.poll(() => list.evaluate((el) => el.scrollTop)).toBeLessThan(80);
+
+  const fresh = `fresh-${tag}`;
+  await compose(b, fresh);
+
+  const jump = a.getByTestId("jump-to-latest");
+  await expect(jump).toBeVisible({ timeout: 10_000 });
+  // Still scrolled up (not yanked).
+  expect(await list.evaluate((el) => el.scrollTop)).toBeLessThan(120);
+
+  // Click jump-to-latest → returns to the newest message; the pill clears.
+  await jump.click();
+  await expect
+    .poll(() => list.evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight), {
+      timeout: 10_000,
+    })
+    .toBeLessThan(80);
+  await expect(jump).toHaveCount(0, { timeout: 10_000 });
+  await expect(a.locator('[data-testid="message-row"]').filter({ hasText: fresh })).toBeVisible();
+
+  await b.context().close();
+});
+
 test("attachment upload: A attaches a small image → it appears for both", async ({
   page,
   browser,

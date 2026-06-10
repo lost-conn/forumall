@@ -30,6 +30,7 @@ import {
   createSignal,
   on,
   onCleanup,
+  onMount,
 } from "solid-js";
 import { isImageAttachment, resolveAttachmentUrl, uploadMedia } from "../../lib/chat-api.ts";
 import { listMembers } from "../../lib/groups-api.ts";
@@ -273,17 +274,122 @@ export const ChatView: Component<{
     }
   };
 
+  // ---- Scroll management (sort-aware pin-to-bottom + jump-to-latest) ----
+  // Only "recent" mode (newest-at-bottom) auto-pins to the bottom. In
+  // "oldest"/"top" the bottom is the oldest / least-reacted row, so forcing a
+  // scroll there is wrong — we leave the view where the user put it.
+  // "Near the bottom" tolerance (px). Within this band we keep auto-pinning;
+  // beyond it we assume the user is reading history and don't yank them.
+  const NEAR_BOTTOM_PX = 80;
+
   let scrollEl: HTMLDivElement | undefined;
+  let contentEl: HTMLDivElement | undefined;
+  // Treat the very first paint / a channel switch as "pinned" so the initial
+  // load lands at the bottom (the pre-existing behaviour).
+  let pinned = true;
+  const [showJump, setShowJump] = createSignal(false);
+  const [hasNewBelow, setHasNewBelow] = createSignal(false);
+
+  const isRecent = () => sortMode() === "recent";
+
+  const atBottom = (): boolean => {
+    if (!scrollEl) return true;
+    return scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight < NEAR_BOTTOM_PX;
+  };
+
+  const scrollToBottom = (smooth = false): void => {
+    if (!scrollEl) return;
+    scrollEl.scrollTo({ top: scrollEl.scrollHeight, behavior: smooth ? "smooth" : "auto" });
+  };
+
+  const jumpToLatest = (): void => {
+    pinned = true;
+    setHasNewBelow(false);
+    setShowJump(false);
+    scrollToBottom(true);
+  };
+
+  // User scroll → recompute the pin state (recent mode only). Scrolling back to
+  // the bottom re-arms the pin and clears the jump affordance.
+  const onScroll = (): void => {
+    if (!isRecent()) {
+      pinned = false;
+      setShowJump(false);
+      return;
+    }
+    pinned = atBottom();
+    if (pinned) {
+      setShowJump(false);
+      setHasNewBelow(false);
+    } else if (!showJump()) {
+      setShowJump(true);
+    }
+  };
+
+  // New messages: in recent mode, follow the bottom only if the user is pinned;
+  // otherwise surface the jump-to-latest pill (flagged as "new below"). In
+  // oldest/top we never force-scroll.
   createEffect(
     on(
       () => messages().length,
-      () => {
-        queueMicrotask(() => {
-          if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight;
-        });
+      (len, prev) => {
+        if (!isRecent()) return;
+        if (pinned) {
+          queueMicrotask(() => scrollToBottom(false));
+        } else if (prev !== undefined && len > prev) {
+          setHasNewBelow(true);
+          setShowJump(true);
+        }
       },
     ),
   );
+
+  // Switching sort modes: into "recent" → pin + scroll to bottom; into
+  // oldest/top → drop the pin and hide the jump pill (don't yank the view).
+  createEffect(
+    on(
+      sortMode,
+      (mode) => {
+        if (mode === "recent") {
+          pinned = true;
+          setHasNewBelow(false);
+          setShowJump(false);
+          queueMicrotask(() => scrollToBottom(false));
+        } else {
+          pinned = false;
+          setShowJump(false);
+          setHasNewBelow(false);
+        }
+      },
+      { defer: true },
+    ),
+  );
+
+  // Channel switch: re-arm the pin so the new channel's history lands at the
+  // bottom (mirrors initial-load behaviour).
+  createEffect(
+    on(
+      channelId,
+      () => {
+        pinned = true;
+        setHasNewBelow(false);
+        setShowJump(false);
+      },
+      { defer: true },
+    ),
+  );
+
+  // Robust pin: late-loading content (avatars, image attachments) grows the
+  // scroll height AFTER the message effect's microtask. A ResizeObserver on the
+  // message content keeps us glued to the bottom while pinned in recent mode.
+  onMount(() => {
+    if (!contentEl) return;
+    const ro = new ResizeObserver(() => {
+      if (isRecent() && pinned) scrollToBottom(false);
+    });
+    ro.observe(contentEl);
+    onCleanup(() => ro.disconnect());
+  });
 
   // Jump to the original post when a reply reference is clicked: scroll its row
   // into view and flash a transient highlight. No-op if the parent is older than
@@ -368,67 +474,86 @@ export const ChatView: Component<{
               </div>
             </header>
 
-            <div
-              ref={scrollEl}
-              class="min-h-0 flex-1 overflow-auto px-[18px] pt-1.5 pb-3.5"
-              data-testid="message-list"
-            >
-              <Show when={olderCursorFor(channelId())}>
-                <div class="mb-3 flex justify-center">
-                  <button
-                    type="button"
-                    class="btn-ghost px-3 py-1 text-xs"
-                    onClick={() => void loadOlder()}
-                    disabled={loadingOlder()}
-                    data-testid="load-older"
-                  >
-                    {loadingOlder() ? "Loading…" : "Load older messages"}
-                  </button>
-                </div>
-              </Show>
-
-              <Show when={historyError()}>
-                <p class="text-sm text-danger" data-testid="chat-history-error">
-                  Could not load messages: {historyError()}
-                </p>
-              </Show>
-
-              <Show
-                when={visibleRoots().length > 0}
-                fallback={
-                  <p class="text-sm text-muted" data-testid="chat-empty">
-                    {typeFilter() === "all"
-                      ? "No messages yet. Say hello."
-                      : "Nothing here for this filter yet."}
-                  </p>
-                }
+            <div class="relative flex min-h-0 flex-1 flex-col">
+              <div
+                ref={scrollEl}
+                onScroll={onScroll}
+                class="min-h-0 flex-1 overflow-auto px-[18px] pt-1.5 pb-3.5"
+                data-testid="message-list"
               >
-                <ul class="flex flex-col gap-3">
-                  <For each={visibleRoots()}>
-                    {(msg, index) => (
-                      <>
-                        {/* Dashed separator between message groups (mirrors the
+                <div ref={contentEl}>
+                  <Show when={olderCursorFor(channelId())}>
+                    <div class="mb-3 flex justify-center">
+                      <button
+                        type="button"
+                        class="btn-ghost px-3 py-1 text-xs"
+                        onClick={() => void loadOlder()}
+                        disabled={loadingOlder()}
+                        data-testid="load-older"
+                      >
+                        {loadingOlder() ? "Loading…" : "Load older messages"}
+                      </button>
+                    </div>
+                  </Show>
+
+                  <Show when={historyError()}>
+                    <p class="text-sm text-danger" data-testid="chat-history-error">
+                      Could not load messages: {historyError()}
+                    </p>
+                  </Show>
+
+                  <Show
+                    when={visibleRoots().length > 0}
+                    fallback={
+                      <p class="text-sm text-muted" data-testid="chat-empty">
+                        {typeFilter() === "all"
+                          ? "No messages yet. Say hello."
+                          : "Nothing here for this filter yet."}
+                      </p>
+                    }
+                  >
+                    <ul class="flex flex-col gap-3">
+                      <For each={visibleRoots()}>
+                        {(msg, index) => (
+                          <>
+                            {/* Dashed separator between message groups (mirrors the
                             prototype's per-message `fa-divider--dashed`). */}
-                        <Show when={index() > 0}>
-                          <li aria-hidden="true" class="fa-divider fa-divider--dashed" />
-                        </Show>
-                        <MessageNode
-                          message={msg}
-                          channelId={channelId()}
-                          groupId={groupId()}
-                          canModerate={props.canModerate}
-                          canPromote={(props.canPostArticle ?? props.canPost) === true}
-                          byId={byId}
-                          highlightId={highlightId}
-                          onJumpTo={scrollToMessage}
-                          onReply={setReplyTarget}
-                          onPromote={setPromoteSource}
-                          onOpenArticle={setOpenArticle}
-                        />
-                      </>
-                    )}
-                  </For>
-                </ul>
+                            <Show when={index() > 0}>
+                              <li aria-hidden="true" class="fa-divider fa-divider--dashed" />
+                            </Show>
+                            <MessageNode
+                              message={msg}
+                              channelId={channelId()}
+                              groupId={groupId()}
+                              canModerate={props.canModerate}
+                              canPromote={(props.canPostArticle ?? props.canPost) === true}
+                              byId={byId}
+                              highlightId={highlightId}
+                              onJumpTo={scrollToMessage}
+                              onReply={setReplyTarget}
+                              onPromote={setPromoteSource}
+                              onOpenArticle={setOpenArticle}
+                            />
+                          </>
+                        )}
+                      </For>
+                    </ul>
+                  </Show>
+                </div>
+              </div>
+
+              {/* Jump-to-latest pill — shown only in recent mode when the user has
+                scrolled up. Indicates when new messages arrived while away. */}
+              <Show when={isRecent() && showJump()}>
+                <button
+                  type="button"
+                  class="absolute bottom-3 right-3 z-10 inline-flex items-center gap-1.5 rounded-full border-[1.5px] border-border-strong bg-surface px-3 py-1.5 font-mono text-[12px] text-ink shadow-[3px_3px_0_var(--shadow-col)] transition-transform hover:-translate-y-px"
+                  data-testid="jump-to-latest"
+                  onClick={jumpToLatest}
+                >
+                  <span aria-hidden="true">↓</span>
+                  {hasNewBelow() ? "New messages" : "Jump to latest"}
+                </button>
               </Show>
             </div>
 
