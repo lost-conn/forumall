@@ -30,6 +30,8 @@ export function localPart(actor: string): string {
 interface CachedProfile {
   /** The resolved global display name, or undefined when the user has none. */
   displayName?: string;
+  /** The resolved global avatar URL, or undefined when the user has none. */
+  avatar?: string;
 }
 
 interface ProfilesStore {
@@ -110,6 +112,7 @@ async function fetchInto(actor: string): Promise<void> {
     const prof = await fetchProfile(client, actor);
     setProfiles("byActor", actor, {
       ...(prof.displayName !== undefined ? { displayName: prof.displayName } : {}),
+      ...(prof.avatar !== undefined ? { avatar: prof.avatar } : {}),
     });
   } catch {
     // Non-fatal: leave the actor unresolved; callers fall back to the local-part.
@@ -139,6 +142,16 @@ export function warmProfiles(actors: Iterable<string>): void {
  */
 export function displayNameFor(actor: string): string {
   return profiles.byActor[actor]?.displayName || localPart(actor);
+}
+
+/**
+ * Reactive GLOBAL avatar URL for `actor`: the cached `avatar` when set, else
+ * `undefined` (callers fall back to initials). Reading this in a component
+ * subscribes to the cache so the photo swaps in once the profile resolves.
+ * Populated by the same {@link warmProfile} calls as {@link displayNameFor}.
+ */
+export function avatarFor(actor: string): string | undefined {
+  return profiles.byActor[actor]?.avatar;
 }
 
 /** Reset the cache (logout). */

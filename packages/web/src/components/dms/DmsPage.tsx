@@ -44,6 +44,7 @@ import { subscribePresence } from "../../stores/presence-controller.ts";
 import { displayNameFor, warmProfile, warmProfiles } from "../../stores/profiles.ts";
 import { session, sessionClient, sessionWs } from "../../stores/session.ts";
 import { Icon, type IconName } from "../Icon.tsx";
+import { Avatar } from "../social/Avatar.tsx";
 import { PresenceDot } from "../social/PresenceDot.tsx";
 import { type ConversationHandle, openConversation, retrySendDm, sendDm } from "./dm-controller.ts";
 
@@ -290,7 +291,10 @@ const ConversationRow: Component<{ conv: DmConversationSummary; active: boolean 
     data-counterparty={props.conv.counterparty}
   >
     <span class="fa-ava" classList={{ "fa-ava__fed": isRemoteActor(props.conv.counterparty) }}>
-      {displayNameFor(props.conv.counterparty).slice(0, 1).toUpperCase()}
+      <Avatar
+        actor={props.conv.counterparty}
+        initials={displayNameFor(props.conv.counterparty).slice(0, 1).toUpperCase()}
+      />
     </span>
     <span class="min-w-0 flex-1">
       <span class="flex items-center gap-1.5" data-testid="dm-conv-name">
@@ -408,7 +412,10 @@ const ThreadView: Component<{
             class="fa-ava fa-ava--sm"
             classList={{ "fa-ava__fed": isRemoteActor(counterparty()) }}
           >
-            {displayNameFor(counterparty()).slice(0, 1).toUpperCase()}
+            <Avatar
+              actor={counterparty()}
+              initials={displayNameFor(counterparty()).slice(0, 1).toUpperCase()}
+            />
           </span>
           <h2
             class="font-display text-base font-semibold tracking-tight text-ink"
@@ -522,7 +529,10 @@ const DmMessageRow: Component<{
     >
       <Show when={!mine()}>
         <span class="fa-ava fa-ava--sm" classList={{ "fa-ava__fed": isRemoteActor(m().author) }}>
-          {displayNameFor(m().author).slice(0, 1).toUpperCase()}
+          <Avatar
+            actor={m().author}
+            initials={displayNameFor(m().author).slice(0, 1).toUpperCase()}
+          />
         </span>
       </Show>
       <div class="flex max-w-[70%] flex-col gap-1" classList={{ "items-end": mine() }}>

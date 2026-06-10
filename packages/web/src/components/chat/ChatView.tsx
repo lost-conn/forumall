@@ -47,6 +47,7 @@ import { displayNameForInGroup, setGroupDisplayName, warmProfiles } from "../../
 import { session, sessionClient, sessionWs } from "../../stores/session.ts";
 import { Icon, type IconName } from "../Icon.tsx";
 import { FollowToggle } from "../feed/FollowToggle.tsx";
+import { Avatar } from "../social/Avatar.tsx";
 import { openUserProfile } from "../social/user-profile-store.ts";
 import { ArticleEditorOverlay } from "./ArticleEditorOverlay.tsx";
 import { ArticleReadingPane, splitArticle } from "./ArticleReadingPane.tsx";
@@ -667,7 +668,10 @@ const MessageRow: Component<{
         aria-label={`${displayNameForInGroup(m().author, props.groupId)} profile`}
         onClick={() => openUserProfile(m().author)}
       >
-        {displayNameForInGroup(m().author, props.groupId).slice(0, 1).toUpperCase()}
+        <Avatar
+          actor={m().author}
+          initials={displayNameForInGroup(m().author, props.groupId).slice(0, 1).toUpperCase()}
+        />
       </button>
       <div class="flex min-w-0 flex-1 flex-col gap-1">
         <div class="flex flex-wrap items-center gap-2">

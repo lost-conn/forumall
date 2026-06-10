@@ -25,6 +25,7 @@ import {
 import { subscribePresence } from "../../stores/presence-controller.ts";
 import { displayNameForInGroup, setGroupDisplayName, warmProfiles } from "../../stores/profiles.ts";
 import { session, sessionClient, sessionWs } from "../../stores/session.ts";
+import { Avatar } from "../social/Avatar.tsx";
 import { PresenceDot } from "../social/PresenceDot.tsx";
 import { membersQuery, useInvalidateGroup } from "./queries.ts";
 import { ErrorLine, RoleBadge, errorMessage } from "./ui.tsx";
@@ -147,8 +148,13 @@ export const MembersPanel: Component<{ group: Group; myRole: () => string | unde
                 const isSelf = () => m.user === session.actor;
                 return (
                   <li class="flex items-center gap-3 py-3" data-testid="member-row">
-                    <span class="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-surface-2 text-xs font-semibold text-muted">
-                      {displayNameForInGroup(m.user, groupId()).slice(0, 2).toUpperCase()}
+                    <span class="grid h-8 w-8 shrink-0 place-items-center overflow-hidden rounded-full bg-surface-2 text-xs font-semibold text-muted">
+                      <Avatar
+                        actor={m.user}
+                        initials={displayNameForInGroup(m.user, groupId())
+                          .slice(0, 2)
+                          .toUpperCase()}
+                      />
                     </span>
                     <div class="min-w-0 flex-1">
                       <div

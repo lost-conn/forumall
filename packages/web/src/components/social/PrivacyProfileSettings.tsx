@@ -13,6 +13,7 @@
  */
 import type { VisibilityPolicy } from "@forumall/shared";
 import { type Component, For, Show, createEffect, createResource, createSignal } from "solid-js";
+import { resolveAttachmentUrl, uploadMedia } from "../../lib/chat-api.ts";
 import { OfscpHttpError } from "../../lib/ofscp-client.ts";
 import { fetchPrivacy, fetchProfile, updatePrivacy, updateProfile } from "../../lib/social-api.ts";
 import { session, sessionClient } from "../../stores/session.ts";
@@ -71,6 +72,8 @@ export const ProfileSettings: Component = () => {
   const [saving, setSaving] = createSignal(false);
   const [saved, setSaved] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
+  const [uploading, setUploading] = createSignal(false);
+  let fileInput: HTMLInputElement | undefined;
 
   // Seed the form from the loaded profile once. Guard on the resource's error
   // state first — reading the accessor while errored re-throws (and would trip the
@@ -84,6 +87,28 @@ export const ProfileSettings: Component = () => {
     setBio(p.bio ?? "");
     setLoaded(true);
   });
+
+  // Upload a chosen image file as the avatar (§5.8 signed multipart, via the
+  // binary-safe `uploadMedia`). The returned attachment `url` is an https:// URL
+  // the server hosts, so it satisfies the avatar field's https-only constraint;
+  // populate the existing avatar field and let the manual Save flow persist it,
+  // matching this form's save-button UX. Upload errors surface like other errors.
+  const onPickAvatar = async (file: File): Promise<void> => {
+    const client = sessionClient();
+    if (!client) return;
+    setUploading(true);
+    setSaved(false);
+    setError(null);
+    try {
+      const att = await uploadMedia(client, file);
+      setAvatar(att.url);
+    } catch (err) {
+      setError(errorOf(err, "Could not upload the image."));
+    } finally {
+      setUploading(false);
+      if (fileInput) fileInput.value = "";
+    }
+  };
 
   const save = async (): Promise<void> => {
     setSaving(true);
@@ -129,6 +154,44 @@ export const ProfileSettings: Component = () => {
             data-testid="profile-display-name"
           />
         </label>
+        <div class="flex flex-col gap-1.5 text-xs text-muted">
+          Avatar
+          <div class="flex items-center gap-3">
+            <span class="grid h-12 w-12 shrink-0 place-items-center overflow-hidden rounded-full bg-surface-2 text-base text-faint">
+              <Show
+                when={avatar().trim()}
+                fallback={(session.actor ?? "?").slice(0, 1).toUpperCase()}
+              >
+                <img
+                  src={resolveAttachmentUrl(avatar().trim())}
+                  alt=""
+                  class="h-full w-full object-cover"
+                  data-testid="profile-avatar-preview"
+                />
+              </Show>
+            </span>
+            <button
+              type="button"
+              class="btn-ghost px-3 py-1.5 text-xs"
+              data-testid="profile-avatar-upload"
+              disabled={uploading()}
+              onClick={() => fileInput?.click()}
+            >
+              {uploading() ? "Uploading…" : "Upload image"}
+            </button>
+            <input
+              ref={fileInput}
+              type="file"
+              accept="image/*"
+              class="hidden"
+              data-testid="profile-avatar-file"
+              onChange={(e) => {
+                const file = e.currentTarget.files?.[0];
+                if (file) void onPickAvatar(file);
+              }}
+            />
+          </div>
+        </div>
         <label class="flex flex-col gap-1 text-xs text-muted">
           Avatar URL
           <input
@@ -153,7 +216,7 @@ export const ProfileSettings: Component = () => {
             type="button"
             class="btn-accent px-4 py-2 text-sm"
             onClick={() => void save()}
-            disabled={saving()}
+            disabled={saving() || uploading()}
             data-testid="profile-save"
           >
             {saving() ? "Saving…" : "Save profile"}
