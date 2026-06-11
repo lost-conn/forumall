@@ -135,6 +135,7 @@ export async function openConversation(deps: OpenConversationDeps): Promise<Conv
       createdAt: m.createdAt,
       ...(m.editedAt ? { editedAt: m.editedAt } : {}),
       ...(m.clientMessageId ? { clientMessageId: m.clientMessageId } : {}),
+      ...(data.cursor ? { cursor: data.cursor } : {}),
       mine,
     };
     if (m.editedAt) applyDmEdit(dmId, next);
@@ -199,6 +200,9 @@ export async function openConversation(deps: OpenConversationDeps): Promise<Conv
           ...(m.reference ? { reference: m.reference } : {}),
           createdAt: m.createdAt,
           ...(m.editedAt ? { editedAt: m.editedAt } : {}),
+          ...((m as { cursor?: string }).cursor
+            ? { cursor: (m as { cursor?: string }).cursor }
+            : {}),
           mine: m.author === me,
         });
         if (m.deletedAt) {

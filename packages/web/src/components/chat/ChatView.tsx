@@ -45,6 +45,7 @@ import {
   typingFor,
 } from "../../stores/chat.ts";
 import { displayNameForInGroup, setGroupDisplayName, warmProfiles } from "../../stores/profiles.ts";
+import { lastReadSeqFor, markRead, seqFromCursor } from "../../stores/read-markers.ts";
 import { session, sessionClient, sessionWs } from "../../stores/session.ts";
 import { Icon, type IconName } from "../Icon.tsx";
 import { FollowToggle } from "../feed/FollowToggle.tsx";
@@ -387,6 +388,64 @@ export const ChatView: Component<{
     onCleanup(() => ro.disconnect());
   });
 
+  // ---- Read state: auto-mark-read + "New messages" divider --------------
+  // The newest decodable `seq` among loaded messages (optimistic echoes carry no
+  // cursor; tombstones/edits keep theirs). This is the high-water mark we advance
+  // the read marker to.
+  const newestSeq = createMemo(() => {
+    let max = 0;
+    for (const m of messages()) {
+      const s = seqFromCursor(m.cursor);
+      if (s != null && s > max) max = s;
+    }
+    return max;
+  });
+
+  // Divider anchor: snapshot the stored `lastReadSeq` when the channel opens, so
+  // the "New messages" line stays put for this viewing session even as
+  // auto-read advances the live marker (like real chat apps). The first message
+  // with `seq > dividerSeq` (not authored by self) gets the divider above it.
+  const [dividerSeq, setDividerSeq] = createSignal(0);
+  createEffect(
+    on(channelId, () => {
+      // Snapshot on open. The hydrate/summary may land slightly after; the
+      // memo below tolerates a 0 snapshot (no divider until there's a marker).
+      setDividerSeq(lastReadSeqFor(channelId()));
+    }),
+  );
+
+  // The id of the message the divider sits ABOVE: the oldest loaded message with
+  // `seq > dividerSeq` that the viewer did not author. `null` → no divider.
+  const dividerBeforeId = createMemo<string | null>(() => {
+    const anchor = dividerSeq();
+    if (anchor <= 0) return null;
+    let best: { seq: number; id: string } | null = null;
+    for (const m of messages()) {
+      if (m.author === session.actor) continue;
+      const s = seqFromCursor(m.cursor);
+      if (s == null || s <= anchor) continue;
+      if (!best || s < best.seq) best = { seq: s, id: m.id };
+    }
+    return best?.id ?? null;
+  });
+
+  // Auto-mark-read: while this channel is active AND pinned at the bottom (or on
+  // initial open), advance the read marker to the newest loaded seq. As new
+  // messages arrive while pinned, this re-fires and keeps the marker current.
+  // Scrolled-up reading history → not pinned → we leave the marker put.
+  createEffect(
+    on(
+      () => [channelId(), newestSeq()] as const,
+      () => {
+        const seq = newestSeq();
+        if (seq <= 0) return;
+        // `pinned` starts true on open/switch, so initial-open marks read; once
+        // the user scrolls up it goes false and we stop advancing.
+        if (pinned) markRead(channelId(), seq);
+      },
+    ),
+  );
+
   // Jump to the original post when a reply reference is clicked: scroll its row
   // into view and flash a transient highlight. No-op if the parent is older than
   // the loaded history (its row isn't in the DOM).
@@ -512,9 +571,23 @@ export const ChatView: Component<{
                       <For each={visibleRoots()}>
                         {(msg, index) => (
                           <>
+                            {/* "New messages" divider: above the first unread
+                            message (snapshotted at open). Recent mode only — the
+                            chronological order is what makes "above" meaningful. */}
+                            <Show when={isRecent() && msg.id === dividerBeforeId()}>
+                              <li
+                                aria-label="New messages"
+                                class="fa-divider fa-divider--new flex items-center gap-2 text-[0.7rem] font-semibold uppercase tracking-wide text-accent"
+                                data-testid="new-messages-divider"
+                              >
+                                <span class="h-px flex-1 bg-accent/40" />
+                                <span>New messages</span>
+                                <span class="h-px flex-1 bg-accent/40" />
+                              </li>
+                            </Show>
                             {/* Dashed separator between message groups (mirrors the
                             prototype's per-message `fa-divider--dashed`). */}
-                            <Show when={index() > 0}>
+                            <Show when={index() > 0 && msg.id !== dividerBeforeId()}>
                               <li aria-hidden="true" class="fa-divider fa-divider--dashed" />
                             </Show>
                             <MessageNode

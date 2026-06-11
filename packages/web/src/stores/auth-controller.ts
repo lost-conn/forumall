@@ -32,6 +32,7 @@ import { clearFeed } from "./feed.ts";
 import { installPresenceListener, resetPresenceSubscriptions } from "./presence-controller.ts";
 import { clearPresence } from "./presence.ts";
 import { clearProfiles } from "./profiles.ts";
+import { clearReadMarkers, hydrateReadMarkers, installReadMarkerListener } from "./read-markers.ts";
 import {
   clearSession,
   sessionClient,
@@ -62,10 +63,16 @@ async function adopt(result: AuthResult, store: KeyStore): Promise<void> {
   // Wire the single inbound `presence.update` → store listener (§7.5) BEFORE
   // connecting, so the immediate snapshots a (re)subscribe triggers are captured.
   installPresenceListener(ws);
+  // Wire the single `read.updated` → store listener (multi-device read sync)
+  // BEFORE connecting; it also re-hydrates the unread summary on each connect.
+  installReadMarkerListener(ws);
   // Fire-and-forget connect; the status dot reflects progress / retries.
   void ws.connect().catch(() => undefined);
 
   setSessionAuth({ client: result.client, stored: session, ws });
+  // Seed the unread summary now that the signing client is adopted (the WS
+  // connect re-hydrates too, but this covers the pre-connect window).
+  void hydrateReadMarkers();
 }
 
 /** Register → keygen → device key → store → connect. Lands authenticated. */
@@ -122,6 +129,7 @@ export async function doLogout(opts: { keyStore?: KeyStore } = {}): Promise<bool
   clearPresence();
   clearProfiles();
   resetPresenceSubscriptions();
+  clearReadMarkers();
   clearSession();
   return revoked;
 }

@@ -623,6 +623,27 @@ const migrations: readonly Migration[] = [
       }
     },
   },
+  {
+    // Read markers (Overboard "Read/new messages history"): per-user last-read
+    // position per channel + per DM, backing unread counts and the "New
+    // messages" divider. One unified table keyed (handle, scope_id) — the global
+    // `seq` space already spans channel `messages` + `dm_messages`, so one
+    // `last_read_seq` works for both. The handle index backs the per-user unread
+    // summary. Create-if-not-exists DDL; guarded so a re-run is a no-op.
+    id: "0028_read_markers",
+    up: (sqlite) => {
+      sqlite.exec(`
+        CREATE TABLE IF NOT EXISTS read_markers (
+          handle        TEXT NOT NULL,
+          scope_id      TEXT NOT NULL,
+          last_read_seq INTEGER NOT NULL,
+          updated_at    INTEGER NOT NULL,
+          PRIMARY KEY (handle, scope_id)
+        ) STRICT;
+      `);
+      sqlite.exec("CREATE INDEX IF NOT EXISTS idx_read_markers_handle ON read_markers (handle);");
+    },
+  },
 ];
 
 const LEDGER_DDL = `

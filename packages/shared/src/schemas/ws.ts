@@ -69,6 +69,7 @@ export const WsEventTypeSchema = z.enum([
   "presence.subscribed",
   "presence.unsubscribed",
   "presence.update",
+  "read.updated",
   "call.started",
   "call.ended",
   "call.participant",
@@ -112,6 +113,7 @@ export const WsTypeSchema = z.enum([
   "presence.subscribed",
   "presence.unsubscribed",
   "presence.update",
+  "read.updated",
   "call.started",
   "call.ended",
   "call.participant",
@@ -582,6 +584,30 @@ export const WsPresenceUpdateSchema = wsFrame(
     .passthrough(),
 );
 export type WsPresenceUpdate = z.infer<typeof WsPresenceUpdateSchema>;
+
+/**
+ * `read.updated` event — the caller's read markers advanced on ANOTHER device
+ * (multi-device sync). Fanned out by `hub.publishToActor` to all of the actor's
+ * connections after a `PATCH /api/me/read-markers`. Carries the touched markers,
+ * each with its recomputed `unreadCount`. Passthrough, like every other event.
+ */
+export const WsReadUpdatedSchema = wsFrame(
+  "read.updated",
+  z
+    .object({
+      markers: z.array(
+        z
+          .object({
+            scopeId: z.string().min(1),
+            lastReadSeq: z.number().int().nonnegative(),
+            unreadCount: z.number().int().nonnegative(),
+          })
+          .passthrough(),
+      ),
+    })
+    .passthrough(),
+);
+export type WsReadUpdated = z.infer<typeof WsReadUpdatedSchema>;
 
 /** `call.started` event. */
 export const WsCallStartedSchema = wsFrame(

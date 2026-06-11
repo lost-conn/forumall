@@ -38,6 +38,8 @@ export interface DmMessage {
   deletedAt?: string;
   /** Set on a local echo until its canonical confirmation replaces it. */
   clientMessageId?: string;
+  /** Opaque timeline cursor (§7.2/§7.4 share one space); decodes to `seq`. */
+  cursor?: string;
   /** True for the caller's own (sent) messages; false for received ones. */
   mine?: boolean;
   /** Optimistic-echo lifecycle: pending → confirmed (replaced) | failed. */

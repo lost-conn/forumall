@@ -21,9 +21,12 @@ import {
   on,
 } from "solid-js";
 import { can, joinGroup, leaveGroup } from "../../lib/groups-api.ts";
+import { upsertChannel } from "../../stores/chat.ts";
+import { unreadCountFor } from "../../stores/read-markers.ts";
 import { session, sessionClient } from "../../stores/session.ts";
 import { Icon, type IconName } from "../Icon.tsx";
 import { ChatView } from "../chat/ChatView.tsx";
+import { UnreadBadge } from "../shared/UnreadBadge.tsx";
 import { CreateChannelModal, ManageChannelModal } from "./ChannelModals.tsx";
 import { GroupAvatar } from "./GroupAvatar.tsx";
 import { GroupSettingsModal } from "./GroupSettingsModal.tsx";
@@ -60,6 +63,21 @@ export const GroupView: Component<{ groupId: string }> = (props) => {
   const channels = useQuery(() => channelsQuery(groupId));
   const members = useQuery(() => membersQuery(groupId, () => true));
   const invalidate = useInvalidateGroup();
+
+  // Seed the chat store's channel→group map for every visible channel, so the
+  // space-rail per-group unread rollup (`unreadForGroup`) knows which channels
+  // belong to this group even before one is opened.
+  createEffect(() => {
+    for (const ch of channels.data ?? []) {
+      upsertChannel({
+        id: ch.id,
+        groupId: ch.groupId,
+        name: ch.name,
+        type: ch.type,
+        tier: ch.tier,
+      });
+    }
+  });
 
   const [menuOpen, setMenuOpen] = createSignal(false);
   const [mgmt, setMgmt] = createSignal<MgmtPanel>(null);
@@ -317,6 +335,9 @@ export const GroupView: Component<{ groupId: string }> = (props) => {
                                 {ch.name ?? ch.id}
                               </span>
                             </button>
+                            <Show when={openChat()?.id !== ch.id}>
+                              <UnreadBadge count={unreadCountFor(ch.id)} variant="inline" />
+                            </Show>
                             <Show when={ch.tier !== "group"}>
                               <Icon name="lock" size={11} />
                             </Show>

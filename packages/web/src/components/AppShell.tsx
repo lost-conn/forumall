@@ -10,9 +10,11 @@ import {
   createSignal,
 } from "solid-js";
 import { resolveAttachmentUrl } from "../lib/chat-api";
+import { unreadForGroup } from "../stores/read-markers";
 import { session } from "../stores/session";
 import { Icon, type IconName } from "./Icon";
 import { myGroupsQuery } from "./groups/queries";
+import { UnreadBadge } from "./shared/UnreadBadge";
 import { SelfPresenceControl } from "./social/SelfPresenceControl";
 import { UserProfileCard } from "./social/UserProfileCard";
 
@@ -65,12 +67,13 @@ export const AppShell: ParentComponent = (props) => {
                 <A
                   href={`/groups/${grp.id}`}
                   title={grp.name}
-                  class="fa-ava fa-ava--rail transition-colors"
+                  class="fa-ava fa-ava--rail relative transition-colors"
                   classList={{ "fa-ava--phosphor": active() }}
                   data-testid="my-group-item"
                   data-group-name={grp.name}
                 >
                   <RailGroupAvatar name={grp.name} avatar={grp.avatar} />
+                  <UnreadBadge count={unreadForGroup(grp.id)} />
                 </A>
               );
             }}

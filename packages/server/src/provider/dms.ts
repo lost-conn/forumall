@@ -421,7 +421,13 @@ export function listDmMessages(
 
   const hasMore = rows.length > limit;
   const pageRows = hasMore ? rows.slice(0, limit) : rows;
-  const items = pageRows.map(rowToDmMessage);
+  // Stamp the per-item opaque cursor (§7.2/§7.4) so a client can decode each
+  // inbox message's `seq` (used by read markers / unread). Forward-compat
+  // passthrough field; schemas are additionalProperties:true.
+  const items = pageRows.map((row) => ({
+    ...rowToDmMessage(row),
+    cursor: encodeMessageCursor(row.seq),
+  }));
 
   const first = pageRows[0];
   const last = pageRows[pageRows.length - 1];

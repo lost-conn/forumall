@@ -49,11 +49,13 @@ import {
 } from "../../stores/dms.ts";
 import { subscribePresence } from "../../stores/presence-controller.ts";
 import { displayNameFor, warmProfile, warmProfiles } from "../../stores/profiles.ts";
+import { markRead, seqFromCursor, unreadCountFor } from "../../stores/read-markers.ts";
 import { session, sessionClient, sessionWs } from "../../stores/session.ts";
 import { Icon, type IconName } from "../Icon.tsx";
 import { AttachmentView } from "../shared/AttachmentView.tsx";
 import { ReactionBar, ReactionPicker } from "../shared/Reactions.tsx";
 import { ReplyQuote } from "../shared/ReplyQuote.tsx";
+import { UnreadBadge } from "../shared/UnreadBadge.tsx";
 import { Avatar } from "../social/Avatar.tsx";
 import { PresenceDot } from "../social/PresenceDot.tsx";
 import {
@@ -328,6 +330,9 @@ const ConversationRow: Component<{ conv: DmConversationSummary; active: boolean 
           <Icon name="at" size={10} />
           direct
         </span>
+        <Show when={!props.active}>
+          <UnreadBadge count={unreadCountFor(props.conv.dmId)} variant="inline" />
+        </Show>
       </span>
       <Show when={props.conv.lastMessageText}>
         <span class="mt-0.5 block truncate text-xs text-faint" data-testid="dm-conv-last">
@@ -415,6 +420,28 @@ const ThreadView: Component<{
 
   const messages = createMemo(() => dmThread(props.dmId));
   const typingActors = createMemo(() => dmTypingFor(props.dmId).filter((u) => u !== session.actor));
+
+  // Auto-mark-read: while a DM thread is open, advance its read marker to the
+  // newest decodable seq (the DM view always follows the bottom, so an open
+  // thread is effectively "pinned"). Excludes the caller's own messages from
+  // unread server-side. Re-fires as new messages arrive while the thread is open.
+  const newestDmSeq = createMemo(() => {
+    let max = 0;
+    for (const m of messages()) {
+      const s = seqFromCursor(m.cursor);
+      if (s != null && s > max) max = s;
+    }
+    return max;
+  });
+  createEffect(
+    on(
+      () => [props.dmId, newestDmSeq()] as const,
+      () => {
+        const seq = newestDmSeq();
+        if (seq > 0) markRead(props.dmId, seq);
+      },
+    ),
+  );
 
   // Index messages by id so a reply-quote can resolve its parent's snippet.
   const byId = createMemo(() => {

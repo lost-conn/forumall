@@ -436,7 +436,11 @@ function rowsToMessagesWithReplyCount(db: Db, channelId: string, rows: MessageRo
   return rows.map((row) => {
     const message = rowToMessage(row);
     const count = counts.get(row.id);
-    return count && count > 0 ? { ...message, replyCount: count } : message;
+    // Stamp the per-item opaque cursor (§7.2): forward-compat passthrough field
+    // so a client can decode each history item's `seq` (used by read markers /
+    // the "New messages" divider). Schemas are additionalProperties:true.
+    const withCursor = { ...message, cursor: encodeMessageCursor(row.seq) };
+    return count && count > 0 ? { ...withCursor, replyCount: count } : withCursor;
   });
 }
 

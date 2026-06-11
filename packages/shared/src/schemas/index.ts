@@ -16,4 +16,5 @@ export * from "./groups.ts";
 export * from "./messaging.ts";
 export * from "./privacy.ts";
 export * from "./objects.ts";
+export * from "./read-markers.ts";
 export * from "./ws.ts";

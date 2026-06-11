@@ -936,3 +936,43 @@ export const knownProviders = sqliteTable("known_providers", {
 
 export type KnownProviderRow = typeof knownProviders.$inferSelect;
 export type NewKnownProviderRow = typeof knownProviders.$inferInsert;
+
+/**
+ * Per-user read markers (read/unread tracking). One row per (local user `handle`,
+ * `scopeId`), where `scopeId` is a channel id (`chn_…`) OR a DM conversation id
+ * (`dmId`, §7.4). One unified table is correct because the global monotonic `seq`
+ * space already spans both channel `messages` and `dm_messages` — a single
+ * `last_read_seq` value compares against either store.
+ *
+ *  - `handle` keys on the LOCAL user (matching `privacy_settings` / `presence`),
+ *    NOT a canonical `handle@domain` actor — read state is private, per-account,
+ *    and never federated.
+ *  - `last_read_seq` is the highest `seq` the user has read in this scope; unread
+ *    is `COUNT(seq > last_read_seq)` excluding the user's own messages.
+ *  - markers are **monotonic** — `setReadMarkers` never moves one backward.
+ *
+ * The `handle` index backs the per-user unread-summary query.
+ */
+export const readMarkers = sqliteTable(
+  "read_markers",
+  {
+    /** The LOCAL user handle this marker belongs to. */
+    handle: text("handle").notNull(),
+    /** Scope: a channel id (`chn_…`) or a DM conversation id (`dmId`, §7.4). */
+    scopeId: text("scope_id").notNull(),
+    /** Highest `seq` the user has read in this scope (monotonic). */
+    lastReadSeq: integer("last_read_seq", { mode: "number" }).notNull(),
+    /** Last-update time (epoch millis). */
+    updatedAt: integer("updated_at", { mode: "number" })
+      .notNull()
+      .$defaultFn(() => Date.now()),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.handle, t.scopeId] }),
+    // Per-user summary: all of a user's markers in one keyset.
+    handleIdx: index("idx_read_markers_handle").on(t.handle),
+  }),
+);
+
+export type ReadMarkerRow = typeof readMarkers.$inferSelect;
+export type NewReadMarkerRow = typeof readMarkers.$inferInsert;
