@@ -43,7 +43,11 @@ export function createPushRouter() {
   // from "egress blocked entirely" (needs a proxy) on a constrained deploy.
   router.get("/_egress-check", async (c) => {
     const { config } = c.var;
-    const report = await egressCheck(config.dnsResultOrder, config.pushProxy !== undefined);
+    const report = await egressCheck(
+      config.dnsResultOrder,
+      config.dnsServers,
+      config.pushProxy !== undefined,
+    );
     return c.json(report, 200);
   });
 

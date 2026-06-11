@@ -174,6 +174,16 @@ const RawEnvSchema = z.object({
   DNS_RESULT_ORDER: z.enum(["ipv4first", "verbatim", "ipv6first"]).default("ipv4first"),
 
   /**
+   * Override the DNS resolver(s) for ALL outbound lookups — comma-separated IPs,
+   * applied at boot via `dns.setServers`. Empty (default) → use the system
+   * resolver. Set this when the host has NO working resolver configured (e.g. a
+   * microVM booted with kernel `ip=` autoconfig but no nameserver — outbound
+   * hostnames then resolve to nothing and Web Push / federation can't connect);
+   * point it at a reachable public resolver such as `1.1.1.1,8.8.8.8`.
+   */
+  DNS_SERVERS: z.string().default(""),
+
+  /**
    * Optional forward proxy for outbound Web Push delivery (Bun `fetch`'s `proxy`
    * option). Set this when the host blocks DIRECT egress to the browser push
    * services (FCM / Mozilla / Apple / Windows) and only permits outbound through
@@ -181,6 +191,16 @@ const RawEnvSchema = z.object({
    */
   PUSH_PROXY: z.string().url().optional(),
 });
+
+/** Parse a comma-separated list into trimmed, non-empty, de-duplicated entries. */
+function parseCsv(raw: string): readonly string[] {
+  const seen = new Set<string>();
+  for (const part of raw.split(",")) {
+    const trimmed = part.trim();
+    if (trimmed.length > 0) seen.add(trimmed);
+  }
+  return Object.freeze([...seen]);
+}
 
 /** Parse a comma-separated domain list into canonicalized, de-duplicated hosts. */
 function parseDomainList(raw: string): readonly string[] {
@@ -274,6 +294,11 @@ export interface Config {
    * outbound `fetch` (web push + federation).
    */
   readonly dnsResultOrder: "ipv4first" | "verbatim" | "ipv6first";
+  /**
+   * Custom DNS resolver IPs applied at boot via `dns.setServers`. Empty → system
+   * resolver. See the `DNS_SERVERS` env doc (fixes hosts with no resolver).
+   */
+  readonly dnsServers: readonly string[];
   /** Optional forward proxy for outbound Web Push delivery; omitted when unset. */
   readonly pushProxy?: string;
 }
@@ -331,6 +356,7 @@ export function loadConfig(env: Env = process.env): Config {
     enableDiscoverFeed: raw.ENABLE_DISCOVER_FEED,
     federationInsecureLocalhost: raw.FEDERATION_INSECURE_LOCALHOST,
     dnsResultOrder: raw.DNS_RESULT_ORDER,
+    dnsServers: parseCsv(raw.DNS_SERVERS),
     ...(raw.CONTACT !== undefined ? { contact: raw.CONTACT } : {}),
     ...(raw.PUSH_PROXY !== undefined ? { pushProxy: raw.PUSH_PROXY } : {}),
   });

@@ -40,16 +40,39 @@ export interface HostEgress {
   };
 }
 
+/** A raw TCP probe to a hard-coded IP:port — egress reachability with ZERO DNS. */
+export interface DirectIpProbe {
+  readonly label: string;
+  readonly ip: string;
+  readonly port: number;
+  readonly tcp: { readonly ok: boolean; readonly error?: string; readonly ms: number };
+}
+
 /** The diagnostic report returned by {@link egressCheck}. */
 export interface EgressReport {
   /** The configured DNS order in effect (so the operator can confirm the build). */
   readonly dnsResultOrder: string;
+  /** Configured custom resolver(s), if any (so the operator can confirm DNS_SERVERS). */
+  readonly dnsServers: readonly string[];
   /** Whether a push proxy is configured (value redacted — boolean only). */
   readonly pushProxyConfigured: boolean;
+  /**
+   * Raw TCP connects to well-known anycast IPs (no DNS). These separate the two
+   * failure modes: if these CONNECT but {@link hosts} resolve to nothing, it's a
+   * pure DNS problem (set DNS_SERVERS); if these also fail, egress is blocked.
+   */
+  readonly directIp: readonly DirectIpProbe[];
   readonly hosts: readonly HostEgress[];
   /** Epoch millis the report was generated. */
   readonly at: number;
 }
+
+/** Well-known anycast endpoints to probe by IP (DNS-independent egress test). */
+const DIRECT_IPS: ReadonlyArray<{ label: string; ip: string; port: number }> = [
+  { label: "cloudflare-dns-https", ip: "1.1.1.1", port: 443 },
+  { label: "cloudflare-dns-53", ip: "1.1.1.1", port: 53 },
+  { label: "google-dns-53", ip: "8.8.8.8", port: 53 },
+];
 
 /** The push services we attempt to reach (resolvable hosts only — no wildcards). */
 const PUSH_HOSTS = ["fcm.googleapis.com", "updates.push.services.mozilla.com"] as const;
@@ -61,10 +84,7 @@ const PUSH_HOSTS = ["fcm.googleapis.com", "updates.push.services.mozilla.com"] a
  * timeout — it just reports an empty/failed probe instead.
  */
 function withTimeout<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
-  return Promise.race([
-    p,
-    new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms)),
-  ]);
+  return Promise.race([p, new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms))]);
 }
 
 /** Resolve a host's addresses for a single IP family (best-effort, bounded, never throws). */
@@ -144,18 +164,27 @@ async function probeFetch(
  */
 export async function egressCheck(
   dnsResultOrder: string,
+  dnsServers: readonly string[],
   pushProxyConfigured: boolean,
   timeoutMs = 3000,
 ): Promise<EgressReport> {
-  const hosts = await Promise.all(
-    PUSH_HOSTS.map(async (host): Promise<HostEgress> => {
-      const [v4, v6, fetchProbe] = await Promise.all([
-        probeFamily(host, 4, timeoutMs),
-        probeFamily(host, 6, timeoutMs),
-        probeFetch(host, timeoutMs),
-      ]);
-      return { host, v4, v6, fetch: fetchProbe };
-    }),
-  );
-  return { dnsResultOrder, pushProxyConfigured, hosts, at: Date.now() };
+  const [directIp, hosts] = await Promise.all([
+    Promise.all(
+      DIRECT_IPS.map(async (d): Promise<DirectIpProbe> => {
+        const tcp = await tcpConnect(d.ip, d.port, timeoutMs);
+        return { label: d.label, ip: d.ip, port: d.port, tcp };
+      }),
+    ),
+    Promise.all(
+      PUSH_HOSTS.map(async (host): Promise<HostEgress> => {
+        const [v4, v6, fetchProbe] = await Promise.all([
+          probeFamily(host, 4, timeoutMs),
+          probeFamily(host, 6, timeoutMs),
+          probeFetch(host, timeoutMs),
+        ]);
+        return { host, v4, v6, fetch: fetchProbe };
+      }),
+    ),
+  ]);
+  return { dnsResultOrder, dnsServers, pushProxyConfigured, directIp, hosts, at: Date.now() };
 }

@@ -281,10 +281,16 @@ describe("config / argon2 defaults (§4.1.4 minimums)", () => {
     const def = loadConfig({});
     expect(def.dnsResultOrder).toBe("ipv4first");
     expect(def.pushProxy).toBeUndefined();
+    expect(def.dnsServers).toEqual([]);
 
-    const over = loadConfig({ DNS_RESULT_ORDER: "verbatim", PUSH_PROXY: "http://10.0.0.2:3128" });
+    const over = loadConfig({
+      DNS_RESULT_ORDER: "verbatim",
+      PUSH_PROXY: "http://10.0.0.2:3128",
+      DNS_SERVERS: "1.1.1.1, 8.8.8.8 ,1.1.1.1",
+    });
     expect(over.dnsResultOrder).toBe("verbatim");
     expect(over.pushProxy).toBe("http://10.0.0.2:3128");
+    expect(over.dnsServers).toEqual(["1.1.1.1", "8.8.8.8"]); // trimmed + de-duped
 
     expect(() => loadConfig({ DNS_RESULT_ORDER: "bogus" })).toThrow();
     expect(() => loadConfig({ PUSH_PROXY: "not-a-url" })).toThrow();

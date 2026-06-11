@@ -53,6 +53,19 @@ try {
   /* runtime without the API — non-fatal, keep the default order */
 }
 
+// Optionally override the resolver(s). Needed on hosts that come up with no
+// working DNS configured (e.g. a microVM booted via kernel `ip=` autoconfig with
+// no nameserver field): outbound hostnames otherwise resolve to nothing and Web
+// Push / federation fail before any connection. Default unset → system resolver.
+if (config.dnsServers.length > 0) {
+  try {
+    dns.setServers(config.dnsServers as string[]);
+    console.log(`[server] DNS resolver(s) overridden: ${config.dnsServers.join(", ")}`);
+  } catch (err) {
+    console.error(`[server] failed to apply DNS_SERVERS (${config.dnsServers.join(", ")}):`, err);
+  }
+}
+
 const db = openDb(config.dbPath);
 const applied = migrate(db);
 if (applied.length > 0) {
