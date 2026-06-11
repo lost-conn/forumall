@@ -84,6 +84,7 @@ export function rowToGroup(row: GroupRow): Group {
     id: row.id,
     name: row.name,
     ...(row.description != null ? { description: row.description } : {}),
+    ...(row.avatar != null ? { avatar: row.avatar } : {}),
     owner: row.owner,
     joinPolicy: row.joinPolicy as JoinPolicy,
     tier: row.tier,
@@ -111,6 +112,7 @@ export function createGroup(db: Db, owner: string, req: GroupCreateRequest): Gro
     id: mintGroupId(),
     name: req.name,
     description: req.description ?? null,
+    avatar: req.avatar ?? null,
     owner,
     joinPolicy: req.joinPolicy ?? DEFAULT_JOIN_POLICY,
     tier: req.tier ?? DEFAULT_TIER,
@@ -145,6 +147,7 @@ export function updateGroup(db: Db, groupId: string, req: GroupUpdateRequest): G
   const patch: Partial<GroupRow> = { updatedAt: Date.now() };
   if (req.name !== undefined) patch.name = req.name;
   if (req.description !== undefined) patch.description = req.description;
+  if (req.avatar !== undefined) patch.avatar = req.avatar;
   if (req.tier !== undefined) patch.tier = req.tier;
   if (req.joinPolicy !== undefined) patch.joinPolicy = req.joinPolicy;
   if (req.permissions !== undefined) patch.permissions = JSON.stringify(req.permissions);

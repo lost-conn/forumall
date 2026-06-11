@@ -605,6 +605,24 @@ const migrations: readonly Migration[] = [
       );
     },
   },
+  {
+    // Group avatars (Overboard "Group avatars"): a nullable `avatar` image URL
+    // on `groups`, mirroring the per-user `users.avatar` column. Set via the
+    // existing PATCH /api/groups/{id} (no new endpoint); the image is uploaded
+    // through POST /api/media and the returned https url stored here.
+    // ADD COLUMN is safe on a STRICT table because the column is nullable with
+    // no default. Guarded so a re-run is a no-op.
+    id: "0027_groups_avatar",
+    up: (sqlite) => {
+      const cols = sqlite
+        .query<{ name: string }, []>("PRAGMA table_info(groups)")
+        .all()
+        .map((c) => c.name);
+      if (!cols.includes("avatar")) {
+        sqlite.exec("ALTER TABLE groups ADD COLUMN avatar TEXT;");
+      }
+    },
+  },
 ];
 
 const LEDGER_DDL = `

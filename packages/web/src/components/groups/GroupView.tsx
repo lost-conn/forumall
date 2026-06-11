@@ -25,6 +25,7 @@ import { session, sessionClient } from "../../stores/session.ts";
 import { Icon, type IconName } from "../Icon.tsx";
 import { ChatView } from "../chat/ChatView.tsx";
 import { CreateChannelModal, ManageChannelModal } from "./ChannelModals.tsx";
+import { GroupAvatar } from "./GroupAvatar.tsx";
 import { GroupSettingsModal } from "./GroupSettingsModal.tsx";
 import { InvitesPanel } from "./InvitesPanel.tsx";
 import { MembersPanel } from "./MembersPanel.tsx";
@@ -187,6 +188,11 @@ export const GroupView: Component<{ groupId: string }> = (props) => {
                   aria-expanded={menuOpen()}
                   onClick={() => setMenuOpen((v) => !v)}
                 >
+                  <GroupAvatar
+                    name={grp().name}
+                    avatar={grp().avatar}
+                    class="h-6 w-6 text-[11px]"
+                  />
                   <span
                     class="truncate font-display text-[15px] font-bold tracking-tight text-ink"
                     data-testid="group-name-heading"

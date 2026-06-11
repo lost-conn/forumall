@@ -1,6 +1,15 @@
 import { A, useLocation } from "@solidjs/router";
 import { useQuery } from "@tanstack/solid-query";
-import { type Component, For, type JSX, type ParentComponent, Show } from "solid-js";
+import {
+  type Component,
+  For,
+  type JSX,
+  type ParentComponent,
+  Show,
+  createEffect,
+  createSignal,
+} from "solid-js";
+import { resolveAttachmentUrl } from "../lib/chat-api";
 import { session } from "../stores/session";
 import { Icon, type IconName } from "./Icon";
 import { myGroupsQuery } from "./groups/queries";
@@ -61,7 +70,7 @@ export const AppShell: ParentComponent = (props) => {
                   data-testid="my-group-item"
                   data-group-name={grp.name}
                 >
-                  {grp.name.slice(0, 1).toUpperCase()}
+                  <RailGroupAvatar name={grp.name} avatar={grp.avatar} />
                 </A>
               );
             }}
@@ -130,6 +139,36 @@ export const AppShell: ParentComponent = (props) => {
       {/* Global, opened from anywhere via openUserProfile(actor). */}
       <UserProfileCard />
     </div>
+  );
+};
+
+/**
+ * The inner content of a space-rail group slot: the group's avatar image when
+ * one is set, else the group-name initial. Lives inside the existing `fa-ava`
+ * slot (which clips to the round shape), mirroring the user {@link Avatar}.
+ * `onError` flips back to the initial so a broken URL never shows a broken-image
+ * glyph.
+ */
+const RailGroupAvatar: Component<{ name: string; avatar?: string }> = (props) => {
+  const [failed, setFailed] = createSignal(false);
+  const src = () => {
+    const url = props.avatar?.trim();
+    return url ? resolveAttachmentUrl(url) : undefined;
+  };
+  createEffect(() => {
+    src();
+    setFailed(false);
+  });
+  return (
+    <Show when={src() && !failed()} fallback={props.name.slice(0, 1).toUpperCase()}>
+      <img
+        src={src()}
+        alt=""
+        class="h-full w-full object-cover"
+        data-testid="rail-group-avatar-image"
+        onError={() => setFailed(true)}
+      />
+    </Show>
   );
 };
 

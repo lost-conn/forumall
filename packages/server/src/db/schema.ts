@@ -182,6 +182,8 @@ export const groups = sqliteTable("groups", {
   name: text("name").notNull(),
   /** Optional human description. */
   description: text("description"),
+  /** Optional avatar image URL (https://; served from /api/media). */
+  avatar: text("avatar"),
   /** Owning actor (`handle@domain`). */
   owner: text("owner").notNull(),
   /** Join policy: `open` | `request` | `invite`. */

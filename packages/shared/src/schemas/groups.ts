@@ -5,7 +5,13 @@
  */
 import { z } from "zod";
 
-import { MetadataListSchema, Rfc3339DateTimeSchema, TierSchema, UserRefSchema } from "./common.ts";
+import {
+  HttpsUriSchema,
+  MetadataListSchema,
+  Rfc3339DateTimeSchema,
+  TierSchema,
+  UserRefSchema,
+} from "./common.ts";
 
 // ---------------------------------------------------------------------------
 // Enums / shared (defs/groups.json)
@@ -92,6 +98,7 @@ export const GroupSchema = z
     id: z.string().min(1),
     name: z.string().min(1),
     description: z.string().optional(),
+    avatar: HttpsUriSchema.optional(),
     owner: UserRefSchema,
     joinPolicy: JoinPolicySchema,
     tier: TierSchema,
@@ -109,6 +116,7 @@ export const GroupCreateRequestSchema = z
   .object({
     name: z.string().min(1),
     description: z.string().optional(),
+    avatar: HttpsUriSchema.optional(),
     tier: TierSchema.optional(),
     joinPolicy: JoinPolicySchema.optional(),
     permissions: GroupPermissionsSchema.optional(),
@@ -123,6 +131,7 @@ export const GroupUpdateRequestSchema = z
   .object({
     name: z.string().min(1).optional(),
     description: z.string().optional(),
+    avatar: HttpsUriSchema.optional(),
     tier: TierSchema.optional(),
     joinPolicy: JoinPolicySchema.optional(),
     permissions: GroupPermissionsSchema.optional(),

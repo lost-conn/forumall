@@ -10,6 +10,7 @@ import type { Group, GroupPermissions, JoinPolicy, RoleDefinition } from "@forum
 import { useNavigate } from "@solidjs/router";
 import { useQuery } from "@tanstack/solid-query";
 import { type Component, For, Show, createMemo, createSignal } from "solid-js";
+import { resolveAttachmentUrl, uploadMedia } from "../../lib/chat-api.ts";
 import { deleteGroup, updateGroup } from "../../lib/groups-api.ts";
 import { sessionClient } from "../../stores/session.ts";
 import { tiersQuery, useInvalidateGroup } from "./queries.ts";
@@ -33,6 +34,9 @@ export const GroupSettingsModal: Component<{
 
   const [name, setName] = createSignal(props.group.name);
   const [description, setDescription] = createSignal(props.group.description ?? "");
+  const [avatar, setAvatar] = createSignal(props.group.avatar ?? "");
+  const [uploading, setUploading] = createSignal(false);
+  let avatarInput: HTMLInputElement | undefined;
   const [tier, setTier] = createSignal(props.group.tier);
   const [joinPolicy, setJoinPolicy] = createSignal<JoinPolicy>(props.group.joinPolicy);
 
@@ -96,6 +100,26 @@ export const GroupSettingsModal: Component<{
     setRoles((prev) => prev.map((r) => (r.name === name ? { ...r, color } : r)));
   };
 
+  // Upload a chosen image as the group avatar (§5.8 signed multipart, via the
+  // binary-safe `uploadMedia`). The returned attachment `url` is an https:// URL
+  // this provider hosts, satisfying the avatar field's https-only constraint;
+  // it's staged in the `avatar` signal and persisted by the normal Save flow.
+  const onPickAvatar = async (file: File): Promise<void> => {
+    const client = sessionClient();
+    if (!client) return;
+    setUploading(true);
+    setError(null);
+    try {
+      const att = await uploadMedia(client, file);
+      setAvatar(att.url);
+    } catch (err) {
+      setError(errorMessage(err, "Could not upload the image."));
+    } finally {
+      setUploading(false);
+      if (avatarInput) avatarInput.value = "";
+    }
+  };
+
   const save = async (e: Event) => {
     e.preventDefault();
     setBusy(true);
@@ -103,6 +127,13 @@ export const GroupSettingsModal: Component<{
     try {
       const client = sessionClient();
       if (!client) throw new Error("not authenticated");
+      // `avatar` is constrained to an https:// URI server-side, so an empty
+      // field must be omitted (not sent as "") or the update is rejected.
+      const avatarUrl = avatar().trim();
+      if (avatarUrl && !/^https:\/\//.test(avatarUrl)) {
+        setError("Avatar must be an https:// URL.");
+        return;
+      }
       // Only persist grants for roles still in the catalogue; drop empty actions.
       const known = new Set(roles().map((r) => r.name));
       const permissions: GroupPermissions = {};
@@ -117,6 +148,7 @@ export const GroupSettingsModal: Component<{
         joinPolicy: joinPolicy(),
         permissions,
         roles: roles(),
+        ...(avatarUrl ? { avatar: avatarUrl } : {}),
       });
       invalidate(props.group.id);
       props.onClose();
@@ -163,6 +195,54 @@ export const GroupSettingsModal: Component<{
             onInput={(e) => setDescription(e.currentTarget.value)}
             disabled={busy()}
           />
+        </Field>
+        <Field label="Avatar">
+          <div class="flex items-center gap-3">
+            <span class="grid h-12 w-12 shrink-0 place-items-center overflow-hidden rounded-full bg-surface-2 text-base text-faint">
+              <Show
+                when={avatar().trim()}
+                fallback={(name() || props.group.name || "?").slice(0, 1).toUpperCase()}
+              >
+                <img
+                  src={resolveAttachmentUrl(avatar().trim())}
+                  alt=""
+                  class="h-full w-full object-cover"
+                  data-testid="settings-avatar-preview"
+                />
+              </Show>
+            </span>
+            <button
+              type="button"
+              class="btn-ghost px-3 py-1.5 text-xs"
+              data-testid="settings-avatar-upload"
+              disabled={busy() || uploading()}
+              onClick={() => avatarInput?.click()}
+            >
+              {uploading() ? "Uploading…" : "Upload image"}
+            </button>
+            <Show when={avatar().trim()}>
+              <button
+                type="button"
+                class="btn-ghost px-3 py-1.5 text-xs hover:(border-danger text-danger)"
+                data-testid="settings-avatar-clear"
+                disabled={busy() || uploading()}
+                onClick={() => setAvatar("")}
+              >
+                Remove
+              </button>
+            </Show>
+            <input
+              ref={avatarInput}
+              type="file"
+              accept="image/*"
+              class="hidden"
+              data-testid="settings-avatar-file"
+              onChange={(e) => {
+                const file = e.currentTarget.files?.[0];
+                if (file) void onPickAvatar(file);
+              }}
+            />
+          </div>
         </Field>
         <Field label="Tier">
           <TierSelect tiers={tiers.data} value={tier()} onChange={setTier} testid="settings-tier" />
