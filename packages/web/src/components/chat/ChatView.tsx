@@ -35,6 +35,7 @@ import {
 import { uploadMedia } from "../../lib/chat-api.ts";
 import { listMembers } from "../../lib/groups-api.ts";
 import { renderMarkdown } from "../../lib/markdown.ts";
+import { clearActiveThread, setActiveThread } from "../../stores/active-thread.ts";
 import {
   type ChatMessage,
   type ReactionGroup,
@@ -167,6 +168,12 @@ export const ChatView: Component<{
   );
 
   onCleanup(() => handle()?.close());
+
+  // Track the open channel as the global "active thread" (drives notify-fx sound
+  // suppression — a message in the channel you're watching while focused + pinned
+  // doesn't chime). Cleared on unmount.
+  createEffect(on(channelId, (id) => setActiveThread("channel", id)));
+  onCleanup(() => clearActiveThread());
 
   const messages = createMemo(() => messagesFor(channelId()));
   const typingActors = createMemo(() => typingFor(channelId()).filter((u) => u !== session.actor));

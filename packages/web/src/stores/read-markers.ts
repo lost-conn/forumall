@@ -129,6 +129,17 @@ export function lastReadSeqFor(scopeId: string): number {
 }
 
 /**
+ * Total unread across ALL scopes (every channel + DM the user has a marker for).
+ * Reactive — the basis for the out-of-app badges (tab title / favicon / PWA app
+ * badge), summed with the unseen notification counts by the FX coordinator.
+ */
+export function totalUnread(): number {
+  let total = 0;
+  for (const s of Object.values(readState.scopes)) total += s.unreadCount;
+  return total;
+}
+
+/**
  * Per-group unread rollup for the space rail: the sum of unread counts across the
  * group's known channels. Channels learn their `groupId` from the chat store, so
  * this stays in sync as channels are discovered.

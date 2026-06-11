@@ -34,6 +34,7 @@ import {
   hydrateNotifications,
   installNotificationListener,
 } from "./notifications.ts";
+import { clearNotifyFx, installNotifyFx } from "./notify-fx.ts";
 import { installPresenceListener, resetPresenceSubscriptions } from "./presence-controller.ts";
 import { clearPresence } from "./presence.ts";
 import { clearProfiles } from "./profiles.ts";
@@ -74,6 +75,10 @@ async function adopt(result: AuthResult, store: KeyStore): Promise<void> {
   // Wire the single `notification.created` → store listener (live inbox) BEFORE
   // connecting; it also re-hydrates the notifications feed on each connect.
   installNotificationListener(ws);
+  // Wire the notification FX coordinator (chime + out-of-app badges) BEFORE
+  // connecting, same race-free rationale: it reacts to dm.message /
+  // notification.created / message.created and drives the title/favicon/app-badge.
+  installNotifyFx(ws);
   // Fire-and-forget connect; the status dot reflects progress / retries.
   void ws.connect().catch(() => undefined);
 
@@ -141,6 +146,7 @@ export async function doLogout(opts: { keyStore?: KeyStore } = {}): Promise<bool
   resetPresenceSubscriptions();
   clearReadMarkers();
   clearNotifications();
+  clearNotifyFx();
   clearSession();
   return revoked;
 }

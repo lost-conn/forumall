@@ -11,9 +11,17 @@ import { session, sessionClient } from "../stores/session.ts";
 import { DeviceKeys } from "./DeviceKeys.tsx";
 import { Icon, type IconName } from "./Icon.tsx";
 import { AppearanceSettings } from "./social/AppearanceSettings.tsx";
+import { NotificationSettings } from "./social/NotificationSettings.tsx";
 import { PrivacySettingsCard, ProfileSettings } from "./social/PrivacyProfileSettings.tsx";
 
-type Section = "account" | "profile" | "appearance" | "privacy" | "devices" | "federation";
+type Section =
+  | "account"
+  | "profile"
+  | "appearance"
+  | "notifications"
+  | "privacy"
+  | "devices"
+  | "federation";
 
 const NAV: { group: string; items: [Section, string, IconName][] }[] = [
   {
@@ -22,6 +30,7 @@ const NAV: { group: string; items: [Section, string, IconName][] }[] = [
       ["account", "My Account", "at"],
       ["profile", "Profile", "users"],
       ["appearance", "Appearance", "gear"],
+      ["notifications", "Notifications", "bell"],
       ["privacy", "Privacy & Safety", "lock"],
       ["devices", "Device keys", "lock"],
       ["federation", "Federation", "globe"],
@@ -146,6 +155,11 @@ export const SettingsShell: Component = () => {
             <Match when={section() === "appearance"}>
               <h1 class="fa-h1 mb-5">Appearance</h1>
               <AppearanceSettings />
+            </Match>
+
+            <Match when={section() === "notifications"}>
+              <h1 class="fa-h1 mb-5">Notifications</h1>
+              <NotificationSettings />
             </Match>
 
             <Match when={section() === "privacy"}>

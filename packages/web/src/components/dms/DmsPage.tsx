@@ -37,6 +37,7 @@ import { DmSentStore } from "../../lib/dm-store.ts";
 import { clientForHost, domainOf, isLocalActor } from "../../lib/federation.ts";
 import { keyStore } from "../../lib/key-store.ts";
 import type { OfscpClient } from "../../lib/ofscp-client.ts";
+import { clearActiveThread, setActiveThread } from "../../stores/active-thread.ts";
 import {
   type DmConversationSummary,
   type DmMessage,
@@ -504,6 +505,16 @@ const ThreadView: Component<{
   );
 
   onCleanup(() => handle()?.close());
+
+  // Track the open DM as the global "active thread" (notify-fx sound suppression:
+  // an incoming DM in the thread you're watching while focused doesn't chime).
+  createEffect(
+    on(
+      () => props.dmId,
+      (dmId) => setActiveThread("dm", dmId),
+    ),
+  );
+  onCleanup(() => clearActiveThread());
 
   // Warm the display-name cache for the counterparty + every message author in
   // this thread (covers the remote sender on a federated DM).
