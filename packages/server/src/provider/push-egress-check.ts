@@ -54,14 +54,30 @@ export interface EgressReport {
 /** The push services we attempt to reach (resolvable hosts only — no wildcards). */
 const PUSH_HOSTS = ["fcm.googleapis.com", "updates.push.services.mozilla.com"] as const;
 
-/** Resolve a host's addresses for a single IP family (best-effort, never throws). */
-async function lookupFamily(host: string, family: 4 | 6): Promise<string[]> {
-  try {
-    const records = await Bun.dns.lookup(host, { family });
-    return records.map((r) => r.address);
-  } catch {
-    return [];
-  }
+/**
+ * Race a promise against a timer, resolving to `fallback` if it doesn't settle in
+ * `ms`. Keeps the diagnostic gateway-safe: on a host where outbound DNS itself
+ * hangs (blocked egress), the lookup can't stall the HTTP response past the proxy
+ * timeout — it just reports an empty/failed probe instead.
+ */
+function withTimeout<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return Promise.race([
+    p,
+    new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms)),
+  ]);
+}
+
+/** Resolve a host's addresses for a single IP family (best-effort, bounded, never throws). */
+async function lookupFamily(host: string, family: 4 | 6, timeoutMs: number): Promise<string[]> {
+  const lookup = (async () => {
+    try {
+      const records = await Bun.dns.lookup(host, { family });
+      return records.map((r) => r.address);
+    } catch {
+      return [];
+    }
+  })();
+  return withTimeout(lookup, timeoutMs, []);
 }
 
 /**
@@ -97,7 +113,7 @@ export function tcpConnect(
 
 /** Resolve + TCP-probe one family of one host. */
 async function probeFamily(host: string, family: 4 | 6, timeoutMs: number): Promise<FamilyProbe> {
-  const addresses = await lookupFamily(host, family);
+  const addresses = await lookupFamily(host, family, timeoutMs);
   const first = addresses[0];
   const tcp443 = first !== undefined ? await tcpConnect(first, 443, timeoutMs) : null;
   return { family, addresses, tcp443 };
@@ -129,7 +145,7 @@ async function probeFetch(
 export async function egressCheck(
   dnsResultOrder: string,
   pushProxyConfigured: boolean,
-  timeoutMs = 5000,
+  timeoutMs = 3000,
 ): Promise<EgressReport> {
   const hosts = await Promise.all(
     PUSH_HOSTS.map(async (host): Promise<HostEgress> => {
