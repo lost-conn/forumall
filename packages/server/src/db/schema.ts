@@ -976,3 +976,51 @@ export const readMarkers = sqliteTable(
 
 export type ReadMarkerRow = typeof readMarkers.$inferSelect;
 export type NewReadMarkerRow = typeof readMarkers.$inferInsert;
+
+/**
+ * Inbound notifications feed (a provider-LOCAL extension — distinct from the §10
+ * outbound notification webhooks). One row per (local recipient, triggering
+ * message) for an @mention in, or a reply to, a group CHANNEL. State is two
+ * independent nullable timestamps: `seenAt` (appeared in the inbox list) and
+ * `readAt` (acted on). Keyed on the LOCAL `recipient` handle and never federated.
+ */
+export const notifications = sqliteTable(
+  "notifications",
+  {
+    /** Stable notification id (`ntf_<base64url>`). Primary key. */
+    id: text("id").primaryKey(),
+    /** The LOCAL user handle this notification belongs to. */
+    recipient: text("recipient").notNull(),
+    /** `mention` | `reply`. */
+    type: text("type").notNull(),
+    /** The message that triggered this notification (`msg_…`). */
+    sourceMessageId: text("source_message_id").notNull(),
+    /** Channel the source message is in (`chn_…`). */
+    channelId: text("channel_id").notNull(),
+    /** Group the channel belongs to (`grp_…`). */
+    groupId: text("group_id").notNull(),
+    /** Author of the source message (`handle@domain`). */
+    author: text("author").notNull(),
+    /** Creation time (epoch millis). */
+    createdAt: integer("created_at", { mode: "number" }).notNull(),
+    /** When this appeared in the inbox list (epoch millis); null until seen. */
+    seenAt: integer("seen_at", { mode: "number" }),
+    /** When the user acted on it (epoch millis); null until read. */
+    readAt: integer("read_at", { mode: "number" }),
+  },
+  (t) => ({
+    // Newest-first feed paging per recipient (createdAt DESC, id tiebreak).
+    recipientCreatedIdx: index("idx_notifications_recipient_created").on(t.recipient, t.createdAt),
+    // Unseen/unread count scans per recipient.
+    recipientSeenIdx: index("idx_notifications_recipient_seen").on(t.recipient, t.seenAt),
+    // Dedupe guard: at most one row per (recipient, type, sourceMessageId).
+    dedupeIdx: uniqueIndex("idx_notifications_recipient_type_source").on(
+      t.recipient,
+      t.type,
+      t.sourceMessageId,
+    ),
+  }),
+);
+
+export type NotificationRow = typeof notifications.$inferSelect;
+export type NewNotificationRow = typeof notifications.$inferInsert;

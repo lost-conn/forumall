@@ -24,6 +24,7 @@ import {
 } from "./common.ts";
 import { MemberSchema } from "./groups.ts";
 import { ContentSchema, MessageReferenceSchema, ReactionSchema } from "./messaging.ts";
+import { NotificationSchema } from "./notifications.ts";
 import { PresenceSchema } from "./privacy.ts";
 
 // ---------------------------------------------------------------------------
@@ -70,6 +71,7 @@ export const WsEventTypeSchema = z.enum([
   "presence.unsubscribed",
   "presence.update",
   "read.updated",
+  "notification.created",
   "call.started",
   "call.ended",
   "call.participant",
@@ -114,6 +116,7 @@ export const WsTypeSchema = z.enum([
   "presence.unsubscribed",
   "presence.update",
   "read.updated",
+  "notification.created",
   "call.started",
   "call.ended",
   "call.participant",
@@ -608,6 +611,22 @@ export const WsReadUpdatedSchema = wsFrame(
     .passthrough(),
 );
 export type WsReadUpdated = z.infer<typeof WsReadUpdatedSchema>;
+
+/**
+ * `notification.created` event — a new inbound notification (an @mention or a
+ * reply to one of the caller's messages, a provider-local feed). Fanned by
+ * `hub.publishToActor` to all of the recipient actor's connections for a live
+ * inbox. Passthrough, like every other event.
+ */
+export const WsNotificationCreatedSchema = wsFrame(
+  "notification.created",
+  z
+    .object({
+      notification: NotificationSchema,
+    })
+    .passthrough(),
+);
+export type WsNotificationCreated = z.infer<typeof WsNotificationCreatedSchema>;
 
 /** `call.started` event. */
 export const WsCallStartedSchema = wsFrame(

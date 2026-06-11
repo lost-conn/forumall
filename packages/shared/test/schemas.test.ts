@@ -97,6 +97,14 @@ import {
   ReadUpdatedEventSchema,
   WsReadUpdatedSchema,
 } from "../src/schemas/index.ts";
+import {
+  NotificationCreatedEventSchema,
+  NotificationSchema,
+  NotificationsMarkRequestSchema,
+  NotificationsMarkResponseSchema,
+  NotificationsResponseSchema,
+  WsNotificationCreatedSchema,
+} from "../src/schemas/index.ts";
 
 // The canonical OFSCP samples live in the sibling ofscp repo. Reference by
 // path (do NOT copy them in) so this stays pinned to the SSOT. Resolve it
@@ -394,5 +402,67 @@ describe("read-markers schemas (provider-local extension)", () => {
 
   test("read.updated is a known WS type", () => {
     expect(isKnownWsType("read.updated")).toBe(true);
+  });
+});
+
+describe("notifications-feed schemas (provider-local extension)", () => {
+  const sample = {
+    id: "ntf_abc",
+    type: "mention",
+    sourceMessageId: "msg_1",
+    channelId: "chn_1",
+    groupId: "grp_1",
+    author: "bob@b.test",
+    createdAt: "2026-01-01T12:00:00Z",
+  };
+
+  test("a notification parses (seen/read optional)", () => {
+    expect(NotificationSchema.safeParse(sample).success).toBe(true);
+    expect(
+      NotificationSchema.safeParse({ ...sample, seenAt: "2026-01-01T12:01:00Z" }).success,
+    ).toBe(true);
+  });
+
+  test("an invalid type is rejected", () => {
+    expect(NotificationSchema.safeParse({ ...sample, type: "bogus" }).success).toBe(false);
+  });
+
+  test("the GET response parses + preserves unknown keys (§2.3)", () => {
+    const r = NotificationsResponseSchema.safeParse({
+      items: [{ ...sample, future: "x" }],
+      counts: { mention: 1, reply: 0 },
+      nextCursor: "cur_1",
+      extra: 9,
+    });
+    expect(r.success).toBe(true);
+    if (r.success) expect((r.data as Record<string, unknown>).extra).toBe(9);
+  });
+
+  test("the mark request accepts omitted/empty/explicit ids", () => {
+    expect(NotificationsMarkRequestSchema.safeParse({}).success).toBe(true);
+    expect(NotificationsMarkRequestSchema.safeParse({ ids: [] }).success).toBe(true);
+    expect(NotificationsMarkRequestSchema.safeParse({ ids: ["ntf_1"] }).success).toBe(true);
+  });
+
+  test("the mark response parses", () => {
+    expect(
+      NotificationsMarkResponseSchema.safeParse({ affected: 2, counts: { mention: 0, reply: 1 } })
+        .success,
+    ).toBe(true);
+  });
+
+  test("the notification.created event payload + WS frame parse", () => {
+    expect(NotificationCreatedEventSchema.safeParse({ notification: sample }).success).toBe(true);
+    const frame = WsNotificationCreatedSchema.safeParse({
+      id: "evt_1",
+      type: "notification.created",
+      ts: "2026-01-01T12:00:00Z",
+      data: { notification: sample },
+    });
+    expect(frame.success).toBe(true);
+  });
+
+  test("notification.created is a known WS type", () => {
+    expect(isKnownWsType("notification.created")).toBe(true);
   });
 });

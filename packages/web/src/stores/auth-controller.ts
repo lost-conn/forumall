@@ -29,6 +29,11 @@ import { OfscpWsClient } from "../lib/ofscp-ws.ts";
 import { baseUrlForHost } from "../lib/provider.ts";
 import { clearDms } from "./dms.ts";
 import { clearFeed } from "./feed.ts";
+import {
+  clearNotifications,
+  hydrateNotifications,
+  installNotificationListener,
+} from "./notifications.ts";
 import { installPresenceListener, resetPresenceSubscriptions } from "./presence-controller.ts";
 import { clearPresence } from "./presence.ts";
 import { clearProfiles } from "./profiles.ts";
@@ -66,6 +71,9 @@ async function adopt(result: AuthResult, store: KeyStore): Promise<void> {
   // Wire the single `read.updated` → store listener (multi-device read sync)
   // BEFORE connecting; it also re-hydrates the unread summary on each connect.
   installReadMarkerListener(ws);
+  // Wire the single `notification.created` → store listener (live inbox) BEFORE
+  // connecting; it also re-hydrates the notifications feed on each connect.
+  installNotificationListener(ws);
   // Fire-and-forget connect; the status dot reflects progress / retries.
   void ws.connect().catch(() => undefined);
 
@@ -73,6 +81,8 @@ async function adopt(result: AuthResult, store: KeyStore): Promise<void> {
   // Seed the unread summary now that the signing client is adopted (the WS
   // connect re-hydrates too, but this covers the pre-connect window).
   void hydrateReadMarkers();
+  // Seed the notifications feed too (same pre-connect window rationale).
+  void hydrateNotifications();
 }
 
 /** Register → keygen → device key → store → connect. Lands authenticated. */
@@ -130,6 +140,7 @@ export async function doLogout(opts: { keyStore?: KeyStore } = {}): Promise<bool
   clearProfiles();
   resetPresenceSubscriptions();
   clearReadMarkers();
+  clearNotifications();
   clearSession();
   return revoked;
 }

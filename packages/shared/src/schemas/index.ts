@@ -14,6 +14,7 @@ export * from "./common.ts";
 export * from "./identity.ts";
 export * from "./groups.ts";
 export * from "./messaging.ts";
+export * from "./notifications.ts";
 export * from "./privacy.ts";
 export * from "./objects.ts";
 export * from "./read-markers.ts";

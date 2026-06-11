@@ -69,6 +69,7 @@ import { getDmConversationRow, isDmParticipant } from "../provider/dms.ts";
 import type { FederationFetch } from "../provider/federation/http.ts";
 import { isProviderAllowed } from "../provider/federation/policy.ts";
 import type { RemoteUserKeysCache } from "../provider/federation/user-keys-cache.ts";
+import { fireMessageNotifications } from "../provider/message-notifications.ts";
 import {
   type MessageRecord,
   createMessage,
@@ -952,6 +953,26 @@ export function createWsHandlers(deps: WsHandlerDeps) {
     // This MUST NOT block the WS fan-out, so we don't await — errors (including
     // zero-endpoint no-ops, which resolve cleanly) are logged off the promise.
     fireMessageCreatedNotifications(groupId, channelId, record, author);
+
+    // --- Inbound notifications feed (provider-local) -----------------------
+    // Derive @mention + thread-reply notifications for LOCAL recipients and fan a
+    // `notification.created` to each (live inbox). DEFENSIVE + NON-BLOCKING: the
+    // helper swallows its own errors so message creation can never break here.
+    // `ref` carries the reply parent (when `type === "reply"`); the body text is
+    // the parsed mention source.
+    const replyToId = ref?.type === "reply" ? ref.id : undefined;
+    const contentText =
+      typeof (content as { text?: unknown }).text === "string"
+        ? (content as { text: string }).text
+        : "";
+    fireMessageNotifications(db, config, hub, {
+      text: contentText,
+      author,
+      sourceMessageId: record.message.id,
+      channelId,
+      groupId,
+      ...(replyToId !== undefined ? { replyToId } : {}),
+    });
   }
 
   /**

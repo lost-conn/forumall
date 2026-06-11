@@ -20,6 +20,7 @@ import { createMeFollowsRouter } from "./follows.ts";
 import { createGroupsRouter } from "./groups.ts";
 import { createInvitesRouter } from "./invites.ts";
 import { createMediaRouter } from "./media.ts";
+import { createMeNotificationsRouter } from "./notifications-feed.ts";
 import { createNotificationsRouter } from "./notifications.ts";
 import { createMeReadMarkersRouter } from "./read-markers.ts";
 import type { AppBindings } from "./types.ts";
@@ -70,6 +71,9 @@ export function createApiRouter() {
 
   /** Read/unread tracking (provider-local): `/api/me/read-markers`. */
   api.route("/me", createMeReadMarkersRouter());
+
+  /** Inbound notifications feed (provider-local): `/api/me/notifications`. */
+  api.route("/me", createMeNotificationsRouter());
 
   /** Caller's account + profile + privacy (§5.1, §6.3, §6.6): `/api/me`. */
   api.route("/me", createMeUserRouter());

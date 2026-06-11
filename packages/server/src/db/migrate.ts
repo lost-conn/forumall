@@ -644,6 +644,40 @@ const migrations: readonly Migration[] = [
       sqlite.exec("CREATE INDEX IF NOT EXISTS idx_read_markers_handle ON read_markers (handle);");
     },
   },
+  {
+    // Inbound notifications feed (provider-local) — @mentions + thread-replies on
+    // a group CHANNEL, one row per (local recipient, triggering message). Two
+    // independent nullable timestamps (`seen_at`, `read_at`). The unique
+    // (recipient, type, source_message_id) index dedupes; the recipient indexes
+    // back the newest-first feed + the unseen counts. Distinct from the §10
+    // outbound webhook `notification_endpoints` table. Guarded for re-run.
+    id: "0029_notifications",
+    up: (sqlite) => {
+      sqlite.exec(`
+        CREATE TABLE IF NOT EXISTS notifications (
+          id                TEXT PRIMARY KEY,
+          recipient         TEXT NOT NULL,
+          type              TEXT NOT NULL,
+          source_message_id TEXT NOT NULL,
+          channel_id        TEXT NOT NULL,
+          group_id          TEXT NOT NULL,
+          author            TEXT NOT NULL,
+          created_at        INTEGER NOT NULL,
+          seen_at           INTEGER,
+          read_at           INTEGER
+        ) STRICT;
+      `);
+      sqlite.exec(
+        "CREATE INDEX IF NOT EXISTS idx_notifications_recipient_created ON notifications (recipient, created_at);",
+      );
+      sqlite.exec(
+        "CREATE INDEX IF NOT EXISTS idx_notifications_recipient_seen ON notifications (recipient, seen_at);",
+      );
+      sqlite.exec(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_recipient_type_source ON notifications (recipient, type, source_message_id);",
+      );
+    },
+  },
 ];
 
 const LEDGER_DDL = `

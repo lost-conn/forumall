@@ -13,7 +13,7 @@
  * thread. A small trust-boundary notice makes the §8.3 confidentiality model
  * explicit (DMs are readable by the recipient's provider; not E2E-encrypted).
  */
-import type { Attachment } from "@forumall/shared";
+import type { Attachment, Notification } from "@forumall/shared";
 import { deriveDmId } from "@forumall/shared";
 import { A, useNavigate, useParams } from "@solidjs/router";
 import {
@@ -47,6 +47,12 @@ import {
   upsertConversation,
   upsertDmMessage,
 } from "../../stores/dms.ts";
+import {
+  markReadLocal,
+  markSeenLocal,
+  notificationsFor,
+  unseenCountFor,
+} from "../../stores/notifications.ts";
 import { subscribePresence } from "../../stores/presence-controller.ts";
 import { displayNameFor, warmProfile, warmProfiles } from "../../stores/profiles.ts";
 import { markRead, seqFromCursor, unreadCountFor } from "../../stores/read-markers.ts";
@@ -73,10 +79,10 @@ import {
 } from "./dm-controller.ts";
 
 /**
- * Inbox tabs. DMs are fully wired; Mentions and Thread-replies are presented but
- * not yet populated — surfacing them requires a server-side notifications/mentions
- * feed (none exists today; §10 notifications are outbound webhooks only). Tracked
- * as its own backend epic on the Forumall board.
+ * Inbox tabs. DMs, Mentions and Thread-replies are all wired: Mentions/Threads
+ * are backed by the provider-local inbound notifications feed
+ * (`/api/me/notifications` + the `notification.created` WS event), surfaced via
+ * the notifications store.
  */
 type InboxTab = "all" | "dms" | "mentions" | "threads";
 const INBOX_TABS: [InboxTab, string, IconName][] = [
@@ -86,13 +92,93 @@ const INBOX_TABS: [InboxTab, string, IconName][] = [
   ["threads", "Threads", "reply"],
 ];
 
-/** Placeholder for an inbox tab whose backing feed isn't built yet. */
+/** Empty-state card for an inbox tab whose backing feed has no items yet. */
 const InboxPlaceholder: Component<{ testid: string; title: string; detail: string }> = (props) => (
   <div class="px-3 py-6 text-center" data-testid={props.testid}>
     <div class="eyebrow mb-1">{props.title}</div>
     <p class="text-xs text-faint">{props.detail}</p>
   </div>
 );
+
+/** One notification row: author avatar/name, a label, time, link to the source. */
+const NotificationRow: Component<{ n: Notification }> = (props) => {
+  const navigate = useNavigate();
+  const label = () => (props.n.type === "mention" ? "mentioned you" : "replied to you");
+  const goToSource = () => {
+    // Best-effort: deep-link to the channel's group (channel selection is
+    // internal store state, so we land the user on the space). Mark the
+    // notification READ on click-through (read implies seen).
+    markReadLocal([props.n.id]);
+    navigate(`/groups/${props.n.groupId}`);
+  };
+  return (
+    <button
+      type="button"
+      onClick={goToSource}
+      class="flex w-full gap-[11px] rounded-md border-[1.5px] border-transparent p-[11px] text-left transition-colors hover:bg-surface-2"
+      classList={{ "opacity-60": !!props.n.readAt }}
+      data-testid="notification-row"
+      data-notification-id={props.n.id}
+      data-notification-type={props.n.type}
+    >
+      <span class="fa-ava fa-ava--sm" classList={{ "fa-ava__fed": isRemoteActor(props.n.author) }}>
+        <Avatar
+          actor={props.n.author}
+          initials={displayNameFor(props.n.author).slice(0, 1).toUpperCase()}
+        />
+      </span>
+      <span class="min-w-0 flex-1">
+        <span class="flex items-center gap-1.5">
+          <span class="min-w-0 flex-1 truncate font-body text-[13.5px] font-semibold text-ink">
+            {displayNameFor(props.n.author)}
+          </span>
+          <span class="inline-flex items-center gap-1 font-mono text-[10px] text-faint">
+            <Icon name={props.n.type === "mention" ? "bell" : "reply"} size={10} />
+            {formatTime(props.n.createdAt)}
+          </span>
+        </span>
+        <span class="mt-0.5 block truncate text-xs text-faint">{label()}</span>
+      </span>
+    </button>
+  );
+};
+
+/**
+ * The list body for a notification tab. Shows the items when present (else the
+ * empty placeholder), and marks every loaded notification of this type SEEN when
+ * the tab is mounted/viewed (seen = appeared in the list; read happens on
+ * click-through).
+ */
+const NotificationList: Component<{
+  type: "mention" | "reply";
+  testid: string;
+  title: string;
+  detail: string;
+}> = (props) => {
+  const items = createMemo(() => notificationsFor(props.type));
+  // Mark unseen notifications of this type SEEN when the tab is viewed.
+  createEffect(() => {
+    const unseen = items()
+      .filter((n) => !n.seenAt)
+      .map((n) => n.id);
+    if (unseen.length > 0) markSeenLocal(unseen);
+  });
+  return (
+    <Show
+      when={items().length > 0}
+      fallback={
+        <InboxPlaceholder testid={props.testid} title={props.title} detail={props.detail} />
+      }
+    >
+      <ul
+        class="flex flex-col gap-0.5"
+        data-testid={`inbox-${props.type === "mention" ? "mentions" : "replies"}-list`}
+      >
+        <For each={items()}>{(n) => <NotificationRow n={n} />}</For>
+      </ul>
+    </Show>
+  );
+};
 
 /** The current user's local sent-store, recreated when the actor changes. */
 function useSentStore(): () => DmSentStore | null {
@@ -223,6 +309,12 @@ export const DmsPage: Component = () => {
               >
                 <Icon name={icon} size={12} />
                 {label}
+                <Show when={id === "mentions" && unseenCountFor("mention") > 0}>
+                  <UnreadBadge count={unseenCountFor("mention")} variant="inline" />
+                </Show>
+                <Show when={id === "threads" && unseenCountFor("reply") > 0}>
+                  <UnreadBadge count={unseenCountFor("reply")} variant="inline" />
+                </Show>
               </button>
             )}
           </For>
@@ -247,14 +339,16 @@ export const DmsPage: Component = () => {
               </Show>
             </Match>
             <Match when={tab() === "mentions"}>
-              <InboxPlaceholder
+              <NotificationList
+                type="mention"
                 testid="inbox-mentions-empty"
                 title="Mentions"
                 detail="When someone @-mentions you, it'll show up here."
               />
             </Match>
             <Match when={tab() === "threads"}>
-              <InboxPlaceholder
+              <NotificationList
+                type="reply"
                 testid="inbox-replies-empty"
                 title="Thread-replies"
                 detail="Replies to your messages and threads you follow will collect here."
