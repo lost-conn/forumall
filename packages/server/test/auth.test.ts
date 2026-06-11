@@ -277,6 +277,19 @@ describe("config / argon2 defaults (§4.1.4 minimums)", () => {
     expect(() => loadConfig({ ARGON2_PARALLELISM: "1" })).toThrow();
   });
 
+  test("outbound networking: ipv4first default, no proxy, parses overrides", () => {
+    const def = loadConfig({});
+    expect(def.dnsResultOrder).toBe("ipv4first");
+    expect(def.pushProxy).toBeUndefined();
+
+    const over = loadConfig({ DNS_RESULT_ORDER: "verbatim", PUSH_PROXY: "http://10.0.0.2:3128" });
+    expect(over.dnsResultOrder).toBe("verbatim");
+    expect(over.pushProxy).toBe("http://10.0.0.2:3128");
+
+    expect(() => loadConfig({ DNS_RESULT_ORDER: "bogus" })).toThrow();
+    expect(() => loadConfig({ PUSH_PROXY: "not-a-url" })).toThrow();
+  });
+
   test("env loader allows raising the cost", () => {
     const c = loadConfig({ ARGON2_MEMORY_KIB: "131072", ARGON2_ITERATIONS: "4" });
     expect(c.argon2.memoryKib).toBe(131_072);

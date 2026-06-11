@@ -8,6 +8,7 @@
  * `./data` and listens on `localhost:3000`. The only thing a real (federating)
  * deployment must set is `DOMAIN`.
  */
+import dns from "node:dns";
 import { mkdirSync } from "node:fs";
 import { ZodError } from "zod";
 import { createApp } from "./app.ts";
@@ -39,6 +40,18 @@ function loadConfigOrExit(): Config {
 }
 
 const config = loadConfigOrExit();
+
+// Apply the outbound DNS address-family preference before any `fetch` runs.
+// Default `ipv4first`: self-host targets that NAT only IPv4 (Firecracker microVMs,
+// some PaaS sandboxes) have no IPv6 egress, so a dual-stack fetch that picks an
+// AAAA address black-holes — this is what kills Web Push delivery to FCM/Mozilla
+// and federation calls on such a host. `setDefaultResultOrder` is wrapped because
+// it's absent on older/edge runtimes (then we simply keep the platform default).
+try {
+  dns.setDefaultResultOrder(config.dnsResultOrder);
+} catch {
+  /* runtime without the API — non-fatal, keep the default order */
+}
 
 const db = openDb(config.dbPath);
 const applied = migrate(db);

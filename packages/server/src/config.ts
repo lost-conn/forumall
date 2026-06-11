@@ -159,6 +159,27 @@ const RawEnvSchema = z.object({
    * gated off by default. Ignored when a custom `federationFetch` is injected.
    */
   FEDERATION_INSECURE_LOCALHOST: BoolEnvSchema.default(false),
+
+  /**
+   * DNS address-family preference for ALL outbound `fetch` (web-push delivery,
+   * federation), applied at boot via Node/Bun `dns.setDefaultResultOrder`:
+   *   - `ipv4first` (default) — resolve A (IPv4) before AAAA. Chosen as the
+   *     default because common self-host targets (Firecracker microVMs, some
+   *     PaaS sandboxes) NAT only IPv4: a dual-stack `fetch` that selects an
+   *     unroutable AAAA address then fails (ECONNREFUSED / no route), which is
+   *     exactly how Web Push to FCM/Mozilla dies on an IPv4-only-NAT host.
+   *   - `verbatim` — use the resolver's order as-is (Node's modern default).
+   *   - `ipv6first` — prefer AAAA.
+   */
+  DNS_RESULT_ORDER: z.enum(["ipv4first", "verbatim", "ipv6first"]).default("ipv4first"),
+
+  /**
+   * Optional forward proxy for outbound Web Push delivery (Bun `fetch`'s `proxy`
+   * option). Set this when the host blocks DIRECT egress to the browser push
+   * services (FCM / Mozilla / Apple / Windows) and only permits outbound through
+   * a proxy. Unset (default) → direct connection. Example `http://10.0.0.2:3128`.
+   */
+  PUSH_PROXY: z.string().url().optional(),
 });
 
 /** Parse a comma-separated domain list into canonicalized, de-duplicated hosts. */
@@ -247,6 +268,14 @@ export interface Config {
    * loopback without TLS. Production stays https-only (default false).
    */
   readonly federationInsecureLocalhost: boolean;
+  /**
+   * DNS address-family order applied once at boot via `dns.setDefaultResultOrder`.
+   * Default `ipv4first` — see the `DNS_RESULT_ORDER` env doc for why. Affects all
+   * outbound `fetch` (web push + federation).
+   */
+  readonly dnsResultOrder: "ipv4first" | "verbatim" | "ipv6first";
+  /** Optional forward proxy for outbound Web Push delivery; omitted when unset. */
+  readonly pushProxy?: string;
 }
 
 /** A loosely-typed environment bag (process.env shape). */
@@ -301,6 +330,8 @@ export function loadConfig(env: Env = process.env): Config {
     enableKnownProviders: raw.ENABLE_KNOWN_PROVIDERS,
     enableDiscoverFeed: raw.ENABLE_DISCOVER_FEED,
     federationInsecureLocalhost: raw.FEDERATION_INSECURE_LOCALHOST,
+    dnsResultOrder: raw.DNS_RESULT_ORDER,
     ...(raw.CONTACT !== undefined ? { contact: raw.CONTACT } : {}),
+    ...(raw.PUSH_PROXY !== undefined ? { pushProxy: raw.PUSH_PROXY } : {}),
   });
 }

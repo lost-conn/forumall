@@ -81,11 +81,15 @@ export async function sendPushToRecipient(
     const doFetch: PushFetch =
       fetchImpl ??
       (async (url, init) => {
-        const res = await fetch(url, {
+        // `proxy` is a Bun fetch extension (forward-proxy egress); only set it
+        // when configured, and type it locally so this stays valid TS.
+        const reqInit: RequestInit & { proxy?: string } = {
           method: init.method,
           headers: init.headers,
           body: init.body as BodyInit,
-        });
+        };
+        if (config.pushProxy) reqInit.proxy = config.pushProxy;
+        const res = await fetch(url, reqInit);
         return { status: res.status };
       });
 
