@@ -34,6 +34,7 @@ import {
   MessageReferenceSchema,
   WsAuthenticateSchema,
   WsChannelTypingSchema,
+  WsDmTypingSchema,
   WsEnvelopeSchema,
   WsMessageCreateSchema,
   WsMessageCreatedSchema,
@@ -64,7 +65,7 @@ import type { Config } from "../config.ts";
 import type { Db } from "../db/index.ts";
 import { canViewChannel, getChannelRow } from "../provider/channels.ts";
 import { resolveActorKeys } from "../provider/device-keys.ts";
-import { isDmParticipant } from "../provider/dms.ts";
+import { getDmConversationRow, isDmParticipant } from "../provider/dms.ts";
 import type { FederationFetch } from "../provider/federation/http.ts";
 import { isProviderAllowed } from "../provider/federation/policy.ts";
 import type { RemoteUserKeysCache } from "../provider/federation/user-keys-cache.ts";
@@ -176,6 +177,12 @@ interface ConnState {
    * expiry, or disconnect removes the entry. Ephemeral — never persisted.
    */
   typingTimers: Map<string, ReturnType<typeof setTimeout>>;
+  /**
+   * Active DM typing indicators for THIS connection, keyed by `dmId`. Like
+   * {@link typingTimers} but DM-scoped: each entry holds the auto-expiry timer
+   * and the `counterparty` actor to fan a `dm.typing` stop to (§7.4). Ephemeral.
+   */
+  dmTypingTimers: Map<string, { timer: ReturnType<typeof setTimeout>; counterparty: string }>;
 }
 
 /**
@@ -289,6 +296,38 @@ export function createWsHandlers(deps: WsHandlerDeps) {
     }
   }
 
+  /** Build a validated `dm.typing` event (§7.4, mirrors `channel.typing`). */
+  function dmTypingEvent(dmId: string, user: string, typingState: "start" | "stop"): OutboundEvent {
+    return {
+      type: "dm.typing",
+      data: WsDmTypingSchema.shape.data.parse({ dmId, user, state: typingState }),
+    };
+  }
+
+  /** Clear a connection's DM typing timer for `dmId` without fanning out. */
+  function clearDmTypingTimer(state: ConnState, dmId: string): void {
+    const entry = state.dmTypingTimers.get(dmId);
+    if (entry !== undefined) {
+      clearTimeout(entry.timer);
+      state.dmTypingTimers.delete(dmId);
+    }
+  }
+
+  /**
+   * Clear every active DM typing indicator for a connection, optionally fanning
+   * out a `stop` to each counterparty first (on disconnect, so a dropped
+   * connection never leaves a stuck indicator — mirrors {@link clearAllTyping}).
+   */
+  function clearAllDmTyping(state: ConnState, emitStop: boolean): void {
+    for (const [dmId, entry] of state.dmTypingTimers) {
+      clearTimeout(entry.timer);
+      if (emitStop && state.actor) {
+        hub.publishToActor(entry.counterparty, dmTypingEvent(dmId, state.actor, "stop"));
+      }
+    }
+    state.dmTypingTimers.clear();
+  }
+
   /**
    * Clear every active typing indicator for a connection, optionally fanning out
    * a `stop` for each first. On disconnect (`emitStop`) we MUST emit a `stop` per
@@ -316,6 +355,7 @@ export function createWsHandlers(deps: WsHandlerDeps) {
     // subscribers), then clear its timers (§7.1: a dropped connection must not
     // leave a stuck indicator).
     clearAllTyping(state, true);
+    clearAllDmTyping(state, true);
 
     const hubConn = state.hubConn;
     if (hubConn) {
@@ -349,6 +389,7 @@ export function createWsHandlers(deps: WsHandlerDeps) {
         challengeUsed: false,
         lastSeen: now,
         typingTimers: new Map(),
+        dmTypingTimers: new Map(),
       };
       stateBySocket.set(keyOf(ws), state);
 
@@ -1133,9 +1174,39 @@ export function createWsHandlers(deps: WsHandlerDeps) {
       return;
     }
     const actor = state.actor;
-    if (!actor) return; // unreachable: only authenticated connections reach here
+    const handle = state.handle;
+    if (!actor || !handle) return; // unreachable: only authenticated connections reach here
 
-    const { channelId } = parsed.data.data;
+    const dmId = parsed.data.data.dmId;
+    // --- DM-scoped typing (§7.4) ------------------------------------------
+    if (dmId !== undefined) {
+      const conv = getDmConversationRow(db, handle, dmId);
+      if (!conv) {
+        send(
+          ws,
+          errorEvent("forbidden", "not authorized to type in this conversation", 403, frameId),
+        );
+        return;
+      }
+      const counterparty = conv.counterparty;
+      // Fan the `start` to the counterparty (the typer doesn't need its own echo
+      // for a 2-party DM, mirroring how DM messages deliver to the recipient).
+      hub.publishToActor(counterparty, dmTypingEvent(dmId, actor, "start"));
+      // (Re)arm the per-(connection, dmId) auto-expiry timer.
+      clearDmTypingTimer(state, dmId);
+      const timer = setTimeout(() => {
+        state.dmTypingTimers.delete(dmId);
+        hub.publishToActor(counterparty, dmTypingEvent(dmId, actor, "stop"));
+      }, config.typingTimeoutMs);
+      state.dmTypingTimers.set(dmId, { timer, counterparty });
+      return;
+    }
+
+    const channelId = parsed.data.data.channelId;
+    if (channelId === undefined) {
+      send(ws, errorEvent("bad_request", "typing.start needs a channelId or dmId", 400, frameId));
+      return;
+    }
     const channel = getChannelRow(db, channelId);
     if (!channel || !canViewChannel(db, channel, actor)) {
       send(ws, errorEvent("forbidden", "not authorized to type in this channel", 403, frameId));
@@ -1174,9 +1245,23 @@ export function createWsHandlers(deps: WsHandlerDeps) {
       return;
     }
     const actor = state.actor;
-    if (!actor) return; // unreachable: only authenticated connections reach here
+    const handle = state.handle;
+    if (!actor || !handle) return; // unreachable: only authenticated connections reach here
 
-    const { channelId } = parsed.data.data;
+    const dmId = parsed.data.data.dmId;
+    if (dmId !== undefined) {
+      // Resolve the counterparty (prefer the live timer's, fall back to the
+      // conversation row) so an explicit stop still reaches the other party.
+      const entry = state.dmTypingTimers.get(dmId);
+      const counterparty =
+        entry?.counterparty ?? getDmConversationRow(db, handle, dmId)?.counterparty;
+      clearDmTypingTimer(state, dmId);
+      if (counterparty) hub.publishToActor(counterparty, dmTypingEvent(dmId, actor, "stop"));
+      return;
+    }
+
+    const channelId = parsed.data.data.channelId;
+    if (channelId === undefined) return; // nothing to stop
     // Cancel the pending auto-expiry; we're emitting the `stop` explicitly now.
     clearTypingTimer(state, channelId);
     hub.publishToChannel(channelId, typingEvent(channelId, actor, "stop"));

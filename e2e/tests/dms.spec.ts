@@ -64,6 +64,11 @@ async function sendDm(page: Page, text: string): Promise<void> {
   await input.press("Enter");
 }
 
+/** A DM message row locator matching `text`. */
+function dmRow(page: Page, text: string) {
+  return page.locator('[data-testid="dm-message"]').filter({ hasText: text });
+}
+
 /** Drive the in-browser signing client to read A's own inbox for a dmId. */
 async function inboxTextsFor(page: Page, dmId: string): Promise<string[]> {
   return page.evaluate(async (id) => {
@@ -234,4 +239,244 @@ test("trust-boundary notice is shown on the DMs screen", async ({ page, appServe
   const notice = page.getByTestId("dm-trust-notice");
   await expect(notice).toBeVisible();
   await expect(notice).toContainText(/not end-to-end encrypted/i);
+});
+
+// ---------------------------------------------------------------------------
+// Parity-with-channel-chat features: reactions, replies, edit/delete,
+// attachments, typing. (Card: "DMs need replies/reactions/all chat
+// functionality".) Single provider, two browser contexts, conversation open on
+// both — exercising the live `dm.reaction` / `dm.typing` events + the §7.2 reply
+// reference + the PATCH/DELETE edit/tombstone re-fan.
+// ---------------------------------------------------------------------------
+
+/**
+ * Two users (A = the fixture page, B = a fresh context) with a DM conversation
+ * open on BOTH sides AND a two-way exchange already done, so BOTH have an inbox
+ * conversation row (required for the typing + own-message reaction paths, §7.4).
+ * Returns both pages + actors + the shared dmId + the two seed texts (`seedA`
+ * authored by A → in B's inbox; `seedB` authored by B → in A's inbox).
+ */
+async function twoUsersInDm(
+  page: Page,
+  browser: Browser,
+  baseUrl: string,
+): Promise<{
+  a: Page;
+  b: Page;
+  aActor: string;
+  bActor: string;
+  dmId: string;
+  seedA: string;
+  seedB: string;
+}> {
+  const aReg = await registerUser(page, baseUrl, uniqueHandle());
+  const b = await newUser(browser, baseUrl);
+  const dmId = await startDm(page, b.actor);
+  const seedA = `seeda-${Date.now().toString(36)}`;
+  await sendDm(page, seedA);
+  await expect(dmRow(page, seedA)).toHaveCount(1, { timeout: 10_000 });
+
+  const dmIdB = await openConversationWith(b.page, aReg.actor);
+  expect(dmIdB).toBe(dmId);
+  await expect(dmRow(b.page, seedA)).toHaveCount(1, { timeout: 10_000 });
+
+  // B replies so A also gets an inbox conversation row (two-way exchange).
+  const seedB = `seedb-${Date.now().toString(36)}`;
+  await sendDm(b.page, seedB);
+  await expect(dmRow(page, seedB)).toHaveCount(1, { timeout: 10_000 });
+
+  return { a: page, b: b.page, aActor: aReg.actor, bActor: b.actor, dmId, seedA, seedB };
+}
+
+test("reactions: B reacts to A's DM → A sees the chip; B removes → it clears", async ({
+  page,
+  browser,
+  appServer,
+}) => {
+  // B holds A's message in B's inbox (the server-supported reaction path, §8.3):
+  // B reacts, the server stores it + fans `dm.reaction` to BOTH participants.
+  const { a, b, seedA } = await twoUsersInDm(page, browser, appServer.baseUrl);
+
+  const bRow = dmRow(b, seedA).first();
+  await bRow.hover();
+  await bRow.getByTestId("react-button").click();
+  await b.getByTestId("reaction-picker").waitFor({ state: "visible" });
+  await b.locator('[data-testid="reaction-pick"][data-reaction-key="+1"]').click();
+
+  // B sees its own chip with count 1 (optimistic + confirmed).
+  const bChip = bRow.locator('[data-testid="reaction-chip"][data-reaction-key="+1"]');
+  await expect(bChip).toBeVisible({ timeout: 10_000 });
+  await expect(bChip.getByTestId("reaction-count")).toHaveText("1");
+
+  // A sees the same chip live (dm.reaction fans to both participants).
+  const aRow = dmRow(a, seedA).first();
+  const aChip = aRow.locator('[data-testid="reaction-chip"][data-reaction-key="+1"]');
+  await expect(aChip).toBeVisible({ timeout: 10_000 });
+  await expect(aChip.getByTestId("reaction-count")).toHaveText("1");
+
+  // B removes it → it clears on BOTH sides.
+  await bChip.click();
+  await expect(bChip).toHaveCount(0, { timeout: 10_000 });
+  await expect(aChip).toHaveCount(0, { timeout: 10_000 });
+
+  await b.context().close();
+});
+
+test("replies: A replies to B's message → the reply renders with a quoted parent", async ({
+  page,
+  browser,
+  appServer,
+}) => {
+  const { a, b, seedB } = await twoUsersInDm(page, browser, appServer.baseUrl);
+
+  // A replies to B's message (B's message is in A's inbox + the loaded thread).
+  const aSeedRow = dmRow(a, seedB).first();
+  await aSeedRow.hover();
+  await aSeedRow.getByTestId("dm-reply-button").click();
+  await expect(a.getByTestId("dm-composer-reply-pill")).toBeVisible();
+  const reply = `reply-${Date.now().toString(36)}`;
+  await sendDm(a, reply);
+
+  // A's own reply renders with the reply-quote referencing B's message.
+  const aReplyRow = dmRow(a, reply).first();
+  await expect(aReplyRow).toBeVisible({ timeout: 10_000 });
+  await expect(aReplyRow.getByTestId("reply-quote")).toBeVisible();
+  await expect(aReplyRow.getByTestId("reply-quote")).toContainText(seedB);
+
+  // B receives the reply live, also with the quoted parent.
+  const bReplyRow = dmRow(b, reply).first();
+  await expect(bReplyRow).toBeVisible({ timeout: 10_000 });
+  await expect(bReplyRow.getByTestId("reply-quote")).toContainText(seedB);
+
+  await b.context().close();
+});
+
+test("edit + delete: A edits then deletes their own DM → BOTH author and recipient reflect it", async ({
+  page,
+  browser,
+  appServer,
+}) => {
+  // §8.3 + storage-follows-message: the author's sent copy is client-retained,
+  // but the server's authoritative copy lives in the RECIPIENT's inbox. The
+  // PATCH/DELETE routes now route the edit/tombstone to that copy and fan
+  // `dm.message` to the recipient — so editing/deleting one's OWN sent DM updates
+  // BOTH the author's own view (+ local store, survives reload) AND the
+  // recipient's live view. We assert both sides here.
+  const { a, b, seedA } = await twoUsersInDm(page, browser, appServer.baseUrl);
+
+  const aSeed = dmRow(a, seedA).first();
+  await expect.poll(() => aSeed.getAttribute("data-message-id")).not.toMatch(/^optimistic:/);
+  const seedId = await aSeed.getAttribute("data-message-id");
+  const aSeedById = a.locator(`[data-testid="dm-message"][data-message-id="${seedId}"]`);
+  // B already holds seedA in their inbox (it was authored by A → B's inbox).
+  const bSeedById = b.locator(`[data-testid="dm-message"][data-message-id="${seedId}"]`);
+  await expect(bSeedById).toContainText(seedA, { timeout: 10_000 });
+
+  // A edits their own message.
+  await aSeedById.hover();
+  await aSeedById.getByTestId("dm-edit-message").click();
+  const edited = `${seedA}-edited`;
+  await aSeedById.getByTestId("dm-edit-input").fill(edited);
+  await aSeedById.getByTestId("dm-save-edit").click();
+  await expect(aSeedById).toContainText(edited, { timeout: 10_000 });
+  await expect(aSeedById.getByTestId("dm-message-edited")).toBeVisible();
+
+  // The RECIPIENT sees the edit live (forwarded to B's inbox + `dm.message`).
+  await expect(bSeedById).toContainText(edited, { timeout: 10_000 });
+  await expect(bSeedById.getByTestId("dm-message-edited")).toBeVisible();
+
+  // The edit survives a reload on BOTH sides (A from the local sent-store, B from
+  // the server's stored inbox copy).
+  await a.reload();
+  await expect(a.locator(`[data-testid="dm-message"][data-message-id="${seedId}"]`)).toContainText(
+    edited,
+    { timeout: 15_000 },
+  );
+  await b.reload();
+  await expect(b.locator(`[data-testid="dm-message"][data-message-id="${seedId}"]`)).toContainText(
+    edited,
+    { timeout: 15_000 },
+  );
+
+  // A deletes their own message → tombstone in place (survives reload) AND the
+  // recipient's copy is tombstoned too.
+  const aSeedById2 = a.locator(`[data-testid="dm-message"][data-message-id="${seedId}"]`);
+  a.once("dialog", (d) => void d.accept());
+  await aSeedById2.hover();
+  await aSeedById2.getByTestId("dm-delete-message").click();
+  await expect(aSeedById2.getByTestId("dm-message-tombstone")).toBeVisible({ timeout: 10_000 });
+
+  // The RECIPIENT sees the tombstone live.
+  await expect(
+    b
+      .locator(`[data-testid="dm-message"][data-message-id="${seedId}"]`)
+      .getByTestId("dm-message-tombstone"),
+  ).toBeVisible({ timeout: 10_000 });
+
+  await a.reload();
+  await expect(
+    a
+      .locator(`[data-testid="dm-message"][data-message-id="${seedId}"]`)
+      .getByTestId("dm-message-tombstone"),
+  ).toBeVisible({ timeout: 15_000 });
+  await b.reload();
+  await expect(
+    b
+      .locator(`[data-testid="dm-message"][data-message-id="${seedId}"]`)
+      .getByTestId("dm-message-tombstone"),
+  ).toBeVisible({ timeout: 15_000 });
+
+  await b.context().close();
+});
+
+test("attachment: A attaches an image to a DM → it renders for both", async ({
+  page,
+  browser,
+  appServer,
+}) => {
+  const { a, b } = await twoUsersInDm(page, browser, appServer.baseUrl);
+
+  // A 1x1 transparent PNG.
+  const pngBase64 =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+  const buffer = Buffer.from(pngBase64, "base64");
+
+  await a.getByTestId("dm-file-input").setInputFiles({
+    name: "pixel.png",
+    mimeType: "image/png",
+    buffer,
+  });
+  await expect(a.getByTestId("dm-composer-attachments")).toBeVisible({ timeout: 10_000 });
+  await sendDm(a, "look at this");
+
+  // The inline <img> appears for A and B and actually loaded.
+  const aImg = a.getByTestId("attachment-image").first();
+  await expect(aImg).toBeVisible({ timeout: 10_000 });
+  await expect(b.getByTestId("attachment-image").first()).toBeVisible({ timeout: 10_000 });
+  await expect
+    .poll(() => aImg.evaluate((el: HTMLImageElement) => el.naturalWidth))
+    .toBeGreaterThan(0);
+
+  await b.context().close();
+});
+
+test("typing: A typing in a DM → B sees the indicator; it clears on blur", async ({
+  page,
+  browser,
+  appServer,
+}) => {
+  const { a, b } = await twoUsersInDm(page, browser, appServer.baseUrl);
+
+  const input = a.getByTestId("dm-composer-input");
+  await input.click();
+  await input.pressSequentially("drafting…", { delay: 20 });
+
+  const indicator = b.getByTestId("dm-typing-indicator");
+  await expect(indicator).toBeVisible({ timeout: 10_000 });
+  await expect(indicator).toContainText("typing");
+
+  await input.evaluate((el: HTMLElement) => el.blur());
+  await expect(b.getByTestId("dm-typing-indicator")).toHaveCount(0, { timeout: 10_000 });
+
+  await b.context().close();
 });

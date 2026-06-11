@@ -13,6 +13,7 @@
 import { z } from "zod";
 
 import {
+  AttachmentSchema,
   DmIdSchema,
   HttpsUriSchema,
   JsonValueSchema,
@@ -22,7 +23,7 @@ import {
   UserRefSchema,
 } from "./common.ts";
 import { MemberSchema } from "./groups.ts";
-import { ContentSchema, ReactionSchema } from "./messaging.ts";
+import { ContentSchema, MessageReferenceSchema, ReactionSchema } from "./messaging.ts";
 import { PresenceSchema } from "./privacy.ts";
 
 // ---------------------------------------------------------------------------
@@ -63,6 +64,8 @@ export const WsEventTypeSchema = z.enum([
   "channel.typing",
   "member.updated",
   "dm.message",
+  "dm.reaction",
+  "dm.typing",
   "presence.subscribed",
   "presence.unsubscribed",
   "presence.update",
@@ -104,6 +107,8 @@ export const WsTypeSchema = z.enum([
   "channel.typing",
   "member.updated",
   "dm.message",
+  "dm.reaction",
+  "dm.typing",
   "presence.subscribed",
   "presence.unsubscribed",
   "presence.update",
@@ -271,17 +276,22 @@ export const WsReactionRemoveSchema = wsFrame(
 );
 export type WsReactionRemove = z.infer<typeof WsReactionRemoveSchema>;
 
-/** `typing.start` command. */
+/**
+ * `typing.start` command. Targets either a channel (`channelId`) OR a DM
+ * conversation (`dmId`) — exactly one. Both fields are optional on the schema
+ * (open-world) and the server requires one of them; a DM-scoped typing frame
+ * fans out a `dm.typing` event to the counterparty (§7.4).
+ */
 export const WsTypingStartSchema = wsFrame(
   "typing.start",
-  z.object({ channelId: z.string().min(1) }).passthrough(),
+  z.object({ channelId: z.string().min(1).optional(), dmId: DmIdSchema.optional() }).passthrough(),
 );
 export type WsTypingStart = z.infer<typeof WsTypingStartSchema>;
 
-/** `typing.stop` command. */
+/** `typing.stop` command. Targets either a channel (`channelId`) or a DM (`dmId`). */
 export const WsTypingStopSchema = wsFrame(
   "typing.stop",
-  z.object({ channelId: z.string().min(1) }).passthrough(),
+  z.object({ channelId: z.string().min(1).optional(), dmId: DmIdSchema.optional() }).passthrough(),
 );
 export type WsTypingStop = z.infer<typeof WsTypingStopSchema>;
 
@@ -491,12 +501,61 @@ export const WsDmMessageSchema = wsFrame(
           author: UserRefSchema,
           createdAt: Rfc3339DateTimeSchema,
           content: ContentSchema,
+          // Attachments + reply reference flow through the live event (parity
+          // with channel `message.created`), so a DM with media / a reply
+          // renders without a re-fetch. Both optional + passthrough.
+          attachments: z.array(AttachmentSchema).optional(),
+          reference: MessageReferenceSchema.optional(),
+          editedAt: Rfc3339DateTimeSchema.optional(),
+          deletedAt: Rfc3339DateTimeSchema.optional(),
         })
         .passthrough(),
     })
     .passthrough(),
 );
 export type WsDmMessage = z.infer<typeof WsDmMessageSchema>;
+
+/**
+ * `dm.reaction` event — a reaction was added to / removed from a DM message
+ * (mirrors the channel `reaction.added`/`reaction.removed` events, DM-scoped by
+ * `dmId`). `state: "added"` carries the full canonical `reaction`; `state:
+ * "removed"` carries the `messageId`/`key`/`author` of the removed reaction.
+ * Fanned out to BOTH DM participants. Passthrough, like every other event.
+ */
+export const WsDmReactionSchema = wsFrame(
+  "dm.reaction",
+  z
+    .object({
+      dmId: DmIdSchema,
+      messageId: z.string().min(1),
+      state: z.enum(["added", "removed"]),
+      // For `added`, the full `reaction` carries author/key/unicode; for
+      // `removed`, the top-level `author`/`key` identify what was removed. Both
+      // top-level fields are optional so the `added` form (author/key inside
+      // `reaction`) validates; this provider always also stamps them.
+      author: UserRefSchema.optional(),
+      key: z.string().min(1).optional(),
+      reaction: ReactionSchema.optional(),
+    })
+    .passthrough(),
+);
+export type WsDmReaction = z.infer<typeof WsDmReactionSchema>;
+
+/**
+ * `dm.typing` event — a participant started/stopped typing in a DM (mirrors
+ * `channel.typing`, DM-scoped by `dmId`). Fanned out to the OTHER participant.
+ */
+export const WsDmTypingSchema = wsFrame(
+  "dm.typing",
+  z
+    .object({
+      dmId: DmIdSchema,
+      user: UserRefSchema,
+      state: z.enum(["start", "stop"]),
+    })
+    .passthrough(),
+);
+export type WsDmTyping = z.infer<typeof WsDmTypingSchema>;
 
 /** `presence.subscribed` event. */
 export const WsPresenceSubscribedSchema = wsFrame(

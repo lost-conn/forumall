@@ -579,6 +579,32 @@ const migrations: readonly Migration[] = [
       }
     },
   },
+  {
+    // DM reactions (Overboard "DMs need replies/reactions/all chat
+    // functionality"): one row per (dm_id, message_id, author, key), mirroring
+    // the channel `reactions` table. Stored at the provider where the target DM
+    // message lives (storage-follows-message, §8.3). Create-if-not-exists DDL +
+    // the unique/aggregation indexes; guarded so a re-run is a no-op.
+    id: "0026_dm_reactions",
+    up: (sqlite) => {
+      sqlite.exec(`
+        CREATE TABLE IF NOT EXISTS dm_reactions (
+          id         TEXT PRIMARY KEY,
+          dm_id      TEXT NOT NULL,
+          message_id TEXT NOT NULL,
+          author     TEXT NOT NULL,
+          key        TEXT NOT NULL,
+          created_at INTEGER NOT NULL
+        ) STRICT;
+      `);
+      sqlite.exec(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_dm_reactions_dm_message_author_key ON dm_reactions (dm_id, message_id, author, key);",
+      );
+      sqlite.exec(
+        "CREATE INDEX IF NOT EXISTS idx_dm_reactions_dm_message ON dm_reactions (dm_id, message_id);",
+      );
+    },
+  },
 ];
 
 const LEDGER_DDL = `

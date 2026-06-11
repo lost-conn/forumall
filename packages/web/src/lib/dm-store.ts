@@ -29,7 +29,15 @@ export interface SentDmMessage {
   /** The sending actor (always the current user). */
   author: string;
   content: { mime?: string; text?: string };
+  /** Media attachments the sender included (retained so reload restores them). */
+  attachments?: import("@forumall/shared").Attachment[];
+  /** §5.3 reply pointer to the message this was a reply to. */
+  reference?: { type: string; id: string };
   createdAt: string;
+  /** Set when the sender edited this message in place (local-only own-copy edit). */
+  editedAt?: string;
+  /** Set when the sender deleted (tombstoned) this own message (local-only). */
+  deletedAt?: string;
   /** Echoed so a live `dm.message` (foreign tab) can de-dupe against the local copy. */
   clientMessageId?: string;
 }

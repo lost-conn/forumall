@@ -32,7 +32,11 @@ import {
   MessageSchema,
   MessageUpdateRequestSchema,
   MessagesPageSchema,
+  PagedResponseSchema,
+  type Reaction,
+  ReactionSchema,
   WsDmMessageSchema,
+  WsDmReactionSchema,
   canonicalAuthority,
   deriveDmId,
   rfc3339Timestamp,
@@ -40,7 +44,16 @@ import {
 import { eq } from "drizzle-orm";
 import { type Context, Hono } from "hono";
 
+import type { Config } from "../config.ts";
+import type { Db } from "../db/index.ts";
 import { users } from "../db/schema.ts";
+import {
+  addDmReaction,
+  hasDmReaction,
+  listDmReplies,
+  removeDmReaction,
+  withDmReactions,
+} from "../provider/dm-reactions.ts";
 import {
   getDmConversationRow,
   getDmMessageByClientId,
@@ -52,9 +65,14 @@ import {
   tombstoneDmMessage,
   updateDmMessageContent,
 } from "../provider/dms.ts";
+import type { FederationFetch } from "../provider/federation/http.ts";
+import { signedProviderFetch } from "../provider/federation/http.ts";
 import { AppError } from "./errors.ts";
-import { requireSignature } from "./signature.ts";
+import { requireProviderSignature, requireSignature } from "./signature.ts";
 import type { AppBindings } from "./types.ts";
+
+/** Max length of a reaction key (matches the channel reaction key bound). */
+const MAX_REACTION_KEY_LENGTH = 64;
 
 /** Read a path param guaranteed present by the mounted route. */
 function requireParam(c: Context<AppBindings>, name: string): string {
@@ -95,7 +113,264 @@ function dmMessageEventData(
       author: message.author,
       createdAt: message.createdAt,
       content: message.content,
+      // Carry attachments / reply reference + edit/delete markers on the live
+      // event so a DM with media or a reply renders without a re-fetch.
+      ...(message.attachments && message.attachments.length > 0
+        ? { attachments: message.attachments }
+        : {}),
+      ...(message.reference ? { reference: message.reference } : {}),
+      ...(message.editedAt ? { editedAt: message.editedAt } : {}),
+      ...(message.deletedAt ? { deletedAt: message.deletedAt } : {}),
     },
+  });
+}
+
+/**
+ * Resolve the LOCAL inbox owner for a `(author, dmId)` pair — the local user
+ * `u` whose derived dmId with `author` equals `dmId` (§8.3 recipient
+ * resolution, O(n) over local users). Returns the bare local handle, or `null`
+ * if no local user is the recipient (i.e. the inbox lives on a remote provider).
+ */
+function resolveLocalDmOwner(db: Db, config: Config, author: string, dmId: string): string | null {
+  const authority = canonicalAuthority(config.domain);
+  const localUsers = db.drizzle.select({ handle: users.handle }).from(users).all();
+  for (const u of localUsers) {
+    if (deriveDmId(author, `${u.handle}@${authority}`) === dmId) return u.handle;
+  }
+  return null;
+}
+
+/** The other actor in `dmId` from `caller`'s perspective, or `null`. */
+function counterpartyOf(db: Db, owner: string, dmId: string): string | null {
+  return getDmConversationRow(db, owner, dmId)?.counterparty ?? null;
+}
+
+/** The host (domain) part of `handle@domain`, canonicalized; "" if malformed. */
+function domainOf(actor: string): string {
+  const at = actor.lastIndexOf("@");
+  if (at <= 0 || at === actor.length - 1) return "";
+  return canonicalAuthority(actor.slice(at + 1));
+}
+
+/** Build a validated `dm.reaction` event payload (added/removed). */
+function dmReactionEventData(args: {
+  dmId: string;
+  messageId: string;
+  state: "added" | "removed";
+  author: string;
+  key: string;
+  reaction?: Reaction;
+}): unknown {
+  return WsDmReactionSchema.shape.data.parse({
+    dmId: args.dmId,
+    messageId: args.messageId,
+    state: args.state,
+    author: args.author,
+    key: args.key,
+    ...(args.reaction ? { reaction: args.reaction } : {}),
+  });
+}
+
+/** Reject an empty / over-long reaction key with a clean 400 (mirrors channels). */
+function assertValidReactionKey(key: string): void {
+  if (key.length === 0 || key.length > MAX_REACTION_KEY_LENGTH) {
+    throw AppError.badRequest({ detail: "invalid reaction key" });
+  }
+}
+
+/** The hub surface the DM routes use for fan-out (publish to a specific actor). */
+type DmHub = { publishToActor(actor: string, event: { type: string; data: unknown }): void };
+
+/**
+ * Fan out a `dm.reaction` event to BOTH participants of the conversation
+ * (mirroring the `publishToActor`-per-participant DM-send delivery). Dedupes so
+ * a fully-local both-parties pair isn't notified twice.
+ */
+function fanOutDmReaction(
+  hub: DmHub,
+  args: {
+    dmId: string;
+    messageId: string;
+    state: "added" | "removed";
+    author: string;
+    key: string;
+    reaction?: Reaction;
+    participants: string[];
+  },
+): void {
+  const data = dmReactionEventData({
+    dmId: args.dmId,
+    messageId: args.messageId,
+    state: args.state,
+    author: args.author,
+    key: args.key,
+    ...(args.reaction ? { reaction: args.reaction } : {}),
+  });
+  for (const actor of new Set(args.participants)) {
+    hub.publishToActor(actor, { type: "dm.reaction", data });
+  }
+}
+
+/**
+ * Forward a DM reaction add/remove to the counterparty's home provider via a
+ * provider-signed request (§8.1), mirroring the DM-send delivery path: the
+ * reaction targets a message stored only in the remote recipient's inbox
+ * (storage-follows-message, §8.3), so the authoritative store is the peer. The
+ * reacting actor travels in the JSON body (a provider-signed request has no
+ * `X-OFSCP-Actor`); the peer re-validates dmId membership.
+ */
+async function forwardDmReaction(
+  db: Db,
+  config: Config,
+  federationFetch: FederationFetch,
+  args: {
+    method: "PUT" | "DELETE";
+    dmId: string;
+    messageId: string;
+    key: string;
+    counterpartyDomain: string;
+    actor: string;
+  },
+): Promise<Response> {
+  const path = `/api/federation/dms/${args.dmId}/messages/${args.messageId}/reactions/${encodeURIComponent(args.key)}`;
+  const url = `https://${args.counterpartyDomain}${path}`;
+  const body = JSON.stringify({ actor: args.actor });
+  return signedProviderFetch(
+    db,
+    config,
+    {
+      method: args.method,
+      url,
+      body,
+      headers: { "content-type": "application/json" },
+    },
+    federationFetch,
+  );
+}
+
+/**
+ * Forward an edit of a sent DM to the counterparty's home provider (§8.1),
+ * mirroring {@link forwardDmReaction}: the message lives only in the remote
+ * recipient's inbox (storage-follows-message, §8.3), so the authoritative store
+ * is the peer. The acting actor + the new content travel in the body (a
+ * provider-signed request has no `X-OFSCP-Actor`); the peer re-validates dmId
+ * membership and enforces author-only + the edit window.
+ */
+async function forwardDmEdit(
+  db: Db,
+  config: Config,
+  federationFetch: FederationFetch,
+  args: {
+    dmId: string;
+    messageId: string;
+    counterpartyDomain: string;
+    actor: string;
+    content: Content;
+  },
+): Promise<Response> {
+  const path = `/api/federation/dms/${args.dmId}/messages/${args.messageId}`;
+  const url = `https://${args.counterpartyDomain}${path}`;
+  const body = JSON.stringify({ actor: args.actor, content: args.content });
+  return signedProviderFetch(
+    db,
+    config,
+    { method: "PATCH", url, body, headers: { "content-type": "application/json" } },
+    federationFetch,
+  );
+}
+
+/**
+ * Forward a delete (tombstone) of a sent DM to the counterparty's home provider
+ * (§8.1), mirroring {@link forwardDmEdit}. The acting actor travels in the body;
+ * the peer enforces author-only against the stored copy.
+ */
+async function forwardDmDelete(
+  db: Db,
+  config: Config,
+  federationFetch: FederationFetch,
+  args: {
+    dmId: string;
+    messageId: string;
+    counterpartyDomain: string;
+    actor: string;
+  },
+): Promise<Response> {
+  const path = `/api/federation/dms/${args.dmId}/messages/${args.messageId}`;
+  const url = `https://${args.counterpartyDomain}${path}`;
+  const body = JSON.stringify({ actor: args.actor });
+  return signedProviderFetch(
+    db,
+    config,
+    { method: "DELETE", url, body, headers: { "content-type": "application/json" } },
+    federationFetch,
+  );
+}
+
+/**
+ * Apply an edit to a stored inbox DM after the author + edit-window checks pass,
+ * then fan `dm.message` to the inbox owner. Shared by the local PATCH path and
+ * the federation ingest so both enforce identical §7.1 rules. `row` is the
+ * pre-fetched stored row (already asserted to exist). Throws 403 if the acting
+ * actor is not the author or the edit window has passed.
+ */
+function applyDmEdit(
+  db: Db,
+  hub: DmHub,
+  args: {
+    owner: string;
+    ownerActor: string;
+    dmId: string;
+    messageId: string;
+    actor: string;
+    content: Content;
+    row: { author: string; editUntil: number };
+  },
+): Message {
+  if (args.row.author !== args.actor) {
+    throw AppError.forbidden({ detail: "only the author may edit this message" });
+  }
+  if (Date.now() > args.row.editUntil) {
+    throw AppError.forbidden({ detail: "the edit window for this message has passed" });
+  }
+  const record = updateDmMessageContent(db, args.owner, args.dmId, args.messageId, args.content);
+  hub.publishToActor(args.ownerActor, {
+    type: "dm.message",
+    data: dmMessageEventData(args.dmId, record.cursor, record.message),
+  });
+  return record.message;
+}
+
+/**
+ * Tombstone a stored inbox DM, then fan `dm.message` to the inbox owner. Shared
+ * by the local DELETE path and the federation ingest.
+ *
+ * `requireAuthor` controls the §7.1 authorization: it is `false` for the local
+ * own-inbox path (the inbox owner may delete their OWN stored copy — preserving
+ * the original DM-delete semantics where a recipient can tombstone a received
+ * message in their inbox), and `true` for the forwarded / federation-ingest path
+ * (a sender deleting a message they SENT that lives in the counterparty's inbox
+ * — only the ORIGINAL AUTHOR may do so; else 403).
+ */
+function applyDmDelete(
+  db: Db,
+  hub: DmHub,
+  args: {
+    owner: string;
+    ownerActor: string;
+    dmId: string;
+    messageId: string;
+    actor: string;
+    row: { author: string };
+    requireAuthor: boolean;
+  },
+): void {
+  if (args.requireAuthor && args.row.author !== args.actor) {
+    throw AppError.forbidden({ detail: "only the author may delete this message" });
+  }
+  const record = tombstoneDmMessage(db, args.owner, args.dmId, args.messageId);
+  hub.publishToActor(args.ownerActor, {
+    type: "dm.message",
+    data: dmMessageEventData(args.dmId, record.cursor, record.message),
   });
 }
 
@@ -168,7 +443,171 @@ export function createFederationDmsRouter() {
     return c.json(MessageSchema.parse(record.message), 201);
   });
 
+  // -- Federation reaction ingest (§8.3 storage-follows-message) ----------
+  // A peer forwards a reaction by one of THEIR users to a DM message that lives
+  // in a LOCAL recipient's inbox here. Provider-signed (§8.1); the reacting
+  // actor travels in the body. We re-derive the local inbox owner from the
+  // (actor, dmId) pair (the §8.3 recipient-resolution guard), store/remove the
+  // reaction, and fan `dm.reaction` to the local recipient.
+  const providerSigned = requireProviderSignature();
+
+  // PUT /{dmId}/messages/{messageId}/reactions/{key}
+  router.put("/:dmId/messages/:messageId/reactions/:key", providerSigned, async (c) =>
+    handleFederationDmReaction(c, "added"),
+  );
+
+  // DELETE /{dmId}/messages/{messageId}/reactions/{key}
+  router.delete("/:dmId/messages/:messageId/reactions/:key", providerSigned, async (c) =>
+    handleFederationDmReaction(c, "removed"),
+  );
+
+  // -- Federation edit/delete ingest (§8.3 storage-follows-message) -------
+  // A peer forwards an edit/delete by one of THEIR users of a DM message that
+  // lives in a LOCAL recipient's inbox here. Provider-signed (§8.1); the acting
+  // actor (and, for edit, the new content) travel in the body. We re-derive the
+  // local inbox owner from (actor, dmId) — the same §8.3 guard — enforce
+  // author-only + the edit window against the stored copy, apply, and fan
+  // `dm.message` to the local recipient.
+
+  // PATCH /{dmId}/messages/{messageId}
+  router.patch("/:dmId/messages/:messageId", providerSigned, async (c) => {
+    const { db, config, hub } = c.var;
+    const dmId = requireParam(c, "dmId");
+    const messageId = requireParam(c, "messageId");
+
+    const raw = (await c.req.json().catch(() => ({}))) as { actor?: unknown; content?: unknown };
+    const actingActor = typeof raw.actor === "string" ? raw.actor : "";
+    if (actingActor === "") throw AppError.badRequest({ detail: "missing acting actor" });
+    const content = MessageUpdateRequestSchema.parse({ content: raw.content }).content as Content;
+
+    const { owner, ownerActor } = resolveFederationDmOwner(db, config, actingActor, dmId);
+    const row = getDmMessageRow(db, owner, dmId, messageId);
+    if (!row) throw AppError.notFound({ detail: "no such message" });
+
+    const message = applyDmEdit(db, hub, {
+      owner,
+      ownerActor,
+      dmId,
+      messageId,
+      actor: actingActor,
+      content,
+      row,
+    });
+    return c.json(MessageSchema.parse(message));
+  });
+
+  // DELETE /{dmId}/messages/{messageId}
+  router.delete("/:dmId/messages/:messageId", providerSigned, async (c) => {
+    const { db, config, hub } = c.var;
+    const dmId = requireParam(c, "dmId");
+    const messageId = requireParam(c, "messageId");
+
+    const raw = (await c.req.json().catch(() => ({}))) as { actor?: unknown };
+    const actingActor = typeof raw.actor === "string" ? raw.actor : "";
+    if (actingActor === "") throw AppError.badRequest({ detail: "missing acting actor" });
+
+    const { owner, ownerActor } = resolveFederationDmOwner(db, config, actingActor, dmId);
+    const row = getDmMessageRow(db, owner, dmId, messageId);
+    if (!row) throw AppError.notFound({ detail: "no such message" });
+
+    applyDmDelete(db, hub, {
+      owner,
+      ownerActor,
+      dmId,
+      messageId,
+      actor: actingActor,
+      row,
+      requireAuthor: true,
+    });
+    return c.body(null, 204);
+  });
+
   return router;
+}
+
+/**
+ * Resolve the LOCAL inbox owner for a forwarded DM edit/delete, applying the
+ * §8.3 recipient-resolution guard: the local user `u` such that
+ * `deriveDmId(actingActor, u@authority) === dmId`. No match → 400 (the message
+ * is for a conversation with no local recipient — inbox poisoning). Returns both
+ * the bare handle and the full `handle@authority` actor.
+ */
+function resolveFederationDmOwner(
+  db: Db,
+  config: Config,
+  actingActor: string,
+  dmId: string,
+): { owner: string; ownerActor: string } {
+  const owner = resolveLocalDmOwner(db, config, actingActor, dmId);
+  if (owner === null) {
+    throw AppError.badRequest({
+      detail: "{dmId} does not match a conversation between the actor and a local recipient",
+    });
+  }
+  const authority = canonicalAuthority(config.domain);
+  return { owner, ownerActor: `${owner}@${authority}` };
+}
+
+/**
+ * Shared handler for the provider-signed DM-reaction ingest (add/remove). The
+ * forwarding peer is the reacting actor's home provider; the message lives in a
+ * LOCAL recipient's inbox. We re-derive the local owner from `(actor, dmId)` —
+ * the same §8.3 guard the DM-send ingest uses — store/remove, then fan out.
+ */
+async function handleFederationDmReaction(
+  c: Context<AppBindings>,
+  state: "added" | "removed",
+): Promise<Response> {
+  const { db, config, hub } = c.var;
+  const dmId = requireParam(c, "dmId");
+  const messageId = requireParam(c, "messageId");
+  const key = requireParam(c, "key");
+  assertValidReactionKey(key);
+
+  const body = (await c.req.json().catch(() => ({}))) as { actor?: unknown };
+  const reactingActor = typeof body.actor === "string" ? body.actor : "";
+  if (reactingActor === "") throw AppError.badRequest({ detail: "missing reacting actor" });
+
+  // §8.3 guard: the local inbox owner is the local user `u` such that
+  // deriveDmId(reactingActor, u@authority) === dmId. No match → 400 (the
+  // reaction is for a conversation with no local recipient — inbox poisoning).
+  const owner = resolveLocalDmOwner(db, config, reactingActor, dmId);
+  if (owner === null) {
+    throw AppError.badRequest({
+      detail: "{dmId} does not match a conversation between the actor and a local recipient",
+    });
+  }
+  const authority = canonicalAuthority(config.domain);
+  const recipientActor = `${owner}@${authority}`;
+
+  if (!getDmMessageRow(db, owner, dmId, messageId)) {
+    throw AppError.notFound({ detail: "no such message" });
+  }
+
+  if (state === "added") {
+    const reaction = addDmReaction(db, { dmId, messageId, author: reactingActor, key });
+    fanOutDmReaction(hub, {
+      dmId,
+      messageId,
+      state: "added",
+      author: reactingActor,
+      key,
+      reaction,
+      participants: [recipientActor, reactingActor],
+    });
+    return c.json(ReactionSchema.parse(reaction), 200);
+  }
+
+  removeDmReaction(db, dmId, messageId, reactingActor, key);
+  fanOutDmReaction(hub, {
+    dmId,
+    messageId,
+    state: "removed",
+    author: reactingActor,
+    key,
+    participants: [recipientActor, reactingActor],
+  });
+  return c.body(null, 204);
 }
 
 /** The `GET /api/me/dms` router. Mounted at `/api/me`. */
@@ -235,60 +674,288 @@ export function createDmsRouter() {
       direction,
       ...(limit !== undefined ? { limit } : {}),
     });
+    // Embed each message's reactions aggregate (attachments + reference already
+    // flow through `rowToDmMessage`), so the client has everything in one read.
+    return c.json(
+      MessagesPageSchema.parse({ items: withDmReactions(db, dmId, page.items), page: page.page }),
+    );
+  });
+
+  // -- GET /{dmId}/messages/{messageId}/replies (§7.2 — signed) -----------
+  // Paged list of the replies to a DM message within the caller's inbox. Same
+  // participant-only gate + `messages-page` shape as the history read.
+  router.get("/:dmId/messages/:messageId/replies", signed, (c) => {
+    const { db } = c.var;
+    const actor = c.var.actor;
+    if (!actor) throw AppError.unauthorized();
+    const dmId = requireParam(c, "dmId");
+    const messageId = requireParam(c, "messageId");
+    const owner = actor.handle;
+
+    if (!isDmParticipant(db, owner, dmId)) {
+      throw AppError.notFound({ detail: "no such conversation" });
+    }
+
+    const { cursor, direction, limit } = pageQuery(c);
+    const page = listDmReplies(db, owner, dmId, messageId, {
+      cursor,
+      direction,
+      ...(limit !== undefined ? { limit } : {}),
+    });
     return c.json(MessagesPageSchema.parse(page));
   });
 
-  // -- PATCH /{dmId}/messages/{messageId} (§7.1 edit on stored copy) ------
-  // Author-only + edit window, applied to the recipient's stored copy.
-  router.patch("/:dmId/messages/:messageId", signed, async (c) => {
-    const { db, hub } = c.var;
+  // -- PUT /{dmId}/messages/{messageId}/reactions/{key} (signed) ----------
+  // Add the caller's reaction; idempotent (201 first add, 200 repeat). Storage-
+  // follows-message (§8.3): if the target message lives in the caller's OWN
+  // inbox (a received message, or both parties on this node) it is stored +
+  // fanned out locally; if the caller is reacting to a message they SENT to a
+  // REMOTE peer (no local copy), the reaction is FORWARDED to the peer's
+  // provider (mirroring the user-signed DM-send delivery path).
+  router.put("/:dmId/messages/:messageId/reactions/:key", signed, async (c) => {
+    const { db, config, hub, federationFetch } = c.var;
     const actor = c.var.actor;
     if (!actor) throw AppError.unauthorized();
     const dmId = requireParam(c, "dmId");
     const messageId = requireParam(c, "messageId");
-    const owner = actor.handle;
+    const key = requireParam(c, "key");
+    assertValidReactionKey(key);
+
+    // Participation: the caller must have an inbox conversation row for dmId.
+    const counterparty = counterpartyOf(db, actor.handle, dmId);
+    if (counterparty === null) throw AppError.notFound({ detail: "no such conversation" });
+
+    // Does the target message live in the caller's own inbox?
+    const local = getDmMessageRow(db, actor.handle, dmId, messageId);
+    if (local) {
+      const existed = hasDmReaction(db, dmId, messageId, actor.actor, key);
+      const reaction = addDmReaction(db, { dmId, messageId, author: actor.actor, key });
+      fanOutDmReaction(hub, {
+        dmId,
+        messageId,
+        state: "added",
+        author: actor.actor,
+        key,
+        reaction,
+        participants: [actor.actor, counterparty],
+      });
+      return c.json(ReactionSchema.parse(reaction), existed ? 200 : 201);
+    }
+
+    // No local copy → the caller SENT this message; the message lives in the
+    // counterparty's inbox. If the counterparty is remote, forward; if local
+    // (single node), store under their inbox.
+    const cpDomain = domainOf(counterparty);
+    const authority = canonicalAuthority(config.domain);
+    if (cpDomain !== "" && cpDomain !== authority) {
+      const res = await forwardDmReaction(db, config, federationFetch, {
+        method: "PUT",
+        dmId,
+        messageId,
+        key,
+        counterpartyDomain: cpDomain,
+        actor: actor.actor,
+      });
+      return c.body(await res.text(), res.status as 200 | 201 | 400 | 404);
+    }
+
+    // Counterparty is local: store on their inbox copy (if it exists here).
+    const owner = resolveLocalDmOwner(db, config, actor.actor, dmId);
+    if (owner === null || !getDmMessageRow(db, owner, dmId, messageId)) {
+      throw AppError.notFound({ detail: "no such message" });
+    }
+    const existed = hasDmReaction(db, dmId, messageId, actor.actor, key);
+    const reaction = addDmReaction(db, { dmId, messageId, author: actor.actor, key });
+    fanOutDmReaction(hub, {
+      dmId,
+      messageId,
+      state: "added",
+      author: actor.actor,
+      key,
+      reaction,
+      participants: [actor.actor, counterparty],
+    });
+    return c.json(ReactionSchema.parse(reaction), existed ? 200 : 201);
+  });
+
+  // -- DELETE /{dmId}/messages/{messageId}/reactions/{key} (signed) -------
+  // Remove the caller's reaction → 204. Same storage-follows-message routing.
+  router.delete("/:dmId/messages/:messageId/reactions/:key", signed, async (c) => {
+    const { db, config, hub, federationFetch } = c.var;
+    const actor = c.var.actor;
+    if (!actor) throw AppError.unauthorized();
+    const dmId = requireParam(c, "dmId");
+    const messageId = requireParam(c, "messageId");
+    const key = requireParam(c, "key");
+    assertValidReactionKey(key);
+
+    const counterparty = counterpartyOf(db, actor.handle, dmId);
+    if (counterparty === null) throw AppError.notFound({ detail: "no such conversation" });
+
+    const local = getDmMessageRow(db, actor.handle, dmId, messageId);
+    if (local) {
+      removeDmReaction(db, dmId, messageId, actor.actor, key);
+      fanOutDmReaction(hub, {
+        dmId,
+        messageId,
+        state: "removed",
+        author: actor.actor,
+        key,
+        participants: [actor.actor, counterparty],
+      });
+      return c.body(null, 204);
+    }
+
+    const cpDomain = domainOf(counterparty);
+    const authority = canonicalAuthority(config.domain);
+    if (cpDomain !== "" && cpDomain !== authority) {
+      const res = await forwardDmReaction(db, config, federationFetch, {
+        method: "DELETE",
+        dmId,
+        messageId,
+        key,
+        counterpartyDomain: cpDomain,
+        actor: actor.actor,
+      });
+      return c.body(null, res.status === 204 ? 204 : (res.status as 400 | 404));
+    }
+
+    const owner = resolveLocalDmOwner(db, config, actor.actor, dmId);
+    if (owner === null || !getDmMessageRow(db, owner, dmId, messageId)) {
+      throw AppError.notFound({ detail: "no such message" });
+    }
+    removeDmReaction(db, dmId, messageId, actor.actor, key);
+    fanOutDmReaction(hub, {
+      dmId,
+      messageId,
+      state: "removed",
+      author: actor.actor,
+      key,
+      participants: [actor.actor, counterparty],
+    });
+    return c.body(null, 204);
+  });
+
+  // -- PATCH /{dmId}/messages/{messageId} (§7.1 edit) ---------------------
+  // Author-only + edit window. Storage-follows-message (§8.3): if the target
+  // lives in the caller's OWN inbox (a self-DM, or both parties on this node) it
+  // is edited + fanned out locally; if the caller is editing a message they SENT
+  // to a REMOTE peer (no local copy), the edit is FORWARDED to the peer (mirrors
+  // the reaction path); if the counterparty is local, it is applied to their
+  // inbox copy here.
+  router.patch("/:dmId/messages/:messageId", signed, async (c) => {
+    const { db, config, hub, federationFetch } = c.var;
+    const actor = c.var.actor;
+    if (!actor) throw AppError.unauthorized();
+    const dmId = requireParam(c, "dmId");
+    const messageId = requireParam(c, "messageId");
 
     const body = MessageUpdateRequestSchema.parse(await c.req.json());
+    const content = body.content as Content;
 
-    const row = getDmMessageRow(db, owner, dmId, messageId);
-    if (!row) throw AppError.notFound({ detail: "no such message" });
-    if (row.author !== actor.actor) {
-      throw AppError.forbidden({ detail: "only the author may edit this message" });
-    }
-    if (Date.now() > row.editUntil) {
-      throw AppError.forbidden({ detail: "the edit window for this message has passed" });
+    // Participation: the caller must have an inbox conversation row for dmId.
+    const counterparty = counterpartyOf(db, actor.handle, dmId);
+    if (counterparty === null) throw AppError.notFound({ detail: "no such conversation" });
+
+    // Does the target message live in the caller's own inbox?
+    const local = getDmMessageRow(db, actor.handle, dmId, messageId);
+    if (local) {
+      const message = applyDmEdit(db, hub, {
+        owner: actor.handle,
+        ownerActor: actor.actor,
+        dmId,
+        messageId,
+        actor: actor.actor,
+        content,
+        row: local,
+      });
+      return c.json(MessageSchema.parse(message));
     }
 
-    const record = updateDmMessageContent(db, owner, dmId, messageId, body.content as Content);
-    hub.publishToActor(actor.actor, {
-      type: "dm.message",
-      data: dmMessageEventData(dmId, record.cursor, record.message),
+    // No local copy → the caller SENT this message; it lives in the
+    // counterparty's inbox. Remote → forward; local → apply to their copy.
+    const cpDomain = domainOf(counterparty);
+    const authority = canonicalAuthority(config.domain);
+    if (cpDomain !== "" && cpDomain !== authority) {
+      const res = await forwardDmEdit(db, config, federationFetch, {
+        dmId,
+        messageId,
+        counterpartyDomain: cpDomain,
+        actor: actor.actor,
+        content,
+      });
+      return c.body(await res.text(), res.status as 200 | 400 | 403 | 404);
+    }
+
+    const owner = resolveLocalDmOwner(db, config, actor.actor, dmId);
+    const row = owner !== null ? getDmMessageRow(db, owner, dmId, messageId) : null;
+    if (owner === null || !row) throw AppError.notFound({ detail: "no such message" });
+    const message = applyDmEdit(db, hub, {
+      owner,
+      ownerActor: `${owner}@${authority}`,
+      dmId,
+      messageId,
+      actor: actor.actor,
+      content,
+      row,
     });
-    return c.json(MessageSchema.parse(record.message));
+    return c.json(MessageSchema.parse(message));
   });
 
   // -- DELETE /{dmId}/messages/{messageId} (§7.1 tombstone) --------------
-  // The owner of the inbox copy may delete it (tombstone). The author/tombstone
-  // rules of §7.1 apply against the recipient's stored copy.
-  router.delete("/:dmId/messages/:messageId", signed, (c) => {
-    const { db, hub } = c.var;
+  // Author-only. Same storage-follows-message routing as PATCH.
+  router.delete("/:dmId/messages/:messageId", signed, async (c) => {
+    const { db, config, hub, federationFetch } = c.var;
     const actor = c.var.actor;
     if (!actor) throw AppError.unauthorized();
     const dmId = requireParam(c, "dmId");
     const messageId = requireParam(c, "messageId");
-    const owner = actor.handle;
 
-    // Only a participant has an inbox; require the conversation row too.
-    if (!getDmConversationRow(db, owner, dmId)) {
-      throw AppError.notFound({ detail: "no such conversation" });
+    const counterparty = counterpartyOf(db, actor.handle, dmId);
+    if (counterparty === null) throw AppError.notFound({ detail: "no such conversation" });
+
+    const local = getDmMessageRow(db, actor.handle, dmId, messageId);
+    if (local) {
+      // Own inbox copy: the owner may tombstone it regardless of authorship
+      // (original DM-delete semantics — delete-from-my-inbox).
+      applyDmDelete(db, hub, {
+        owner: actor.handle,
+        ownerActor: actor.actor,
+        dmId,
+        messageId,
+        actor: actor.actor,
+        row: local,
+        requireAuthor: false,
+      });
+      return c.body(null, 204);
     }
-    const row = getDmMessageRow(db, owner, dmId, messageId);
-    if (!row) throw AppError.notFound({ detail: "no such message" });
 
-    const record = tombstoneDmMessage(db, owner, dmId, messageId);
-    hub.publishToActor(actor.actor, {
-      type: "dm.message",
-      data: dmMessageEventData(dmId, record.cursor, record.message),
+    const cpDomain = domainOf(counterparty);
+    const authority = canonicalAuthority(config.domain);
+    if (cpDomain !== "" && cpDomain !== authority) {
+      const res = await forwardDmDelete(db, config, federationFetch, {
+        dmId,
+        messageId,
+        counterpartyDomain: cpDomain,
+        actor: actor.actor,
+      });
+      if (res.status === 204) return c.body(null, 204);
+      return c.body(await res.text(), res.status as 400 | 403 | 404);
+    }
+
+    // The message lives in a LOCAL counterparty's inbox; the caller SENT it, so
+    // only the author may delete it (author-only — mirrors the federation ingest).
+    const owner = resolveLocalDmOwner(db, config, actor.actor, dmId);
+    const row = owner !== null ? getDmMessageRow(db, owner, dmId, messageId) : null;
+    if (owner === null || !row) throw AppError.notFound({ detail: "no such message" });
+    applyDmDelete(db, hub, {
+      owner,
+      ownerActor: `${owner}@${authority}`,
+      dmId,
+      messageId,
+      actor: actor.actor,
+      row,
+      requireAuthor: true,
     });
     return c.body(null, 204);
   });

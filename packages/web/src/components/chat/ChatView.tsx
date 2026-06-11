@@ -32,7 +32,7 @@ import {
   onCleanup,
   onMount,
 } from "solid-js";
-import { isImageAttachment, resolveAttachmentUrl, uploadMedia } from "../../lib/chat-api.ts";
+import { uploadMedia } from "../../lib/chat-api.ts";
 import { listMembers } from "../../lib/groups-api.ts";
 import { renderMarkdown } from "../../lib/markdown.ts";
 import {
@@ -48,6 +48,11 @@ import { displayNameForInGroup, setGroupDisplayName, warmProfiles } from "../../
 import { session, sessionClient, sessionWs } from "../../stores/session.ts";
 import { Icon, type IconName } from "../Icon.tsx";
 import { FollowToggle } from "../feed/FollowToggle.tsx";
+// `AttachmentView` is re-exported below so existing importers (the home feed)
+// keep importing it from here unchanged after the extraction to `../shared`.
+import { AttachmentView } from "../shared/AttachmentView.tsx";
+import { ReactionBar, ReactionPicker } from "../shared/Reactions.tsx";
+import { ReplyQuote } from "../shared/ReplyQuote.tsx";
 import { Avatar } from "../social/Avatar.tsx";
 import { openUserProfile } from "../social/user-profile-store.ts";
 import { ArticleEditorOverlay } from "./ArticleEditorOverlay.tsx";
@@ -65,15 +70,6 @@ import {
   typingStart,
   typingStop,
 } from "./chat-controller.ts";
-
-/** A small, friendly reaction palette for the quick-react button. */
-const QUICK_REACTIONS: { key: string; unicode: string }[] = [
-  { key: "+1", unicode: "👍" },
-  { key: "heart", unicode: "❤️" },
-  { key: "tada", unicode: "🎉" },
-  { key: "eyes", unicode: "👀" },
-  { key: "laugh", unicode: "😄" },
-];
 
 /** Throttle window for `typing.start` re-emits while composing (ms). */
 const TYPING_THROTTLE_MS = 2500;
@@ -627,7 +623,22 @@ const MessageNode: Component<{
   return (
     <li class="flex flex-col gap-1">
       <Show when={m().reference}>
-        <ReplyQuote parent={replyParent()} groupId={props.groupId} onJump={props.onJumpTo} />
+        <ReplyQuote
+          parent={
+            replyParent()
+              ? {
+                  id: (replyParent() as ChatMessage).id,
+                  authorName: displayNameForInGroup(
+                    (replyParent() as ChatMessage).author,
+                    props.groupId,
+                  ),
+                  text: (replyParent() as ChatMessage).content.text ?? "",
+                  deleted: (replyParent() as ChatMessage).deletedAt !== undefined,
+                }
+              : undefined
+          }
+          onJump={props.onJumpTo}
+        />
       </Show>
 
       <MessageRow
@@ -643,45 +654,6 @@ const MessageNode: Component<{
         onOpenArticle={() => props.onOpenArticle(m())}
       />
     </li>
-  );
-};
-
-/**
- * A small quoted snippet of the message being replied to (inline replies).
- * Clickable when the parent is loaded into the view — jumps to + highlights the
- * original post; rendered as inert text when the parent isn't reachable
- * (deleted, or older than the loaded history).
- */
-const ReplyQuote: Component<{
-  parent?: ChatMessage;
-  groupId: string;
-  onJump?: (id: string) => void;
-}> = (props) => {
-  const snippet = (): string => {
-    const p = props.parent;
-    if (!p) return "a message";
-    if (p.deletedAt) return "a deleted message";
-    const author = displayNameForInGroup(p.author, props.groupId);
-    const text = (p.content.text ?? "").replace(/\s+/g, " ").trim();
-    const clipped = text.length > 80 ? `${text.slice(0, 80)}…` : text;
-    return clipped ? `${author}: ${clipped}` : author;
-  };
-  const jumpable = () => props.parent !== undefined && !props.parent.deletedAt;
-  return (
-    <button
-      type="button"
-      class="flex max-w-full items-center gap-1 text-left text-xs text-faint transition-colors enabled:cursor-pointer enabled:hover:text-accent disabled:cursor-default"
-      data-testid="reply-quote"
-      disabled={!jumpable()}
-      title={jumpable() ? "Jump to the original message" : undefined}
-      onClick={() => {
-        const p = props.parent;
-        if (p) props.onJump?.(p.id);
-      }}
-    >
-      <span aria-hidden="true">↳</span>
-      <span class="truncate">replying to {snippet()}</span>
-    </button>
   );
 };
 
@@ -707,7 +679,6 @@ const MessageRow: Component<{
   const [editing, setEditing] = createSignal(false);
   const [editText, setEditText] = createSignal("");
   const [editError, setEditError] = createSignal<string | null>(null);
-  const [showReactPicker, setShowReactPicker] = createSignal(false);
 
   const ws = () => sessionWs();
 
@@ -774,7 +745,6 @@ const MessageRow: Component<{
     };
     if (myReactionKeys().has(key)) removeReactionCmd(common);
     else addReactionCmd({ ...common, unicode });
-    setShowReactPicker(false);
   };
 
   return (
@@ -864,42 +834,7 @@ const MessageRow: Component<{
                   Promote
                 </button>
               </Show>
-              <div class="relative">
-                <button
-                  type="button"
-                  class="rounded px-2 py-1 text-xs text-faint hover:(bg-surface-2 text-ink) md:px-1.5 md:py-0.5"
-                  data-testid="react-button"
-                  onClick={() => setShowReactPicker((v) => !v)}
-                  aria-label="Add reaction"
-                >
-                  ☺
-                </button>
-                <Show when={showReactPicker()}>
-                  {/* Open DOWNWARD (top-full): the message list is an
-                      overflow-auto scroll container, so a picker opening upward
-                      (bottom-full) off the newest, top-of-stream message gets
-                      clipped by the container's top edge / the channel header.
-                      Opening down keeps it inside the scroll viewport. */}
-                  <div
-                    class="absolute top-full right-0 z-10 mt-1 flex gap-0.5 rounded-lg border border-border bg-surface p-1 shadow-lg"
-                    data-testid="reaction-picker"
-                  >
-                    <For each={QUICK_REACTIONS}>
-                      {(r) => (
-                        <button
-                          type="button"
-                          class="rounded px-2 py-1 text-base hover:bg-surface-2 md:px-1 md:py-0.5 md:text-sm"
-                          data-testid="reaction-pick"
-                          data-reaction-key={r.key}
-                          onClick={() => toggleReaction(r.key, r.unicode)}
-                        >
-                          {r.unicode}
-                        </button>
-                      )}
-                    </For>
-                  </div>
-                </Show>
-              </div>
+              <ReactionPicker onPick={(key, unicode) => toggleReaction(key, unicode)} />
               <Show when={isAuthor()}>
                 <button
                   type="button"
@@ -982,26 +917,12 @@ const MessageRow: Component<{
         </Show>
 
         {/* Reactions */}
-        <Show when={props.reactions().length > 0}>
-          <div class="fa-rx" data-testid="reactions">
-            <For each={props.reactions()}>
-              {(g) => (
-                <button
-                  type="button"
-                  class="fa-rx__chip"
-                  classList={{ "fa-rx__chip--on": myReactionKeys().has(g.key) }}
-                  data-testid="reaction-chip"
-                  data-reaction-key={g.key}
-                  title={g.authors.map((a) => displayNameForInGroup(a, props.groupId)).join(", ")}
-                  onClick={() => toggleReaction(g.key, g.unicode ?? g.key)}
-                >
-                  <span>{g.unicode ?? g.key}</span>
-                  <span data-testid="reaction-count">{g.authors.length}</span>
-                </button>
-              )}
-            </For>
-          </div>
-        </Show>
+        <ReactionBar
+          reactions={props.reactions}
+          myKeys={myReactionKeys}
+          onToggle={toggleReaction}
+          resolveName={(a) => displayNameForInGroup(a, props.groupId)}
+        />
       </div>
     </div>
   );
@@ -1092,36 +1013,6 @@ export const MessageBody: Component<{ message: ChatMessage; onOpenArticle?: () =
         </p>
       </Match>
     </Switch>
-  );
-};
-
-/** Render one attachment: images inline, everything else as a download link. */
-export const AttachmentView: Component<{ attachment: Attachment }> = (props) => {
-  const url = () => resolveAttachmentUrl(props.attachment.url);
-  return (
-    <Show
-      when={isImageAttachment(props.attachment)}
-      fallback={
-        <a
-          href={url()}
-          target="_blank"
-          rel="noopener noreferrer"
-          class="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface-2 px-3 py-2 text-xs text-muted hover:text-ink"
-          data-testid="attachment-link"
-        >
-          📎 {props.attachment.filename ?? props.attachment.id}
-        </a>
-      }
-    >
-      <a href={url()} target="_blank" rel="noopener noreferrer" data-testid="attachment-image-link">
-        <img
-          src={url()}
-          alt={props.attachment.filename ?? "attachment"}
-          class="max-h-64 max-w-xs rounded-lg border border-border object-contain"
-          data-testid="attachment-image"
-        />
-      </a>
-    </Show>
   );
 };
 
@@ -1493,3 +1384,5 @@ function formatTime(iso?: string): string {
 
 // Re-export so a parent can read the store reactively if needed.
 export { chat };
+// Re-export the shared `AttachmentView` so the home feed keeps importing it here.
+export { AttachmentView };

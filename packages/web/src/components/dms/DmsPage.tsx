@@ -13,9 +13,11 @@
  * thread. A small trust-boundary notice makes the §8.3 confidentiality model
  * explicit (DMs are readable by the recipient's provider; not E2E-encrypted).
  */
+import type { Attachment } from "@forumall/shared";
 import { deriveDmId } from "@forumall/shared";
 import { A, useNavigate, useParams } from "@solidjs/router";
 import {
+  type Accessor,
   type Component,
   For,
   Match,
@@ -29,24 +31,44 @@ import {
   onCleanup,
   onMount,
 } from "solid-js";
-import { fetchDmConversations } from "../../lib/dm-api.ts";
+import { uploadMedia } from "../../lib/chat-api.ts";
+import { fetchDmConversations, fetchDmReplies } from "../../lib/dm-api.ts";
 import { DmSentStore } from "../../lib/dm-store.ts";
 import { clientForHost, domainOf, isLocalActor } from "../../lib/federation.ts";
 import { keyStore } from "../../lib/key-store.ts";
 import type { OfscpClient } from "../../lib/ofscp-client.ts";
 import {
   type DmConversationSummary,
+  type DmMessage,
   dmConversations,
+  dmReactionsFor,
   dmThread,
+  dmTypingFor,
   upsertConversation,
+  upsertDmMessage,
 } from "../../stores/dms.ts";
 import { subscribePresence } from "../../stores/presence-controller.ts";
 import { displayNameFor, warmProfile, warmProfiles } from "../../stores/profiles.ts";
 import { session, sessionClient, sessionWs } from "../../stores/session.ts";
 import { Icon, type IconName } from "../Icon.tsx";
+import { AttachmentView } from "../shared/AttachmentView.tsx";
+import { ReactionBar, ReactionPicker } from "../shared/Reactions.tsx";
+import { ReplyQuote } from "../shared/ReplyQuote.tsx";
 import { Avatar } from "../social/Avatar.tsx";
 import { PresenceDot } from "../social/PresenceDot.tsx";
-import { type ConversationHandle, openConversation, retrySendDm, sendDm } from "./dm-controller.ts";
+import {
+  type ConversationHandle,
+  DM_TYPING_IDLE_MS,
+  DM_TYPING_THROTTLE_MS,
+  deleteDm,
+  dmTypingStart,
+  dmTypingStop,
+  editDm,
+  openConversation,
+  retrySendDm,
+  sendDm,
+  toggleDmReaction,
+} from "./dm-controller.ts";
 
 /**
  * Inbox tabs. DMs are fully wired; Mentions and Thread-replies are presented but
@@ -327,6 +349,15 @@ const ThreadView: Component<{
 }> = (props) => {
   const [handle, setHandle] = createSignal<ConversationHandle | null>(null);
   const [error, setError] = createSignal<string | null>(null);
+  const [replyTarget, setReplyTarget] = createSignal<DmMessage | null>(null);
+
+  // Reset any reply target when switching conversations.
+  createEffect(
+    on(
+      () => props.dmId,
+      () => setReplyTarget(null),
+    ),
+  );
 
   const counterparty = createMemo(() => {
     const me = session.actor ?? "";
@@ -383,18 +414,36 @@ const ThreadView: Component<{
   });
 
   const messages = createMemo(() => dmThread(props.dmId));
+  const typingActors = createMemo(() => dmTypingFor(props.dmId).filter((u) => u !== session.actor));
+
+  // Index messages by id so a reply-quote can resolve its parent's snippet.
+  const byId = createMemo(() => {
+    const map = new Map<string, DmMessage>();
+    for (const m of messages()) map.set(m.id, m);
+    return map;
+  });
 
   let scrollEl: HTMLDivElement | undefined;
-  createEffect(
-    on(
-      () => messages().length,
-      () => {
-        queueMicrotask(() => {
-          if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight;
-        });
-      },
-    ),
-  );
+  const scrollToBottom = (): void => {
+    queueMicrotask(() => {
+      if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight;
+    });
+  };
+  createEffect(on(() => messages().length, scrollToBottom));
+
+  // Jump to a parent message when its reply-quote is clicked: scroll its row into
+  // view + flash a transient highlight (no-op if it's outside the loaded window).
+  const [highlightId, setHighlightId] = createSignal<string | null>(null);
+  let highlightTimer: ReturnType<typeof setTimeout> | undefined;
+  const scrollToMessage = (id: string): void => {
+    const el = scrollEl?.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(id)}"]`);
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    setHighlightId(id);
+    clearTimeout(highlightTimer);
+    highlightTimer = setTimeout(() => setHighlightId(null), 1600);
+  };
+  onCleanup(() => clearTimeout(highlightTimer));
 
   return (
     <div class="flex min-h-0 flex-1 flex-col" data-testid="dm-thread" data-dm-id={props.dmId}>
@@ -493,6 +542,10 @@ const ThreadView: Component<{
                   message={msg}
                   counterparty={counterparty()}
                   sentStore={props.sentStore}
+                  byId={byId}
+                  highlightId={highlightId}
+                  onReply={setReplyTarget}
+                  onJumpTo={scrollToMessage}
                 />
               )}
             </For>
@@ -500,10 +553,14 @@ const ThreadView: Component<{
         </Show>
       </div>
 
+      <DmTypingLine actors={typingActors()} />
+
       <DmComposer
         dmId={props.dmId}
         counterparty={counterparty()}
         sentStore={props.sentStore}
+        replyTarget={replyTarget}
+        onClearReply={() => setReplyTarget(null)}
         onSent={props.onSent}
       />
     </div>
@@ -512,100 +569,434 @@ const ThreadView: Component<{
 
 const DmMessageRow: Component<{
   dmId: string;
-  message: ReturnType<typeof dmThread>[number];
+  message: DmMessage;
   counterparty: string;
   sentStore: () => DmSentStore | null;
+  byId: Accessor<Map<string, DmMessage>>;
+  highlightId: Accessor<string | null>;
+  onReply: (m: DmMessage) => void;
+  onJumpTo: (id: string) => void;
 }> = (props) => {
   const m = () => props.message;
   const mine = () => m().mine === true || m().author === session.actor;
+  const isDeleted = () => m().deletedAt !== undefined;
+  const [editing, setEditing] = createSignal(false);
+  const [editText, setEditText] = createSignal("");
+  const [editError, setEditError] = createSignal<string | null>(null);
+  const [actionError, setActionError] = createSignal<string | null>(null);
+
+  const reactions = () => dmReactionsFor(props.dmId, m().id);
+  const myReactionKeys = createMemo(
+    () =>
+      new Set(
+        reactions()
+          .filter((g) => session.actor != null && g.authors.includes(session.actor))
+          .map((g) => g.key),
+      ),
+  );
+
+  const replyParent = () => {
+    const pid = m().reference?.id;
+    return pid ? props.byId().get(pid) : undefined;
+  };
+
+  // Replies already flow into the DM timeline (they are inbox messages), but a
+  // reply whose parent loaded in an earlier page may be outside the window. This
+  // affordance ensures completeness: fetch this message's replies (§7.2) and fold
+  // them in (de-duped by id). Shown when at least one loaded message replies here.
+  const loadedReplies = createMemo(() =>
+    [...props.byId().values()].filter((x) => x.reference?.id === m().id),
+  );
+  const viewReplies = (): void => {
+    const client = sessionClient();
+    const me = session.actor;
+    if (!client || !me) return;
+    setActionError(null);
+    void fetchDmReplies(client, props.dmId, m().id, { limit: 50 })
+      .then((page) => {
+        for (const r of page.messages) {
+          if (r.deletedAt) continue;
+          upsertDmMessage(props.dmId, {
+            id: r.id,
+            author: r.author,
+            content: r.content,
+            ...(r.attachments && r.attachments.length > 0 ? { attachments: r.attachments } : {}),
+            ...(r.reference ? { reference: r.reference } : {}),
+            createdAt: r.createdAt,
+            ...(r.editedAt ? { editedAt: r.editedAt } : {}),
+            mine: r.author === me,
+          });
+        }
+      })
+      .catch((err) =>
+        setActionError(err instanceof Error ? err.message : "Could not load replies."),
+      );
+  };
+
+  const toggleReaction = (key: string, unicode: string): void => {
+    const client = sessionClient();
+    const me = session.actor;
+    if (!client || !me) return;
+    setActionError(null);
+    void toggleDmReaction({
+      client,
+      dmId: props.dmId,
+      messageId: m().id,
+      me,
+      key,
+      unicode,
+      has: myReactionKeys().has(key),
+    }).catch((err) =>
+      setActionError(err instanceof Error ? err.message : "Could not update the reaction."),
+    );
+  };
+
+  const startEdit = (): void => {
+    setEditText(m().content.text ?? "");
+    setEditError(null);
+    setEditing(true);
+  };
+  const submitEdit = (): void => {
+    const client = sessionClient();
+    const store = props.sentStore();
+    const me = session.actor;
+    const text = editText().trim();
+    if (!client || !store || !me || text.length === 0) return;
+    setEditError(null);
+    void editDm({ client, dmId: props.dmId, message: m(), me, text, sentStore: store })
+      .then(() => setEditing(false))
+      .catch((err) =>
+        setEditError(err instanceof Error ? err.message : "Could not edit this message."),
+      );
+  };
+  const doDelete = (): void => {
+    const client = sessionClient();
+    const store = props.sentStore();
+    const me = session.actor;
+    if (!client || !store || !me) return;
+    if (!confirm("Delete this message?")) return;
+    setActionError(null);
+    void deleteDm({ client, dmId: props.dmId, message: m(), me, sentStore: store }).catch((err) =>
+      setActionError(err instanceof Error ? err.message : "Could not delete this message."),
+    );
+  };
+
+  const retry = (): void => {
+    const client = sessionClient();
+    const store = props.sentStore();
+    const me = session.actor;
+    if (!client || !store || !me || !m().clientMessageId) return;
+    const counterparty = props.counterparty;
+    void resolveDeliveryClient(counterparty).then((deliveryClient) =>
+      retrySendDm({
+        client,
+        ...(deliveryClient ? { deliveryClient } : {}),
+        dmId: props.dmId,
+        me,
+        counterparty,
+        text: m().content.text ?? "",
+        ...(m().attachments && (m().attachments as Attachment[]).length > 0
+          ? { attachments: m().attachments }
+          : {}),
+        ...(m().reference ? { reference: m().reference } : {}),
+        sentStore: store,
+        clientMessageId: m().clientMessageId as string,
+      }),
+    );
+  };
+
   return (
     <li
-      class="flex items-start gap-[9px]"
-      classList={{ "justify-end": mine() }}
+      class="group/dm -mx-1.5 flex flex-col gap-1 rounded-md px-1.5 transition-colors duration-500"
+      classList={{
+        "items-end": mine(),
+        "bg-accent/10 ring-1 ring-accent/30 duration-150": props.highlightId() === m().id,
+      }}
       data-testid="dm-message"
       data-message-id={m().id}
       data-mine={mine() ? "1" : "0"}
+      data-message-highlighted={props.highlightId() === m().id ? "1" : undefined}
       data-pending={m().pending ? "1" : undefined}
     >
-      <Show when={!mine()}>
-        <span class="fa-ava fa-ava--sm" classList={{ "fa-ava__fed": isRemoteActor(m().author) }}>
-          <Avatar
-            actor={m().author}
-            initials={displayNameFor(m().author).slice(0, 1).toUpperCase()}
-          />
-        </span>
+      <Show when={m().reference}>
+        <ReplyQuote
+          parent={
+            replyParent()
+              ? {
+                  id: (replyParent() as DmMessage).id,
+                  authorName: displayNameFor((replyParent() as DmMessage).author),
+                  text: (replyParent() as DmMessage).content.text ?? "",
+                  deleted: (replyParent() as DmMessage).deletedAt !== undefined,
+                }
+              : undefined
+          }
+          onJump={props.onJumpTo}
+        />
       </Show>
-      <div class="flex max-w-[70%] flex-col gap-1" classList={{ "items-end": mine() }}>
-        <p
-          class="whitespace-pre-wrap break-words rounded-md border-[1.5px] px-[13px] py-[9px] text-sm leading-[1.45]"
-          classList={{
-            "border-accent bg-accent-soft text-ink": mine(),
-            "border-border-strong bg-surface text-ink": !mine(),
-          }}
-          data-testid="dm-message-text"
-        >
-          {m().content.text ?? ""}
-        </p>
-        <Show when={m().pending || m().failed}>
-          <div class="flex items-center gap-2">
-            <Show when={m().pending}>
-              <span class="text-[10px] text-accent" data-testid="dm-message-pending">
-                sending…
-              </span>
-            </Show>
-            <Show when={m().failed}>
+
+      <div class="flex items-start gap-[9px]" classList={{ "flex-row-reverse": mine() }}>
+        <Show when={!mine()}>
+          <span class="fa-ava fa-ava--sm" classList={{ "fa-ava__fed": isRemoteActor(m().author) }}>
+            <Avatar
+              actor={m().author}
+              initials={displayNameFor(m().author).slice(0, 1).toUpperCase()}
+            />
+          </span>
+        </Show>
+        <div class="flex max-w-[70%] flex-col gap-1" classList={{ "items-end": mine() }}>
+          <Switch>
+            <Match when={isDeleted()}>
+              <p
+                class="rounded-md border-[1.5px] border-border px-[13px] py-[9px] text-sm italic text-faint"
+                data-testid="dm-message-tombstone"
+              >
+                message deleted
+              </p>
+            </Match>
+            <Match when={editing()}>
+              <div class="flex w-full flex-col gap-1">
+                <textarea
+                  class="input min-h-16 resize-y"
+                  data-testid="dm-edit-input"
+                  value={editText()}
+                  onInput={(e) => setEditText(e.currentTarget.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      submitEdit();
+                    }
+                    if (e.key === "Escape") setEditing(false);
+                  }}
+                />
+                <div class="flex gap-2">
+                  <button
+                    type="button"
+                    class="btn-accent px-3 py-1 text-xs"
+                    data-testid="dm-save-edit"
+                    onClick={submitEdit}
+                  >
+                    Save
+                  </button>
+                  <button
+                    type="button"
+                    class="btn-ghost px-3 py-1 text-xs"
+                    onClick={() => setEditing(false)}
+                  >
+                    Cancel
+                  </button>
+                </div>
+                <Show when={editError()}>
+                  <p class="text-xs text-danger" data-testid="dm-edit-error">
+                    {editError()}
+                  </p>
+                </Show>
+              </div>
+            </Match>
+            <Match when={true}>
+              <div
+                class="rounded-md border-[1.5px] px-[13px] py-[9px]"
+                classList={{
+                  "border-accent bg-accent-soft text-ink": mine(),
+                  "border-border-strong bg-surface text-ink": !mine(),
+                }}
+                data-testid="dm-message-bubble"
+              >
+                <DmMessageBody message={m()} />
+              </div>
+            </Match>
+          </Switch>
+
+          {/* Attachments */}
+          <Show when={!isDeleted() && (m().attachments?.length ?? 0) > 0}>
+            <div class="flex flex-wrap gap-2" data-testid="dm-attachments">
+              <For each={m().attachments ?? []}>{(att) => <AttachmentView attachment={att} />}</For>
+            </div>
+          </Show>
+
+          {/* Reactions */}
+          <ReactionBar
+            reactions={reactions}
+            myKeys={myReactionKeys}
+            onToggle={toggleReaction}
+            resolveName={displayNameFor}
+          />
+
+          {/* Per-message actions — hover-revealed on desktop, always on touch. */}
+          <Show when={!isDeleted() && !editing()}>
+            <span class="flex items-center gap-1 opacity-100 transition-opacity md:opacity-0 md:group-hover/dm:opacity-100">
               <button
                 type="button"
-                class="text-[10px] text-danger underline"
-                data-testid="dm-message-retry"
-                onClick={() => {
-                  const client = sessionClient();
-                  const store = props.sentStore();
-                  const me = session.actor;
-                  if (client && store && me && m().clientMessageId) {
-                    const counterparty = props.counterparty;
-                    void resolveDeliveryClient(counterparty).then((deliveryClient) =>
-                      retrySendDm({
-                        client,
-                        ...(deliveryClient ? { deliveryClient } : {}),
-                        dmId: props.dmId,
-                        me,
-                        counterparty,
-                        text: m().content.text ?? "",
-                        sentStore: store,
-                        clientMessageId: m().clientMessageId as string,
-                      }),
-                    );
-                  }
-                }}
+                class="rounded px-2 py-1 text-xs text-faint hover:(bg-surface-2 text-ink) md:px-1.5 md:py-0.5"
+                data-testid="dm-reply-button"
+                onClick={() => props.onReply(m())}
               >
-                failed — retry
+                Reply
               </button>
-            </Show>
-          </div>
-        </Show>
+              <ReactionPicker onPick={toggleReaction} />
+              <Show when={loadedReplies().length > 0}>
+                <button
+                  type="button"
+                  class="rounded px-2 py-1 text-xs text-faint hover:(bg-surface-2 text-accent) md:px-1.5 md:py-0.5"
+                  data-testid="dm-view-replies"
+                  onClick={viewReplies}
+                >
+                  {loadedReplies().length} replies
+                </button>
+              </Show>
+              <Show when={mine()}>
+                <button
+                  type="button"
+                  class="rounded px-2 py-1 text-xs text-faint hover:(bg-surface-2 text-ink) md:px-1.5 md:py-0.5"
+                  data-testid="dm-edit-message"
+                  onClick={startEdit}
+                >
+                  Edit
+                </button>
+                <button
+                  type="button"
+                  class="rounded px-2 py-1 text-xs text-faint hover:(bg-surface-2 text-danger) md:px-1.5 md:py-0.5"
+                  data-testid="dm-delete-message"
+                  onClick={doDelete}
+                >
+                  Delete
+                </button>
+              </Show>
+            </span>
+          </Show>
+
+          <Show when={m().editedAt && !isDeleted()}>
+            <span class="fa-meta" data-testid="dm-message-edited">
+              (edited)
+            </span>
+          </Show>
+
+          <Show when={m().pending || m().failed}>
+            <div class="flex items-center gap-2">
+              <Show when={m().pending}>
+                <span class="text-[10px] text-accent" data-testid="dm-message-pending">
+                  sending…
+                </span>
+              </Show>
+              <Show when={m().failed}>
+                <button
+                  type="button"
+                  class="text-[10px] text-danger underline"
+                  data-testid="dm-message-retry"
+                  onClick={retry}
+                >
+                  failed — retry
+                </button>
+              </Show>
+            </div>
+          </Show>
+
+          <Show when={actionError()}>
+            <p class="text-[10px] text-danger" data-testid="dm-action-error">
+              {actionError()}
+            </p>
+          </Show>
+        </div>
       </div>
     </li>
   );
 };
 
+/**
+ * Render a DM message body. DM messages are always `type: "message"` (the server
+ * stores no other kind), so this renders content as plain text — the same way
+ * channel chat renders a `message`/`memo`. (Markdown rendering is reserved for
+ * `article`-type messages, which DMs never carry; kept as a single content
+ * renderer so the surfaces stay consistent.)
+ */
+const DmMessageBody: Component<{ message: DmMessage }> = (props) => (
+  <p class="whitespace-pre-wrap break-words text-sm leading-[1.45]" data-testid="dm-message-text">
+    {props.message.content.text ?? ""}
+  </p>
+);
+
+/** Typing indicator for the counterparty (mirrors the channel typing line). */
+const DmTypingLine: Component<{ actors: string[] }> = (props) => (
+  <Show when={props.actors.length > 0}>
+    <div class="px-6 py-1 text-xs text-faint" data-testid="dm-typing-indicator">
+      {dmTypingText(props.actors)}
+    </div>
+  </Show>
+);
+
+function dmTypingText(actors: string[]): string {
+  const names = actors.map((a) => displayNameFor(a));
+  if (names.length === 1) return `${names[0]} is typing…`;
+  if (names.length === 2) return `${names[0]} and ${names[1]} are typing…`;
+  return `${names.length} people are typing…`;
+}
+
 const DmComposer: Component<{
   dmId: string;
   counterparty: string;
   sentStore: () => DmSentStore | null;
+  replyTarget: Accessor<DmMessage | null>;
+  onClearReply: () => void;
   onSent: () => void;
 }> = (props) => {
   const [text, setText] = createSignal("");
   const [sendError, setSendError] = createSignal<string | null>(null);
+  const [pendingAttachments, setPendingAttachments] = createSignal<Attachment[]>([]);
+  const [uploading, setUploading] = createSignal(false);
+
+  let lastTypingStart = 0;
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
+  let fileInput: HTMLInputElement | undefined;
+
+  const stopTyping = (): void => {
+    const ws = sessionWs();
+    if (ws) dmTypingStop(ws, props.dmId);
+    lastTypingStart = 0;
+    if (idleTimer) clearTimeout(idleTimer);
+  };
+
+  const onType = (value: string): void => {
+    setText(value);
+    const ws = sessionWs();
+    if (!ws) return;
+    const now = Date.now();
+    if (now - lastTypingStart > DM_TYPING_THROTTLE_MS) {
+      dmTypingStart(ws, props.dmId);
+      lastTypingStart = now;
+    }
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(stopTyping, DM_TYPING_IDLE_MS);
+  };
+
+  const onPickFile = async (file: File): Promise<void> => {
+    const client = sessionClient();
+    if (!client) return;
+    setUploading(true);
+    setSendError(null);
+    try {
+      const att = await uploadMedia(client, file);
+      setPendingAttachments((prev) => [...prev, att]);
+    } catch (err) {
+      setSendError(err instanceof Error ? err.message : "Upload failed.");
+    } finally {
+      setUploading(false);
+      if (fileInput) fileInput.value = "";
+    }
+  };
 
   const doSend = (): void => {
     const client = sessionClient();
     const store = props.sentStore();
     const me = session.actor;
     const body = text().trim();
-    if (!client || !store || !me || body.length === 0 || !props.counterparty) return;
+    const atts = pendingAttachments();
+    if (!client || !store || !me || !props.counterparty) return;
+    if (body.length === 0 && atts.length === 0) return;
     setSendError(null);
     setText("");
+    setPendingAttachments([]);
+    const target = props.replyTarget();
+    props.onClearReply();
+    stopTyping();
     const counterparty = props.counterparty;
     void resolveDeliveryClient(counterparty)
       .then((deliveryClient) =>
@@ -616,6 +1007,8 @@ const DmComposer: Component<{
           me,
           counterparty,
           text: body,
+          ...(atts.length > 0 ? { attachments: atts } : {}),
+          ...(target ? { reference: { type: "reply", id: target.id } } : {}),
           sentStore: store,
         }),
       )
@@ -625,19 +1018,86 @@ const DmComposer: Component<{
       });
   };
 
+  onCleanup(() => {
+    if (idleTimer) clearTimeout(idleTimer);
+  });
+
   return (
     <div class="border-t border-border px-6 py-3" data-testid="dm-composer">
+      {/* Reply context pill */}
+      <Show when={props.replyTarget()}>
+        {(t) => (
+          <div
+            class="mb-2 flex items-center gap-2 rounded-lg bg-surface-2 px-3 py-1.5 text-xs"
+            data-testid="dm-composer-reply-pill"
+          >
+            <span class="truncate text-muted">
+              Replying to <span class="text-ink">{displayNameFor(t().author)}</span>
+            </span>
+            <button
+              type="button"
+              class="ml-auto text-faint hover:text-danger"
+              aria-label="Cancel reply"
+              data-testid="dm-cancel-reply"
+              onClick={() => props.onClearReply()}
+            >
+              ✕
+            </button>
+          </div>
+        )}
+      </Show>
+
+      <Show when={pendingAttachments().length > 0}>
+        <div class="mb-2 flex flex-wrap gap-2" data-testid="dm-composer-attachments">
+          <For each={pendingAttachments()}>
+            {(att, idx) => (
+              <span class="inline-flex items-center gap-1 rounded-full bg-surface-2 px-2.5 py-1 text-xs text-muted">
+                📎 {att.filename ?? att.id}
+                <button
+                  type="button"
+                  class="text-faint hover:text-danger"
+                  aria-label="Remove attachment"
+                  onClick={() =>
+                    setPendingAttachments((prev) => prev.filter((_, i) => i !== idx()))
+                  }
+                >
+                  ✕
+                </button>
+              </span>
+            )}
+          </For>
+        </div>
+      </Show>
+
       <div class="flex items-end gap-2.5 rounded-md border-[1.5px] border-border-strong bg-surface px-3 py-2 focus-within:(outline outline-2 outline-accent outline-offset-1)">
-        <span class="pb-0.5 text-faint" title="Not end-to-end encrypted">
-          <Icon name="lock" size={16} />
-        </span>
+        <button
+          type="button"
+          class="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-sm text-faint transition-colors hover:text-ink disabled:opacity-50"
+          data-testid="dm-attach-button"
+          disabled={uploading()}
+          onClick={() => fileInput?.click()}
+          aria-label="Attach a file"
+        >
+          <Icon name="plus" size={18} />
+        </button>
+        <input
+          ref={fileInput}
+          type="file"
+          class="hidden"
+          data-testid="dm-file-input"
+          onChange={(e) => {
+            const file = e.currentTarget.files?.[0];
+            if (file) void onPickFile(file);
+          }}
+        />
         <textarea
           class="max-h-40 min-h-6 flex-1 resize-none bg-transparent text-sm text-ink outline-none placeholder:text-faint"
           rows={1}
           data-testid="dm-composer-input"
           placeholder={`Message ${props.counterparty ? displayNameFor(props.counterparty) : "…"}…`}
           value={text()}
-          onInput={(e) => setText(e.currentTarget.value)}
+          onInput={(e) => onType(e.currentTarget.value)}
+          onBlur={stopTyping}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();

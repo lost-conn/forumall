@@ -18,6 +18,7 @@
  * The store is transport-agnostic: the DM controller feeds received messages
  * (REST history + WS) and the sent-store hydrate/echo here.
  */
+import type { Attachment, Reaction } from "@forumall/shared";
 import { createStore, produce } from "solid-js/store";
 
 /** A DM message as the thread renders it (received OR locally-retained sent). */
@@ -26,7 +27,15 @@ export interface DmMessage {
   id: string;
   author: string;
   content: { mime?: string; text?: string };
+  /** Media attachments carried on the message (parity with channel messages). */
+  attachments?: Attachment[];
+  /** §5.3 reply pointer: `{ type: "reply", id: <parent message id> }`. */
+  reference?: { type: string; id: string };
   createdAt: string;
+  /** Set when the message was edited in place. */
+  editedAt?: string;
+  /** Set when the message was tombstoned (deleted). */
+  deletedAt?: string;
   /** Set on a local echo until its canonical confirmation replaces it. */
   clientMessageId?: string;
   /** True for the caller's own (sent) messages; false for received ones. */
@@ -34,6 +43,14 @@ export interface DmMessage {
   /** Optimistic-echo lifecycle: pending → confirmed (replaced) | failed. */
   pending?: boolean;
   failed?: boolean;
+}
+
+/** Aggregated reactions for one DM message: key → { unicode, authors }. */
+export interface DmReactionGroup {
+  key: string;
+  unicode?: string;
+  image?: string;
+  authors: string[];
 }
 
 /** A conversation summary for the sidebar list. */
@@ -52,11 +69,17 @@ interface DmState {
   conversations: Record<string, DmConversationSummary>;
   /** Merged message timeline per dmId (ascending by createdAt). */
   threads: Record<string, DmMessage[]>;
+  /** Reaction aggregation: dmId → messageId → key → DmReactionGroup. */
+  reactions: Record<string, Record<string, Record<string, DmReactionGroup>>>;
+  /** Typing actors per dmId (the counterparty; cleared on stop/timeout). */
+  typing: Record<string, string[]>;
 }
 
 const [dms, setDms] = createStore<DmState>({
   conversations: {},
   threads: {},
+  reactions: {},
+  typing: {},
 });
 
 export { dms };
@@ -167,6 +190,107 @@ export function upsertConversation(summary: DmConversationSummary): void {
   );
 }
 
+/**
+ * Apply an in-place edit to a DM message (new content + `editedAt`), de-duped by
+ * id. Edits arrive as a `dm.message` event carrying the new content + `editedAt`
+ * (the server re-fans the stored copy), so this is just an id-keyed upsert.
+ */
+export function applyDmEdit(dmId: string, message: DmMessage): void {
+  upsertDmMessage(dmId, message);
+}
+
+/**
+ * Mark a DM message tombstoned (clear content + attachments, set `deletedAt`),
+ * preserving its position in the timeline — mirrors the chat store's
+ * `tombstoneMessage`. A delete arrives as a `dm.message` event with `deletedAt`.
+ */
+export function tombstoneDmMessage(dmId: string, messageId: string, deletedAt: string): void {
+  setDms(
+    produce((s) => {
+      const msg = s.threads[dmId]?.find((m) => m.id === messageId);
+      if (msg) {
+        msg.deletedAt = deletedAt;
+        msg.content = { mime: "text/plain", text: "" };
+        msg.attachments = [];
+      }
+    }),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Reactions (client-side aggregation — mirrors the chat store)
+// ---------------------------------------------------------------------------
+
+/** Fold a `Reaction` (from a `dm.reaction` added event or the history embed). */
+export function addDmReactionAgg(dmId: string, reaction: Reaction): void {
+  const messageId = reaction.reference.id;
+  setDms(
+    produce((s) => {
+      if (!s.reactions[dmId]) s.reactions[dmId] = {};
+      const byMsg = s.reactions[dmId];
+      if (!byMsg[messageId]) byMsg[messageId] = {};
+      const byKey = byMsg[messageId];
+      const group: DmReactionGroup = byKey[reaction.key] ?? {
+        key: reaction.key,
+        ...(reaction.unicode !== undefined ? { unicode: reaction.unicode } : {}),
+        ...(reaction.image !== undefined ? { image: reaction.image } : {}),
+        authors: [],
+      };
+      byKey[reaction.key] = group;
+      if (reaction.unicode !== undefined) group.unicode = reaction.unicode;
+      if (reaction.image !== undefined) group.image = reaction.image;
+      if (!group.authors.includes(reaction.author)) group.authors.push(reaction.author);
+    }),
+  );
+}
+
+/** Remove an actor's reaction `key` from a DM message (folds `dm.reaction` removed). */
+export function removeDmReactionAgg(
+  dmId: string,
+  messageId: string,
+  key: string,
+  author: string,
+): void {
+  setDms(
+    produce((s) => {
+      const byMsg = s.reactions[dmId]?.[messageId];
+      const group = byMsg?.[key];
+      if (!byMsg || !group) return;
+      const idx = group.authors.indexOf(author);
+      if (idx !== -1) group.authors.splice(idx, 1);
+      if (group.authors.length === 0) delete byMsg[key];
+    }),
+  );
+}
+
+/** Aggregated reaction groups for a DM message (non-empty groups only). */
+export function dmReactionsFor(dmId: string, messageId: string): DmReactionGroup[] {
+  const byKey = dms.reactions[dmId]?.[messageId];
+  if (!byKey) return [];
+  return Object.values(byKey).filter((g) => g.authors.length > 0);
+}
+
+// ---------------------------------------------------------------------------
+// Typing indicators
+// ---------------------------------------------------------------------------
+
+/** Add/remove a typing actor for a DM (the caller filters self). */
+export function setDmTyping(dmId: string, actor: string, typing: boolean): void {
+  setDms(
+    produce((s) => {
+      if (!s.typing[dmId]) s.typing[dmId] = [];
+      const list = s.typing[dmId];
+      const idx = list.indexOf(actor);
+      if (typing && idx === -1) list.push(actor);
+      else if (!typing && idx !== -1) list.splice(idx, 1);
+    }),
+  );
+}
+
+export function dmTypingFor(dmId: string): string[] {
+  return dms.typing[dmId] ?? [];
+}
+
 // ---------------------------------------------------------------------------
 // Reads
 // ---------------------------------------------------------------------------
@@ -188,5 +312,5 @@ export function dmConversations(): DmConversationSummary[] {
 
 /** Reset all DM state (logout / account switch). */
 export function clearDms(): void {
-  setDms({ conversations: {}, threads: {} });
+  setDms({ conversations: {}, threads: {}, reactions: {}, typing: {} });
 }

@@ -649,6 +649,62 @@ export type DmConversationRow = typeof dmConversations.$inferSelect;
 export type NewDmConversationRow = typeof dmConversations.$inferInsert;
 
 /**
+ * DM reactions (spec §7.4, mirroring §5.3/§7.1 channel reactions). One row per
+ * (dm_id, message_id, author, key): a user may hold at most ONE reaction per
+ * `key` per DM message, enforced by the unique `(dm_id, message_id, author,
+ * key)` index — the add is idempotent against it, exactly like channel
+ * `reactions`.
+ *
+ * ## Storage-follows-message (§8.3)
+ * A DM message lives ONLY in its recipient's inbox at the recipient's home
+ * provider (there is no sender copy). A reaction targets that message, so it is
+ * stored at the SAME provider the message lives on, scoped by `(dm_id,
+ * message_id)`. The inbox `owner` is therefore implicit (the single inbox that
+ * holds `message_id` for `dm_id` on this provider), so — unlike channel
+ * reactions — no group/channel denormalization is needed. When the local user
+ * reacts to a message they SENT to a remote peer (no local copy here), the HTTP
+ * layer forwards the reaction to the peer's provider rather than storing it
+ * here (see `http/dms.ts`).
+ *
+ * `unicode` is omitted (DM reactions in v0.1 carry only a `key`, like the
+ * channel `reaction.add` minimal form); the canonical `Reaction.reference` is
+ * re-derived as `{ type: "message", id: message_id }` at the read boundary. The
+ * `(dm_id, message_id)` index backs the per-message aggregation on history reads.
+ */
+export const dmReactions = sqliteTable(
+  "dm_reactions",
+  {
+    /** Stable reaction id, e.g. `rct_<base64url>`. Primary key. */
+    id: text("id").primaryKey(),
+    /** Deterministic two-party conversation id (`deriveDmId`, §7.4). */
+    dmId: text("dm_id").notNull(),
+    /** FK to `dm_messages.id` — the reacted-to DM message. */
+    messageId: text("message_id").notNull(),
+    /** Reacting actor (`handle@domain`). */
+    author: text("author").notNull(),
+    /** Reaction key (e.g. `heart`); the dedupe axis with author + message. */
+    key: text("key").notNull(),
+    /** Creation time (epoch millis); rendered as RFC 3339 `createdAt`. */
+    createdAt: integer("created_at", { mode: "number" }).notNull(),
+  },
+  (t) => ({
+    // One reaction per (dm, message, author, key): adding the same key again is
+    // a no-op (idempotent in `addDmReaction`).
+    uniqueIdx: uniqueIndex("idx_dm_reactions_dm_message_author_key").on(
+      t.dmId,
+      t.messageId,
+      t.author,
+      t.key,
+    ),
+    // Aggregating reactions for a DM message (history reads / fan-out).
+    dmMessageIdx: index("idx_dm_reactions_dm_message").on(t.dmId, t.messageId),
+  }),
+);
+
+export type DmReactionRow = typeof dmReactions.$inferSelect;
+export type NewDmReactionRow = typeof dmReactions.$inferInsert;
+
+/**
  * Contacts (spec §6.7). A mutually-consented relationship that backs the
  * `contacts` visibility tier (§6.1). One row per (owner, user) FROM the local
  * `owner`'s perspective:

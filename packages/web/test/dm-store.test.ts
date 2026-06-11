@@ -8,16 +8,36 @@
  *    id, with optimistic-echo reconciliation in place.
  */
 import { beforeEach, describe, expect, test } from "bun:test";
+import type { Reaction } from "@forumall/shared";
 import { DmSentStore, type SentDmMessage } from "../src/lib/dm-store.ts";
 import {
   type DmMessage,
   addDmOptimistic,
+  addDmReactionAgg,
+  applyDmEdit,
   clearDms,
   dmConversations,
+  dmReactionsFor,
   dmThread,
+  dmTypingFor,
+  removeDmReactionAgg,
+  setDmTyping,
+  tombstoneDmMessage,
   upsertConversation,
   upsertDmMessage,
 } from "../src/stores/dms.ts";
+
+function reaction(over: Partial<Reaction>): Reaction {
+  return {
+    id: over.id ?? "rct_1",
+    author: over.author ?? "alice@h",
+    key: over.key ?? "+1",
+    reference: over.reference ?? { type: "message", id: "m1" },
+    createdAt: "2026-06-05T00:00:00Z",
+    metadata: [],
+    ...(over.unicode !== undefined ? { unicode: over.unicode } : {}),
+  } as Reaction;
+}
 
 const DM = "dm_aaaa";
 
@@ -160,5 +180,131 @@ describe("DM store: merge received + sent", () => {
       updatedAt: "2026-06-05T00:00:03.000Z",
     });
     expect(dmConversations().map((c) => c.dmId)).toEqual(["dm_b", "dm_a"]);
+  });
+});
+
+describe("DM store: reactions (client-side aggregation)", () => {
+  beforeEach(() => clearDms());
+
+  test("counts + authors aggregate per key; removal decrements / clears", () => {
+    addDmReactionAgg(DM, reaction({ author: "a@h", key: "+1", unicode: "👍" }));
+    addDmReactionAgg(DM, reaction({ author: "b@h", key: "+1", unicode: "👍" }));
+    addDmReactionAgg(DM, reaction({ author: "a@h", key: "heart", unicode: "❤️" }));
+
+    let groups = dmReactionsFor(DM, "m1");
+    const thumb = groups.find((g) => g.key === "+1");
+    expect(thumb?.authors).toHaveLength(2);
+    expect(thumb?.unicode).toBe("👍");
+
+    removeDmReactionAgg(DM, "m1", "+1", "a@h");
+    groups = dmReactionsFor(DM, "m1");
+    expect(groups.find((g) => g.key === "+1")?.authors).toEqual(["b@h"]);
+
+    removeDmReactionAgg(DM, "m1", "+1", "b@h");
+    expect(dmReactionsFor(DM, "m1").find((g) => g.key === "+1")).toBeUndefined();
+  });
+
+  test("a repeated add by the same author is idempotent (own optimistic toggle)", () => {
+    addDmReactionAgg(DM, reaction({ author: "me@h", key: "+1" }));
+    addDmReactionAgg(DM, reaction({ author: "me@h", key: "+1" }));
+    expect(dmReactionsFor(DM, "m1").find((g) => g.key === "+1")?.authors).toEqual(["me@h"]);
+  });
+
+  test("reactions are scoped per dmId", () => {
+    addDmReactionAgg(DM, reaction({ author: "a@h", key: "+1" }));
+    addDmReactionAgg("dm_other", reaction({ author: "a@h", key: "+1" }));
+    expect(dmReactionsFor(DM, "m1")).toHaveLength(1);
+    expect(dmReactionsFor("dm_other", "m1")).toHaveLength(1);
+    removeDmReactionAgg(DM, "m1", "+1", "a@h");
+    expect(dmReactionsFor(DM, "m1")).toHaveLength(0);
+    expect(dmReactionsFor("dm_other", "m1")).toHaveLength(1);
+  });
+});
+
+describe("DM store: edit + tombstone in place", () => {
+  beforeEach(() => clearDms());
+
+  test("an edit replaces content + sets editedAt in place (no duplicate)", () => {
+    upsertDmMessage(DM, {
+      id: "m1",
+      author: "me@h",
+      content: { text: "original" },
+      createdAt: "2026-06-05T00:00:00Z",
+      mine: true,
+    });
+    applyDmEdit(DM, {
+      id: "m1",
+      author: "me@h",
+      content: { text: "edited" },
+      createdAt: "2026-06-05T00:00:00Z",
+      editedAt: "2026-06-05T00:01:00Z",
+      mine: true,
+    });
+    const list = dmThread(DM);
+    expect(list).toHaveLength(1);
+    expect(list[0]?.content.text).toBe("edited");
+    expect(list[0]?.editedAt).toBe("2026-06-05T00:01:00Z");
+  });
+
+  test("deleting clears content + attachments + sets deletedAt, keeps position", () => {
+    upsertDmMessage(DM, {
+      id: "m1",
+      author: "me@h",
+      content: { text: "one" },
+      createdAt: "2026-06-05T00:00:00Z",
+    });
+    upsertDmMessage(DM, {
+      id: "m2",
+      author: "me@h",
+      content: { text: "two" },
+      createdAt: "2026-06-05T00:00:01Z",
+    });
+    tombstoneDmMessage(DM, "m1", "2026-06-05T00:02:00Z");
+    const list = dmThread(DM);
+    expect(list).toHaveLength(2);
+    expect(list[0]?.id).toBe("m1");
+    expect(list[0]?.deletedAt).toBe("2026-06-05T00:02:00Z");
+    expect(list[0]?.content.text).toBe("");
+    expect(list[0]?.attachments).toEqual([]);
+  });
+});
+
+describe("DM store: attachments + reference on the message model", () => {
+  beforeEach(() => clearDms());
+
+  test("attachments + reference are carried on upsert", () => {
+    upsertDmMessage(DM, {
+      id: "m1",
+      author: "me@h",
+      content: { text: "see attached" },
+      attachments: [
+        {
+          id: "att_1",
+          url: "https://h/api/media/att_1",
+          mime: "image/png",
+          size: 10,
+          metadata: [],
+        },
+      ],
+      reference: { type: "reply", id: "parent" },
+      createdAt: "2026-06-05T00:00:00Z",
+      mine: true,
+    });
+    const m = dmThread(DM)[0];
+    expect(m?.attachments).toHaveLength(1);
+    expect(m?.reference?.id).toBe("parent");
+  });
+});
+
+describe("DM store: typing", () => {
+  beforeEach(() => clearDms());
+
+  test("start adds, stop removes (idempotent)", () => {
+    setDmTyping(DM, "a@h", true);
+    expect(dmTypingFor(DM)).toEqual(["a@h"]);
+    setDmTyping(DM, "a@h", true);
+    expect(dmTypingFor(DM)).toEqual(["a@h"]);
+    setDmTyping(DM, "a@h", false);
+    expect(dmTypingFor(DM)).toEqual([]);
   });
 });
