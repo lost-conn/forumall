@@ -17,6 +17,7 @@
 import { PushSubscribeRequestSchema, PushUnsubscribeRequestSchema } from "@forumall/shared";
 import { Hono } from "hono";
 
+import { egressCheck } from "../provider/push-egress-check.ts";
 import { addSubscription, getVapidKey, removeSubscription } from "../provider/push.ts";
 import { AppError } from "./errors.ts";
 import { optionalSignature, requireSignature } from "./signature.ts";
@@ -33,6 +34,17 @@ export function createPushRouter() {
     const { db } = c.var;
     const key = getVapidKey(db);
     return c.json({ publicKey: key.publicKey }, 200);
+  });
+
+  // -- GET /_egress-check (public, ops diagnostic) ------------------------
+  // Reports whether THIS host can reach the browser push services and over which
+  // IP family (raw TCP per family + the real fetch path). Hosts are hard-coded,
+  // so there is no SSRF surface. Use it to tell "IPv6 black-hole" (force IPv4)
+  // from "egress blocked entirely" (needs a proxy) on a constrained deploy.
+  router.get("/_egress-check", async (c) => {
+    const { config } = c.var;
+    const report = await egressCheck(config.dnsResultOrder, config.pushProxy !== undefined);
+    return c.json(report, 200);
   });
 
   // -- POST /subscribe (signed) -------------------------------------------

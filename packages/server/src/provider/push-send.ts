@@ -117,7 +117,15 @@ export async function sendPushToRecipient(
             console.error(`web push to ${sub.endpoint} failed: status ${status}`);
           }
         } catch (err) {
-          console.error("web push delivery error:", err);
+          // Concise one-liner (the raw error otherwise dumps a source snippet).
+          const code = (err as { code?: string })?.code ?? String(err);
+          let host = sub.endpoint;
+          try {
+            host = new URL(sub.endpoint).host;
+          } catch {
+            /* keep the raw endpoint */
+          }
+          console.error(`web push to ${host} failed: ${code}`);
         }
       }),
     );
