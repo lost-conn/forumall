@@ -1024,3 +1024,66 @@ export const notifications = sqliteTable(
 
 export type NotificationRow = typeof notifications.$inferSelect;
 export type NewNotificationRow = typeof notifications.$inferInsert;
+
+/**
+ * The provider's own VAPID (Web Push application-server) P-256 key pair (RFC
+ * 8292) — distinct from the Ed25519 `provider_keys` signing identity. Generated
+ * once on first push use and reused across restarts (mirrors `provider_keys`).
+ * The public half is the `applicationServerKey` browsers subscribe with; the
+ * private scalar signs the per-request VAPID JWT and is NEVER served.
+ */
+export const pushKeys = sqliteTable("push_keys", {
+  /** Stable id, e.g. `vpk-<short>`. Primary key. */
+  keyId: text("key_id").primaryKey(),
+  /** Base64url raw uncompressed P-256 public key (65 bytes, `0x04||X||Y`). */
+  publicKey: text("public_key").notNull(),
+  /** Base64url raw 32-byte P-256 private scalar. Secret; never served. */
+  privateKey: text("private_key").notNull(),
+  /** Always `P-256` in v0.1; column exists to support future algorithms. */
+  algorithm: text("algorithm").notNull(),
+  /** Creation time (epoch millis). */
+  createdAt: integer("created_at", { mode: "number" })
+    .notNull()
+    .$defaultFn(() => Date.now()),
+});
+
+export type PushKeyRow = typeof pushKeys.$inferSelect;
+export type NewPushKeyRow = typeof pushKeys.$inferInsert;
+
+/**
+ * Web Push subscriptions (provider-local extension). One row per registered
+ * browser `PushSubscription` for a LOCAL recipient. The unique `endpoint` index
+ * makes (re-)subscribing idempotent; a `410 Gone`/`404` from the push service
+ * deletes the row (dead subscription cleanup). Keyed on the LOCAL `recipient`
+ * handle and never federated.
+ */
+export const pushSubscriptions = sqliteTable(
+  "push_subscriptions",
+  {
+    /** Stable id (`psh_<base64url>`). Primary key. */
+    id: text("id").primaryKey(),
+    /** The LOCAL user handle this subscription belongs to. */
+    recipient: text("recipient").notNull(),
+    /** The push service endpoint URL (unique — idempotent re-subscribe). */
+    endpoint: text("endpoint").notNull(),
+    /** The subscription's P-256 public key (`p256dh`), base64url. */
+    p256dh: text("p256dh").notNull(),
+    /** The subscription's auth secret (`auth`), base64url. */
+    auth: text("auth").notNull(),
+    /** Creation time (epoch millis). */
+    createdAt: integer("created_at", { mode: "number" })
+      .notNull()
+      .$defaultFn(() => Date.now()),
+    /** Last successful delivery time (epoch millis); null until first delivery. */
+    lastDeliveredAt: integer("last_delivered_at", { mode: "number" }),
+  },
+  (t) => ({
+    // Idempotent (re-)subscribe: at most one row per push endpoint.
+    endpointIdx: uniqueIndex("idx_push_subscriptions_endpoint").on(t.endpoint),
+    // Fan-out scan: all of a recipient's subscriptions.
+    recipientIdx: index("idx_push_subscriptions_recipient").on(t.recipient),
+  }),
+);
+
+export type PushSubscriptionRow = typeof pushSubscriptions.$inferSelect;
+export type NewPushSubscriptionRow = typeof pushSubscriptions.$inferInsert;

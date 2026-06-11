@@ -22,6 +22,7 @@ import { createInvitesRouter } from "./invites.ts";
 import { createMediaRouter } from "./media.ts";
 import { createMeNotificationsRouter } from "./notifications-feed.ts";
 import { createNotificationsRouter } from "./notifications.ts";
+import { createPushRouter } from "./push.ts";
 import { createMeReadMarkersRouter } from "./read-markers.ts";
 import type { AppBindings } from "./types.ts";
 import { createMeUserRouter, createUsersRouter } from "./users.ts";
@@ -86,6 +87,14 @@ export function createApiRouter() {
 
   /** Notification webhook registration + delivery (§10): `/api/notifications`. */
   api.route("/notifications", createNotificationsRouter());
+
+  /**
+   * Web Push (provider-local): `/api/push`. The VAPID public key + browser
+   * PushSubscription registration. Real OS/browser push for @mentions, replies,
+   * and DMs is fired (fire-and-forget) from the message/DM paths when the
+   * recipient has no live WS connection.
+   */
+  api.route("/push", createPushRouter());
 
   /**
    * Known providers (§8.6, OPTIONAL): `GET /api/providers`. 404 unless

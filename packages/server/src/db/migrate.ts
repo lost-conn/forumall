@@ -678,6 +678,42 @@ const migrations: readonly Migration[] = [
       );
     },
   },
+  {
+    // Web Push (provider-local): the provider's own VAPID P-256 key pair
+    // (generate-once, mirrors `provider_keys`) + per-recipient browser push
+    // subscriptions. The unique `endpoint` index makes re-subscribe idempotent
+    // and backs the 410-cleanup delete; the recipient index backs fan-out.
+    // Guarded for re-run.
+    id: "0030_push",
+    up: (sqlite) => {
+      sqlite.exec(`
+        CREATE TABLE IF NOT EXISTS push_keys (
+          key_id      TEXT PRIMARY KEY,
+          public_key  TEXT NOT NULL,
+          private_key TEXT NOT NULL,
+          algorithm   TEXT NOT NULL,
+          created_at  INTEGER NOT NULL
+        ) STRICT;
+      `);
+      sqlite.exec(`
+        CREATE TABLE IF NOT EXISTS push_subscriptions (
+          id                TEXT PRIMARY KEY,
+          recipient         TEXT NOT NULL,
+          endpoint          TEXT NOT NULL,
+          p256dh            TEXT NOT NULL,
+          auth              TEXT NOT NULL,
+          created_at        INTEGER NOT NULL,
+          last_delivered_at INTEGER
+        ) STRICT;
+      `);
+      sqlite.exec(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_push_subscriptions_endpoint ON push_subscriptions (endpoint);",
+      );
+      sqlite.exec(
+        "CREATE INDEX IF NOT EXISTS idx_push_subscriptions_recipient ON push_subscriptions (recipient);",
+      );
+    },
+  },
 ];
 
 const LEDGER_DDL = `

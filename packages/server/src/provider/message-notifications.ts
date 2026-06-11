@@ -19,10 +19,15 @@ import { type Notification, canonicalAuthority } from "@forumall/shared";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/index.ts";
 import { notifyForChannelMessage } from "./notifications-feed.ts";
+import { type PushPayload, previewText, sendPushToRecipient } from "./push-send.ts";
 
-/** The publish surface this helper needs from the hub (just actor fan-out). */
+/**
+ * The publish surface this helper needs from the hub: per-actor fan-out plus the
+ * live-connection gate (push is only sent when the recipient is disconnected).
+ */
 export interface NotificationCreatedFanout {
   publishToActor(actor: string, event: { type: string; data: unknown }): void;
+  liveConnectionCount(actor: string): number;
 }
 
 /** Inputs describing the channel message that was just created. */
@@ -62,10 +67,23 @@ export function fireMessageNotifications(
     });
     const out: Notification[] = [];
     for (const { recipient, notification } of created) {
-      hub.publishToActor(`${recipient}@${localDomain}`, {
+      const recipientActor = `${recipient}@${localDomain}`;
+      hub.publishToActor(recipientActor, {
         type: "notification.created",
         data: { notification },
       });
+      // Push: only when the recipient has NO live WS connection (a connected
+      // recipient already got the in-app chime/badge). Fire-and-forget — never
+      // block or fail message creation.
+      if (hub.liveConnectionCount(recipientActor) === 0) {
+        const payload = channelPushPayload(
+          notification.type,
+          input.author,
+          input.text,
+          input.groupId,
+        );
+        void sendPushToRecipient(db, config, recipientActor, payload);
+      }
       out.push(notification);
     }
     return out;
@@ -73,4 +91,21 @@ export function fireMessageNotifications(
     console.error("inbound notification creation failed:", err);
     return [];
   }
+}
+
+/** Build the Web Push payload for a channel mention/reply notification. */
+function channelPushPayload(
+  type: string,
+  author: string,
+  text: string,
+  groupId: string,
+): PushPayload {
+  const handle = author.includes("@") ? author.slice(0, author.lastIndexOf("@")) : author;
+  const title = type === "reply" ? `New reply from ${handle}` : `New mention from ${handle}`;
+  return {
+    title,
+    body: previewText(text),
+    tag: `chan:${groupId}`,
+    data: { targetUrl: `/groups/${groupId}` },
+  };
 }

@@ -67,6 +67,7 @@ import {
 } from "../provider/dms.ts";
 import type { FederationFetch } from "../provider/federation/http.ts";
 import { signedProviderFetch } from "../provider/federation/http.ts";
+import { previewText, sendPushToRecipient } from "../provider/push-send.ts";
 import { AppError } from "./errors.ts";
 import { requireProviderSignature, requireSignature } from "./signature.ts";
 import type { AppBindings } from "./types.ts";
@@ -437,6 +438,23 @@ export function createFederationDmsRouter() {
       type: "dm.message",
       data: dmMessageEventData(dmId, record.cursor, record.message, body.clientMessageId),
     });
+
+    // --- Web Push: notify a DISCONNECTED recipient (no live WS) -------------
+    // Gate strictly on liveConnectionCount === 0 (a connected recipient already
+    // got the in-app dm.message). Fire-and-forget — never block/fail the send.
+    if (hub.liveConnectionCount(recipientActor) === 0) {
+      const authorHandle = author.includes("@") ? author.slice(0, author.lastIndexOf("@")) : author;
+      const text =
+        typeof (body.content as { text?: unknown }).text === "string"
+          ? (body.content as { text: string }).text
+          : "";
+      void sendPushToRecipient(db, config, recipientActor, {
+        title: authorHandle,
+        body: previewText(text),
+        tag: `dm:${dmId}`,
+        data: { targetUrl: `/dms/${dmId}` },
+      });
+    }
 
     // Respond with the stored canonical message (the local sender's confirmation;
     // the sender still keeps its own optimistic copy client-side, §7.4).

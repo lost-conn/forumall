@@ -28,6 +28,48 @@ self.addEventListener("activate", (event) => {
   );
 });
 
+// --- Web Push --------------------------------------------------------------
+// A push arrives as an encrypted JSON payload (RFC 8291); show it as an OS/
+// browser notification. The payload shape is `{title, body, tag, data:{targetUrl}}`.
+self.addEventListener("push", (event) => {
+  let payload = {};
+  try {
+    payload = event.data ? event.data.json() : {};
+  } catch {
+    payload = {};
+  }
+  const title = payload.title || "Forumall";
+  const options = {
+    body: payload.body || "",
+    icon: "/icon-192.png",
+    badge: "/icon-192.png",
+    tag: payload.tag || undefined,
+    data: payload.data || {},
+  };
+  event.waitUntil(self.registration.showNotification(title, options));
+});
+
+// Clicking a notification focuses an open Forumall tab (routing it to the
+// target) or opens a new window at the target URL.
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const targetUrl = event.notification.data?.targetUrl || "/";
+  const absolute = new URL(targetUrl, self.location.origin).href;
+  event.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clientList) => {
+      for (const client of clientList) {
+        // Reuse an existing same-origin tab: navigate it and focus.
+        if (new URL(client.url).origin === self.location.origin && "focus" in client) {
+          if ("navigate" in client) client.navigate(absolute).catch(() => undefined);
+          return client.focus();
+        }
+      }
+      if (self.clients.openWindow) return self.clients.openWindow(absolute);
+      return undefined;
+    }),
+  );
+});
+
 self.addEventListener("fetch", (event) => {
   const req = event.request;
   if (req.method !== "GET") return;

@@ -17,5 +17,6 @@ export * from "./messaging.ts";
 export * from "./notifications.ts";
 export * from "./privacy.ts";
 export * from "./objects.ts";
+export * from "./push.ts";
 export * from "./read-markers.ts";
 export * from "./ws.ts";
