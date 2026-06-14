@@ -55,10 +55,11 @@ import {
   withDmReactions,
 } from "../provider/dm-reactions.ts";
 import {
+  type DmViewer,
   getDmConversationRow,
   getDmMessageByClientId,
   getDmMessageRow,
-  isDmParticipant,
+  isDmThreadParticipant,
   listDmConversations,
   listDmMessages,
   storeDmMessage,
@@ -672,22 +673,32 @@ export function createDmsRouter() {
   const signed = requireSignature();
 
   // -- GET /{dmId}/messages (§7.4 — signed, participant-only) -------------
+  // Returns the caller's FULL conversation view the provider can serve: the
+  // messages they SENT (rows authored by them, stored in the counterparty's
+  // local inbox) ∪ the messages they RECEIVED (their own inbox, when local),
+  // over the shared global seq cursor space (§7.4). Works same- and
+  // cross-provider (a remote sender reading the recipient's provider gets their
+  // sent rows by `author` scope).
   router.get("/:dmId/messages", signed, (c) => {
-    const { db } = c.var;
+    const { db, config } = c.var;
     const actor = c.var.actor;
     if (!actor) throw AppError.unauthorized();
     const dmId = requireParam(c, "dmId");
-    const owner = actor.handle;
+    const viewer: DmViewer = {
+      handle: actor.handle,
+      actor: actor.actor,
+      local: actor.domain === canonicalAuthority(config.domain),
+    };
 
-    // Participation: no conversation row for the caller → unknown to this inbox.
-    // Practical rule (per card): a 404 for an unknown dmId, since a non-
-    // participant simply has no inbox conversation row for it.
-    if (!isDmParticipant(db, owner, dmId)) {
+    // Participation: the caller must own a local inbox row for dmId, OR be named
+    // as the counterparty of some local inbox row for dmId (covers an only-sent /
+    // cross-provider sender with no inbox here). A true non-participant → 404.
+    if (!isDmThreadParticipant(db, dmId, viewer)) {
       throw AppError.notFound({ detail: "no such conversation" });
     }
 
     const { cursor, direction, limit } = pageQuery(c);
-    const page = listDmMessages(db, owner, dmId, {
+    const page = listDmMessages(db, dmId, viewer, {
       cursor,
       direction,
       ...(limit !== undefined ? { limit } : {}),
@@ -703,19 +714,23 @@ export function createDmsRouter() {
   // Paged list of the replies to a DM message within the caller's inbox. Same
   // participant-only gate + `messages-page` shape as the history read.
   router.get("/:dmId/messages/:messageId/replies", signed, (c) => {
-    const { db } = c.var;
+    const { db, config } = c.var;
     const actor = c.var.actor;
     if (!actor) throw AppError.unauthorized();
     const dmId = requireParam(c, "dmId");
     const messageId = requireParam(c, "messageId");
-    const owner = actor.handle;
+    const viewer: DmViewer = {
+      handle: actor.handle,
+      actor: actor.actor,
+      local: actor.domain === canonicalAuthority(config.domain),
+    };
 
-    if (!isDmParticipant(db, owner, dmId)) {
+    if (!isDmThreadParticipant(db, dmId, viewer)) {
       throw AppError.notFound({ detail: "no such conversation" });
     }
 
     const { cursor, direction, limit } = pageQuery(c);
-    const page = listDmReplies(db, owner, dmId, messageId, {
+    const page = listDmReplies(db, dmId, messageId, viewer, {
       cursor,
       direction,
       ...(limit !== undefined ? { limit } : {}),

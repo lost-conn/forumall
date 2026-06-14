@@ -31,11 +31,11 @@ import {
   ReactionSchema,
   rfc3339Timestamp,
 } from "@forumall/shared";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, or, sql } from "drizzle-orm";
 
 import type { Db } from "../db/index.ts";
 import { type DmMessageRow, type DmReactionRow, dmMessages, dmReactions } from "../db/schema.ts";
-import type { ListDmMessagesOptions } from "./dms.ts";
+import type { DmViewer, ListDmMessagesOptions } from "./dms.ts";
 import { type PageDirection, encodeMessageCursor } from "./messages.ts";
 
 /** `id` prefix per the §5.3 wire examples (`rct_…`). */
@@ -276,18 +276,19 @@ export interface DmReplyPage {
 }
 
 /**
- * List one page of the replies to `parentMessageId` within the caller's inbox
- * for `dmId` (§7.2), mirroring channel {@link listReplies}: the inbox messages
- * whose `reference.id` is `parentMessageId` and `reference.type` is `reply`,
- * over the same `seq` cursor space. `direction` defaults to `forward`
- * (oldest-reply-first). Reactions are embedded onto each reply. Authorization
- * (participation) is the caller's responsibility.
+ * List one page of the replies to `parentMessageId` within the `viewer`'s full
+ * conversation view for `dmId` (§7.2), mirroring channel {@link listReplies}: the
+ * DM messages whose `reference.id` is `parentMessageId` and `reference.type` is
+ * `reply`, over the same `seq` cursor space, scoped to the same union as
+ * {@link listDmMessages} (sent ∪, when local, received). `direction` defaults to
+ * `forward` (oldest-reply-first). Reactions are embedded onto each reply.
+ * Authorization (participation) is the caller's responsibility.
  */
 export function listDmReplies(
   db: Db,
-  owner: string,
   dmId: string,
   parentMessageId: string,
+  viewer: DmViewer,
   opts: ListDmMessagesOptions = {},
 ): DmReplyPage {
   const direction: PageDirection = opts.direction === "backward" ? "backward" : "forward";
@@ -297,10 +298,13 @@ export function listDmReplies(
       : DEFAULT_PAGE_SIZE;
   const after = opts.cursor ? decodeMessageSeqCursor(opts.cursor) : null;
 
-  // Replies: same inbox + dm, whose JSON reference is a reply to the parent.
+  // Replies: same dm, whose JSON reference is a reply to the parent, scoped to
+  // the viewer's sent ∪ (local ? received) union — matching listDmMessages.
   const scope = and(
-    eq(dmMessages.owner, owner),
     eq(dmMessages.dmId, dmId),
+    viewer.local
+      ? or(eq(dmMessages.author, viewer.actor), eq(dmMessages.owner, viewer.handle))
+      : eq(dmMessages.author, viewer.actor),
     sql`json_valid(${dmMessages.reference}) AND json_extract(${dmMessages.reference}, '$.type') = 'reply' AND json_extract(${dmMessages.reference}, '$.id') = ${parentMessageId}`,
   );
   const where =

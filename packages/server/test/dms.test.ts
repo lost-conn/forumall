@@ -130,6 +130,9 @@ async function signedReq(
   bodyObj?: unknown,
 ): Promise<Response> {
   const body = bodyObj === undefined ? undefined : JSON.stringify(bodyObj);
+  // The query string is a distinct signed line (§4.4.2); split it off the path.
+  const qIdx = path.indexOf("?");
+  const query = qIdx === -1 ? undefined : path.slice(qIdx + 1);
   const { headers } = sign({
     actor: signer.actor,
     keyId: signer.keyId,
@@ -137,6 +140,7 @@ async function signedReq(
     authority: DOMAIN,
     method,
     path,
+    ...(query !== undefined ? { query } : {}),
     ...(body !== undefined ? { body } : {}),
   });
   return http(b, path, {
@@ -280,9 +284,16 @@ describe("DM send + inbox-only storage (§7.4, §8.3)", () => {
     expect(bobItems[0]?.id).toBe(stored.id);
     expect(bobItems[0]?.author).toBe(alice.actor);
 
-    // alice reads HER inbox for the same dmId → 404 (no sender copy stored).
+    // alice reads the conversation → 200 with her SENT message (broadened read:
+    // no sender copy is stored, but the read returns rows she authored that sit
+    // in bob's inbox, §7.4).
     const aliceHist = await signedReq(b, alice, "GET", `/api/dms/${dmId}/messages`);
-    expect(aliceHist.status).toBe(404);
+    expect(aliceHist.status).toBe(200);
+    const aliceItems = ((await aliceHist.json()) as { items: { id: string; author: string }[] })
+      .items;
+    expect(aliceItems.length).toBe(1);
+    expect(aliceItems[0]?.id).toBe(stored.id);
+    expect(aliceItems[0]?.author).toBe(alice.actor);
   });
 
   test("dmId mismatch → 400, nothing stored (inbox poisoning blocked)", async () => {
@@ -446,6 +457,91 @@ describe("DM listing + participation (§7.4)", () => {
 
     const res = await signedReq(b, carol, "GET", `/api/dms/${dmId}/messages`);
     expect(res.status).toBe(404);
+  });
+});
+
+describe("DM broadened read: sender can read back their sent messages (§7.4)", () => {
+  test("both A and B see the full conversation (sent ∪ received), ordered by seq", async () => {
+    const b = boot("dm-broadened-both");
+    const alice = await registerUserWithKey(b, "alice");
+    const bob = await registerUserWithKey(b, "bob");
+    const dmId = deriveDmId(alice.actor, bob.actor);
+
+    // alice → bob, then bob → alice (interleaved authorship).
+    const s1 = await sendDm(b, alice, dmId, "from alice 1", "c1");
+    const s2 = await sendDm(b, bob, dmId, "from bob 1", "c2");
+    const s3 = await sendDm(b, alice, dmId, "from alice 2", "c3");
+    const id1 = ((await s1.json()) as { id: string }).id;
+    const id2 = ((await s2.json()) as { id: string }).id;
+    const id3 = ((await s3.json()) as { id: string }).id;
+
+    // alice reads (forward = chronological): sees all three, hers + bob's.
+    const aRes = await signedReq(b, alice, "GET", `/api/dms/${dmId}/messages?direction=forward`);
+    expect(aRes.status).toBe(200);
+    const aItems = ((await aRes.json()) as { items: { id: string; author: string }[] }).items;
+    expect(aItems.map((m) => m.id)).toEqual([id1, id2, id3]);
+    expect(aItems.map((m) => m.author)).toEqual([alice.actor, bob.actor, alice.actor]);
+
+    // bob reads (forward): sees the same three in the same seq order.
+    const bRes = await signedReq(b, bob, "GET", `/api/dms/${dmId}/messages?direction=forward`);
+    expect(bRes.status).toBe(200);
+    const bItems = ((await bRes.json()) as { items: { id: string; author: string }[] }).items;
+    expect(bItems.map((m) => m.id)).toEqual([id1, id2, id3]);
+  });
+
+  test("a sender who has ONLY sent (no received) can read their sent message back", async () => {
+    const b = boot("dm-broadened-onlysent");
+    const alice = await registerUserWithKey(b, "alice");
+    const bob = await registerUserWithKey(b, "bob");
+    const dmId = deriveDmId(alice.actor, bob.actor);
+
+    const sent = await sendDm(b, alice, dmId, "only sent", "c_only");
+    const id = ((await sent.json()) as { id: string }).id;
+
+    // alice has no inbox row of her own for dmId, but is the counterparty of
+    // bob's inbox row → participant; the read returns her sent message.
+    const res = await signedReq(b, alice, "GET", `/api/dms/${dmId}/messages`);
+    expect(res.status).toBe(200);
+    const items = ((await res.json()) as { items: { id: string }[] }).items;
+    expect(items.length).toBe(1);
+    expect(items[0]?.id).toBe(id);
+  });
+
+  test("a genuine non-participant still gets 404", async () => {
+    const b = boot("dm-broadened-nonparticipant");
+    const alice = await registerUserWithKey(b, "alice");
+    const bob = await registerUserWithKey(b, "bob");
+    const carol = await registerUserWithKey(b, "carol");
+    const dmId = deriveDmId(alice.actor, bob.actor);
+
+    await sendDm(b, alice, dmId, "private", "c_priv");
+
+    const res = await signedReq(b, carol, "GET", `/api/dms/${dmId}/messages`);
+    expect(res.status).toBe(404);
+  });
+
+  test("replies read is scoped the same way (sent replies show too)", async () => {
+    const b = boot("dm-broadened-replies");
+    const alice = await registerUserWithKey(b, "alice");
+    const bob = await registerUserWithKey(b, "bob");
+    const dmId = deriveDmId(alice.actor, bob.actor);
+
+    // alice sends a parent, then alice replies to it (the reply is authored by
+    // alice and stored in bob's inbox — no sender copy).
+    const parent = await sendDm(b, alice, dmId, "parent", "c_parent");
+    const parentId = ((await parent.json()) as { id: string }).id;
+    const reply = await signedReq(b, alice, "POST", `/api/federation/dms/${dmId}/messages`, {
+      clientMessageId: "c_reply",
+      content: { mime: "text/plain", text: "my reply" },
+      reference: { type: "reply", id: parentId },
+    });
+    const replyId = ((await reply.json()) as { id: string }).id;
+
+    // alice lists the replies to her parent → sees her own sent reply.
+    const res = await signedReq(b, alice, "GET", `/api/dms/${dmId}/messages/${parentId}/replies`);
+    expect(res.status).toBe(200);
+    const items = ((await res.json()) as { items: { id: string }[] }).items;
+    expect(items.map((m) => m.id)).toEqual([replyId]);
   });
 });
 

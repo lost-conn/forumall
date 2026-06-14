@@ -30,7 +30,7 @@ import {
   type MetadataList,
   rfc3339Timestamp,
 } from "@forumall/shared";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, or, sql } from "drizzle-orm";
 
 import type { Config } from "../config.ts";
 import type { Db } from "../db/index.ts";
@@ -260,6 +260,38 @@ export function isDmParticipant(db: Db, owner: string, dmId: string): boolean {
   return getDmConversationRow(db, owner, dmId) != null;
 }
 
+/**
+ * The identity reading a DM thread. `actor` is the full `handle@domain`; `handle`
+ * is the bare local handle (only meaningful when `local` is true); `local` is
+ * whether the viewer's home provider is THIS provider (so they may own an inbox
+ * here). A remote sender reading the recipient's provider has `local === false`
+ * and is scoped purely by `author`.
+ */
+export interface DmViewer {
+  readonly handle: string;
+  readonly actor: string;
+  readonly local: boolean;
+}
+
+/**
+ * Whether `viewer` is a participant of `dmId` for the purpose of the broadened
+ * read (§7.4). True if the viewer either owns a LOCAL inbox conversation row for
+ * `dmId` (received, or a self/same-node conversation), OR is named as the
+ * counterparty of SOME local inbox row for `dmId` (covers a cross-provider — or
+ * only-sent — sender who has no inbox of their own here but whose sent messages
+ * sit in a local recipient's inbox). A true non-participant matches neither.
+ */
+export function isDmThreadParticipant(db: Db, dmId: string, viewer: DmViewer): boolean {
+  if (viewer.local && getDmConversationRow(db, viewer.handle, dmId) != null) return true;
+  const row = db.drizzle
+    .select({ owner: dmConversations.owner })
+    .from(dmConversations)
+    .where(and(eq(dmConversations.dmId, dmId), eq(dmConversations.counterparty, viewer.actor)))
+    .limit(1)
+    .all()[0];
+  return row != null;
+}
+
 /** Keyset position for the conversation listing: `(updatedAt, dmId)` total order. */
 interface ConversationCursor {
   readonly updatedAt: number;
@@ -383,14 +415,17 @@ export interface DmMessagePage {
 }
 
 /**
- * Read one page of the caller's inbox timeline for `dmId` by keyset over `seq`
- * (§7.4, same cursor space + shape as §7.2). `backward` (default) returns
- * newest-first; `forward` oldest-first. A malformed cursor → first page.
+ * Read one page of the `viewer`'s full conversation view for `dmId` by keyset
+ * over `seq` (§7.4, same cursor space + shape as §7.2). The view is the union of
+ * the messages the viewer SENT (rows authored by them — which, with no sender
+ * copy, live in the counterparty's local inbox) and, when the viewer is local,
+ * the messages they RECEIVED (rows in their own inbox). `backward` (default)
+ * returns newest-first; `forward` oldest-first. A malformed cursor → first page.
  */
 export function listDmMessages(
   db: Db,
-  owner: string,
   dmId: string,
+  viewer: DmViewer,
   opts: ListDmMessagesOptions = {},
 ): DmMessagePage {
   const direction: PageDirection = opts.direction === "forward" ? "forward" : "backward";
@@ -400,7 +435,16 @@ export function listDmMessages(
       : DEFAULT_PAGE_SIZE;
   const after = opts.cursor ? decodeMessageSeqCursor(opts.cursor) : null;
 
-  const scope = and(eq(dmMessages.owner, owner), eq(dmMessages.dmId, dmId));
+  // Scope: rows authored by the viewer (their SENT messages, stored in the
+  // counterparty's inbox) OR — when the viewer is local — rows in the viewer's
+  // own inbox (their RECEIVED messages). A self-DM row could satisfy both clauses
+  // but it's a single row under OR, so no duplication.
+  const scope = and(
+    eq(dmMessages.dmId, dmId),
+    viewer.local
+      ? or(eq(dmMessages.author, viewer.actor), eq(dmMessages.owner, viewer.handle))
+      : eq(dmMessages.author, viewer.actor),
+  );
   const where =
     after != null
       ? and(
