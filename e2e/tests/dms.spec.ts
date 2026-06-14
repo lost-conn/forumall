@@ -104,6 +104,9 @@ test("A → B live DM: B sees it live + in the list; A's copy is local-only (no 
     .poll(() => aRows.first().getAttribute("data-message-id"))
     .not.toMatch(/^optimistic:/);
   await expect(aRows.first()).toHaveAttribute("data-mine", "1");
+  // The bubble shows a per-message timestamp (matching the channel chat view).
+  await expect(aRows.first().getByTestId("dm-message-time")).toBeVisible({ timeout: 10_000 });
+  await expect(aRows.first().getByTestId("dm-message-time")).toHaveText(/\d{1,2}:\d{2}/);
 
   // B sees it live in the open list/thread. Open the conversation from B's list.
   const dmIdB = await openConversationWith(b.page, a.actor);
@@ -111,6 +114,7 @@ test("A → B live DM: B sees it live + in the list; A's copy is local-only (no 
   const bRows = b.page.locator('[data-testid="dm-message"]').filter({ hasText: msg1 });
   await expect(bRows).toHaveCount(1, { timeout: 10_000 });
   await expect(bRows.first()).toHaveAttribute("data-mine", "0");
+  await expect(bRows.first().getByTestId("dm-message-time")).toBeVisible({ timeout: 10_000 });
 
   // The conversation appears in B's list naming A.
   await expect(

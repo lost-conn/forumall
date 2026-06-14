@@ -996,9 +996,17 @@ const DmMessageRow: Component<{
             </span>
           </Show>
 
-          <Show when={m().editedAt && !isDeleted()}>
-            <span class="fa-meta" data-testid="dm-message-edited">
-              (edited)
+          <Show when={formatTime(m().createdAt)}>
+            <span
+              class="fa-meta"
+              data-testid="dm-message-time"
+              title={formatFullTime(m().createdAt)}
+            >
+              {formatTime(m().createdAt)}
+              <Show when={m().editedAt && !isDeleted()}>
+                {" "}
+                <span data-testid="dm-message-edited">(edited)</span>
+              </Show>
             </span>
           </Show>
 
@@ -1373,4 +1381,12 @@ function formatTime(iso?: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "";
   return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+/** Full localized date+time for hover precision; empty when absent/unparseable. */
+function formatFullTime(iso?: string): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleString();
 }
