@@ -114,7 +114,9 @@ function playChime(): void {
       osc.stop(end + 0.02);
     }
     // Bring the master up after wiring so the ramps above are audible.
-    master.gain.setValueAtTime(0.6, now);
+    // 1.2 = 2x the previous 0.6 amplitude (+6 dB); worst-case two-note overlap
+    // peaks ~0.19, well within the 1.0 headroom so it won't clip.
+    master.gain.setValueAtTime(1.2, now);
   } catch {
     /* never throw on audio failures */
   }
