@@ -8,7 +8,7 @@
  * entry (set optimistically on `presence.set`), so it updates instantly; other
  * viewers see the privacy-filtered fan-out the server emits.
  */
-import { type Component, For, Show, createSignal } from "solid-js";
+import { type Component, For, Show, createEffect, createSignal, onCleanup } from "solid-js";
 import type { SettableAvailability } from "../../lib/social-api.ts";
 import { setMyPresence } from "../../stores/presence-controller.ts";
 import { presence } from "../../stores/presence.ts";
@@ -29,6 +29,7 @@ const OPTIONS: PresenceOption[] = [
 
 export const SelfPresenceControl: Component = () => {
   const [open, setOpen] = createSignal(false);
+  let rootRef: HTMLDivElement | undefined;
   const current = () => presence.self.availability;
   const currentOption = (): PresenceOption =>
     OPTIONS.find((o) => o.value === current()) ?? ONLINE_OPTION;
@@ -36,14 +37,35 @@ export const SelfPresenceControl: Component = () => {
 
   const choose = (availability: SettableAvailability): void => {
     setMyPresence(sessionWs(), availability, status().trim() || undefined);
+    setOpen(false);
   };
 
   const saveStatus = (): void => {
     setMyPresence(sessionWs(), current(), status().trim() || undefined);
+    setOpen(false);
   };
 
+  // Dismiss on an outside pointer-down or Escape while the menu is open. The
+  // listeners are only attached while open (and torn down by the effect's
+  // cleanup), so a closed control adds no global handlers.
+  createEffect(() => {
+    if (!open()) return;
+    const onPointerDown = (e: PointerEvent): void => {
+      if (rootRef && e.target instanceof Node && !rootRef.contains(e.target)) setOpen(false);
+    };
+    const onKeyDown = (e: KeyboardEvent): void => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    onCleanup(() => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    });
+  });
+
   return (
-    <div class="relative" data-testid="self-presence">
+    <div ref={rootRef} class="relative" data-testid="self-presence">
       <button
         type="button"
         class="grid h-11 w-11 place-items-center rounded-md border-[1.5px] border-transparent text-ink transition-colors hover:bg-surface-2"

@@ -120,6 +120,12 @@ test("presence flips live: B sees A online, then dnd, then offline on disconnect
   // A sets dnd via the self-presence control → B sees the dnd state.
   await page.getByTestId("self-presence-toggle").click();
   await page.getByTestId("set-presence-dnd").click();
+  // Choosing a presence closes the menu; reopening then Escape closes it too.
+  await expect(page.getByTestId("self-presence-menu")).toBeHidden();
+  await page.getByTestId("self-presence-toggle").click();
+  await expect(page.getByTestId("self-presence-menu")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("self-presence-menu")).toBeHidden();
   await expect.poll(() => availabilityOf(b.page, aReg.actor), { timeout: 15_000 }).toBe("dnd");
 
   // A disconnects (close the whole context) → B sees A flip to offline. The server
