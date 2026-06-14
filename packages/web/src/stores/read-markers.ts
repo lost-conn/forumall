@@ -21,16 +21,17 @@
  * advance a marker from the newest loaded message.
  */
 import type { ReadMarker } from "@forumall/shared";
-import { createStore } from "solid-js/store";
+import { createStore, reconcile } from "solid-js/store";
 import type { OfscpWsClient } from "../lib/ofscp-ws.ts";
 import { getReadMarkers, setReadMarkers as patchReadMarkers } from "../lib/read-markers-api.ts";
-import { chat } from "./chat.ts";
 import { sessionClient } from "./session.ts";
 
 /** Per-scope read state. */
 export interface ScopeReadState {
   lastReadSeq: number;
   unreadCount: number;
+  /** Owning group id for a channel scope; absent for DM scopes. */
+  groupId?: string;
 }
 
 interface ReadMarkerState {
@@ -65,9 +66,15 @@ export function seqFromCursor(cursor: string | undefined | null): number | null 
 function setSummary(entries: ReadMarker[]): void {
   const next: Record<string, ScopeReadState> = {};
   for (const e of entries) {
-    next[e.scopeId] = { lastReadSeq: e.lastReadSeq, unreadCount: e.unreadCount };
+    next[e.scopeId] = {
+      lastReadSeq: e.lastReadSeq,
+      unreadCount: e.unreadCount,
+      groupId: e.groupId,
+    };
   }
-  setReadState("scopes", next);
+  // `reconcile` replaces the whole map (drops scopes absent from the new
+  // summary); a bare object set would MERGE and leave stale keys behind.
+  setReadState("scopes", reconcile(next));
 }
 
 /** GET the unread summary on session start and seed the store. */
@@ -96,6 +103,7 @@ export function markRead(scopeId: string, seq: number | null | undefined): void 
   setReadState("scopes", scopeId, (prev) => ({
     lastReadSeq: Math.max(prev?.lastReadSeq ?? 0, seq),
     unreadCount: 0,
+    groupId: prev?.groupId,
   }));
 
   const client = sessionClient();
@@ -112,6 +120,8 @@ export function applyReadUpdated(markers: ReadMarker[]): void {
     setReadState("scopes", m.scopeId, {
       lastReadSeq: Math.max(cur?.lastReadSeq ?? 0, m.lastReadSeq),
       unreadCount: m.unreadCount,
+      // Preserve a known groupId if this update omits it.
+      groupId: m.groupId ?? cur?.groupId,
     });
   }
 }
@@ -141,21 +151,23 @@ export function totalUnread(): number {
 
 /**
  * Per-group unread rollup for the space rail: the sum of unread counts across the
- * group's known channels. Channels learn their `groupId` from the chat store, so
- * this stays in sync as channels are discovered.
+ * group's channel scopes. Each channel scope carries its owning `groupId` (from
+ * the unread summary / `read.updated` events), so this works for groups never
+ * opened this session — it does NOT depend on `chat.channels` being populated.
  */
 export function unreadForGroup(groupId: string): number {
   let total = 0;
-  for (const ch of Object.values(chat.channels)) {
-    if (ch.groupId !== groupId) continue;
-    total += readState.scopes[ch.id]?.unreadCount ?? 0;
+  for (const s of Object.values(readState.scopes)) {
+    if (s.groupId !== groupId) continue;
+    total += s.unreadCount;
   }
   return total;
 }
 
 /** Clear all read state (logout). */
 export function clearReadMarkers(): void {
-  setReadState("scopes", {});
+  // `reconcile({})` truly empties the keyed map; a bare `{}` set would merge.
+  setReadState("scopes", reconcile({}));
 }
 
 // --- WS wiring --------------------------------------------------------------

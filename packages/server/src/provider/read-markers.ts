@@ -48,6 +48,8 @@ export interface UnreadEntry {
   readonly scopeId: string;
   readonly lastReadSeq: number;
   readonly unreadCount: number;
+  /** Owning group id for a channel scope; absent for DM scopes. */
+  readonly groupId?: string;
 }
 
 /** All read markers for `handle`, as a `scopeId → lastReadSeq` map. */
@@ -177,7 +179,7 @@ export function getUnreadSummary(db: Db, handle: string, actor: string): UnreadE
       if (!canViewChannel(db, ch, actor)) continue;
       const sinceSeq = markers.get(ch.id) ?? 0;
       const unreadCount = channelUnread(db, ch.id, sinceSeq, actor);
-      out.push({ scopeId: ch.id, lastReadSeq: sinceSeq, unreadCount });
+      out.push({ scopeId: ch.id, lastReadSeq: sinceSeq, unreadCount, groupId: ch.groupId });
     }
   }
 
@@ -208,8 +210,18 @@ export function unreadEntryFor(
   scopeId: string,
   lastReadSeq: number,
 ): UnreadEntry {
-  const unreadCount = scopeId.startsWith("chn_")
-    ? channelUnread(db, scopeId, lastReadSeq, actor)
-    : dmUnread(db, handle, scopeId, lastReadSeq, actor);
+  if (scopeId.startsWith("chn_")) {
+    const unreadCount = channelUnread(db, scopeId, lastReadSeq, actor);
+    // Look up the channel's owning group so the rail rollup stays correct on a
+    // multi-device `read.updated`. A missing channel row just omits groupId.
+    const chRow = db.drizzle
+      .select({ groupId: channels.groupId })
+      .from(channels)
+      .where(eq(channels.id, scopeId))
+      .limit(1)
+      .all()[0];
+    return { scopeId, lastReadSeq, unreadCount, groupId: chRow?.groupId };
+  }
+  const unreadCount = dmUnread(db, handle, scopeId, lastReadSeq, actor);
   return { scopeId, lastReadSeq, unreadCount };
 }

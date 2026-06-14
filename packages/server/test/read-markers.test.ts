@@ -217,6 +217,8 @@ describe("read-markers provider", () => {
     const entry = summary.find((s) => s.scopeId === ch.id);
     expect(entry).toBeDefined();
     expect(entry?.unreadCount).toBe(2);
+    // Channel scopes carry their owning group id (for the rail rollup).
+    expect(entry?.groupId).toBe(groupId);
 
     // Bob's view: only alice's 1 message is unread to him.
     const bobSummary = getUnreadSummary(b.db, "bob", bob.actor);
@@ -313,12 +315,15 @@ describe("GET/PATCH /api/me/read-markers", () => {
     const res = await signedReq(b, alice, "GET", "/api/me/read-markers");
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
-      scopes: { scopeId: string; lastReadSeq: number; unreadCount: number }[];
+      scopes: { scopeId: string; lastReadSeq: number; unreadCount: number; groupId?: string }[];
     };
     const chEntry = body.scopes.find((s) => s.scopeId === ch.id);
     const dmEntry = body.scopes.find((s) => s.scopeId === dmId);
     expect(chEntry?.unreadCount).toBe(1);
     expect(dmEntry?.unreadCount).toBe(1);
+    // Channel scope carries its owning group id; DM scope has none.
+    expect(chEntry?.groupId).toBe(groupId);
+    expect(dmEntry?.groupId).toBeUndefined();
   });
 
   test("PATCH advances a marker; backward value is ignored", async () => {
@@ -470,12 +475,14 @@ describe("read.updated multi-device fan-out", () => {
     // device2 receives read.updated with the advanced marker + 0 unread.
     const evt = await device2.ofType("read.updated");
     const data = evt.data as {
-      markers: { scopeId: string; lastReadSeq: number; unreadCount: number }[];
+      markers: { scopeId: string; lastReadSeq: number; unreadCount: number; groupId?: string }[];
     };
     const m = data.markers.find((x) => x.scopeId === ch.id);
     expect(m).toBeDefined();
     expect(m?.lastReadSeq).toBe(s2);
     expect(m?.unreadCount).toBe(0);
+    // The recomputed channel marker carries its owning group id for the rollup.
+    expect(m?.groupId).toBe(groupId);
 
     device2.close();
   });

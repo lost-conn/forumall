@@ -21,6 +21,8 @@ export const ReadMarkerSchema = z
     lastReadSeq: z.number().int().nonnegative(),
     /** Unread message count in this scope (`seq > lastReadSeq`, own excluded). */
     unreadCount: z.number().int().nonnegative(),
+    /** Owning group id for a channel scope; absent for DM scopes. */
+    groupId: z.string().optional(),
   })
   .passthrough();
 export type ReadMarker = z.infer<typeof ReadMarkerSchema>;
