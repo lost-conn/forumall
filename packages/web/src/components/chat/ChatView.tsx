@@ -17,7 +17,7 @@
  *    in that post's reading pane, opened by clicking the memo/article card;
  *  - replies to a **chat message** render inline with a quoted-parent snippet.
  */
-import type { Attachment, Channel } from "@forumall/shared";
+import type { Attachment, Channel, Member } from "@forumall/shared";
 import {
   type Accessor,
   type Component,
@@ -27,6 +27,7 @@ import {
   Switch,
   createEffect,
   createMemo,
+  createResource,
   createSignal,
   on,
   onCleanup,
@@ -35,6 +36,11 @@ import {
 import { uploadMedia } from "../../lib/chat-api.ts";
 import { listMembers } from "../../lib/groups-api.ts";
 import { renderMarkdown } from "../../lib/markdown.ts";
+import {
+  detectActiveMentionQuery,
+  mentionRefFor,
+  parseMentionSegments,
+} from "../../lib/mentions.ts";
 import { clearActiveThread, setActiveThread } from "../../stores/active-thread.ts";
 import {
   type ChatMessage,
@@ -1008,6 +1014,37 @@ const MessageRow: Component<{
   );
 };
 
+/**
+ * Render freeform body text with `@mention` tokens styled + clickable. Mirrors
+ * the server's mention parse (`parseMentionSegments`) so a highlighted token is
+ * exactly one the provider turned into a notification. Mentioning yourself stands
+ * out (`bg-accent-soft`); clicking any token opens that user's profile.
+ */
+const MentionText: Component<{ text: string }> = (props) => {
+  const localDomain = () => session.actor?.split("@")[1] ?? "";
+  const segments = createMemo(() => parseMentionSegments(props.text, localDomain()));
+  return (
+    <For each={segments()}>
+      {(seg) =>
+        seg.type === "text" ? (
+          <>{seg.value}</>
+        ) : (
+          <button
+            type="button"
+            class="rounded px-0.5 font-medium text-accent hover:underline"
+            classList={{ "bg-accent-soft": seg.actor === session.actor }}
+            data-testid="message-mention"
+            data-actor={seg.actor}
+            onClick={() => openUserProfile(seg.actor)}
+          >
+            {seg.raw}
+          </button>
+        )
+      }
+    </For>
+  );
+};
+
 /** Render a message body by §5.3 type, with a safe fallback for unknown types. */
 export const MessageBody: Component<{ message: ChatMessage; onOpenArticle?: () => void }> = (
   props,
@@ -1019,7 +1056,7 @@ export const MessageBody: Component<{ message: ChatMessage; onOpenArticle?: () =
       fallback={
         // Unknown type (§2.3 forward-compat): best-effort plain text, never crash.
         <p class="text-sm text-ink whitespace-pre-wrap break-words" data-testid="message-text">
-          {text()}
+          <MentionText text={text()} />
         </p>
       }
     >
@@ -1083,13 +1120,13 @@ export const MessageBody: Component<{ message: ChatMessage; onOpenArticle?: () =
           onClick={() => props.onOpenArticle?.()}
         >
           <p class="text-sm text-ink whitespace-pre-wrap break-words" data-testid="message-text">
-            {text()}
+            <MentionText text={text()} />
           </p>
         </button>
       </Match>
       <Match when={type() === "message"}>
         <p class="text-sm text-ink whitespace-pre-wrap break-words" data-testid="message-text">
-          {text()}
+          <MentionText text={text()} />
         </p>
       </Match>
     </Switch>
@@ -1132,8 +1169,67 @@ const Composer: Component<{
 }> = (props) => {
   const channelId = () => props.channel.id;
   const groupId = () => props.channel.groupId;
+  const localDomain = () => session.actor?.split("@")[1] ?? "";
   const [text, setText] = createSignal("");
   const [kind, setKind] = createSignal<ComposeKind>("message");
+  // @mention autocomplete: the group's members (for candidate matching), the
+  // active query being typed (caret-relative), and the highlighted candidate.
+  let inputRef: HTMLTextAreaElement | undefined;
+  const [members] = createResource(groupId, (gid) => {
+    const c = sessionClient();
+    return c ? listMembers(c, gid) : Promise.resolve([]);
+  });
+  const [mentionQ, setMentionQ] = createSignal<{ start: number; query: string } | null>(null);
+  const [mentionIdx, setMentionIdx] = createSignal(0);
+
+  // Candidates: members whose handle OR per-group display name contains the
+  // query (case-insensitive), excluding the current user, capped at 8. Resetting
+  // the highlight to 0 when the query changes is handled where the query is set.
+  const candidates = createMemo<Member[]>(() => {
+    const q = mentionQ();
+    if (!q) return [];
+    const needle = q.query.toLowerCase();
+    const out: Member[] = [];
+    for (const m of members() ?? []) {
+      if (m.user === session.actor) continue;
+      const handle = m.user.split("@")[0]?.toLowerCase() ?? "";
+      const name = displayNameForInGroup(m.user, groupId()).toLowerCase();
+      if (needle === "" || handle.includes(needle) || name.includes(needle)) {
+        out.push(m);
+        if (out.length >= 8) break;
+      }
+    }
+    return out;
+  });
+
+  /** Recompute the active mention query from the textarea's value + caret. */
+  const refreshMentionQuery = (value: string): void => {
+    const caret = inputRef?.selectionStart ?? value.length;
+    const next = detectActiveMentionQuery(value, caret);
+    setMentionQ(next);
+    setMentionIdx(0);
+  };
+
+  /** Insert the chosen member's ref over the active query, then re-focus. */
+  const acceptMention = (member: Member): void => {
+    const q = mentionQ();
+    if (!q) return;
+    const ref = mentionRefFor(member.user, localDomain());
+    const insert = `@${ref} `;
+    const value = text();
+    const from = q.start;
+    const to = q.start + 1 + q.query.length;
+    const next = value.slice(0, from) + insert + value.slice(to);
+    setText(next);
+    setMentionQ(null);
+    const caret = from + insert.length;
+    // Restore focus + caret after the value commits to the DOM.
+    requestAnimationFrame(() => {
+      if (!inputRef) return;
+      inputRef.focus();
+      inputRef.selectionStart = inputRef.selectionEnd = caret;
+    });
+  };
   const [pendingAttachments, setPendingAttachments] = createSignal<Attachment[]>([]);
   const [uploading, setUploading] = createSignal(false);
   const [sendError, setSendError] = createSignal<string | null>(null);
@@ -1203,6 +1299,7 @@ const Composer: Component<{
 
   const onType = (value: string): void => {
     setText(value);
+    refreshMentionQuery(value);
     const ws = sessionWs();
     if (!ws) return;
     const now = Date.now();
@@ -1363,68 +1460,142 @@ const Composer: Component<{
           </div>
         </Match>
         <Match when={true}>
-          <div class="flex items-center gap-[9px] rounded-md border-[1.5px] border-border-strong bg-surface px-3 py-2 focus-within:(outline outline-2 outline-accent outline-offset-1)">
-            <button
-              type="button"
-              class="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-sm text-faint transition-colors hover:text-ink disabled:opacity-50"
-              data-testid="attach-button"
-              disabled={uploading()}
-              onClick={() => fileInput?.click()}
-              aria-label="Attach a file"
-            >
-              <Icon name="plus" size={18} />
-            </button>
-            <input
-              ref={fileInput}
-              type="file"
-              class="hidden"
-              data-testid="file-input"
-              onChange={(e) => {
-                const file = e.currentTarget.files?.[0];
-                if (file) void onPickFile(file);
-              }}
-            />
-            <textarea
-              class="flex-1 resize-none bg-transparent text-sm text-ink outline-none placeholder:text-faint"
-              classList={{
-                "max-h-40 min-h-6": kind() === "message",
-                "min-h-20": kind() === "memo",
-              }}
-              rows={1}
-              data-testid="composer-input"
-              placeholder={
-                kind() === "memo"
-                  ? "Share a memo…"
-                  : `Message #${props.channel.name ?? props.channel.id}…`
-              }
-              value={text()}
-              onInput={(e) => onType(e.currentTarget.value)}
-              onBlur={stopTyping}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey && kind() === "message") {
-                  e.preventDefault();
-                  doSend();
+          <div class="relative">
+            {/* @mention autocomplete dropdown, anchored above the input row. */}
+            <Show when={mentionQ() && candidates().length > 0}>
+              <div
+                class="absolute bottom-full left-0 z-20 mb-1 max-h-56 w-72 overflow-y-auto rounded-md border-[1.5px] border-border-strong bg-surface py-1 shadow-lg"
+                data-testid="mention-autocomplete"
+              >
+                <For each={candidates()}>
+                  {(m, i) => (
+                    <button
+                      type="button"
+                      class="flex w-full items-center gap-2 px-2.5 py-1.5 text-left transition-colors"
+                      classList={{
+                        "bg-surface-2": i() === mentionIdx(),
+                        "hover:bg-surface-2": i() !== mentionIdx(),
+                      }}
+                      data-testid="mention-option"
+                      data-actor={m.user}
+                      // Prevent the textarea blur so the click still inserts.
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => acceptMention(m)}
+                    >
+                      <span class="flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-full bg-surface-2 text-[11px] font-mono uppercase text-muted">
+                        <Avatar
+                          actor={m.user}
+                          initials={(m.user.split("@")[0] ?? "?").slice(0, 2)}
+                        />
+                      </span>
+                      <span class="min-w-0 flex-1">
+                        <span class="block truncate text-sm text-ink">
+                          {displayNameForInGroup(m.user, groupId())}
+                        </span>
+                        <span class="block truncate text-xs text-faint">
+                          @{m.user.split("@")[0]}
+                        </span>
+                      </span>
+                    </button>
+                  )}
+                </For>
+              </div>
+            </Show>
+            <div class="flex items-center gap-[9px] rounded-md border-[1.5px] border-border-strong bg-surface px-3 py-2 focus-within:(outline outline-2 outline-accent outline-offset-1)">
+              <button
+                type="button"
+                class="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-sm text-faint transition-colors hover:text-ink disabled:opacity-50"
+                data-testid="attach-button"
+                disabled={uploading()}
+                onClick={() => fileInput?.click()}
+                aria-label="Attach a file"
+              >
+                <Icon name="plus" size={18} />
+              </button>
+              <input
+                ref={fileInput}
+                type="file"
+                class="hidden"
+                data-testid="file-input"
+                onChange={(e) => {
+                  const file = e.currentTarget.files?.[0];
+                  if (file) void onPickFile(file);
+                }}
+              />
+              <textarea
+                ref={inputRef}
+                class="flex-1 resize-none bg-transparent text-sm text-ink outline-none placeholder:text-faint"
+                classList={{
+                  "max-h-40 min-h-6": kind() === "message",
+                  "min-h-20": kind() === "memo",
+                }}
+                rows={1}
+                data-testid="composer-input"
+                placeholder={
+                  kind() === "memo"
+                    ? "Share a memo…"
+                    : `Message #${props.channel.name ?? props.channel.id}…`
                 }
-              }}
-            />
-            <button
-              type="button"
-              class="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-sm text-faint transition-colors hover:text-ink"
-              data-testid="emoji-button"
-              aria-label="Add emoji"
-              tabindex={-1}
-            >
-              <Icon name="smile" size={18} />
-            </button>
-            <button
-              type="button"
-              class="btn-accent shrink-0 px-2.5 py-[5px] text-[11px]"
-              data-testid="send-button"
-              onClick={doSend}
-            >
-              <Icon name="send" size={14} />
-              {kind() === "memo" ? "Post" : "Send"}
-            </button>
+                value={text()}
+                onInput={(e) => onType(e.currentTarget.value)}
+                onSelect={(e) => refreshMentionQuery(e.currentTarget.value)}
+                onBlur={() => {
+                  stopTyping();
+                  // Close the dropdown on blur; row onMouseDown preventDefault keeps
+                  // a click from blurring before it registers.
+                  setMentionQ(null);
+                }}
+                onKeyDown={(e) => {
+                  // Autocomplete keys take precedence over Enter-to-send.
+                  if (mentionQ() && candidates().length > 0) {
+                    const n = candidates().length;
+                    if (e.key === "ArrowDown") {
+                      e.preventDefault();
+                      setMentionIdx((i) => (i + 1) % n);
+                      return;
+                    }
+                    if (e.key === "ArrowUp") {
+                      e.preventDefault();
+                      setMentionIdx((i) => (i - 1 + n) % n);
+                      return;
+                    }
+                    if (e.key === "Enter" || e.key === "Tab") {
+                      e.preventDefault();
+                      const pick = candidates()[mentionIdx()];
+                      if (pick) acceptMention(pick);
+                      return;
+                    }
+                    if (e.key === "Escape") {
+                      e.preventDefault();
+                      setMentionQ(null);
+                      return;
+                    }
+                  }
+                  if (e.key === "Enter" && !e.shiftKey && kind() === "message") {
+                    e.preventDefault();
+                    doSend();
+                  }
+                }}
+              />
+              <button
+                type="button"
+                class="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-sm text-faint transition-colors hover:text-ink"
+                data-testid="emoji-button"
+                aria-label="Add emoji"
+                tabindex={-1}
+              >
+                <Icon name="smile" size={18} />
+              </button>
+              <button
+                type="button"
+                class="btn-accent shrink-0 px-2.5 py-[5px] text-[11px]"
+                data-testid="send-button"
+                onClick={doSend}
+              >
+                <Icon name="send" size={14} />
+                {kind() === "memo" ? "Post" : "Send"}
+              </button>
+            </div>
           </div>
         </Match>
       </Switch>
