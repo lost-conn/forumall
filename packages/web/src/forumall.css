@@ -421,6 +421,12 @@ body.fa {
   align-items: center;
   justify-content: center;
   flex: none;
+  /* Zero the UA <button> padding (Chrome defaults to 1px 6px). The control reset
+     above normalizes font/color/background but not padding, so on the button
+     call sites (chat author, home-feed, space rail) that padding shrank the
+     inner content box — making the `h-full w-full` <img> render narrower than
+     the slot (e.g. 22×32 in a 36×36 box): clipped at the sides / squished. */
+  padding: 0;
   width: 36px;
   height: 36px;
   border-radius: var(--r-md);
