@@ -10,13 +10,20 @@ import {
   createSignal,
 } from "solid-js";
 import { resolveAttachmentUrl } from "../lib/chat-api";
+import { displayNameFor, warmProfile } from "../stores/profiles";
 import { unreadForGroup } from "../stores/read-markers";
 import { session } from "../stores/session";
 import { Icon, type IconName } from "./Icon";
 import { myGroupsQuery } from "./groups/queries";
 import { UnreadBadge } from "./shared/UnreadBadge";
+import { Avatar } from "./social/Avatar";
 import { SelfPresenceControl } from "./social/SelfPresenceControl";
 import { UserProfileCard } from "./social/UserProfileCard";
+
+/** First-letter fallback for the signed-in user's avatar. */
+function meInitial(actor: string): string {
+  return displayNameFor(actor).slice(0, 1).toUpperCase();
+}
 
 /** Phone bottom-tab + space-rail nav targets (icon-driven). */
 const MOBILE_NAV: { href: string; label: string; icon: IconName }[] = [
@@ -34,6 +41,13 @@ export const AppShell: ParentComponent = (props) => {
     href === "/" ? location.pathname === "/" : location.pathname.startsWith(href);
 
   const groups = useQuery(myGroupsQuery);
+
+  // Warm the signed-in user's own profile so their avatar (settings entries,
+  // etc.) resolves — nothing else fetches self at startup.
+  createEffect(() => {
+    const actor = session.actor;
+    if (actor) warmProfile(actor);
+  });
 
   return (
     <div class="app-shell">
@@ -114,6 +128,7 @@ export const AppShell: ParentComponent = (props) => {
             label="Settings"
             icon="gear"
             active={isActive("/settings")}
+            avatarActor={session.actor ?? undefined}
           />
         </div>
       </nav>
@@ -132,7 +147,19 @@ export const AppShell: ParentComponent = (props) => {
               class="flex flex-1 flex-col items-center justify-center gap-0.5 font-mono text-[9.5px] text-faint"
               classList={{ "text-accent": isActive(item.href) }}
             >
-              <Icon name={item.icon} size={20} />
+              <Show
+                when={item.href === "/settings" && session.actor}
+                fallback={<Icon name={item.icon} size={20} />}
+              >
+                {(actor) => (
+                  <span
+                    class="grid h-5 w-5 place-items-center overflow-hidden rounded-full border-[1.5px] border-border-strong bg-surface-2 text-[9px] font-semibold text-ink"
+                    data-testid="mobile-me-avatar"
+                  >
+                    <Avatar actor={actor()} initials={meInitial(actor())} />
+                  </span>
+                )}
+              </Show>
               <span>{item.label}</span>
             </A>
           )}
@@ -181,6 +208,8 @@ const RailButton: Component<{
   label: string;
   icon: IconName;
   active: boolean;
+  /** When set (signed-in actor), render the user's avatar instead of `icon`. */
+  avatarActor?: string;
 }> = (props): JSX.Element => (
   <A
     href={props.href}
@@ -192,6 +221,15 @@ const RailButton: Component<{
       "border-transparent text-muted hover:(bg-surface-2 text-ink)": !props.active,
     }}
   >
-    <Icon name={props.icon} size={20} />
+    <Show when={props.avatarActor} fallback={<Icon name={props.icon} size={20} />}>
+      {(actor) => (
+        <span
+          class="grid h-7 w-7 place-items-center overflow-hidden rounded-full border-[1.5px] border-border-strong bg-surface-2 text-xs font-semibold text-ink"
+          data-testid="rail-me-avatar"
+        >
+          <Avatar actor={actor()} initials={meInitial(actor())} />
+        </span>
+      )}
+    </Show>
   </A>
 );
