@@ -18,6 +18,7 @@ import { Icon, type IconName } from "./Icon";
 import { myGroupsQuery } from "./groups/queries";
 import { UnreadBadge } from "./shared/UnreadBadge";
 import { Avatar } from "./social/Avatar";
+import { PushPromptBanner } from "./social/PushPromptBanner";
 import { SelfPresenceControl } from "./social/SelfPresenceControl";
 import { UserProfileCard } from "./social/UserProfileCard";
 
@@ -141,7 +142,14 @@ export const AppShell: ParentComponent = (props) => {
         </div>
       </nav>
 
-      <main class="app-content pb-14 md:pb-0">{props.children}</main>
+      <main class="app-content pb-14 md:pb-0">
+        {/* First-load push nudge — only for a signed-in user (and self-gates on
+            support/permission/dismiss inside the component). */}
+        <Show when={session.actor}>
+          <PushPromptBanner />
+        </Show>
+        {props.children}
+      </main>
 
       {/* Phone bottom tab bar (hidden ≥ md). */}
       <nav

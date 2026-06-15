@@ -18,6 +18,44 @@
 import type { OfscpClient } from "./ofscp-client.ts";
 
 const ENABLED_KEY = "forumall.notify.push";
+const PROMPT_DISMISSED_KEY = "forumall.notify.push-prompt-dismissed";
+
+/** How long to wait for a registered service worker before giving up (ms). */
+const SW_READY_TIMEOUT_MS = 5000;
+
+/**
+ * Pure visibility predicate for the first-load push nudge. Kept DOM-free so it
+ * can be unit-tested without a browser env. The banner shows only when push is
+ * supported, permission is still un-asked (`default`), the user hasn't already
+ * enabled push, and they haven't dismissed the nudge on this device.
+ */
+export function shouldShowPushPrompt(args: {
+  supported: boolean;
+  permission: NotificationPermission;
+  enabledPref: boolean;
+  dismissed: boolean;
+}): boolean {
+  return args.supported && args.permission === "default" && !args.enabledPref && !args.dismissed;
+}
+
+/** Has the user dismissed the first-load push nudge on this device? */
+export function pushPromptDismissed(): boolean {
+  try {
+    return localStorage.getItem(PROMPT_DISMISSED_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+/** Persist that the first-load push nudge was dismissed (never show again). */
+export function setPushPromptDismissed(dismissed: boolean): void {
+  try {
+    if (dismissed) localStorage.setItem(PROMPT_DISMISSED_KEY, "true");
+    else localStorage.removeItem(PROMPT_DISMISSED_KEY);
+  } catch {
+    /* private mode — best effort */
+  }
+}
 
 /** Whether this browser exposes the Service Worker + Push + Notification APIs. */
 export function isPushSupported(): boolean {
@@ -73,6 +111,38 @@ function arrayBufferToBase64Url(buf: ArrayBuffer | null): string {
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
+/**
+ * Await the registered service worker, but race it against a timeout that
+ * REJECTS. `navigator.serviceWorker.ready` never resolves when no SW is (or
+ * will be) registered — which is the case in dev/`vite dev`, where the SW only
+ * registers in PROD. Without this guard `enablePush` would hang forever (the
+ * banner Enable + Settings toggle would spin); with it both fail gracefully.
+ */
+function serviceWorkerReady(): Promise<ServiceWorkerRegistration> {
+  return new Promise<ServiceWorkerRegistration>((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      reject(new Error("No service worker is registered (push is unavailable here)"));
+    }, SW_READY_TIMEOUT_MS);
+    navigator.serviceWorker.ready.then(
+      (reg) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(reg);
+      },
+      (err) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
+
 /** The serialisable view of a browser PushSubscription the server stores. */
 function serializeSubscription(sub: PushSubscription): {
   endpoint: string;
@@ -104,7 +174,7 @@ export async function enablePush(client: OfscpClient): Promise<boolean> {
   const permission = await Notification.requestPermission();
   if (permission !== "granted") throw new Error("Notification permission was not granted");
 
-  const reg = await navigator.serviceWorker.ready;
+  const reg = await serviceWorkerReady();
 
   const keyRes = await client.get<{ publicKey: string }>("/api/push/public-key", {
     anonymous: true,
