@@ -13,6 +13,7 @@ import { Hono } from "hono";
 
 import { TIERS } from "../provider/tiers.ts";
 import { createAdminDiscoverRouter } from "./admin-discover.ts";
+import { createAdminSettingsRouter } from "./admin-settings.ts";
 import { createAuthRouter } from "./auth.ts";
 import { createFederationContactsRouter, createMeContactsRouter } from "./contacts.ts";
 import { createDiscoverRouter, createProvidersRouter } from "./discovery-feed.ts";
@@ -128,6 +129,13 @@ export function createApiRouter() {
    * `requireSignature` + `requireAdmin` (403 for non-admins).
    */
   api.route("/admin", createAdminDiscoverRouter());
+
+  /**
+   * Admin provider settings (Forumall extension): `/api/admin/group-policy`.
+   * Toggles who may create groups (`open` vs `admin-only`). `requireSignature`
+   * + `requireAdmin` (403 for non-admins).
+   */
+  api.route("/admin", createAdminSettingsRouter());
 
   // Later: api.route("/channels", …); …
 

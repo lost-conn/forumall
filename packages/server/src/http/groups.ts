@@ -14,6 +14,8 @@
 import { type Group, GroupCreateRequestSchema, GroupUpdateRequestSchema } from "@forumall/shared";
 import { Hono } from "hono";
 
+import { isProviderAdmin } from "../provider/admin.ts";
+import { getGroupCreationPolicy } from "../provider/group-policy.ts";
 import {
   createGroup,
   deleteGroup,
@@ -40,9 +42,16 @@ export function createGroupsRouter() {
 
   // -- POST /api/groups (§5.5) ---------------------------------------------
   router.post("/", signed, async (c) => {
-    const { db } = c.var;
+    const { config, db } = c.var;
     const actor = c.var.actor;
     if (!actor) throw AppError.unauthorized(); // unreachable: middleware sets it
+
+    // Group-creation policy (Forumall extension): `admin-only` restricts creation
+    // to the provider admin; `open` (the default) preserves the historical
+    // "any authenticated user" behavior. Checked before creating the group.
+    if (getGroupCreationPolicy(db) === "admin-only" && !isProviderAdmin(db, config, actor.handle)) {
+      throw AppError.forbidden({ detail: "group creation is restricted to the provider admin" });
+    }
 
     const raw = await c.req.json().catch(() => {
       throw AppError.badRequest({ detail: "request body must be valid JSON" });

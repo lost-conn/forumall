@@ -14,6 +14,7 @@
 import { Hono } from "hono";
 
 import { getBranding, setBranding } from "../provider/branding.ts";
+import { type GroupCreationPolicy, getGroupCreationPolicy } from "../provider/group-policy.ts";
 import { requireAdmin } from "./admin-guard.ts";
 import { AppError } from "./errors.ts";
 import { requireSignature } from "./signature.ts";
@@ -25,6 +26,8 @@ interface BrandingResponse {
   name: string;
   iconUrl: string | null;
   accentColor: string | null;
+  /** Who may create groups on this instance (Forumall extension). */
+  groupCreationPolicy: GroupCreationPolicy;
 }
 
 export function createProviderRouter(): Hono<AppBindings> {
@@ -40,6 +43,7 @@ export function createProviderRouter(): Hono<AppBindings> {
       name: branding.name,
       iconUrl: branding.iconUrl,
       accentColor: branding.accentColor,
+      groupCreationPolicy: getGroupCreationPolicy(db),
     };
     return c.json(body);
   });
@@ -69,6 +73,7 @@ export function createProviderRouter(): Hono<AppBindings> {
       name: branding.name,
       iconUrl: branding.iconUrl,
       accentColor: branding.accentColor,
+      groupCreationPolicy: getGroupCreationPolicy(db),
     };
     return c.json(body);
   });

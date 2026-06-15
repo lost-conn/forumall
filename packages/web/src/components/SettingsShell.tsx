@@ -12,6 +12,7 @@ import { DeviceKeys } from "./DeviceKeys.tsx";
 import { Icon, type IconName } from "./Icon.tsx";
 import { BrandingSettings } from "./admin/BrandingSettings.tsx";
 import { DiscoverSettings } from "./admin/DiscoverSettings.tsx";
+import { GroupCreationPolicy } from "./admin/GroupCreationPolicy.tsx";
 import { AppearanceSettings } from "./social/AppearanceSettings.tsx";
 import { NotificationSettings } from "./social/NotificationSettings.tsx";
 import { PrivacySettingsCard, ProfileSettings } from "./social/PrivacyProfileSettings.tsx";
@@ -25,7 +26,8 @@ type Section =
   | "devices"
   | "federation"
   | "branding"
-  | "discover";
+  | "discover"
+  | "group-policy";
 
 const NAV: { group: string; items: [Section, string, IconName][] }[] = [
   {
@@ -51,6 +53,7 @@ const COMMUNITY: [string, IconName][] = [
 const PROVIDER_NAV: [Section, string, IconName][] = [
   ["branding", "Branding", "gear"],
   ["discover", "Discover", "globe"],
+  ["group-policy", "Group creation", "users"],
 ];
 
 interface MeAccount {
@@ -215,6 +218,11 @@ export const SettingsShell: Component = () => {
             <Match when={section() === "discover" && session.isAdmin}>
               <h1 class="fa-h1 mb-5">Discover feed</h1>
               <DiscoverSettings />
+            </Match>
+
+            <Match when={section() === "group-policy" && session.isAdmin}>
+              <h1 class="fa-h1 mb-5">Group creation</h1>
+              <GroupCreationPolicy />
             </Match>
           </Switch>
         </div>

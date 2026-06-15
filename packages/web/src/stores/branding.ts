@@ -11,6 +11,10 @@
  */
 import { createSignal } from "solid-js";
 import { baseUrlForHost } from "../lib/provider.ts";
+import { isAdmin } from "./session.ts";
+
+/** Who may create groups on this instance (Forumall extension). */
+export type GroupCreationPolicy = "open" | "admin-only";
 
 /** Branding as returned by `GET /api/provider`. */
 export interface ProviderBranding {
@@ -18,6 +22,8 @@ export interface ProviderBranding {
   name: string;
   iconUrl: string | null;
   accentColor: string | null;
+  /** Who may create groups (defaults to `open` when an older server omits it). */
+  groupCreationPolicy?: GroupCreationPolicy;
 }
 
 /** The default brand name when an instance hasn't set a custom one. */
@@ -29,6 +35,23 @@ export { branding };
 /** The current brand name, falling back to "Forumall" when unknown. */
 export function brandName(): string {
   return branding()?.name ?? DEFAULT_BRAND_NAME;
+}
+
+/**
+ * The current group-creation policy. Defaults to `open` until the branding is
+ * loaded (or when an older server omits the field).
+ */
+export function groupCreationPolicy(): GroupCreationPolicy {
+  return branding()?.groupCreationPolicy ?? "open";
+}
+
+/**
+ * Whether the current session may create groups: true when the policy is `open`
+ * (anyone) or when the caller is the provider admin. Reactive on both the
+ * branding store and `session.isAdmin`.
+ */
+export function canCreateGroups(): boolean {
+  return groupCreationPolicy() === "open" || isAdmin();
 }
 
 /** The current brand icon URL (resolved for the page origin), or null. */
