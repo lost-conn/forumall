@@ -23,6 +23,12 @@ export interface SessionState {
   deviceName: string | null;
   /** Live home-provider WS connection state. */
   connection: WsConnectionState;
+  /**
+   * Whether the current user is a provider administrator (Forumall extension).
+   * Hydrated from `GET /api/me` after auth; false until known. Later admin UI
+   * (branding / discover curation / group gate) gates on this.
+   */
+  isAdmin: boolean;
 }
 
 const [session, setSession] = createStore<SessionState>({
@@ -31,9 +37,20 @@ const [session, setSession] = createStore<SessionState>({
   keyId: null,
   deviceName: null,
   connection: "idle",
+  isAdmin: false,
 });
 
 export { session };
+
+/** Whether the current user is a provider administrator (Forumall extension). */
+export function isAdmin(): boolean {
+  return session.isAdmin;
+}
+
+/** Set the current user's provider-admin status (hydrated from `GET /api/me`). */
+export function setIsAdmin(value: boolean): void {
+  setSession("isAdmin", value);
+}
 
 /**
  * Live handles that aren't reactive store fields (the client/WS instances and
@@ -73,6 +90,9 @@ export function setSessionAuth(args: {
     host: args.stored.host,
     keyId: args.stored.keyId,
     deviceName: args.stored.deviceName,
+    // isAdmin is hydrated separately from GET /api/me; reset to a known-false
+    // baseline here so a previous session's value can't leak through.
+    isAdmin: false,
   });
 }
 
@@ -92,7 +112,14 @@ export function clearSession(): void {
   activeClient = null;
   activeWs = null;
   activeStored = null;
-  setSession({ actor: null, host: null, keyId: null, deviceName: null, connection: "idle" });
+  setSession({
+    actor: null,
+    host: null,
+    keyId: null,
+    deviceName: null,
+    connection: "idle",
+    isAdmin: false,
+  });
 }
 
 export function isAuthenticated(): boolean {

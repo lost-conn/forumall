@@ -742,6 +742,23 @@ const migrations: readonly Migration[] = [
       );
     },
   },
+  {
+    // Provider admin (Forumall extension, not OFSCP): a nullable-free `is_admin`
+    // integer-boolean on `users`, mirroring the `guest` column style. Set on the
+    // first registration (instance owner) and for `config.adminHandles`. ADD
+    // COLUMN with a default is safe on a STRICT table; guarded so a re-run is a
+    // no-op.
+    id: "0032_provider_admin",
+    up: (sqlite) => {
+      const cols = sqlite
+        .query<{ name: string }, []>("PRAGMA table_info(users)")
+        .all()
+        .map((c) => c.name);
+      if (!cols.includes("is_admin")) {
+        sqlite.exec("ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0;");
+      }
+    },
+  },
 ];
 
 const LEDGER_DDL = `

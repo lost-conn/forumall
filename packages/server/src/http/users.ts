@@ -35,6 +35,7 @@ import {
 } from "@forumall/shared";
 import { type Context, Hono } from "hono";
 
+import { isProviderAdmin } from "../provider/admin.ts";
 import { buildUserProfile, getUserRow, updateUserProfile } from "../provider/guests.ts";
 import { groupIdsOf } from "../provider/membership.ts";
 import {
@@ -103,7 +104,9 @@ export function createMeUserRouter() {
 
   // -- GET /api/me (§5.1.2 — signed) --------------------------------------
   // The caller's private `UserAccount` = { profile, settings }. Never exposes
-  // another user's fields; settings is a minimal placeholder bag.
+  // another user's fields; settings is a minimal placeholder bag. The
+  // `isAdmin` field (Forumall extension, via UserAccountSchema's passthrough) is
+  // attached ONLY on this self view — never on another user's public profile.
   router.get("/", signed, (c) => {
     const { config, db } = c.var;
     const actor = c.var.actor;
@@ -112,7 +115,11 @@ export function createMeUserRouter() {
     const profile = buildUserProfile(db, canonicalAuthority(config.domain), actor.handle);
     if (!profile) throw AppError.notFound({ detail: "no such user" });
 
-    const account = UserAccountSchema.parse({ profile, settings: {} });
+    const account = UserAccountSchema.parse({
+      profile,
+      settings: {},
+      isAdmin: isProviderAdmin(db, config, actor.handle),
+    });
     return c.json(account, 200);
   });
 

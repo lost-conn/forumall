@@ -131,6 +131,7 @@ export function createGuestUser(db: Db, input: CreateGuestInput): UserRow {
       passwordHash: null,
       recoveryEmail: null,
       guest: true,
+      isAdmin: false,
       displayName: input.displayName ?? null,
       avatar: null,
       bio: null,

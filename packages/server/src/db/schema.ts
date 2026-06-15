@@ -81,6 +81,14 @@ export const users = sqliteTable("users", {
   recoveryEmail: text("recovery_email"),
   /** Guest-account flag (§4.8). 0 = full account, 1 = guest (no password). */
   guest: integer("guest", { mode: "boolean" }).notNull().default(false),
+  /**
+   * Provider-admin flag (Forumall extension, not OFSCP). 0 = ordinary user,
+   * 1 = instance administrator. Set on the first-ever registration (instance
+   * owner) or for any handle listed in `config.adminHandles`. Gates the
+   * `requireAdmin` HTTP guard and surfaces as `isAdmin` on the caller's own
+   * `GET /api/me` (self view only — never on another user's public profile).
+   */
+  isAdmin: integer("is_admin", { mode: "boolean" }).notNull().default(false),
   /** Optional human display name; surfaced on the `UserProfile` (§4.8, §6). */
   displayName: text("display_name"),
   /** Optional avatar HTTPS URI; surfaced on the `UserProfile` (§5.1, §6.2). */

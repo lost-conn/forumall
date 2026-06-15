@@ -44,9 +44,28 @@ import {
   clearSession,
   sessionClient,
   setConnectionState,
+  setIsAdmin,
   setSessionAuth,
   storedSession,
 } from "./session.ts";
+
+/** Self `UserAccount` shape (subset) — `isAdmin` is a Forumall extension field. */
+interface MeAccount {
+  isAdmin?: boolean;
+}
+
+/**
+ * Hydrate the current user's provider-admin status from `GET /api/me`
+ * (Forumall extension). Fire-and-forget; a failure leaves `isAdmin` false.
+ */
+async function hydrateAdminStatus(client: AuthResult["client"]): Promise<void> {
+  try {
+    const res = await client.get<MeAccount>("/api/me");
+    setIsAdmin(res.data.isAdmin === true);
+  } catch {
+    setIsAdmin(false);
+  }
+}
 
 /**
  * Read the private seed for a session from the key-store (where the flow just
@@ -91,6 +110,8 @@ async function adopt(result: AuthResult, store: KeyStore): Promise<void> {
   void hydrateNotifications();
   // Seed the server-backed per-channel/group notification preferences.
   void hydrateNotificationPrefs();
+  // Seed the caller's provider-admin status (Forumall extension).
+  void hydrateAdminStatus(result.client);
 }
 
 /** Register → keygen → device key → store → connect. Lands authenticated. */

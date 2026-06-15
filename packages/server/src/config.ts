@@ -53,6 +53,16 @@ const RawEnvSchema = z.object({
    * `mailto:admin@example.social`. Omitted from the document if unset.
    */
   CONTACT: z.string().min(1).optional(),
+  /**
+   * Provider admins (Forumall extension, not OFSCP): comma-separated bare
+   * handles that are treated as instance administrators. A handle listed here is
+   * promoted to admin on registration (regardless of registration order) and is
+   * always treated as admin by `isProviderAdmin` even if its `users.is_admin`
+   * flag was never persisted. Parsed into trimmed, lowercased, non-empty,
+   * de-duplicated entries. Empty (default) → only the first registrant (the
+   * instance owner) becomes admin.
+   */
+  ADMIN_HANDLES: z.string().default(""),
 
   // --- Argon2id password-hashing cost (§4.1.4) ----------------------------
   // Secure-by-default: the defaults equal the spec MINIMUMS, and the schema
@@ -202,6 +212,16 @@ function parseCsv(raw: string): readonly string[] {
   return Object.freeze([...seen]);
 }
 
+/** Parse a comma-separated list into trimmed, lowercased, non-empty, de-duplicated entries. */
+function parseHandleList(raw: string): readonly string[] {
+  const seen = new Set<string>();
+  for (const part of raw.split(",")) {
+    const trimmed = part.trim().toLowerCase();
+    if (trimmed.length > 0) seen.add(trimmed);
+  }
+  return Object.freeze([...seen]);
+}
+
 /** Parse a comma-separated domain list into canonicalized, de-duplicated hosts. */
 function parseDomainList(raw: string): readonly string[] {
   const seen = new Set<string>();
@@ -249,6 +269,13 @@ export interface Config {
   readonly maxUploadBytes: number;
   /** Optional admin contact for discovery; omitted when unset. */
   readonly contact?: string;
+  /**
+   * Provider-admin handles (Forumall extension): bare handles promoted to
+   * instance administrator on registration and always treated as admin by
+   * `isProviderAdmin`. Trimmed, lowercased, de-duplicated. Empty → only the
+   * first registrant becomes admin. See {@link isProviderAdmin}.
+   */
+  readonly adminHandles: readonly string[];
   /** Argon2id password-hashing cost (§4.1.4); env-validated to spec minimums. */
   readonly argon2: Argon2Params;
   /** Bootstrap-token TTL in seconds (§4.2). */
@@ -350,6 +377,7 @@ export function loadConfig(env: Env = process.env): Config {
     messageEditWindowSeconds: raw.MESSAGE_EDIT_WINDOW_SECONDS,
     maxResumeReplay: raw.MAX_RESUME_REPLAY,
     typingTimeoutMs: raw.TYPING_TIMEOUT_MS,
+    adminHandles: parseHandleList(raw.ADMIN_HANDLES),
     federationAllow: parseDomainList(raw.FEDERATION_ALLOW),
     federationDeny: parseDomainList(raw.FEDERATION_DENY),
     enableKnownProviders: raw.ENABLE_KNOWN_PROVIDERS,
