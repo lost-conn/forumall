@@ -29,6 +29,7 @@ import { OfscpWsClient } from "../lib/ofscp-ws.ts";
 import { baseUrlForHost } from "../lib/provider.ts";
 import { clearDms } from "./dms.ts";
 import { clearFeed } from "./feed.ts";
+import { clearNotificationPrefs, hydrateNotificationPrefs } from "./notification-prefs.ts";
 import {
   clearNotifications,
   hydrateNotifications,
@@ -88,6 +89,8 @@ async function adopt(result: AuthResult, store: KeyStore): Promise<void> {
   void hydrateReadMarkers();
   // Seed the notifications feed too (same pre-connect window rationale).
   void hydrateNotifications();
+  // Seed the server-backed per-channel/group notification preferences.
+  void hydrateNotificationPrefs();
 }
 
 /** Register → keygen → device key → store → connect. Lands authenticated. */
@@ -146,6 +149,7 @@ export async function doLogout(opts: { keyStore?: KeyStore } = {}): Promise<bool
   resetPresenceSubscriptions();
   clearReadMarkers();
   clearNotifications();
+  clearNotificationPrefs();
   clearNotifyFx();
   clearSession();
   return revoked;

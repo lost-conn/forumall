@@ -1087,3 +1087,53 @@ export const pushSubscriptions = sqliteTable(
 
 export type PushSubscriptionRow = typeof pushSubscriptions.$inferSelect;
 export type NewPushSubscriptionRow = typeof pushSubscriptions.$inferInsert;
+
+/**
+ * Per-channel / per-group notification preferences (provider-local extension).
+ * One row per (`owner`, `scopeType`, `scopeId`) holding the recipient's chosen
+ * notification `mode` for that scope:
+ *
+ *  - `all`      — notify on EVERY message in the scope.
+ *  - `mentions` — notify only on @mention / reply (the default behavior).
+ *  - `none`     — muted; notify on nothing.
+ *
+ * A scope is either a `group` (`scopeId` = `grp_…`) or a `channel`
+ * (`scopeId` = `chn_…`). A MISSING row means "inherit": the effective mode for a
+ * (recipient, channel) resolves channel pref → group pref → default `mentions`
+ * (`provider/notification-prefs.ts`). Keyed on the LOCAL `owner` handle and never
+ * federated — this is private, per-account state synced across the owner's own
+ * devices. The unique (owner, scopeType, scopeId) index makes the upsert
+ * idempotent; the owner index backs per-owner listing + the `all`-fan-out scan.
+ */
+export const notificationPreferences = sqliteTable(
+  "notification_preferences",
+  {
+    /** Stable id (`npf_<base64url>`). Primary key. */
+    id: text("id").primaryKey(),
+    /** The LOCAL user handle this preference belongs to. */
+    owner: text("owner").notNull(),
+    /** Scope kind: `group` | `channel`. */
+    scopeType: text("scope_type").notNull(),
+    /** The scoped id: a `grp_…` (group) or `chn_…` (channel) id. */
+    scopeId: text("scope_id").notNull(),
+    /** Notification mode: `all` | `mentions` | `none`. */
+    mode: text("mode").notNull(),
+    /** Last-update time (epoch millis). */
+    updatedAt: integer("updated_at", { mode: "number" })
+      .notNull()
+      .$defaultFn(() => Date.now()),
+  },
+  (t) => ({
+    // Upsert axis: at most one preference per (owner, scopeType, scopeId).
+    ownerScopeIdx: uniqueIndex("idx_notification_preferences_owner_scope").on(
+      t.owner,
+      t.scopeType,
+      t.scopeId,
+    ),
+    // Per-owner listing + the `all`-fan-out membership scan.
+    ownerIdx: index("idx_notification_preferences_owner").on(t.owner),
+  }),
+);
+
+export type NotificationPreferenceRow = typeof notificationPreferences.$inferSelect;
+export type NewNotificationPreferenceRow = typeof notificationPreferences.$inferInsert;

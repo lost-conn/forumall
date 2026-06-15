@@ -20,6 +20,7 @@ import { createMeFollowsRouter } from "./follows.ts";
 import { createGroupsRouter } from "./groups.ts";
 import { createInvitesRouter } from "./invites.ts";
 import { createMediaRouter } from "./media.ts";
+import { createMeNotificationSettingsRouter } from "./notification-settings.ts";
 import { createMeNotificationsRouter } from "./notifications-feed.ts";
 import { createNotificationsRouter } from "./notifications.ts";
 import { createPushRouter } from "./push.ts";
@@ -75,6 +76,9 @@ export function createApiRouter() {
 
   /** Inbound notifications feed (provider-local): `/api/me/notifications`. */
   api.route("/me", createMeNotificationsRouter());
+
+  /** Per-channel/group notification preferences: `/api/me/notification-settings`. */
+  api.route("/me", createMeNotificationSettingsRouter());
 
   /** Caller's account + profile + privacy (§5.1, §6.3, §6.6): `/api/me`. */
   api.route("/me", createMeUserRouter());

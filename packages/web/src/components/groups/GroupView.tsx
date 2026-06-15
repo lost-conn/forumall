@@ -32,6 +32,7 @@ import { GroupAvatar } from "./GroupAvatar.tsx";
 import { GroupSettingsModal } from "./GroupSettingsModal.tsx";
 import { InvitesPanel } from "./InvitesPanel.tsx";
 import { MembersPanel } from "./MembersPanel.tsx";
+import { NotificationModeMenu } from "./NotificationModeMenu.tsx";
 import { RequestsPanel } from "./RequestsPanel.tsx";
 import { channelsQuery, groupQuery, membersQuery, useInvalidateGroup } from "./queries.ts";
 import { ErrorLine, errorMessage } from "./ui.tsx";
@@ -199,28 +200,36 @@ export const GroupView: Component<{ groupId: string }> = (props) => {
             >
               {/* Space header + management dropdown */}
               <div class="relative">
-                <button
-                  type="button"
-                  class="flex w-full items-center gap-2 border-b border-border px-3.5 py-[13px] text-left hover:bg-surface-2"
-                  data-testid="space-menu-toggle"
-                  aria-expanded={menuOpen()}
-                  onClick={() => setMenuOpen((v) => !v)}
-                >
-                  <GroupAvatar
-                    name={grp().name}
-                    avatar={grp().avatar}
-                    class="h-6 w-6 text-[11px]"
-                  />
-                  <span
-                    class="truncate font-display text-[15px] font-bold tracking-tight text-ink"
-                    data-testid="group-name-heading"
+                <div class="flex items-center border-b border-border pr-2 hover:bg-surface-2">
+                  <button
+                    type="button"
+                    class="flex min-w-0 flex-1 items-center gap-2 px-3.5 py-[13px] text-left"
+                    data-testid="space-menu-toggle"
+                    aria-expanded={menuOpen()}
+                    onClick={() => setMenuOpen((v) => !v)}
                   >
-                    {grp().name}
-                  </span>
-                  <span class="ml-auto text-muted">
-                    <Icon name="chevDown" size={15} />
-                  </span>
-                </button>
+                    <GroupAvatar
+                      name={grp().name}
+                      avatar={grp().avatar}
+                      class="h-6 w-6 text-[11px]"
+                    />
+                    <span
+                      class="truncate font-display text-[15px] font-bold tracking-tight text-ink"
+                      data-testid="group-name-heading"
+                    >
+                      {grp().name}
+                    </span>
+                    <span class="ml-auto text-muted">
+                      <Icon name="chevDown" size={15} />
+                    </span>
+                  </button>
+                  {/* Group-level notification mode picker (members only). */}
+                  <Show when={isMember()}>
+                    <span class="shrink-0 pl-1" data-testid="group-notif-mode">
+                      <NotificationModeMenu scopeType="group" scopeId={grp().id} />
+                    </span>
+                  </Show>
+                </div>
 
                 <Show when={menuOpen()}>
                   <button
@@ -341,6 +350,14 @@ export const GroupView: Component<{ groupId: string }> = (props) => {
                             <Show when={ch.tier !== "group"}>
                               <Icon name="lock" size={11} />
                             </Show>
+                            <span class="opacity-100 transition-opacity md:opacity-0 md:group-hover:opacity-100">
+                              <NotificationModeMenu
+                                scopeType="channel"
+                                scopeId={ch.id}
+                                groupId={ch.groupId}
+                                compact
+                              />
+                            </span>
                             <Show when={canManage()}>
                               <button
                                 type="button"

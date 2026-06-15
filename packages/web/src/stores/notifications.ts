@@ -34,19 +34,19 @@ interface NotificationState {
 
 const [notifState, setNotifState] = createStore<NotificationState>({
   items: [],
-  counts: { mention: 0, reply: 0 },
+  counts: { mention: 0, reply: 0, message: 0 },
 });
 
 export { notifState };
 
 /** Notifications of a given type (or all), newest-first. */
-export function notificationsFor(type?: "mention" | "reply"): Notification[] {
+export function notificationsFor(type?: "mention" | "reply" | "message"): Notification[] {
   if (!type) return notifState.items;
   return notifState.items.filter((n) => n.type === type);
 }
 
 /** Unseen count for a type (badge). */
-export function unseenCountFor(type: "mention" | "reply"): number {
+export function unseenCountFor(type: "mention" | "reply" | "message"): number {
   return notifState.counts[type] ?? 0;
 }
 
@@ -68,7 +68,11 @@ export function applyNotificationCreated(notification: Notification): void {
   if (notifState.items.some((n) => n.id === notification.id)) return;
   setNotifState("items", (prev) => [notification, ...prev]);
   // A freshly-created notification is unseen → bump the badge for its type.
-  if (notification.type === "mention" || notification.type === "reply") {
+  if (
+    notification.type === "mention" ||
+    notification.type === "reply" ||
+    notification.type === "message"
+  ) {
     setNotifState("counts", notification.type, (c) => (c ?? 0) + 1);
   }
 }
@@ -123,17 +127,19 @@ function applyLocalStamp(
 function recomputeCounts(): void {
   let mention = 0;
   let reply = 0;
+  let message = 0;
   for (const n of notifState.items) {
     if (n.seenAt) continue;
     if (n.type === "mention") mention += 1;
     else if (n.type === "reply") reply += 1;
+    else if (n.type === "message") message += 1;
   }
-  setNotifState("counts", { mention, reply });
+  setNotifState("counts", { mention, reply, message });
 }
 
 /** Clear all notification state (logout). */
 export function clearNotifications(): void {
-  setNotifState({ items: [], counts: { mention: 0, reply: 0 } });
+  setNotifState({ items: [], counts: { mention: 0, reply: 0, message: 0 } });
 }
 
 // --- WS wiring --------------------------------------------------------------

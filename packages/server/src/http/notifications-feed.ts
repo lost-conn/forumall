@@ -47,7 +47,8 @@ export function createMeNotificationsRouter() {
     if (!actor) throw AppError.unauthorized();
 
     const typeRaw = c.req.query("type");
-    const type = typeRaw === "mention" || typeRaw === "reply" ? typeRaw : undefined;
+    const type =
+      typeRaw === "mention" || typeRaw === "reply" || typeRaw === "message" ? typeRaw : undefined;
     const cursor = c.req.query("cursor") ?? null;
     const rawLimit = Number.parseInt(c.req.query("limit") ?? "", 10);
     const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : undefined;

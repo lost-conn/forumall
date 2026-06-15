@@ -14,8 +14,15 @@ import { z } from "zod";
 
 import { Rfc3339DateTimeSchema } from "./common.ts";
 
-/** Notification kind: an @mention or a reply to one of the user's messages. */
-export const NotificationTypeSchema = z.enum(["mention", "reply"]);
+/**
+ * Notification kind:
+ *  - `mention` — an @mention of the user.
+ *  - `reply`   — a reply to one of the user's messages.
+ *  - `message` — any message in a channel the user has opted into `all`-mode
+ *    notifications for (per-channel/group notification settings), when it is not
+ *    already a `mention`/`reply` for them.
+ */
+export const NotificationTypeSchema = z.enum(["mention", "reply", "message"]);
 export type NotificationType = z.infer<typeof NotificationTypeSchema>;
 
 /**
@@ -53,6 +60,12 @@ export const NotificationCountsSchema = z
     mention: z.number().int().nonnegative(),
     /** Unseen reply notifications. */
     reply: z.number().int().nonnegative(),
+    /**
+     * Unseen `all`-mode message notifications. Optional for forward-compat (§2.3):
+     * a provider that predates per-channel/group notification settings omits it,
+     * and a client reads it as 0.
+     */
+    message: z.number().int().nonnegative().optional(),
   })
   .passthrough();
 export type NotificationCounts = z.infer<typeof NotificationCountsSchema>;

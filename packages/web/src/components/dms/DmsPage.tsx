@@ -104,7 +104,12 @@ const InboxPlaceholder: Component<{ testid: string; title: string; detail: strin
 /** One notification row: author avatar/name, a label, time, link to the source. */
 const NotificationRow: Component<{ n: Notification }> = (props) => {
   const navigate = useNavigate();
-  const label = () => (props.n.type === "mention" ? "mentioned you" : "replied to you");
+  const label = () =>
+    props.n.type === "mention"
+      ? "mentioned you"
+      : props.n.type === "message"
+        ? "posted a message"
+        : "replied to you";
   const goToSource = () => {
     // Best-effort: deep-link to the channel's group (channel selection is
     // internal store state, so we land the user on the space). Mark the
@@ -134,7 +139,7 @@ const NotificationRow: Component<{ n: Notification }> = (props) => {
             {displayNameFor(props.n.author)}
           </span>
           <span class="inline-flex items-center gap-1 font-mono text-[10px] text-faint">
-            <Icon name={props.n.type === "mention" ? "bell" : "reply"} size={10} />
+            <Icon name={props.n.type === "reply" ? "reply" : "bell"} size={10} />
             {formatTime(props.n.createdAt)}
           </span>
         </span>

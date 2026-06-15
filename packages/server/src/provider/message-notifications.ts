@@ -93,7 +93,7 @@ export function fireMessageNotifications(
   }
 }
 
-/** Build the Web Push payload for a channel mention/reply notification. */
+/** Build the Web Push payload for a channel mention/reply/message notification. */
 function channelPushPayload(
   type: string,
   author: string,
@@ -101,7 +101,12 @@ function channelPushPayload(
   groupId: string,
 ): PushPayload {
   const handle = author.includes("@") ? author.slice(0, author.lastIndexOf("@")) : author;
-  const title = type === "reply" ? `New reply from ${handle}` : `New mention from ${handle}`;
+  const title =
+    type === "reply"
+      ? `New reply from ${handle}`
+      : type === "message"
+        ? `New message from ${handle}`
+        : `New mention from ${handle}`;
   return {
     title,
     body: previewText(text),

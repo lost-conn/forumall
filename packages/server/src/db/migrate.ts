@@ -714,6 +714,34 @@ const migrations: readonly Migration[] = [
       );
     },
   },
+  {
+    // Per-channel / per-group notification preferences (provider-local). One row
+    // per (owner, scope_type, scope_id) holding the recipient's chosen mode
+    // (`all` | `mentions` | `none`). A missing row means "inherit": the effective
+    // mode resolves channel pref → group pref → default `mentions`. The unique
+    // (owner, scope_type, scope_id) index makes the upsert idempotent; the owner
+    // index backs the per-owner listing + the `all`-fan-out membership scan.
+    // Guarded for re-run.
+    id: "0031_notification_preferences",
+    up: (sqlite) => {
+      sqlite.exec(`
+        CREATE TABLE IF NOT EXISTS notification_preferences (
+          id         TEXT PRIMARY KEY,
+          owner      TEXT NOT NULL,
+          scope_type TEXT NOT NULL,
+          scope_id   TEXT NOT NULL,
+          mode       TEXT NOT NULL,
+          updated_at INTEGER NOT NULL
+        ) STRICT;
+      `);
+      sqlite.exec(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_notification_preferences_owner_scope ON notification_preferences (owner, scope_type, scope_id);",
+      );
+      sqlite.exec(
+        "CREATE INDEX IF NOT EXISTS idx_notification_preferences_owner ON notification_preferences (owner);",
+      );
+    },
+  },
 ];
 
 const LEDGER_DDL = `

@@ -7,8 +7,9 @@
  * a hint when push is unsupported (e.g. the Vite dev server, where the SW does
  * not register) or permission has been denied.
  */
+import { useQuery } from "@tanstack/solid-query";
 import type { Component, JSX } from "solid-js";
-import { createSignal, onMount } from "solid-js";
+import { For, Show, createSignal, onMount } from "solid-js";
 import {
   disablePush,
   enablePush,
@@ -17,12 +18,20 @@ import {
   pushPermission,
 } from "../../lib/push.ts";
 import {
+  type NotificationMode,
+  clearPref,
+  effectiveModeFor,
+  modeFor,
+  setPref,
+} from "../../stores/notification-prefs.ts";
+import {
   badgeEnabled,
   setBadgeEnabled,
   setSoundEnabled,
   soundEnabled,
 } from "../../stores/notify-prefs.ts";
 import { sessionClient } from "../../stores/session.ts";
+import { channelsQuery, myGroupsQuery } from "../groups/queries.ts";
 
 /** A labelled on/off switch row matching the design's `fa-switch`. */
 function ToggleRow(props: {
@@ -104,35 +113,164 @@ export const NotificationSettings: Component = () => {
   }
 
   return (
-    <section class="card flex flex-col gap-1" data-testid="notification-settings">
+    <>
+      <section class="card flex flex-col gap-1" data-testid="notification-settings">
+        <div class="mb-1">
+          <h2 class="font-display text-sm font-bold tracking-tight">Notifications</h2>
+          <p class="mt-0.5 text-xs text-muted">
+            Sounds and unread badges. Stored on this device only.
+          </p>
+        </div>
+        <ToggleRow
+          testid="notify-sound-toggle"
+          label="Notification sounds"
+          detail="Play a soft chime for new direct messages, mentions, and replies."
+          checked={soundEnabled()}
+          onToggle={setSoundEnabled}
+        />
+        <ToggleRow
+          testid="notify-badge-toggle"
+          label="Unread badges"
+          detail="Show your unread count on the tab title, favicon, and app icon."
+          checked={badgeEnabled()}
+          onToggle={setBadgeEnabled}
+        />
+        <ToggleRow
+          testid="notify-push-toggle"
+          label="Push notifications"
+          detail={pushDetail()}
+          checked={pushOn()}
+          disabled={pushDisabled()}
+          onToggle={(on) => void togglePush(on)}
+        />
+      </section>
+      <ChannelGroupNotificationSettings />
+    </>
+  );
+};
+
+/** The pickable modes + labels for the per-scope segmented control. */
+const SCOPE_MODES: ReadonlyArray<{ mode: NotificationMode; label: string }> = [
+  { mode: "all", label: "All" },
+  { mode: "mentions", label: "Mentions" },
+  { mode: "none", label: "Muted" },
+];
+
+/**
+ * A small segmented mode picker for one scope (group or channel). It writes the
+ * server-backed pref; `inherited` lets a channel offer an explicit "Inherit"
+ * state (revert to the group default).
+ */
+function ModePicker(props: {
+  scopeType: "group" | "channel";
+  scopeId: string;
+  inheritedLabel?: string;
+}): JSX.Element {
+  const explicit = (): NotificationMode | undefined => modeFor(props.scopeType, props.scopeId);
+  return (
+    <div
+      class="flex shrink-0 items-center gap-0.5 rounded-md border border-border bg-surface-2 p-0.5"
+      data-testid={`mode-picker-${props.scopeId}`}
+    >
+      <For each={SCOPE_MODES}>
+        {(opt) => (
+          <button
+            type="button"
+            class="rounded-[5px] px-2 py-1 font-mono text-[11px] transition-colors"
+            classList={{
+              "bg-accent-soft text-accent": explicit() === opt.mode,
+              "text-muted hover:text-ink": explicit() !== opt.mode,
+            }}
+            data-testid={`mode-${props.scopeId}-${opt.mode}`}
+            onClick={() => setPref(props.scopeType, props.scopeId, opt.mode)}
+          >
+            {opt.label}
+          </button>
+        )}
+      </For>
+      <Show when={props.inheritedLabel}>
+        <button
+          type="button"
+          class="rounded-[5px] px-2 py-1 font-mono text-[11px] transition-colors"
+          classList={{
+            "bg-accent-soft text-accent": explicit() === undefined,
+            "text-muted hover:text-ink": explicit() !== undefined,
+          }}
+          data-testid={`mode-${props.scopeId}-inherit`}
+          onClick={() => clearPref(props.scopeType, props.scopeId)}
+          title={props.inheritedLabel}
+        >
+          Inherit
+        </button>
+      </Show>
+    </div>
+  );
+}
+
+/** A group row with its channels, each with a mode picker. */
+const GroupNotifRow: Component<{ groupId: string; name: string }> = (props) => {
+  const channels = useQuery(() => channelsQuery(() => props.groupId));
+  const textChannels = () => (channels.data ?? []).filter((c) => c.type === "text");
+  return (
+    <div
+      class="border-b border-dashed border-border py-3 last:border-b-0"
+      data-testid="notif-group-row"
+    >
+      <div class="flex items-center gap-3">
+        <div class="min-w-0 flex-1">
+          <div class="truncate font-body text-[13.5px] font-semibold text-ink">{props.name}</div>
+          <div class="fa-meta mt-[3px]">Whole group default</div>
+        </div>
+        <ModePicker scopeType="group" scopeId={props.groupId} />
+      </div>
+      <Show when={textChannels().length > 0}>
+        <ul class="mt-2 flex flex-col gap-1.5 border-l border-border pl-3">
+          <For each={textChannels()}>
+            {(ch) => (
+              <li class="flex items-center gap-3" data-testid="notif-channel-row">
+                <div class="min-w-0 flex-1 truncate font-mono text-[12px] text-muted">
+                  #{ch.name ?? ch.id}
+                  <span class="ml-1.5 text-[10px] text-faint">
+                    ({effectiveModeFor(ch.id, props.groupId)})
+                  </span>
+                </div>
+                <ModePicker
+                  scopeType="channel"
+                  scopeId={ch.id}
+                  inheritedLabel="Use group default"
+                />
+              </li>
+            )}
+          </For>
+        </ul>
+      </Show>
+    </div>
+  );
+};
+
+/** The "Channels & Groups" server-backed notification preferences section. */
+const ChannelGroupNotificationSettings: Component = () => {
+  const groups = useQuery(myGroupsQuery);
+  return (
+    <section class="card flex flex-col gap-1" data-testid="notification-scope-settings">
       <div class="mb-1">
-        <h2 class="font-display text-sm font-bold tracking-tight">Notifications</h2>
+        <h2 class="font-display text-sm font-bold tracking-tight">Channels &amp; groups</h2>
         <p class="mt-0.5 text-xs text-muted">
-          Sounds and unread badges. Stored on this device only.
+          Choose what each space notifies you about. Synced across your devices.
         </p>
       </div>
-      <ToggleRow
-        testid="notify-sound-toggle"
-        label="Notification sounds"
-        detail="Play a soft chime for new direct messages, mentions, and replies."
-        checked={soundEnabled()}
-        onToggle={setSoundEnabled}
-      />
-      <ToggleRow
-        testid="notify-badge-toggle"
-        label="Unread badges"
-        detail="Show your unread count on the tab title, favicon, and app icon."
-        checked={badgeEnabled()}
-        onToggle={setBadgeEnabled}
-      />
-      <ToggleRow
-        testid="notify-push-toggle"
-        label="Push notifications"
-        detail={pushDetail()}
-        checked={pushOn()}
-        disabled={pushDisabled()}
-        onToggle={(on) => void togglePush(on)}
-      />
+      <Show
+        when={(groups.data ?? []).length > 0}
+        fallback={
+          <p class="py-3 text-xs text-faint" data-testid="notif-scope-empty">
+            Join a group to set per-channel notifications.
+          </p>
+        }
+      >
+        <For each={groups.data ?? []}>
+          {(grp) => <GroupNotifRow groupId={grp.id} name={grp.name} />}
+        </For>
+      </Show>
     </section>
   );
 };

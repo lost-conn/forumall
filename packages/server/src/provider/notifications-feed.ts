@@ -31,8 +31,15 @@ import { type Notification, NotificationSchema, rfc3339Timestamp } from "@foruma
 import { and, desc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
 
 import type { Db } from "../db/index.ts";
-import { type NotificationRow, messages, notifications, users } from "../db/schema.ts";
+import {
+  type NotificationRow,
+  groupMembers,
+  messages,
+  notifications,
+  users,
+} from "../db/schema.ts";
 import { decodeCursor, encodeCursor } from "./membership.ts";
+import { getEffectiveMode } from "./notification-prefs.ts";
 
 /** `id` prefix for a notification (`ntf_<base64url>`). */
 const NOTIFICATION_ID_PREFIX = "ntf_";
@@ -132,7 +139,7 @@ export function rowToNotification(row: NotificationRow): Notification {
 /** A notification to create (recipient is a resolved LOCAL handle). */
 export interface NotificationInput {
   readonly recipient: string;
-  readonly type: "mention" | "reply";
+  readonly type: "mention" | "reply" | "message";
   readonly sourceMessageId: string;
   readonly channelId: string;
   readonly groupId: string;
@@ -150,6 +157,8 @@ export interface CreatedNotification {
   readonly recipient: string;
   /** The canonical notification object (no `recipient` field). */
   readonly notification: Notification;
+  /** The notification kind (mirrors `notification.type`), for fan-out branching. */
+  readonly type: "mention" | "reply" | "message";
 }
 
 /**
@@ -191,7 +200,11 @@ export function createNotifications(
       // RunResult at runtime — read `changes` through an unknown cast.
       const changes = (res as unknown as { changes?: number }).changes ?? 0;
       if (changes > 0) {
-        created.push({ recipient: row.recipient, notification: rowToNotification(row) });
+        created.push({
+          recipient: row.recipient,
+          notification: rowToNotification(row),
+          type: input.type,
+        });
       }
     }
   })();
@@ -226,6 +239,9 @@ export function notifyForChannelMessage(
 ): CreatedNotification[] {
   const { text, author, sourceMessageId, channelId, groupId, localDomain, replyToId } = params;
   const inputs: NotificationInput[] = [];
+  // LOCAL recipient handles already covered by a mention/reply row (so the
+  // `all`-path does not also create a `message` row for them).
+  const directRecipients = new Set<string>();
 
   // --- Mentions ---------------------------------------------------------
   for (const actor of detectMentions(text, localDomain)) {
@@ -236,6 +252,9 @@ export function notifyForChannelMessage(
     // Local-recipient only: the resolved actor must be hosted here AND exist.
     if (domain !== localDomain) continue;
     if (!isLocalUser(db, handle)) continue;
+    // Muted: a `none` effective mode suppresses the mention notification.
+    if (getEffectiveMode(db, handle, channelId, groupId) === "none") continue;
+    directRecipients.add(handle);
     inputs.push({
       recipient: handle,
       type: "mention",
@@ -258,7 +277,13 @@ export function notifyForChannelMessage(
       const at = parent.author.lastIndexOf("@");
       const handle = at > 0 ? parent.author.slice(0, at) : parent.author;
       const domain = at > 0 ? parent.author.slice(at + 1) : "";
-      if (domain === localDomain && isLocalUser(db, handle)) {
+      // Muted: a `none` effective mode suppresses the reply notification.
+      if (
+        domain === localDomain &&
+        isLocalUser(db, handle) &&
+        getEffectiveMode(db, handle, channelId, groupId) !== "none"
+      ) {
+        directRecipients.add(handle);
         inputs.push({
           recipient: handle,
           type: "reply",
@@ -271,7 +296,55 @@ export function notifyForChannelMessage(
     }
   }
 
+  // --- `all`-mode members -----------------------------------------------
+  // Every LOCAL group member whose effective mode is `all`, excluding the author
+  // and anyone already getting a mention/reply for this message, gets a
+  // `message` notification.
+  for (const handle of localMemberHandles(db, groupId, localDomain)) {
+    if (directRecipients.has(handle)) continue;
+    const authorHandle = author.endsWith(`@${localDomain}`)
+      ? author.slice(0, author.lastIndexOf("@"))
+      : null;
+    if (authorHandle !== null && handle === authorHandle) continue; // self-exclude
+    if (getEffectiveMode(db, handle, channelId, groupId) !== "all") continue;
+    inputs.push({
+      recipient: handle,
+      type: "message",
+      sourceMessageId,
+      channelId,
+      groupId,
+      author,
+    });
+  }
+
   return createNotifications(db, inputs);
+}
+
+/**
+ * The bare LOCAL handles of every member of `groupId` (members are stored as
+ * canonical `handle@domain` actors; we keep only those hosted on `localDomain`
+ * and resolving to an existing local user). Used by the `all`-mode fan-out.
+ */
+function localMemberHandles(db: Db, groupId: string, localDomain: string): string[] {
+  const rows = db.drizzle
+    .select({ user: groupMembers.user })
+    .from(groupMembers)
+    .where(eq(groupMembers.groupId, groupId))
+    .all();
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const { user } of rows) {
+    const at = user.lastIndexOf("@");
+    if (at <= 0) continue;
+    const handle = user.slice(0, at);
+    const domain = user.slice(at + 1);
+    if (domain !== localDomain) continue;
+    if (seen.has(handle)) continue;
+    if (!isLocalUser(db, handle)) continue;
+    seen.add(handle);
+    out.push(handle);
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -286,8 +359,8 @@ interface NotificationCursor {
 
 /** Options for {@link listNotifications}. */
 export interface ListNotificationsOptions {
-  /** Filter to a single type, or both when omitted. */
-  readonly type?: "mention" | "reply";
+  /** Filter to a single type, or all when omitted. */
+  readonly type?: "mention" | "reply" | "message";
   /** Page size; clamped to {@link MAX_NOTIFICATION_PAGE_SIZE}. */
   readonly limit?: number;
   /** Opaque cursor to page from (exclusive); omit for the first page. */
@@ -406,6 +479,7 @@ export function markRead(db: Db, recipient: string, ids?: readonly string[]): nu
 export interface NotificationCounts {
   readonly mention: number;
   readonly reply: number;
+  readonly message: number;
 }
 
 /**
@@ -419,10 +493,11 @@ export function unreadCounts(db: Db, recipient: string): NotificationCounts {
     .where(and(eq(notifications.recipient, recipient), isNull(notifications.seenAt)))
     .groupBy(notifications.type)
     .all();
-  const counts = { mention: 0, reply: 0 };
+  const counts = { mention: 0, reply: 0, message: 0 };
   for (const r of rows) {
     if (r.type === "mention") counts.mention = Number(r.n);
     else if (r.type === "reply") counts.reply = Number(r.n);
+    else if (r.type === "message") counts.message = Number(r.n);
   }
   return counts;
 }
