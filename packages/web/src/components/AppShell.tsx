@@ -10,6 +10,7 @@ import {
   createSignal,
 } from "solid-js";
 import { resolveAttachmentUrl } from "../lib/chat-api";
+import { brandIconUrl, brandName } from "../stores/branding";
 import { displayNameFor, warmProfile } from "../stores/profiles";
 import { unreadForGroup } from "../stores/read-markers";
 import { session } from "../stores/session";
@@ -58,14 +59,21 @@ export const AppShell: ParentComponent = (props) => {
       >
         <A
           href="/"
-          title="Home"
-          class="grid h-11 w-11 place-items-center rounded-md border-[1.5px] bg-accent-soft transition-colors"
+          title={brandName()}
+          class="grid h-11 w-11 place-items-center overflow-hidden rounded-md border-[1.5px] bg-accent-soft transition-colors"
           classList={{
             "border-accent": isActive("/"),
             "border-border-strong": !isActive("/"),
           }}
+          data-testid="brand-home"
         >
-          <img src="/forumall-mark.svg" alt="Forumall" class="h-7 w-7" width="28" height="28" />
+          <img
+            src={brandIconUrl() ?? "/forumall-mark.svg"}
+            alt={brandName()}
+            class="h-7 w-7 object-cover"
+            width="28"
+            height="28"
+          />
         </A>
 
         <RailButton href="/dms" label="Inbox & DMs" icon="inbox" active={isActive("/dms")} />

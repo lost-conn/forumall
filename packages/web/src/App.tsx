@@ -24,6 +24,7 @@ import {
   SettingsPage,
 } from "./routes/pages";
 import { doRestore } from "./stores/auth-controller";
+import { loadBranding } from "./stores/branding";
 import { isAuthenticated, provider, setProvider } from "./stores/session";
 
 const queryClient = new QueryClient({
@@ -40,6 +41,9 @@ const queryClient = new QueryClient({
  */
 const [restoring, setRestoring] = createSignal(true);
 async function bootstrapSession(): Promise<void> {
+  // Provider branding is PUBLIC — apply the instance title/favicon/accent/name
+  // as early as possible (independent of the session restore below).
+  void loadBranding();
   try {
     const restored = await doRestore();
     if (!restored) {

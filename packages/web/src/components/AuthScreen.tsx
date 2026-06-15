@@ -15,6 +15,7 @@ import {
   storeProviderHost,
 } from "../lib/provider.ts";
 import { doLogin, doRegister } from "../stores/auth-controller.ts";
+import { brandIconUrl, brandName } from "../stores/branding.ts";
 import { provider, setProvider } from "../stores/session.ts";
 import { Icon } from "./Icon.tsx";
 
@@ -74,7 +75,13 @@ export const AuthScreen: Component = () => {
 /** Brand header shown atop both stages. */
 const Brand: Component<{ title: string; sub: string }> = (props) => (
   <div class="mb-6 flex flex-col items-center gap-3 text-center">
-    <img src="/forumall-mark.svg" alt="Forumall" class="h-12 w-12" width="48" height="48" />
+    <img
+      src={brandIconUrl() ?? "/forumall-mark.svg"}
+      alt={brandName()}
+      class="h-12 w-12 rounded-md object-cover"
+      width="48"
+      height="48"
+    />
     <div>
       <div class="font-display text-2xl font-bold tracking-tight text-ink">{props.title}</div>
       <div class="mt-0.5 text-sm text-muted">{props.sub}</div>
@@ -123,7 +130,7 @@ const WelcomeCard: Component<{ info: ProviderInfo; onChange: () => void }> = (pr
   return (
     <form class="card-raised flex flex-col gap-4" onSubmit={submit} data-testid="credentials-form">
       <Brand
-        title={mode() === "register" ? "Welcome to Forumall" : "Welcome back"}
+        title={mode() === "register" ? `Welcome to ${brandName()}` : "Welcome back"}
         sub={mode() === "register" ? "Pick a name and jump in." : "Sign in to your account."}
       />
 

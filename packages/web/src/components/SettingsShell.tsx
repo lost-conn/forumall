@@ -10,6 +10,7 @@ import { doLogout } from "../stores/auth-controller.ts";
 import { session, sessionClient } from "../stores/session.ts";
 import { DeviceKeys } from "./DeviceKeys.tsx";
 import { Icon, type IconName } from "./Icon.tsx";
+import { BrandingSettings } from "./admin/BrandingSettings.tsx";
 import { AppearanceSettings } from "./social/AppearanceSettings.tsx";
 import { NotificationSettings } from "./social/NotificationSettings.tsx";
 import { PrivacySettingsCard, ProfileSettings } from "./social/PrivacyProfileSettings.tsx";
@@ -21,7 +22,8 @@ type Section =
   | "notifications"
   | "privacy"
   | "devices"
-  | "federation";
+  | "federation"
+  | "branding";
 
 const NAV: { group: string; items: [Section, string, IconName][] }[] = [
   {
@@ -42,6 +44,9 @@ const COMMUNITY: [string, IconName][] = [
   ["Moderation", "users"],
   ["Audit log", "article"],
 ];
+
+/** Provider-admin nav items (shown only when `session.isAdmin`). */
+const PROVIDER_NAV: [Section, string, IconName][] = [["branding", "Branding", "gear"]];
 
 interface MeAccount {
   profile: { handle: string; domain: string; displayName?: string };
@@ -87,6 +92,27 @@ export const SettingsShell: Component = () => {
             </>
           )}
         </For>
+        <Show when={session.isAdmin}>
+          <div class="eyebrow px-2 pb-1.5 pt-4">provider</div>
+          <For each={PROVIDER_NAV}>
+            {([id, label, icon]) => (
+              <button
+                type="button"
+                class="mb-0.5 flex w-full items-center gap-2.5 rounded-md border-[1.5px] px-2.5 py-1.5 text-left font-mono text-[13px] transition-colors"
+                classList={{
+                  "border-accent bg-accent-soft text-accent": section() === id,
+                  "border-transparent text-muted hover:(bg-surface-2 text-ink)": section() !== id,
+                }}
+                data-testid={`settings-nav-${id}`}
+                onClick={() => setSection(id)}
+              >
+                <Icon name={icon} size={15} />
+                {label}
+              </button>
+            )}
+          </For>
+        </Show>
+
         <div class="eyebrow px-2 pb-1.5 pt-4">community</div>
         <For each={COMMUNITY}>
           {([label, icon]) => (
@@ -174,6 +200,11 @@ export const SettingsShell: Component = () => {
 
             <Match when={section() === "federation"}>
               <FederationInfo />
+            </Match>
+
+            <Match when={section() === "branding" && session.isAdmin}>
+              <h1 class="fa-h1 mb-5">Provider branding</h1>
+              <BrandingSettings />
             </Match>
           </Switch>
         </div>

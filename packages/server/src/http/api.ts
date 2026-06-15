@@ -23,6 +23,7 @@ import { createMediaRouter } from "./media.ts";
 import { createMeNotificationSettingsRouter } from "./notification-settings.ts";
 import { createMeNotificationsRouter } from "./notifications-feed.ts";
 import { createNotificationsRouter } from "./notifications.ts";
+import { createProviderRouter } from "./provider.ts";
 import { createPushRouter } from "./push.ts";
 import { createMeReadMarkersRouter } from "./read-markers.ts";
 import type { AppBindings } from "./types.ts";
@@ -46,6 +47,12 @@ export function createApiRouter() {
 
   /** Local auth: register + login → bootstrap tokens (§4.1, §4.2). */
   api.route("/auth", createAuthRouter());
+
+  /**
+   * Provider branding (Forumall extension): `GET /api/provider` is PUBLIC
+   * (web boot reads it pre-login); `PUT /api/provider` is admin-only.
+   */
+  api.route("/provider", createProviderRouter());
 
   /** Group CRUD + permission model (§5.2, §5.5). */
   api.route("/groups", createGroupsRouter());
