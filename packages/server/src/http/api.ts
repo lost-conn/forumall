@@ -12,6 +12,7 @@ import { OFSCP_VERSION } from "@forumall/shared";
 import { Hono } from "hono";
 
 import { TIERS } from "../provider/tiers.ts";
+import { createAdminDiscoverRouter } from "./admin-discover.ts";
 import { createAuthRouter } from "./auth.ts";
 import { createFederationContactsRouter, createMeContactsRouter } from "./contacts.ts";
 import { createDiscoverRouter, createProvidersRouter } from "./discovery-feed.ts";
@@ -120,6 +121,13 @@ export function createApiRouter() {
    * compiled at read time — no feed is stored.
    */
   api.route("/discover", createDiscoverRouter());
+
+  /**
+   * Admin discover curation (Forumall extension): `/api/admin/discover`. Manages
+   * the allowlist of GROUPS featured in the discovery feed. All routes are
+   * `requireSignature` + `requireAdmin` (403 for non-admins).
+   */
+  api.route("/admin", createAdminDiscoverRouter());
 
   // Later: api.route("/channels", …); …
 

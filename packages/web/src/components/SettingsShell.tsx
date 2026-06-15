@@ -11,6 +11,7 @@ import { session, sessionClient } from "../stores/session.ts";
 import { DeviceKeys } from "./DeviceKeys.tsx";
 import { Icon, type IconName } from "./Icon.tsx";
 import { BrandingSettings } from "./admin/BrandingSettings.tsx";
+import { DiscoverSettings } from "./admin/DiscoverSettings.tsx";
 import { AppearanceSettings } from "./social/AppearanceSettings.tsx";
 import { NotificationSettings } from "./social/NotificationSettings.tsx";
 import { PrivacySettingsCard, ProfileSettings } from "./social/PrivacyProfileSettings.tsx";
@@ -23,7 +24,8 @@ type Section =
   | "privacy"
   | "devices"
   | "federation"
-  | "branding";
+  | "branding"
+  | "discover";
 
 const NAV: { group: string; items: [Section, string, IconName][] }[] = [
   {
@@ -46,7 +48,10 @@ const COMMUNITY: [string, IconName][] = [
 ];
 
 /** Provider-admin nav items (shown only when `session.isAdmin`). */
-const PROVIDER_NAV: [Section, string, IconName][] = [["branding", "Branding", "gear"]];
+const PROVIDER_NAV: [Section, string, IconName][] = [
+  ["branding", "Branding", "gear"],
+  ["discover", "Discover", "globe"],
+];
 
 interface MeAccount {
   profile: { handle: string; domain: string; displayName?: string };
@@ -205,6 +210,11 @@ export const SettingsShell: Component = () => {
             <Match when={section() === "branding" && session.isAdmin}>
               <h1 class="fa-h1 mb-5">Provider branding</h1>
               <BrandingSettings />
+            </Match>
+
+            <Match when={section() === "discover" && session.isAdmin}>
+              <h1 class="fa-h1 mb-5">Discover feed</h1>
+              <DiscoverSettings />
             </Match>
           </Switch>
         </div>

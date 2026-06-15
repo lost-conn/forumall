@@ -7,9 +7,13 @@
  * pointers from LOCAL `discoverable`-tier channels at read time, keyset-paged
  * over the channel `rowid` via the shared opaque cursor.
  *
- * ## What is surfaced (tier-respecting)
+ * ## What is surfaced (tier-respecting + admin-curated)
  * Only channels whose own `tier` is `discoverable` are surfaced (§11.1, §11.2):
- * `private`/`group`/`public` channels are never included. Each item is a pointer
+ * `private`/`group`/`public` channels are never included. Additionally, the feed
+ * is narrowed to an **admin-curated allowlist of GROUPS** (Forumall extension,
+ * `provider/discover-features.ts`): a discoverable channel appears only when its
+ * owning group has been explicitly featured by a provider admin. With no
+ * featured groups the feed is empty (not an error). Each item is a pointer
  * `{ channel, groupId?, provider }` and MAY carry a non-authoritative `sample`
  * preview of the channel's most recent (non-tombstoned) message.
  *
@@ -27,11 +31,12 @@ import {
   DiscoverResponseSchema,
   rfc3339Timestamp,
 } from "@forumall/shared";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 
 import type { Config } from "../config.ts";
 import type { Db } from "../db/index.ts";
 import { type ChannelRow, channels, messages } from "../db/schema.ts";
+import { listFeaturedGroupIds } from "./discover-features.ts";
 import { decodeCursor, encodeCursor } from "./membership.ts";
 
 /** The tier eligible for the discovery feed (§11.1, §11.2). */
@@ -119,10 +124,21 @@ export function compileDiscoverPage(
   const withSample = opts.withSample ?? true;
   const after = opts.cursor ? decodeDiscoverCursor(opts.cursor) : null;
 
+  // Admin-curated allowlist: only channels whose owning group has been featured
+  // by a provider admin are surfaced (intersected with the channel-level
+  // `discoverable` tier filter below). With NO featured groups the feed is empty
+  // — short-circuit to an empty page (not an error).
+  const featuredGroupIds = listFeaturedGroupIds(db);
+  if (featuredGroupIds.length === 0) {
+    return DiscoverResponseSchema.parse({ items: [], page: {} });
+  }
+
   // Keyset over the channel rowid (oldest-first): rows strictly past `after`.
   // `channels` is a STRICT rowid table (its `id` PK is TEXT, not INTEGER), so an
   // explicit `rowid` column exists and is a stable insertion-order keyset.
   const tierEq = eq(channels.tier, DISCOVERABLE_TIER);
+  const featuredEq = inArray(channels.groupId, featuredGroupIds);
+  const baseWhere = and(tierEq, featuredEq);
   const rowidCol = sql<number>`channels.rowid`;
 
   const rows = db.drizzle
@@ -140,7 +156,7 @@ export function compileDiscoverPage(
       updatedAt: channels.updatedAt,
     })
     .from(channels)
-    .where(after != null ? and(tierEq, sql`channels.rowid > ${after}`) : tierEq)
+    .where(after != null ? and(baseWhere, sql`channels.rowid > ${after}`) : baseWhere)
     .orderBy(sql`channels.rowid ASC`)
     .limit(limit + 1)
     .all() as ChannelRowWithRowid[];

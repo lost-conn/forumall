@@ -759,6 +759,29 @@ const migrations: readonly Migration[] = [
       }
     },
   },
+  {
+    // Admin-curated discover allowlist (Forumall extension, not OFSCP). One row
+    // per GROUP the provider admin has explicitly featured in the discovery feed
+    // (§11.2). The discover compile query intersects this allowlist with the
+    // existing `tier='discoverable'` channel filter, so a discoverable channel is
+    // only surfaced if its owning group is featured. The UNIQUE `group_id` index
+    // makes featuring idempotent (upsert). Create-if-not-exists DDL; guarded for
+    // re-run.
+    id: "0033_discover_features",
+    up: (sqlite) => {
+      sqlite.exec(`
+        CREATE TABLE IF NOT EXISTS discover_features (
+          id         TEXT PRIMARY KEY,
+          group_id   TEXT NOT NULL,
+          added_by   TEXT NOT NULL,
+          created_at INTEGER NOT NULL
+        ) STRICT;
+      `);
+      sqlite.exec(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_discover_features_group ON discover_features (group_id);",
+      );
+    },
+  },
 ];
 
 const LEDGER_DDL = `

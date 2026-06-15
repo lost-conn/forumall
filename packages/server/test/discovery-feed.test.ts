@@ -37,6 +37,7 @@ import { createApp } from "../src/app.ts";
 import { type Argon2Params, type Config, loadConfig } from "../src/config.ts";
 import { openDb } from "../src/db/index.ts";
 import { migrate } from "../src/db/migrate.ts";
+import { featureGroup } from "../src/provider/discover-features.ts";
 import { addKnownProvider, scrapeKnownProviders } from "../src/provider/known-providers.ts";
 import { createMessage } from "../src/provider/messages.ts";
 import { startFederation } from "./helpers/two-provider.ts";
@@ -243,6 +244,14 @@ describe("discovery feed enabled (§11.2)", () => {
     // A message for the (non-authoritative) sample preview.
     seedMessage(db, config, group.id, disc.id, alice.actor, "hello discoverable");
 
+    // Discover is now an admin-curated allowlist of GROUPS: nothing surfaces
+    // until the owning group is featured by an admin.
+    expect(
+      (await DiscoverResponseSchema.parse(await (await app.request("/api/discover")).json())).items
+        .length,
+    ).toBe(0);
+    featureGroup(db, group.id, "alice");
+
     const res = await app.request("/api/discover");
     expect(res.status).toBe(200);
     const body = DiscoverResponseSchema.parse(await res.json());
@@ -264,20 +273,26 @@ describe("discovery feed enabled (§11.2)", () => {
     const doc = await fetchDiscoveryDoc(app);
     expect(doc.capabilities?.discovery?.discoverFeed).toBe(true);
 
-    // No feed is stored: items are pointers compiled at read time.
+    // No feed is stored: items are pointers compiled at read time. The
+    // admin-curated allowlist table (`discover_features`) is an allowlist of
+    // featured GROUPS, not a stored feed of pointers — it is the only "discover"
+    // table permitted here.
     const tables = db.sqlite
       .query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type = 'table'")
       .all()
       .map((r) => r.name);
-    expect(tables.some((t) => t.includes("feed") || t.includes("discover"))).toBe(false);
+    expect(tables.some((t) => t.includes("feed"))).toBe(false);
+    expect(tables.filter((t) => t.includes("discover"))).toEqual(["discover_features"]);
   });
 
   test("pagination: limit=1 yields a nextCursor that returns the next item", async () => {
-    const { app } = freshApp("discover-paging", { ENABLE_DISCOVER_FEED: "true" });
+    const { app, db } = freshApp("discover-paging", { ENABLE_DISCOVER_FEED: "true" });
     const alice = await registerUserWithKey(app, "alice");
     const group = await createGroup(app, alice, { name: "G", tier: "public" });
     const c1 = await createChannel(app, alice, group.id, { type: "text", tier: "discoverable" });
     const c2 = await createChannel(app, alice, group.id, { type: "text", tier: "discoverable" });
+    // Feature the owning group so its discoverable channels surface (admin allowlist).
+    featureGroup(db, group.id, "alice");
 
     const page1 = DiscoverResponseSchema.parse(
       await (await app.request("/api/discover?limit=1")).json(),
