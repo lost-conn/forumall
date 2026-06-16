@@ -34,8 +34,10 @@ import {
   canonicalAuthority,
 } from "@forumall/shared";
 import { type Context, Hono } from "hono";
+import { z } from "zod";
 
 import { isProviderAdmin } from "../provider/admin.ts";
+import { claimGuestAccount } from "../provider/claim.ts";
 import { buildUserProfile, getUserRow, updateUserProfile } from "../provider/guests.ts";
 import { groupIdsOf } from "../provider/membership.ts";
 import {
@@ -50,6 +52,20 @@ import { canView } from "../provider/visibility.ts";
 import { AppError } from "./errors.ts";
 import { requireSignature } from "./signature.ts";
 import type { AppBindings, AuthenticatedActor } from "./types.ts";
+
+/**
+ * `POST /api/me/claim` body: the guest's chosen new handle + password (+ optional
+ * display name). The handle is min-validated here and fully validated (format,
+ * reserved prefix, availability) inside {@link claimGuestAccount}; the password
+ * mirrors the §4.1 register minimum (`min(8)`).
+ */
+const ClaimRequestSchema = z
+  .object({
+    handle: z.string().min(1),
+    password: z.string().min(8),
+    displayName: z.string().optional(),
+  })
+  .strict();
 
 /** Read a path param guaranteed present by the mounted route. */
 function requireParam(c: Context<AppBindings>, name: string): string {
@@ -121,6 +137,41 @@ export function createMeUserRouter() {
       isAdmin: isProviderAdmin(db, config, actor.handle),
     });
     return c.json(account, 200);
+  });
+
+  // -- POST /api/me/claim (guest → full account, signed) ------------------
+  // A signed-in GUEST upgrades to a full account by choosing a new permanent
+  // handle + setting a password. This is a full identity rename across every
+  // table that embeds the actor (`provider/claim.ts`); the caller keeps the
+  // SAME device keypair + keyId, which now resolves to the new actor. Returns
+  // `{ actor, keyId, profile }`. 409 if already a full account / handle taken;
+  // 400 on an invalid or reserved handle.
+  router.post("/claim", signed, async (c) => {
+    const { config, db } = c.var;
+    const actor = c.var.actor;
+    if (!actor) throw AppError.unauthorized();
+
+    const raw = await c.req.json().catch(() => {
+      throw AppError.badRequest({ detail: "request body must be valid JSON" });
+    });
+    const parsed = ClaimRequestSchema.safeParse(raw);
+    if (!parsed.success) {
+      throw AppError.badRequest({
+        detail: "invalid claim request",
+        extensions: { errors: parsed.error.flatten() },
+      });
+    }
+
+    const result = claimGuestAccount(db, config, actor.handle, {
+      newHandle: parsed.data.handle,
+      password: parsed.data.password,
+      ...(parsed.data.displayName !== undefined ? { displayName: parsed.data.displayName } : {}),
+    });
+
+    const profile = buildUserProfile(db, canonicalAuthority(config.domain), result.handle);
+    if (!profile) throw AppError.notFound({ detail: "no such user" });
+
+    return c.json({ actor: result.actor, keyId: actor.keyId, profile }, 200);
   });
 
   // -- PATCH /api/me/profile (§6.3 — signed) ------------------------------
