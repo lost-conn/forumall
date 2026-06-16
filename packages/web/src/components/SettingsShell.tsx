@@ -13,11 +13,13 @@ import { Icon, type IconName } from "./Icon.tsx";
 import { BrandingSettings } from "./admin/BrandingSettings.tsx";
 import { DiscoverSettings } from "./admin/DiscoverSettings.tsx";
 import { GroupCreationPolicy } from "./admin/GroupCreationPolicy.tsx";
+import { AccountUpgrade } from "./social/AccountUpgrade.tsx";
 import { AppearanceSettings } from "./social/AppearanceSettings.tsx";
 import { NotificationSettings } from "./social/NotificationSettings.tsx";
 import { PrivacySettingsCard, ProfileSettings } from "./social/PrivacyProfileSettings.tsx";
 
 type Section =
+  | "upgrade"
   | "account"
   | "profile"
   | "appearance"
@@ -68,13 +70,31 @@ async function fetchMe(): Promise<MeAccount> {
 }
 
 export const SettingsShell: Component = () => {
-  const [section, setSection] = createSignal<Section>("account");
+  // A guest lands on the upgrade panel first — securing the account matters most.
+  const [section, setSection] = createSignal<Section>(session.isGuest ? "upgrade" : "account");
   const [me] = createResource(fetchMe);
 
   return (
     <div class="flex min-h-0 flex-1 flex-col md:flex-row" data-testid="settings-page">
       {/* setnav — a top strip on mobile (capped + scrollable), a sidebar on desktop. */}
       <nav class="max-h-44 w-full shrink-0 overflow-auto border-b border-border bg-surface px-2.5 py-2 fa-scroll md:max-h-none md:w-[210px] md:border-r md:border-b-0">
+        <Show when={session.isGuest}>
+          <div class="eyebrow px-2 pb-1.5 pt-2">upgrade</div>
+          <button
+            type="button"
+            class="mb-0.5 flex w-full items-center gap-2.5 rounded-md border-[1.5px] px-2.5 py-1.5 text-left font-mono text-[13px] transition-colors"
+            classList={{
+              "border-accent bg-accent-soft text-accent": section() === "upgrade",
+              "border-transparent text-muted hover:(bg-surface-2 text-ink)":
+                section() !== "upgrade",
+            }}
+            data-testid="settings-nav-upgrade"
+            onClick={() => setSection("upgrade")}
+          >
+            <Icon name="lock" size={15} />
+            Secure account
+          </button>
+        </Show>
         <For each={NAV}>
           {(grp) => (
             <>
@@ -150,6 +170,11 @@ export const SettingsShell: Component = () => {
       <div class="min-h-0 flex-1 overflow-auto px-4 py-5 fa-scroll md:px-7 md:py-[26px]">
         <div class="mx-auto max-w-2xl">
           <Switch>
+            <Match when={section() === "upgrade" && session.isGuest}>
+              <h1 class="fa-h1 mb-5">Secure your account</h1>
+              <AccountUpgrade />
+            </Match>
+
             <Match when={section() === "account"}>
               <h1 class="fa-h1 mb-5">My Account</h1>
               <section class="card" data-testid="account">

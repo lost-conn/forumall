@@ -45,25 +45,32 @@ import {
   sessionClient,
   setConnectionState,
   setIsAdmin,
+  setIsGuest,
   setSessionAuth,
   storedSession,
 } from "./session.ts";
 
-/** Self `UserAccount` shape (subset) — `isAdmin` is a Forumall extension field. */
+/**
+ * Self `UserAccount` shape (subset). `isAdmin` is a Forumall extension field;
+ * `profile.guest` marks a provisional guest account (§4.8).
+ */
 interface MeAccount {
   isAdmin?: boolean;
+  profile?: { guest?: boolean };
 }
 
 /**
- * Hydrate the current user's provider-admin status from `GET /api/me`
- * (Forumall extension). Fire-and-forget; a failure leaves `isAdmin` false.
+ * Hydrate the current user's provider-admin + guest status from `GET /api/me`
+ * (Forumall extensions / §4.8). Fire-and-forget; a failure leaves both false.
  */
-async function hydrateAdminStatus(client: AuthResult["client"]): Promise<void> {
+async function hydrateSelfStatus(client: AuthResult["client"]): Promise<void> {
   try {
     const res = await client.get<MeAccount>("/api/me");
     setIsAdmin(res.data.isAdmin === true);
+    setIsGuest(res.data.profile?.guest === true);
   } catch {
     setIsAdmin(false);
+    setIsGuest(false);
   }
 }
 
@@ -110,8 +117,8 @@ async function adopt(result: AuthResult, store: KeyStore): Promise<void> {
   void hydrateNotifications();
   // Seed the server-backed per-channel/group notification preferences.
   void hydrateNotificationPrefs();
-  // Seed the caller's provider-admin status (Forumall extension).
-  void hydrateAdminStatus(result.client);
+  // Seed the caller's provider-admin + guest status (Forumall extension / §4.8).
+  void hydrateSelfStatus(result.client);
 }
 
 /** Register → keygen → device key → store → connect. Lands authenticated. */

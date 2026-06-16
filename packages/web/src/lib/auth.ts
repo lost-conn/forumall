@@ -88,6 +88,24 @@ export function loadSession(): StoredSession | null {
   }
 }
 
+/**
+ * Re-point the persisted session at a NEW actor/handle while keeping the SAME
+ * device keyId + host (the guest → full-account upgrade case, §4.8). The device
+ * private key is keyed by `keyId` in the key-store and is therefore untouched by
+ * this rename — only the actor the client signs as changes. Returns the updated
+ * descriptor, or `null` when there is no stored session to upgrade.
+ */
+export function persistUpgradedSession(args: {
+  actor: string;
+  handle: string;
+}): StoredSession | null {
+  const current = loadSession();
+  if (!current) return null;
+  const next: StoredSession = { ...current, actor: args.actor, handle: args.handle };
+  storeSession(next);
+  return next;
+}
+
 /** Wipe the persisted session descriptor. */
 function dropSession(): void {
   try {

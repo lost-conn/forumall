@@ -18,6 +18,7 @@ import { Icon, type IconName } from "./Icon";
 import { myGroupsQuery } from "./groups/queries";
 import { UnreadBadge } from "./shared/UnreadBadge";
 import { Avatar } from "./social/Avatar";
+import { GuestUpgradeBanner } from "./social/GuestUpgradeBanner";
 import { PushPromptBanner } from "./social/PushPromptBanner";
 import { SelfPresenceControl } from "./social/SelfPresenceControl";
 import { UserProfileCard } from "./social/UserProfileCard";
@@ -146,6 +147,8 @@ export const AppShell: ParentComponent = (props) => {
         {/* First-load push nudge — only for a signed-in user (and self-gates on
             support/permission/dismiss inside the component). */}
         <Show when={session.actor}>
+          {/* Persistent guest nudge (only when the session is a guest). */}
+          <GuestUpgradeBanner />
           <PushPromptBanner />
         </Show>
         {props.children}

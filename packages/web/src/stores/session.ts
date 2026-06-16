@@ -29,6 +29,12 @@ export interface SessionState {
    * (branding / discover curation / group gate) gates on this.
    */
   isAdmin: boolean;
+  /**
+   * Whether the current user is a provisional GUEST account (no password, not
+   * federation-resolvable). Hydrated from `GET /api/me` (`profile.guest`) after
+   * auth; false until known. Gates the account-upgrade UI (claim / merge).
+   */
+  isGuest: boolean;
 }
 
 const [session, setSession] = createStore<SessionState>({
@@ -38,6 +44,7 @@ const [session, setSession] = createStore<SessionState>({
   deviceName: null,
   connection: "idle",
   isAdmin: false,
+  isGuest: false,
 });
 
 export { session };
@@ -50,6 +57,16 @@ export function isAdmin(): boolean {
 /** Set the current user's provider-admin status (hydrated from `GET /api/me`). */
 export function setIsAdmin(value: boolean): void {
   setSession("isAdmin", value);
+}
+
+/** Whether the current user is a provisional guest account (Forumall extension). */
+export function isGuest(): boolean {
+  return session.isGuest;
+}
+
+/** Set the current user's guest status (hydrated from `GET /api/me`). */
+export function setIsGuest(value: boolean): void {
+  setSession("isGuest", value);
 }
 
 /**
@@ -90,9 +107,10 @@ export function setSessionAuth(args: {
     host: args.stored.host,
     keyId: args.stored.keyId,
     deviceName: args.stored.deviceName,
-    // isAdmin is hydrated separately from GET /api/me; reset to a known-false
-    // baseline here so a previous session's value can't leak through.
+    // isAdmin / isGuest are hydrated separately from GET /api/me; reset to a
+    // known-false baseline here so a previous session's value can't leak through.
     isAdmin: false,
+    isGuest: false,
   });
 }
 
@@ -119,6 +137,7 @@ export function clearSession(): void {
     deviceName: null,
     connection: "idle",
     isAdmin: false,
+    isGuest: false,
   });
 }
 
