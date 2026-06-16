@@ -40,6 +40,7 @@ import { isProviderAdmin } from "../provider/admin.ts";
 import { claimGuestAccount } from "../provider/claim.ts";
 import { buildUserProfile, getUserRow, updateUserProfile } from "../provider/guests.ts";
 import { groupIdsOf } from "../provider/membership.ts";
+import { mergeGuestIntoAccount } from "../provider/merge.ts";
 import {
   type ExplicitAvailability,
   fanOutPresence,
@@ -64,6 +65,18 @@ const ClaimRequestSchema = z
     handle: z.string().min(1),
     password: z.string().min(8),
     displayName: z.string().optional(),
+  })
+  .strict();
+
+/**
+ * `POST /api/me/merge` body: the EXISTING target account's handle + password
+ * (a login-equivalent credential check). The merge folds the calling guest's
+ * content/identity into that account; see {@link mergeGuestIntoAccount}.
+ */
+const MergeRequestSchema = z
+  .object({
+    handle: z.string().min(1),
+    password: z.string().min(1),
   })
   .strict();
 
@@ -166,6 +179,42 @@ export function createMeUserRouter() {
       newHandle: parsed.data.handle,
       password: parsed.data.password,
       ...(parsed.data.displayName !== undefined ? { displayName: parsed.data.displayName } : {}),
+    });
+
+    const profile = buildUserProfile(db, canonicalAuthority(config.domain), result.handle);
+    if (!profile) throw AppError.notFound({ detail: "no such user" });
+
+    return c.json({ actor: result.actor, keyId: actor.keyId, profile }, 200);
+  });
+
+  // -- POST /api/me/merge (guest → EXISTING account, signed) --------------
+  // A signed-in GUEST folds itself into an EXISTING full account by supplying
+  // that account's handle + password (a login-equivalent credential check). All
+  // of the guest's content/identity moves into the target actor with conflict
+  // resolution (`provider/merge.ts`), the caller's device key is re-bound to the
+  // target (so this device stays logged in — now as the target, SAME keyId), and
+  // the guest row is deleted. Returns `{ actor, keyId, profile }` (the target's).
+  // 401 on a bad handle/password (uniform, no enumeration); 409 if the caller is
+  // already a full account.
+  router.post("/merge", signed, async (c) => {
+    const { config, db } = c.var;
+    const actor = c.var.actor;
+    if (!actor) throw AppError.unauthorized();
+
+    const raw = await c.req.json().catch(() => {
+      throw AppError.badRequest({ detail: "request body must be valid JSON" });
+    });
+    const parsed = MergeRequestSchema.safeParse(raw);
+    if (!parsed.success) {
+      throw AppError.badRequest({
+        detail: "invalid merge request",
+        extensions: { errors: parsed.error.flatten() },
+      });
+    }
+
+    const result = mergeGuestIntoAccount(db, config, actor.handle, {
+      targetHandle: parsed.data.handle,
+      password: parsed.data.password,
     });
 
     const profile = buildUserProfile(db, canonicalAuthority(config.domain), result.handle);
