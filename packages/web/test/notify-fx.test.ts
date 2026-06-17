@@ -13,7 +13,10 @@ import {
   type SoundCandidate,
   badgeLabel,
   computeTotalUnread,
+  notifyContentFor,
+  notifyEligible,
   notifyPolicyFor,
+  previewText,
   soundEligible,
   suppressedByPresence,
 } from "../src/stores/notify-fx-core.ts";
@@ -82,6 +85,87 @@ describe("soundEligible — channel message.created", () => {
   });
   test("my own message in the open channel is never eligible", () => {
     expect(soundEligible({ ...base, author: ME }, ctx({ activeScopeId: "chn_1" }))).toBe(false);
+  });
+});
+
+describe("notifyEligible — the desktop-notification set (mirrors Web Push)", () => {
+  test("an incoming DM is eligible; my own DM is not", () => {
+    const dm: SoundCandidate = { source: "dm.message", scopeId: "dm_x", sourceMessageId: "m1" };
+    expect(notifyEligible({ ...dm, author: OTHER, mine: false }, ctx())).toBe(true);
+    expect(notifyEligible({ ...dm, author: ME, mine: true }, ctx())).toBe(false);
+  });
+  test("a received mention/reply is eligible; self-authored is not", () => {
+    const n: SoundCandidate = {
+      source: "notification.created",
+      scopeId: "chn_1",
+      sourceMessageId: "m1",
+    };
+    expect(notifyEligible({ ...n, author: OTHER }, ctx())).toBe(true);
+    expect(notifyEligible({ ...n, author: ME }, ctx())).toBe(false);
+  });
+  test("a plain channel message NEVER desktop-notifies (only chimes)", () => {
+    const msg: SoundCandidate = {
+      source: "message.created",
+      scopeId: "chn_1",
+      sourceMessageId: "m1",
+      author: OTHER,
+    };
+    // Even in the OPEN channel where it would chime.
+    expect(notifyEligible(msg, ctx({ activeScopeId: "chn_1" }))).toBe(false);
+  });
+});
+
+describe("notifyContentFor — mirrors the server push payloads (coalesce by tag)", () => {
+  test("a DM carries the author + body preview + dm: tag + /dms route", () => {
+    const out = notifyContentFor({
+      source: "dm.message",
+      scopeId: "dm_x",
+      sourceMessageId: "m1",
+      author: "alice@h",
+      text: "  hello   there  ",
+    });
+    expect(out).toEqual({
+      title: "alice",
+      body: "hello there",
+      tag: "dm:dm_x",
+      targetUrl: "/dms/dm_x",
+    });
+  });
+  test("a mention has a verb title, empty body, chan: tag + /groups route", () => {
+    const out = notifyContentFor({
+      source: "notification.created",
+      scopeId: "chn_1",
+      sourceMessageId: "m1",
+      author: "bob@h",
+      groupId: "grp_9",
+      notifType: "mention",
+    });
+    expect(out).toEqual({
+      title: "New mention from bob",
+      body: "",
+      tag: "chan:grp_9",
+      targetUrl: "/groups/grp_9",
+    });
+  });
+  test("a reply uses the 'reply' verb", () => {
+    const out = notifyContentFor({
+      source: "notification.created",
+      scopeId: "chn_1",
+      sourceMessageId: "m1",
+      author: "bob@h",
+      groupId: "grp_9",
+      notifType: "reply",
+    });
+    expect(out.title).toBe("New reply from bob");
+  });
+});
+
+describe("previewText", () => {
+  test("collapses whitespace and trims", () => {
+    expect(previewText("  a\n\n b   c ")).toBe("a b c");
+  });
+  test("clamps to max with an ellipsis", () => {
+    expect(previewText("abcdef", 4)).toBe("abc…");
   });
 });
 

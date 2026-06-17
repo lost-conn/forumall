@@ -57,6 +57,13 @@ export interface SoundCandidate {
   author?: string;
   /** DM-only: true when the message is the current user's own send. */
   mine?: boolean;
+  // --- desktop-notification extras (ignored by the sound path) ---------------
+  /** Message text, when carried by the event (DMs); used for the notif body. */
+  text?: string;
+  /** The group the scope belongs to (channel events); used for the click-through. */
+  groupId?: string;
+  /** `notification.created` kind (`mention` | `reply` | `message`); used for the title. */
+  notifType?: "mention" | "reply" | "message";
 }
 
 /** Inputs that decide eligibility, independent of the event. */
@@ -151,6 +158,95 @@ export class Deduper {
       if (now - at >= this.windowMs) this.seen.delete(id);
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Desktop notifications (OS-level, while the tab is open but NOT focused)
+// ---------------------------------------------------------------------------
+//
+// A second, independent decision path that mirrors the server's Web Push set:
+// it raises an OS notification (via the service worker) for the things that
+// would have been pushed had the user been offline — DMs and channel
+// mentions/replies — but only when the window/tab is NOT focused. This fills the
+// gap left by Web Push, which the server suppresses while a live WS connection
+// exists (`liveConnectionCount > 0`): a connected-but-blurred tab otherwise got
+// the chime and badge, never a desktop popup. The "while focused → silent" half
+// is just the focus gate in the coordinator.
+
+/**
+ * Is this candidate a *candidate* for a desktop notification? Mirrors the Web
+ * Push set, NOT the chime set:
+ *  - `dm.message`: eligible iff not the user's own send.
+ *  - `notification.created`: a received mention/reply → eligible.
+ *  - `message.created`: NEVER — a plain channel message is not pushed offline
+ *    either (its @mentions arrive via `notification.created`), so it only chimes.
+ *
+ * Per-channel muting is enforced server-side (a muted channel never fans a
+ * `notification.created` to you), so it needs no re-check here.
+ */
+export function notifyEligible(c: SoundCandidate, ctx: EligibilityContext): boolean {
+  switch (c.source) {
+    case "dm.message":
+      return c.mine !== true && c.author !== ctx.me;
+    case "notification.created":
+      return c.author !== ctx.me;
+    default:
+      return false;
+  }
+}
+
+/** The OS-notification content the coordinator hands to `showNotification`. */
+export interface NotifyContent {
+  title: string;
+  body: string;
+  /** Coalescing tag — shared scheme with the server push, so the two collapse. */
+  tag: string;
+  /** Click-through route (the SW `notificationclick` handler navigates here). */
+  targetUrl: string;
+}
+
+/** `handle@domain` → `handle` (defensive: returns the input when there's no `@`). */
+function handleOf(actor: string): string {
+  const at = actor.lastIndexOf("@");
+  return at > 0 ? actor.slice(0, at) : actor;
+}
+
+/** Strip whitespace + clamp for a notification body (mirrors the server's previewText). */
+export function previewText(text: string, max = 120): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+}
+
+/**
+ * Build the OS-notification content for a candidate, mirroring the server's Web
+ * Push payloads (`channelPushPayload` / the DM push) so an in-tab-while-unfocused
+ * alert and an offline push read identically and COALESCE on `tag`.
+ *
+ * DMs carry the message text → a real body preview. Channel mentions/replies
+ * arrive via `notification.created`, which does NOT carry the text (the offline
+ * push does, because the server has it; the client doesn't for a background
+ * channel), so their body is empty and the verb lives in the title.
+ */
+export function notifyContentFor(c: SoundCandidate): NotifyContent {
+  const handle = c.author ? handleOf(c.author) : "Someone";
+  if (c.source === "dm.message") {
+    return {
+      title: handle,
+      body: c.text ? previewText(c.text) : "",
+      tag: `dm:${c.scopeId}`,
+      targetUrl: `/dms/${c.scopeId}`,
+    };
+  }
+  // notification.created — a mention, reply, or (rarely) a plain message notif.
+  const verb =
+    c.notifType === "reply" ? "reply" : c.notifType === "message" ? "message" : "mention";
+  const groupId = c.groupId ?? "";
+  return {
+    title: `New ${verb} from ${handle}`,
+    body: "",
+    tag: `chan:${groupId}`,
+    targetUrl: groupId ? `/groups/${groupId}` : "/",
+  };
 }
 
 /**

@@ -20,13 +20,16 @@ import { activeThread, installFocusTracker, isAppFocused } from "./active-thread
 import { unseenCountFor } from "./notifications.ts";
 import {
   Deduper,
+  type NotifyContent,
   type SoundCandidate,
   badgeLabel,
   computeTotalUnread,
+  notifyContentFor,
+  notifyEligible,
   soundEligible,
   suppressedByPresence,
 } from "./notify-fx-core.ts";
-import { badgeEnabled, soundEnabled } from "./notify-prefs.ts";
+import { badgeEnabled, desktopEnabled, soundEnabled } from "./notify-prefs.ts";
 import { totalUnread } from "./read-markers.ts";
 import { session } from "./session.ts";
 
@@ -267,6 +270,10 @@ function applyBadges(total: number): void {
 // ---------------------------------------------------------------------------
 
 const dedup = new Deduper();
+// A second de-dupe set for the desktop-notification path. It is independent of
+// the chime's `dedup` (the two consume the same source ids) and mainly guards
+// against a reconnect/`since`-resume replaying the same event.
+const notifyDedup = new Deduper();
 const installed = new WeakSet<OfscpWsClient>();
 let badgeRootDisposed: (() => void) | null = null;
 
@@ -288,6 +295,47 @@ function maybeSound(c: SoundCandidate): void {
 }
 
 /**
+ * Raise an OS notification via the service worker registration. Uses
+ * `registration.showNotification` (NOT `new Notification()`, which throws on
+ * Android Chrome and is being removed). Fire-and-forget + fully defensive: in
+ * dev there is no registered SW so `ready` never resolves — harmless here since
+ * nothing awaits it. The SW's `notificationclick` handler routes `data.targetUrl`
+ * (focus an existing tab or open one).
+ */
+async function showLocalNotification(content: NotifyContent): Promise<void> {
+  try {
+    if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) return;
+    const reg = await navigator.serviceWorker.ready;
+    await reg.showNotification(content.title, {
+      body: content.body,
+      icon: "/icon-192.png",
+      badge: "/icon-192.png",
+      tag: content.tag,
+      data: { targetUrl: content.targetUrl },
+    });
+  } catch {
+    /* never throw on notification failures */
+  }
+}
+
+/**
+ * Evaluate a candidate for a desktop (OS) notification — the "still notify me
+ * while the tab is open but NOT focused" path. Fires ONLY when the app is
+ * unfocused (the "silent while focused" half), the pref is on, permission is
+ * granted, the candidate is push-eligible (a DM / mention / reply, never a plain
+ * channel message), and it isn't a replay. Independent of the chime: the chime
+ * also fires while focused-on-another-thread; this never does.
+ */
+function maybeNotify(c: SoundCandidate): void {
+  if (!desktopEnabled()) return;
+  if (isAppFocused()) return; // the "not when in focus" rule
+  if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
+  if (!notifyEligible(c, { me: session.actor, activeScopeId: activeScopeId() })) return;
+  if (!notifyDedup.shouldSound(c.sourceMessageId)) return;
+  void showLocalNotification(notifyContentFor(c));
+}
+
+/**
  * Install the single set of FX listeners on `ws` (idempotent). Called once per
  * connection by the auth controller BEFORE connecting. Reacts to `dm.message`,
  * `notification.created`, and channel `message.created`.
@@ -305,25 +353,32 @@ export function installNotifyFx(ws: OfscpWsClient): void {
     const data = (e as WsDmMessage).data;
     if (!data?.message) return;
     const m = data.message;
-    maybeSound({
+    const c: SoundCandidate = {
       source: "dm.message",
       scopeId: data.dmId,
       sourceMessageId: m.id,
       author: m.author,
       mine: m.author === session.actor,
-    });
+      text: m.content?.text,
+    };
+    maybeSound(c);
+    maybeNotify(c);
   });
 
   ws.on("notification.created", (e: WsEnvelope) => {
     const data = (e as { data?: { notification?: Notification } }).data;
     const n = data?.notification;
     if (!n) return;
-    maybeSound({
+    const c: SoundCandidate = {
       source: "notification.created",
       scopeId: n.channelId,
       sourceMessageId: n.sourceMessageId,
       author: n.author,
-    });
+      groupId: n.groupId,
+      notifType: n.type,
+    };
+    maybeSound(c);
+    maybeNotify(c);
   });
 
   ws.on("message.created", (e: WsEnvelope) => {

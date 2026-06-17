@@ -26,7 +26,9 @@ import {
 } from "../../stores/notification-prefs.ts";
 import {
   badgeEnabled,
+  desktopEnabled,
   setBadgeEnabled,
+  setDesktopEnabled,
   setSoundEnabled,
   soundEnabled,
 } from "../../stores/notify-prefs.ts";
@@ -89,6 +91,27 @@ export const NotificationSettings: Component = () => {
     return "Get notified on this device when the app is closed.";
   };
 
+  const desktopDetail = (): string => {
+    if (!supported) return "Not available on this device or in development.";
+    if (denied()) return "Blocked — allow notifications in your browser settings to enable.";
+    return "Show a notification when a message arrives while this tab is open but not focused.";
+  };
+
+  // Desktop alerts ride on the granted Notification permission (the same one the
+  // push toggle requests). Turning this on while permission is still un-asked
+  // prompts for it directly, so it works without enrolling in Web Push.
+  async function toggleDesktop(on: boolean): Promise<void> {
+    if (on && typeof Notification !== "undefined" && Notification.permission === "default") {
+      try {
+        await Notification.requestPermission();
+      } catch {
+        /* ignore — the pref still flips; it's simply a no-op until granted */
+      }
+      setDenied(pushPermission() === "denied");
+    }
+    setDesktopEnabled(on);
+  }
+
   async function togglePush(on: boolean): Promise<void> {
     const client = sessionClient();
     if (!client) return;
@@ -134,6 +157,14 @@ export const NotificationSettings: Component = () => {
           detail="Show your unread count on the tab title, favicon, and app icon."
           checked={badgeEnabled()}
           onToggle={setBadgeEnabled}
+        />
+        <ToggleRow
+          testid="notify-desktop-toggle"
+          label="Desktop alerts when away"
+          detail={desktopDetail()}
+          checked={desktopEnabled()}
+          disabled={!supported || denied()}
+          onToggle={(on) => void toggleDesktop(on)}
         />
         <ToggleRow
           testid="notify-push-toggle"
