@@ -583,7 +583,11 @@ const ThreadView: Component<{
   onCleanup(() => clearTimeout(highlightTimer));
 
   return (
-    <div class="flex min-h-0 flex-1 flex-col" data-testid="dm-thread" data-dm-id={props.dmId}>
+    <div
+      class="flex min-h-0 min-w-0 flex-1 flex-col"
+      data-testid="dm-thread"
+      data-dm-id={props.dmId}
+    >
       <header class="flex flex-col gap-2 border-b border-border px-6 py-3">
         <div class="flex items-center gap-2">
           <A
