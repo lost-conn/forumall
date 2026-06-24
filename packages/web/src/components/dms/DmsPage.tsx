@@ -1240,7 +1240,7 @@ const DmComposer: Component<{
           }}
         />
         <textarea
-          class="max-h-40 min-h-6 flex-1 resize-none bg-transparent text-sm text-ink outline-none placeholder:text-faint"
+          class="max-h-40 min-h-6 flex-1 resize-none bg-transparent text-sm leading-6 text-ink outline-none placeholder:text-faint"
           rows={1}
           data-testid="dm-composer-input"
           placeholder={`Message ${props.counterparty ? displayNameFor(props.counterparty) : "…"}…`}
