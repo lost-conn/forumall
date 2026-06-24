@@ -60,6 +60,7 @@ import { FollowToggle } from "../feed/FollowToggle.tsx";
 // `AttachmentView` is re-exported below so existing importers (the home feed)
 // keep importing it from here unchanged after the extraction to `../shared`.
 import { AttachmentView } from "../shared/AttachmentView.tsx";
+import { EditMessageForm } from "../shared/EditMessageForm.tsx";
 import { ReactionBar, ReactionPicker } from "../shared/Reactions.tsx";
 import { ReplyQuote } from "../shared/ReplyQuote.tsx";
 import { Avatar } from "../social/Avatar.tsx";
@@ -953,43 +954,13 @@ const MessageRow: Component<{
             </p>
           </Match>
           <Match when={editing()}>
-            <div class="flex flex-col gap-1">
-              <textarea
-                class="input min-h-16 resize-y"
-                data-testid="edit-input"
-                value={editText()}
-                onInput={(e) => setEditText(e.currentTarget.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault();
-                    submitEdit();
-                  }
-                  if (e.key === "Escape") setEditing(false);
-                }}
-              />
-              <div class="flex gap-2">
-                <button
-                  type="button"
-                  class="btn-accent px-3 py-1 text-xs"
-                  data-testid="save-edit"
-                  onClick={submitEdit}
-                >
-                  Save
-                </button>
-                <button
-                  type="button"
-                  class="btn-ghost px-3 py-1 text-xs"
-                  onClick={() => setEditing(false)}
-                >
-                  Cancel
-                </button>
-              </div>
-              <Show when={editError()}>
-                <p class="text-xs text-danger" data-testid="edit-error">
-                  {editError()}
-                </p>
-              </Show>
-            </div>
+            <EditMessageForm
+              value={editText()}
+              onInput={setEditText}
+              onSubmit={submitEdit}
+              onCancel={() => setEditing(false)}
+              error={editError()}
+            />
           </Match>
           <Match when={true}>
             <MessageBody message={m()} onOpenArticle={props.onOpenArticle} />

@@ -61,6 +61,7 @@ import { markRead, seqFromCursor, unreadCountFor } from "../../stores/read-marke
 import { session, sessionClient, sessionWs } from "../../stores/session.ts";
 import { Icon, type IconName } from "../Icon.tsx";
 import { AttachmentView } from "../shared/AttachmentView.tsx";
+import { EditMessageForm } from "../shared/EditMessageForm.tsx";
 import { ReactionBar, ReactionPicker } from "../shared/Reactions.tsx";
 import { ReplyQuote } from "../shared/ReplyQuote.tsx";
 import { UnreadBadge } from "../shared/UnreadBadge.tsx";
@@ -896,43 +897,15 @@ const DmMessageRow: Component<{
               </p>
             </Match>
             <Match when={editing()}>
-              <div class="flex w-full flex-col gap-1">
-                <textarea
-                  class="input min-h-16 resize-y"
-                  data-testid="dm-edit-input"
-                  value={editText()}
-                  onInput={(e) => setEditText(e.currentTarget.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey) {
-                      e.preventDefault();
-                      submitEdit();
-                    }
-                    if (e.key === "Escape") setEditing(false);
-                  }}
-                />
-                <div class="flex gap-2">
-                  <button
-                    type="button"
-                    class="btn-accent px-3 py-1 text-xs"
-                    data-testid="dm-save-edit"
-                    onClick={submitEdit}
-                  >
-                    Save
-                  </button>
-                  <button
-                    type="button"
-                    class="btn-ghost px-3 py-1 text-xs"
-                    onClick={() => setEditing(false)}
-                  >
-                    Cancel
-                  </button>
-                </div>
-                <Show when={editError()}>
-                  <p class="text-xs text-danger" data-testid="dm-edit-error">
-                    {editError()}
-                  </p>
-                </Show>
-              </div>
+              <EditMessageForm
+                fullWidth
+                testidPrefix="dm-"
+                value={editText()}
+                onInput={setEditText}
+                onSubmit={submitEdit}
+                onCancel={() => setEditing(false)}
+                error={editError()}
+              />
             </Match>
             <Match when={true}>
               <div
