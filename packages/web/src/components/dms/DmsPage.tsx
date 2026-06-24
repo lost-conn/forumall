@@ -968,7 +968,7 @@ const DmMessageRow: Component<{
             <span class="flex items-center gap-1 opacity-100 transition-opacity md:opacity-0 md:group-hover/dm:opacity-100">
               <button
                 type="button"
-                class="rounded px-2 py-1 text-xs text-faint hover:(bg-surface-2 text-ink) md:px-1.5 md:py-0.5"
+                class="btn-action"
                 data-testid="dm-reply-button"
                 onClick={() => props.onReply(m())}
               >
@@ -978,7 +978,7 @@ const DmMessageRow: Component<{
               <Show when={loadedReplies().length > 0}>
                 <button
                   type="button"
-                  class="rounded px-2 py-1 text-xs text-faint hover:(bg-surface-2 text-accent) md:px-1.5 md:py-0.5"
+                  class="btn-action-accent"
                   data-testid="dm-view-replies"
                   onClick={viewReplies}
                 >
@@ -988,7 +988,7 @@ const DmMessageRow: Component<{
               <Show when={mine()}>
                 <button
                   type="button"
-                  class="rounded px-2 py-1 text-xs text-faint hover:(bg-surface-2 text-ink) md:px-1.5 md:py-0.5"
+                  class="btn-action"
                   data-testid="dm-edit-message"
                   onClick={startEdit}
                 >
@@ -996,7 +996,7 @@ const DmMessageRow: Component<{
                 </button>
                 <button
                   type="button"
-                  class="rounded px-2 py-1 text-xs text-faint hover:(bg-surface-2 text-danger) md:px-1.5 md:py-0.5"
+                  class="btn-action-danger"
                   data-testid="dm-delete-message"
                   onClick={doDelete}
                 >

@@ -49,7 +49,7 @@ export const ReactionPicker: Component<{
     <div class="relative">
       <button
         type="button"
-        class="rounded px-2 py-1 text-xs text-faint hover:(bg-surface-2 text-ink) md:px-1.5 md:py-0.5"
+        class="btn-action"
         data-testid="react-button"
         onClick={() => setOpen((v) => !v)}
         aria-label="Add reaction"

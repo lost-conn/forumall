@@ -93,6 +93,16 @@ export default defineConfig({
     "btn-ghost":
       "btn-base inline-flex items-center justify-center gap-2 rounded-md border-[1.5px] border-dashed border-border-strong px-4 py-2 text-xs font-mono font-bold uppercase tracking-wide text-ink hover:(bg-surface border-solid) active:(translate-x-px translate-y-px) disabled:(opacity-50 cursor-not-allowed)",
 
+    // Inline message-action buttons — the small faint hover-reveal controls on a
+    // message row (reply/edit/delete/promote) and the reaction-picker trigger.
+    // `btn-action` is the default (ink hover); the variants only swap the hover
+    // tint. Shared by ChatView, DmsPage, and Reactions.
+    "btn-action-base": "rounded px-2 py-1 text-xs text-faint md:px-1.5 md:py-0.5",
+    "btn-action": "btn-action-base hover:(bg-surface-2 text-ink)",
+    "btn-action-accent": "btn-action-base hover:(bg-surface-2 text-accent)",
+    "btn-action-secondary": "btn-action-base hover:(bg-surface-2 text-ember)",
+    "btn-action-danger": "btn-action-base hover:(bg-surface-2 text-danger)",
+
     // Form + surfaces
     input:
       "w-full rounded-md border-[1.5px] border-border-strong bg-surface-2 px-3 py-2 text-sm text-ink placeholder:text-faint outline-none focus:(outline outline-2 outline-accent outline-offset-1)",

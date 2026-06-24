@@ -904,7 +904,7 @@ const MessageRow: Component<{
             <span class="ml-auto flex items-center gap-1 opacity-100 transition-opacity md:opacity-0 md:group-hover/msg:opacity-100">
               <button
                 type="button"
-                class="rounded px-2 py-1 text-xs text-faint hover:(bg-surface-2 text-ink) md:px-1.5 md:py-0.5"
+                class="btn-action"
                 data-testid="reply-button"
                 onClick={() => props.onReply()}
               >
@@ -913,7 +913,7 @@ const MessageRow: Component<{
               <Show when={props.canPromote && (m().type ?? "message") === "message"}>
                 <button
                   type="button"
-                  class="rounded px-2 py-1 text-xs text-faint hover:(bg-surface-2 text-ember) md:px-1.5 md:py-0.5"
+                  class="btn-action-secondary"
                   data-testid="promote-button"
                   title="Promote this message to an article"
                   onClick={() => props.onPromote()}
@@ -925,7 +925,7 @@ const MessageRow: Component<{
               <Show when={isAuthor()}>
                 <button
                   type="button"
-                  class="rounded px-2 py-1 text-xs text-faint hover:(bg-surface-2 text-ink) md:px-1.5 md:py-0.5"
+                  class="btn-action"
                   data-testid="edit-message"
                   onClick={startEdit}
                 >
@@ -935,7 +935,7 @@ const MessageRow: Component<{
               <Show when={isAuthor() || props.canModerate}>
                 <button
                   type="button"
-                  class="rounded px-2 py-1 text-xs text-faint hover:(bg-surface-2 text-danger) md:px-1.5 md:py-0.5"
+                  class="btn-action-danger"
                   data-testid="delete-message"
                   onClick={doDelete}
                 >
