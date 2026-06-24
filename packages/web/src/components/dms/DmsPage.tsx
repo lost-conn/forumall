@@ -1218,7 +1218,7 @@ const DmComposer: Component<{
         </div>
       </Show>
 
-      <div class="flex items-end gap-2.5 rounded-md border-[1.5px] border-border-strong bg-surface px-3 py-2 focus-within:(outline outline-2 outline-accent outline-offset-1)">
+      <div class="flex items-center gap-2.5 rounded-md border-[1.5px] border-border-strong bg-surface px-3 py-2 focus-within:(outline outline-2 outline-accent outline-offset-1)">
         <button
           type="button"
           class="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-sm text-faint transition-colors hover:text-ink disabled:opacity-50"
@@ -1240,7 +1240,7 @@ const DmComposer: Component<{
           }}
         />
         <textarea
-          class="max-h-40 min-h-6 flex-1 resize-none bg-transparent text-sm leading-6 text-ink outline-none placeholder:text-faint"
+          class="max-h-40 min-h-6 flex-1 resize-none bg-transparent text-sm text-ink outline-none placeholder:text-faint"
           rows={1}
           data-testid="dm-composer-input"
           placeholder={`Message ${props.counterparty ? displayNameFor(props.counterparty) : "…"}…`}
