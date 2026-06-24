@@ -7,6 +7,7 @@
  */
 import { type Component, For, Show, createMemo, createSignal, onMount } from "solid-js";
 import { renderMarkdown } from "../../lib/markdown.ts";
+import { formatTime } from "../../lib/time.ts";
 import { type ChatMessage, reactionsFor } from "../../stores/chat.ts";
 import { session, sessionWs } from "../../stores/session.ts";
 import { Icon } from "../Icon.tsx";
@@ -19,13 +20,6 @@ const PROMOTE_TAG_PREFIX = "promoted-from:";
 function displayName(actor: string): string {
   const at = actor.indexOf("@");
   return at > 0 ? actor.slice(0, at) : actor;
-}
-
-function formatTime(iso?: string): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
 /** Split an article's markdown into a leading title (first heading) + the body. */

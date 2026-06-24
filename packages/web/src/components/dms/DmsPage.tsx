@@ -37,6 +37,7 @@ import { DmSentStore } from "../../lib/dm-store.ts";
 import { clientForHost, domainOf, isLocalActor } from "../../lib/federation.ts";
 import { keyStore } from "../../lib/key-store.ts";
 import type { OfscpClient } from "../../lib/ofscp-client.ts";
+import { formatFullTime, formatTime } from "../../lib/time.ts";
 import { clearActiveThread, setActiveThread } from "../../stores/active-thread.ts";
 import {
   type DmConversationSummary,
@@ -1385,17 +1386,5 @@ function isRemoteActor(actor: string): boolean {
 }
 
 /** Short HH:MM time for a message timestamp; empty when absent/unparseable. */
-function formatTime(iso?: string): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-}
 
 /** Full localized date+time for hover precision; empty when absent/unparseable. */
-function formatFullTime(iso?: string): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  return d.toLocaleString();
-}

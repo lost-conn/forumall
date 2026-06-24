@@ -24,6 +24,7 @@ import {
   onCleanup,
   onMount,
 } from "solid-js";
+import { formatTime } from "../../lib/time.ts";
 import { reactionsFor } from "../../stores/chat.ts";
 import { type FeedItem, activeFollows, feed, mergedTimeline } from "../../stores/feed.ts";
 import { clearFeed } from "../../stores/feed.ts";
@@ -234,9 +235,3 @@ function displayName(actor: string): string {
 }
 
 /** Short HH:MM time for a message timestamp; empty when absent/unparseable. */
-function formatTime(iso?: string): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-}

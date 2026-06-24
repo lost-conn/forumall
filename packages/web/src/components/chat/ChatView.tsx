@@ -41,6 +41,7 @@ import {
   mentionRefFor,
   parseMentionSegments,
 } from "../../lib/mentions.ts";
+import { formatTime } from "../../lib/time.ts";
 import { clearActiveThread, setActiveThread } from "../../stores/active-thread.ts";
 import {
   type ChatMessage,
@@ -1626,12 +1627,6 @@ const Composer: Component<{
 // ---------------------------------------------------------------------------
 
 /** Short HH:MM time for a message timestamp; empty when absent/unparseable. */
-function formatTime(iso?: string): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-}
 
 // Re-export so a parent can read the store reactively if needed.
 export { chat };
