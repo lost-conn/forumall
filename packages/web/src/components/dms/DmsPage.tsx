@@ -31,7 +31,6 @@ import {
   onCleanup,
   onMount,
 } from "solid-js";
-import { uploadMedia } from "../../lib/chat-api.ts";
 import { fetchDmConversations, fetchDmReplies } from "../../lib/dm-api.ts";
 import { DmSentStore } from "../../lib/dm-store.ts";
 import { clientForHost, domainOf, isLocalActor } from "../../lib/federation.ts";
@@ -70,6 +69,7 @@ import { ReactionBar, ReactionPicker } from "../shared/Reactions.tsx";
 import { ReplyContextPill } from "../shared/ReplyContextPill.tsx";
 import { ReplyQuote } from "../shared/ReplyQuote.tsx";
 import { UnreadBadge } from "../shared/UnreadBadge.tsx";
+import { useComposerTyping, useComposerUpload } from "../shared/composer.ts";
 import { Avatar } from "../social/Avatar.tsx";
 import { PresenceDot } from "../social/PresenceDot.tsx";
 import {
@@ -1053,48 +1053,34 @@ const DmComposer: Component<{
   onSent: () => void;
 }> = (props) => {
   const [text, setText] = createSignal("");
-  const [sendError, setSendError] = createSignal<string | null>(null);
-  const [pendingAttachments, setPendingAttachments] = createSignal<Attachment[]>([]);
-  const [uploading, setUploading] = createSignal(false);
+  const {
+    pendingAttachments,
+    setPendingAttachments,
+    uploading,
+    error: sendError,
+    setError: setSendError,
+    onPickFile,
+    removeAttachment,
+    setFileInput,
+    openFilePicker,
+  } = useComposerUpload();
 
-  let lastTypingStart = 0;
-  let idleTimer: ReturnType<typeof setTimeout> | undefined;
-  let fileInput: HTMLInputElement | undefined;
-
-  const stopTyping = (): void => {
-    const ws = sessionWs();
-    if (ws) dmTypingStop(ws, props.dmId);
-    lastTypingStart = 0;
-    if (idleTimer) clearTimeout(idleTimer);
-  };
+  const { notifyTyping, stopTyping } = useComposerTyping({
+    start: () => {
+      const ws = sessionWs();
+      if (ws) dmTypingStart(ws, props.dmId);
+    },
+    stop: () => {
+      const ws = sessionWs();
+      if (ws) dmTypingStop(ws, props.dmId);
+    },
+    throttleMs: DM_TYPING_THROTTLE_MS,
+    idleMs: DM_TYPING_IDLE_MS,
+  });
 
   const onType = (value: string): void => {
     setText(value);
-    const ws = sessionWs();
-    if (!ws) return;
-    const now = Date.now();
-    if (now - lastTypingStart > DM_TYPING_THROTTLE_MS) {
-      dmTypingStart(ws, props.dmId);
-      lastTypingStart = now;
-    }
-    if (idleTimer) clearTimeout(idleTimer);
-    idleTimer = setTimeout(stopTyping, DM_TYPING_IDLE_MS);
-  };
-
-  const onPickFile = async (file: File): Promise<void> => {
-    const client = sessionClient();
-    if (!client) return;
-    setUploading(true);
-    setSendError(null);
-    try {
-      const att = await uploadMedia(client, file);
-      setPendingAttachments((prev) => [...prev, att]);
-    } catch (err) {
-      setSendError(err instanceof Error ? err.message : "Upload failed.");
-    } finally {
-      setUploading(false);
-      if (fileInput) fileInput.value = "";
-    }
+    notifyTyping();
   };
 
   const doSend = (): void => {
@@ -1132,10 +1118,6 @@ const DmComposer: Component<{
       });
   };
 
-  onCleanup(() => {
-    if (idleTimer) clearTimeout(idleTimer);
-  });
-
   return (
     <div class="border-t border-border px-6 py-3" data-testid="dm-composer">
       {/* Reply context pill */}
@@ -1151,7 +1133,7 @@ const DmComposer: Component<{
 
       <AttachmentChips
         attachments={pendingAttachments()}
-        onRemove={(i) => setPendingAttachments((prev) => prev.filter((_, j) => j !== i))}
+        onRemove={removeAttachment}
         testid="dm-composer-attachments"
       />
 
@@ -1161,13 +1143,13 @@ const DmComposer: Component<{
           class="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-sm text-faint transition-colors hover:text-ink disabled:opacity-50"
           data-testid="dm-attach-button"
           disabled={uploading()}
-          onClick={() => fileInput?.click()}
+          onClick={openFilePicker}
           aria-label="Attach a file"
         >
           <Icon name="plus" size={18} />
         </button>
         <input
-          ref={fileInput}
+          ref={setFileInput}
           type="file"
           class="hidden"
           data-testid="dm-file-input"

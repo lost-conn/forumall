@@ -33,7 +33,6 @@ import {
   onCleanup,
   onMount,
 } from "solid-js";
-import { uploadMedia } from "../../lib/chat-api.ts";
 import { listMembers } from "../../lib/groups-api.ts";
 import { renderMarkdown } from "../../lib/markdown.ts";
 import {
@@ -67,6 +66,7 @@ import { MessageStatus } from "../shared/MessageStatus.tsx";
 import { ReactionBar, ReactionPicker } from "../shared/Reactions.tsx";
 import { ReplyContextPill } from "../shared/ReplyContextPill.tsx";
 import { ReplyQuote } from "../shared/ReplyQuote.tsx";
+import { useComposerTyping, useComposerUpload } from "../shared/composer.ts";
 import { Avatar } from "../social/Avatar.tsx";
 import { openUserProfile } from "../social/user-profile-store.ts";
 import { ArticleEditorOverlay } from "./ArticleEditorOverlay.tsx";
@@ -1199,9 +1199,17 @@ const Composer: Component<{
       inputRef.selectionStart = inputRef.selectionEnd = caret;
     });
   };
-  const [pendingAttachments, setPendingAttachments] = createSignal<Attachment[]>([]);
-  const [uploading, setUploading] = createSignal(false);
-  const [sendError, setSendError] = createSignal<string | null>(null);
+  const {
+    pendingAttachments,
+    setPendingAttachments,
+    uploading,
+    error: sendError,
+    setError: setSendError,
+    onPickFile,
+    removeAttachment,
+    setFileInput,
+    openFilePicker,
+  } = useComposerUpload();
   // Article composer → a full-screen editor overlay. Promote chat→article opens
   // it prefilled with the source text + a lineage source channel (published as a
   // `promoted-from:` tag → rendered as a badge on the article).
@@ -1255,29 +1263,23 @@ const Composer: Component<{
     clearPromote();
   };
 
-  let lastTypingStart = 0;
-  let idleTimer: ReturnType<typeof setTimeout> | undefined;
-  let fileInput: HTMLInputElement | undefined;
-
-  const stopTyping = (): void => {
-    const ws = sessionWs();
-    if (ws) typingStop(ws, channelId());
-    lastTypingStart = 0;
-    if (idleTimer) clearTimeout(idleTimer);
-  };
+  const { notifyTyping, stopTyping } = useComposerTyping({
+    start: () => {
+      const ws = sessionWs();
+      if (ws) typingStart(ws, channelId());
+    },
+    stop: () => {
+      const ws = sessionWs();
+      if (ws) typingStop(ws, channelId());
+    },
+    throttleMs: TYPING_THROTTLE_MS,
+    idleMs: TYPING_IDLE_MS,
+  });
 
   const onType = (value: string): void => {
     setText(value);
     refreshMentionQuery(value);
-    const ws = sessionWs();
-    if (!ws) return;
-    const now = Date.now();
-    if (now - lastTypingStart > TYPING_THROTTLE_MS) {
-      typingStart(ws, channelId());
-      lastTypingStart = now;
-    }
-    if (idleTimer) clearTimeout(idleTimer);
-    idleTimer = setTimeout(stopTyping, TYPING_IDLE_MS);
+    notifyTyping();
   };
 
   const doSend = (): void => {
@@ -1311,26 +1313,6 @@ const Composer: Component<{
       setSendError(err instanceof Error ? err.message : "Could not send the message.");
     }
   };
-
-  const onPickFile = async (file: File): Promise<void> => {
-    const client = sessionClient();
-    if (!client) return;
-    setUploading(true);
-    setSendError(null);
-    try {
-      const att = await uploadMedia(client, file);
-      setPendingAttachments((prev) => [...prev, att]);
-    } catch (err) {
-      setSendError(err instanceof Error ? err.message : "Upload failed.");
-    } finally {
-      setUploading(false);
-      if (fileInput) fileInput.value = "";
-    }
-  };
-
-  onCleanup(() => {
-    if (idleTimer) clearTimeout(idleTimer);
-  });
 
   const kindButton = (k: ComposeKind, label: string, icon: IconName, show = true) => (
     <Show when={show}>
@@ -1375,7 +1357,7 @@ const Composer: Component<{
 
       <AttachmentChips
         attachments={pendingAttachments()}
-        onRemove={(i) => setPendingAttachments((prev) => prev.filter((_, j) => j !== i))}
+        onRemove={removeAttachment}
         testid="composer-attachments"
       />
 
@@ -1446,13 +1428,13 @@ const Composer: Component<{
                 class="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-sm text-faint transition-colors hover:text-ink disabled:opacity-50"
                 data-testid="attach-button"
                 disabled={uploading()}
-                onClick={() => fileInput?.click()}
+                onClick={openFilePicker}
                 aria-label="Attach a file"
               >
                 <Icon name="plus" size={18} />
               </button>
               <input
-                ref={fileInput}
+                ref={setFileInput}
                 type="file"
                 class="hidden"
                 data-testid="file-input"
