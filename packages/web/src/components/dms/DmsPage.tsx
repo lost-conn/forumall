@@ -60,10 +60,12 @@ import { displayNameFor, warmProfile, warmProfiles } from "../../stores/profiles
 import { markRead, seqFromCursor, unreadCountFor } from "../../stores/read-markers.ts";
 import { session, sessionClient, sessionWs } from "../../stores/session.ts";
 import { Icon, type IconName } from "../Icon.tsx";
+import { AttachmentChips } from "../shared/AttachmentChips.tsx";
 import { AttachmentView } from "../shared/AttachmentView.tsx";
 import { EditMessageForm } from "../shared/EditMessageForm.tsx";
 import { Modal } from "../shared/Modal.tsx";
 import { ReactionBar, ReactionPicker } from "../shared/Reactions.tsx";
+import { ReplyContextPill } from "../shared/ReplyContextPill.tsx";
 import { ReplyQuote } from "../shared/ReplyQuote.tsx";
 import { UnreadBadge } from "../shared/UnreadBadge.tsx";
 import { Avatar } from "../social/Avatar.tsx";
@@ -1151,47 +1153,19 @@ const DmComposer: Component<{
       {/* Reply context pill */}
       <Show when={props.replyTarget()}>
         {(t) => (
-          <div
-            class="mb-2 flex items-center gap-2 rounded-lg bg-surface-2 px-3 py-1.5 text-xs"
-            data-testid="dm-composer-reply-pill"
-          >
-            <span class="truncate text-muted">
-              Replying to <span class="text-ink">{displayNameFor(t().author)}</span>
-            </span>
-            <button
-              type="button"
-              class="ml-auto text-faint hover:text-danger"
-              aria-label="Cancel reply"
-              data-testid="dm-cancel-reply"
-              onClick={() => props.onClearReply()}
-            >
-              ✕
-            </button>
-          </div>
+          <ReplyContextPill
+            name={displayNameFor(t().author)}
+            onCancel={() => props.onClearReply()}
+            testidPrefix="dm-"
+          />
         )}
       </Show>
 
-      <Show when={pendingAttachments().length > 0}>
-        <div class="mb-2 flex flex-wrap gap-2" data-testid="dm-composer-attachments">
-          <For each={pendingAttachments()}>
-            {(att, idx) => (
-              <span class="inline-flex items-center gap-1 rounded-full bg-surface-2 px-2.5 py-1 text-xs text-muted">
-                📎 {att.filename ?? att.id}
-                <button
-                  type="button"
-                  class="text-faint hover:text-danger"
-                  aria-label="Remove attachment"
-                  onClick={() =>
-                    setPendingAttachments((prev) => prev.filter((_, i) => i !== idx()))
-                  }
-                >
-                  ✕
-                </button>
-              </span>
-            )}
-          </For>
-        </div>
-      </Show>
+      <AttachmentChips
+        attachments={pendingAttachments()}
+        onRemove={(i) => setPendingAttachments((prev) => prev.filter((_, j) => j !== i))}
+        testid="dm-composer-attachments"
+      />
 
       <div class="flex items-center gap-2.5 rounded-md border-[1.5px] border-border-strong bg-surface px-3 py-2 focus-within:(outline outline-2 outline-accent outline-offset-1)">
         <button

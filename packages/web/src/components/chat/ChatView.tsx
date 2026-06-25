@@ -57,11 +57,13 @@ import { lastReadSeqFor, markRead, seqFromCursor } from "../../stores/read-marke
 import { session, sessionClient, sessionWs } from "../../stores/session.ts";
 import { Icon, type IconName } from "../Icon.tsx";
 import { FollowToggle } from "../feed/FollowToggle.tsx";
+import { AttachmentChips } from "../shared/AttachmentChips.tsx";
 // `AttachmentView` is re-exported below so existing importers (the home feed)
 // keep importing it from here unchanged after the extraction to `../shared`.
 import { AttachmentView } from "../shared/AttachmentView.tsx";
 import { EditMessageForm } from "../shared/EditMessageForm.tsx";
 import { ReactionBar, ReactionPicker } from "../shared/Reactions.tsx";
+import { ReplyContextPill } from "../shared/ReplyContextPill.tsx";
 import { ReplyQuote } from "../shared/ReplyQuote.tsx";
 import { Avatar } from "../social/Avatar.tsx";
 import { openUserProfile } from "../social/user-profile-store.ts";
@@ -1362,24 +1364,10 @@ const Composer: Component<{
       {/* Reply context pill */}
       <Show when={props.replyTarget()}>
         {(t) => (
-          <div
-            class="mb-2 flex items-center gap-2 rounded-lg bg-surface-2 px-3 py-1.5 text-xs"
-            data-testid="composer-reply-pill"
-          >
-            <span class="truncate text-muted">
-              Replying to{" "}
-              <span class="text-ink">{displayNameForInGroup(t().author, groupId())}</span>
-            </span>
-            <button
-              type="button"
-              class="ml-auto text-faint hover:text-danger"
-              aria-label="Cancel reply"
-              data-testid="cancel-reply"
-              onClick={() => props.onClearReply()}
-            >
-              ✕
-            </button>
-          </div>
+          <ReplyContextPill
+            name={displayNameForInGroup(t().author, groupId())}
+            onCancel={() => props.onClearReply()}
+          />
         )}
       </Show>
 
@@ -1390,27 +1378,11 @@ const Composer: Component<{
         {kindButton("article", "Article", "article", props.canPostArticle)}
       </div>
 
-      <Show when={pendingAttachments().length > 0}>
-        <div class="mb-2 flex flex-wrap gap-2" data-testid="composer-attachments">
-          <For each={pendingAttachments()}>
-            {(att, idx) => (
-              <span class="inline-flex items-center gap-1 rounded-full bg-surface-2 px-2.5 py-1 text-xs text-muted">
-                📎 {att.filename ?? att.id}
-                <button
-                  type="button"
-                  class="text-faint hover:text-danger"
-                  aria-label="Remove attachment"
-                  onClick={() =>
-                    setPendingAttachments((prev) => prev.filter((_, i) => i !== idx()))
-                  }
-                >
-                  ✕
-                </button>
-              </span>
-            )}
-          </For>
-        </div>
-      </Show>
+      <AttachmentChips
+        attachments={pendingAttachments()}
+        onRemove={(i) => setPendingAttachments((prev) => prev.filter((_, j) => j !== i))}
+        testid="composer-attachments"
+      />
 
       <Switch>
         <Match when={kind() === "article"}>
