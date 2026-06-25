@@ -12,6 +12,7 @@ import { useQuery } from "@tanstack/solid-query";
 import {
   type Component,
   For,
+  type JSX,
   Match,
   Show,
   Switch,
@@ -35,7 +36,7 @@ import { MembersPanel } from "./MembersPanel.tsx";
 import { NotificationModeMenu } from "./NotificationModeMenu.tsx";
 import { RequestsPanel } from "./RequestsPanel.tsx";
 import { channelsQuery, groupQuery, membersQuery, useInvalidateGroup } from "./queries.ts";
-import { ErrorLine, errorMessage } from "./ui.tsx";
+import { ErrorLine, Modal, errorMessage } from "./ui.tsx";
 
 /** Which management overlay is open (reached from the space-header dropdown). */
 type MgmtPanel = "members" | "requests" | "invites" | null;
@@ -533,32 +534,12 @@ const SpaceMenuItem: Component<{
 );
 
 /** A centered modal hosting a management panel (members / requests / invites). */
-const MgmtModal: Component<{ title: string; onClose: () => void; children: unknown }> = (props) => (
-  <div
-    class="fixed inset-0 z-50 grid place-items-center bg-black/50 p-4"
-    role="presentation"
-    onClick={(e) => {
-      if (e.target === e.currentTarget) props.onClose();
-    }}
-    onKeyDown={(e) => {
-      if (e.key === "Escape") props.onClose();
-    }}
-  >
-    <div class="card max-h-[80vh] w-full max-w-2xl overflow-auto" data-testid="mgmt-modal">
-      <div class="mb-3 flex items-center justify-between">
-        <h2 class="font-display text-sm font-bold tracking-tight">{props.title}</h2>
-        <button
-          type="button"
-          class="text-faint hover:text-ink"
-          aria-label="Close"
-          onClick={props.onClose}
-        >
-          <Icon name="x" size={16} />
-        </button>
-      </div>
-      {props.children as never}
-    </div>
-  </div>
+const MgmtModal: Component<{ title: string; onClose: () => void; children: JSX.Element }> = (
+  props,
+) => (
+  <Modal title={props.title} onClose={props.onClose} size="lg" scrollable testid="mgmt-modal">
+    {props.children}
+  </Modal>
 );
 
 const JoinCard: Component<{

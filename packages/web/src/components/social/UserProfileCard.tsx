@@ -36,6 +36,7 @@ import { upsertConversation } from "../../stores/dms.ts";
 import { refreshPresenceSnapshots, subscribePresence } from "../../stores/presence-controller.ts";
 import { setPresenceFor } from "../../stores/presence.ts";
 import { session, sessionClient, sessionWs } from "../../stores/session.ts";
+import { Modal } from "../shared/Modal.tsx";
 import { PresenceDot } from "./PresenceDot.tsx";
 import { closeUserProfile, profileActor } from "./user-profile-store.ts";
 
@@ -160,132 +161,114 @@ export const UserProfileCard: Component = () => {
 
   return (
     <Show when={actor()}>
-      <div
-        class="fixed inset-0 z-50 grid place-items-center bg-black/50 p-4"
-        role="presentation"
-        data-testid="user-profile-modal"
-        onClick={(e) => {
-          if (e.target === e.currentTarget) closeUserProfile();
-        }}
-        onKeyDown={(e) => {
-          if (e.key === "Escape") closeUserProfile();
-        }}
-      >
-        <div class="card w-full max-w-sm">
+      <Modal onClose={closeUserProfile} size="sm" testid="user-profile-modal">
+        <Show when={!profile.loading} fallback={<p class="text-sm text-muted">Loading profile…</p>}>
           <Show
-            when={!profile.loading}
-            fallback={<p class="text-sm text-muted">Loading profile…</p>}
-          >
-            <Show
-              when={!profile.error}
-              fallback={
-                <div>
-                  <p class="text-sm text-danger" data-testid="profile-error">
-                    Could not load this profile.
-                  </p>
-                  <button
-                    type="button"
-                    class="btn-ghost mt-3 px-3 py-1 text-xs"
-                    onClick={closeUserProfile}
-                  >
-                    Close
-                  </button>
-                </div>
-              }
-            >
-              <div class="flex items-start gap-3">
-                <Show
-                  when={profile()?.avatar}
-                  fallback={
-                    <div class="grid h-12 w-12 shrink-0 place-items-center rounded-full bg-surface-2 text-lg text-muted">
-                      {fullActor().slice(0, 1).toUpperCase()}
-                    </div>
-                  }
-                >
-                  <img
-                    src={profile()?.avatar}
-                    alt=""
-                    class="h-12 w-12 shrink-0 rounded-full object-cover"
-                    data-testid="profile-avatar"
-                  />
-                </Show>
-                <div class="min-w-0 flex-1">
-                  <div class="flex items-center gap-2">
-                    <h2
-                      class="truncate text-base font-semibold text-ink"
-                      data-testid="profile-name"
-                    >
-                      {profile()?.displayName ?? localPart(fullActor())}
-                    </h2>
-                    <PresenceDot actor={fullActor()} size="md" />
-                  </div>
-                  <p class="truncate text-xs text-faint" data-testid="profile-handle">
-                    {fullActor()}
-                  </p>
-                </div>
-              </div>
-
-              <Show when={profile()?.bio}>
-                <p class="mt-3 text-sm text-muted" data-testid="profile-bio">
-                  {profile()?.bio as string}
+            when={!profile.error}
+            fallback={
+              <div>
+                <p class="text-sm text-danger" data-testid="profile-error">
+                  Could not load this profile.
                 </p>
-              </Show>
-
-              <div class="mt-4 flex items-center gap-2">
-                <Show
-                  when={!isSelf()}
-                  fallback={<span class="text-xs text-faint">This is you.</span>}
-                >
-                  <button
-                    type="button"
-                    class="btn-accent px-3 py-1.5 text-xs"
-                    data-testid="profile-message"
-                    onClick={message}
-                  >
-                    Message
-                  </button>
-                  <Switch>
-                    <Match when={contactState() === "accepted"}>
-                      <span class="badge text-xs" data-testid="profile-contact-state">
-                        Contact
-                      </span>
-                    </Match>
-                    <Match when={contactState() === "pending" || requested()}>
-                      <span class="badge text-xs" data-testid="profile-contact-state">
-                        Request pending
-                      </span>
-                    </Match>
-                    <Match when={true}>
-                      <button
-                        type="button"
-                        class="btn-ghost px-3 py-1.5 text-xs"
-                        data-testid="profile-add-contact"
-                        disabled={busy()}
-                        onClick={() => void addContact()}
-                      >
-                        {busy() ? "…" : "Add contact"}
-                      </button>
-                    </Match>
-                  </Switch>
-                </Show>
                 <button
                   type="button"
-                  class="btn-ghost ml-auto px-3 py-1.5 text-xs"
-                  data-testid="profile-close"
+                  class="btn-ghost mt-3 px-3 py-1 text-xs"
                   onClick={closeUserProfile}
                 >
                   Close
                 </button>
               </div>
-              <Show when={error()}>
-                <p class="mt-2 text-xs text-danger" data-testid="profile-action-error">
-                  {error()}
-                </p>
+            }
+          >
+            <div class="flex items-start gap-3">
+              <Show
+                when={profile()?.avatar}
+                fallback={
+                  <div class="grid h-12 w-12 shrink-0 place-items-center rounded-full bg-surface-2 text-lg text-muted">
+                    {fullActor().slice(0, 1).toUpperCase()}
+                  </div>
+                }
+              >
+                <img
+                  src={profile()?.avatar}
+                  alt=""
+                  class="h-12 w-12 shrink-0 rounded-full object-cover"
+                  data-testid="profile-avatar"
+                />
               </Show>
+              <div class="min-w-0 flex-1">
+                <div class="flex items-center gap-2">
+                  <h2 class="truncate text-base font-semibold text-ink" data-testid="profile-name">
+                    {profile()?.displayName ?? localPart(fullActor())}
+                  </h2>
+                  <PresenceDot actor={fullActor()} size="md" />
+                </div>
+                <p class="truncate text-xs text-faint" data-testid="profile-handle">
+                  {fullActor()}
+                </p>
+              </div>
+            </div>
+
+            <Show when={profile()?.bio}>
+              <p class="mt-3 text-sm text-muted" data-testid="profile-bio">
+                {profile()?.bio as string}
+              </p>
+            </Show>
+
+            <div class="mt-4 flex items-center gap-2">
+              <Show
+                when={!isSelf()}
+                fallback={<span class="text-xs text-faint">This is you.</span>}
+              >
+                <button
+                  type="button"
+                  class="btn-accent px-3 py-1.5 text-xs"
+                  data-testid="profile-message"
+                  onClick={message}
+                >
+                  Message
+                </button>
+                <Switch>
+                  <Match when={contactState() === "accepted"}>
+                    <span class="badge text-xs" data-testid="profile-contact-state">
+                      Contact
+                    </span>
+                  </Match>
+                  <Match when={contactState() === "pending" || requested()}>
+                    <span class="badge text-xs" data-testid="profile-contact-state">
+                      Request pending
+                    </span>
+                  </Match>
+                  <Match when={true}>
+                    <button
+                      type="button"
+                      class="btn-ghost px-3 py-1.5 text-xs"
+                      data-testid="profile-add-contact"
+                      disabled={busy()}
+                      onClick={() => void addContact()}
+                    >
+                      {busy() ? "…" : "Add contact"}
+                    </button>
+                  </Match>
+                </Switch>
+              </Show>
+              <button
+                type="button"
+                class="btn-ghost ml-auto px-3 py-1.5 text-xs"
+                data-testid="profile-close"
+                onClick={closeUserProfile}
+              >
+                Close
+              </button>
+            </div>
+            <Show when={error()}>
+              <p class="mt-2 text-xs text-danger" data-testid="profile-action-error">
+                {error()}
+              </p>
             </Show>
           </Show>
-        </div>
-      </div>
+        </Show>
+      </Modal>
     </Show>
   );
 };

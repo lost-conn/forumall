@@ -17,39 +17,10 @@ export function errorMessage(err: unknown, fallback: string): string {
   return fallback;
 }
 
-/** A centered modal dialog with a backdrop. */
-export const Modal: Component<{
-  title: string;
-  onClose: () => void;
-  children: JSX.Element;
-  testid?: string;
-}> = (props) => (
-  <div
-    class="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4"
-    role="presentation"
-    onClick={(e) => {
-      if (e.currentTarget === e.target) props.onClose();
-    }}
-    onKeyDown={(e) => {
-      if (e.key === "Escape") props.onClose();
-    }}
-  >
-    <div class="card w-full max-w-md" aria-label={props.title} data-testid={props.testid}>
-      <div class="mb-4 flex items-center justify-between">
-        <h2 class="text-sm font-semibold tracking-tight">{props.title}</h2>
-        <button
-          type="button"
-          class="text-faint hover:text-ink"
-          onClick={props.onClose}
-          aria-label="Close"
-        >
-          ✕
-        </button>
-      </div>
-      {props.children}
-    </div>
-  </div>
-);
+// `Modal` now lives in components/shared so non-group screens (DMs, profile)
+// can share the same dialog shell; re-exported here so the group screens keep
+// importing it from `./ui` unchanged.
+export { Modal } from "../shared/Modal.tsx";
 
 /** A labelled field wrapper. */
 export const Field: Component<{ label: string; children: JSX.Element; hint?: string }> = (

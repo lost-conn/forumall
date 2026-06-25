@@ -62,6 +62,7 @@ import { session, sessionClient, sessionWs } from "../../stores/session.ts";
 import { Icon, type IconName } from "../Icon.tsx";
 import { AttachmentView } from "../shared/AttachmentView.tsx";
 import { EditMessageForm } from "../shared/EditMessageForm.tsx";
+import { Modal } from "../shared/Modal.tsx";
 import { ReactionBar, ReactionPicker } from "../shared/Reactions.tsx";
 import { ReplyQuote } from "../shared/ReplyQuote.tsx";
 import { UnreadBadge } from "../shared/UnreadBadge.tsx";
@@ -1274,62 +1275,50 @@ const NewDmModal: Component<{ onClose: () => void; onStart: (counterparty: strin
   };
 
   return (
-    <div
-      class="fixed inset-0 z-50 grid place-items-center bg-black/50 p-4"
-      data-testid="new-dm-modal"
-      role="presentation"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) props.onClose();
-      }}
-      onKeyDown={(e) => {
-        if (e.key === "Escape") props.onClose();
-      }}
-    >
-      <div class="card w-full max-w-sm">
-        <h2 class="mb-1 text-sm font-semibold tracking-tight">New direct message</h2>
-        <p class="mb-4 text-xs text-muted">Enter a recipient's actor to start a conversation.</p>
-        <label class="mb-1 block text-xs text-muted" for="new-dm-recipient">
-          Recipient
-        </label>
-        <input
-          ref={inputEl}
-          id="new-dm-recipient"
-          class="input"
-          data-testid="new-dm-recipient"
-          placeholder="handle@domain"
-          value={recipient()}
-          onInput={(e) => {
-            setRecipient(e.currentTarget.value);
-            setError(null);
-          }}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              submit();
-            }
-            if (e.key === "Escape") props.onClose();
-          }}
-        />
-        <Show when={error()}>
-          <p class="mt-1 text-xs text-danger" data-testid="new-dm-error">
-            {error()}
-          </p>
-        </Show>
-        <div class="mt-4 flex justify-end gap-2">
-          <button type="button" class="btn-ghost px-3 py-1.5 text-xs" onClick={props.onClose}>
-            Cancel
-          </button>
-          <button
-            type="button"
-            class="btn-accent px-3 py-1.5 text-xs"
-            data-testid="new-dm-start"
-            onClick={submit}
-          >
-            Start chat
-          </button>
-        </div>
+    <Modal onClose={props.onClose} size="sm" testid="new-dm-modal">
+      <h2 class="mb-1 text-sm font-semibold tracking-tight">New direct message</h2>
+      <p class="mb-4 text-xs text-muted">Enter a recipient's actor to start a conversation.</p>
+      <label class="mb-1 block text-xs text-muted" for="new-dm-recipient">
+        Recipient
+      </label>
+      <input
+        ref={inputEl}
+        id="new-dm-recipient"
+        class="input"
+        data-testid="new-dm-recipient"
+        placeholder="handle@domain"
+        value={recipient()}
+        onInput={(e) => {
+          setRecipient(e.currentTarget.value);
+          setError(null);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            submit();
+          }
+          if (e.key === "Escape") props.onClose();
+        }}
+      />
+      <Show when={error()}>
+        <p class="mt-1 text-xs text-danger" data-testid="new-dm-error">
+          {error()}
+        </p>
+      </Show>
+      <div class="mt-4 flex justify-end gap-2">
+        <button type="button" class="btn-ghost px-3 py-1.5 text-xs" onClick={props.onClose}>
+          Cancel
+        </button>
+        <button
+          type="button"
+          class="btn-accent px-3 py-1.5 text-xs"
+          data-testid="new-dm-start"
+          onClick={submit}
+        >
+          Start chat
+        </button>
       </div>
-    </div>
+    </Modal>
   );
 };
 
