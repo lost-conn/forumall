@@ -34,6 +34,7 @@ import {
 } from "../../stores/notify-prefs.ts";
 import { sessionClient } from "../../stores/session.ts";
 import { channelsQuery, myGroupsQuery } from "../groups/queries.ts";
+import { SettingsSection } from "../shared/SettingsSection.tsx";
 import { Toggle } from "../shared/Toggle.tsx";
 
 export const NotificationSettings: Component = () => {
@@ -103,13 +104,11 @@ export const NotificationSettings: Component = () => {
 
   return (
     <>
-      <section class="card flex flex-col gap-1" data-testid="notification-settings">
-        <div class="mb-1">
-          <h2 class="font-display text-sm font-bold tracking-tight">Notifications</h2>
-          <p class="mt-0.5 text-xs text-muted">
-            Sounds and unread badges. Stored on this device only.
-          </p>
-        </div>
+      <SettingsSection
+        title="Notifications"
+        description="Sounds and unread badges. Stored on this device only."
+        testid="notification-settings"
+      >
         <Toggle
           testid="notify-sound-toggle"
           label="Notification sounds"
@@ -140,7 +139,7 @@ export const NotificationSettings: Component = () => {
           disabled={pushDisabled()}
           onToggle={(on) => void togglePush(on)}
         />
-      </section>
+      </SettingsSection>
       <ChannelGroupNotificationSettings />
     </>
   );
@@ -249,25 +248,25 @@ const GroupNotifRow: Component<{ groupId: string; name: string }> = (props) => {
 const ChannelGroupNotificationSettings: Component = () => {
   const groups = useQuery(myGroupsQuery);
   return (
-    <section class="card flex flex-col gap-1" data-testid="notification-scope-settings">
-      <div class="mb-1">
-        <h2 class="font-display text-sm font-bold tracking-tight">Channels &amp; groups</h2>
-        <p class="mt-0.5 text-xs text-muted">
-          Choose what each space notifies you about. Synced across your devices.
-        </p>
+    <SettingsSection
+      title="Channels & groups"
+      description="Choose what each space notifies you about. Synced across your devices."
+      testid="notification-scope-settings"
+    >
+      <div class="flex flex-col gap-1">
+        <Show
+          when={(groups.data ?? []).length > 0}
+          fallback={
+            <p class="py-3 text-xs text-faint" data-testid="notif-scope-empty">
+              Join a group to set per-channel notifications.
+            </p>
+          }
+        >
+          <For each={groups.data ?? []}>
+            {(grp) => <GroupNotifRow groupId={grp.id} name={grp.name} />}
+          </For>
+        </Show>
       </div>
-      <Show
-        when={(groups.data ?? []).length > 0}
-        fallback={
-          <p class="py-3 text-xs text-faint" data-testid="notif-scope-empty">
-            Join a group to set per-channel notifications.
-          </p>
-        }
-      >
-        <For each={groups.data ?? []}>
-          {(grp) => <GroupNotifRow groupId={grp.id} name={grp.name} />}
-        </For>
-      </Show>
-    </section>
+    </SettingsSection>
   );
 };

@@ -17,6 +17,7 @@ import { resolveAttachmentUrl, uploadMedia } from "../../lib/chat-api.ts";
 import { OfscpHttpError } from "../../lib/ofscp-client.ts";
 import { fetchPrivacy, fetchProfile, updatePrivacy, updateProfile } from "../../lib/social-api.ts";
 import { session, sessionClient } from "../../stores/session.ts";
+import { SettingsSection } from "../shared/SettingsSection.tsx";
 
 function clientOrThrow() {
   const c = sessionClient();
@@ -137,8 +138,7 @@ export const ProfileSettings: Component = () => {
   };
 
   return (
-    <section class="card" data-testid="profile-settings">
-      <h2 class="mb-3 text-sm font-semibold tracking-tight">Profile</h2>
+    <SettingsSection title="Profile" testid="profile-settings">
       <Show when={profile.error}>
         <p class="mb-2 text-sm text-danger" data-testid="profile-load-error">
           Could not load your profile.
@@ -233,7 +233,7 @@ export const ProfileSettings: Component = () => {
           </Show>
         </div>
       </div>
-    </section>
+    </SettingsSection>
   );
 };
 
@@ -293,8 +293,7 @@ export const PrivacySettingsCard: Component = () => {
   };
 
   return (
-    <section class="card" data-testid="privacy-settings">
-      <h2 class="mb-3 text-sm font-semibold tracking-tight">Privacy</h2>
+    <SettingsSection title="Privacy" testid="privacy-settings">
       <Show when={settings.error}>
         <p class="mb-2 text-sm text-danger" data-testid="privacy-load-error">
           Could not load your privacy settings.
@@ -361,7 +360,7 @@ export const PrivacySettingsCard: Component = () => {
           </div>
         </div>
       </Show>
-    </section>
+    </SettingsSection>
   );
 };
 

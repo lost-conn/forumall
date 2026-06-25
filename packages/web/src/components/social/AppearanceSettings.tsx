@@ -17,6 +17,7 @@ import {
   setDensity,
   setTheme,
 } from "../../stores/appearance.ts";
+import { SettingsSection } from "../shared/SettingsSection.tsx";
 
 const THEME_LABEL: Record<Theme, string> = {
   system: "System",
@@ -75,37 +76,37 @@ function Segmented<T extends string>(props: {
 
 export const AppearanceSettings: Component = () => {
   return (
-    <section class="card flex flex-col gap-4" data-testid="appearance-settings">
-      <div>
-        <h2 class="font-display text-sm font-bold tracking-tight">Appearance</h2>
-        <p class="mt-0.5 text-xs text-muted">
-          Theme, density, and accent. Stored on this device only.
-        </p>
+    <SettingsSection
+      title="Appearance"
+      description="Theme, density, and accent. Stored on this device only."
+      testid="appearance-settings"
+    >
+      <div class="flex flex-col gap-4">
+        <Segmented
+          label="Theme"
+          testid="appearance-theme"
+          options={THEMES}
+          value={appearance.theme}
+          label_of={(v) => THEME_LABEL[v]}
+          onSelect={setTheme}
+        />
+        <Segmented
+          label="Density"
+          testid="appearance-density"
+          options={DENSITIES}
+          value={appearance.density}
+          label_of={(v) => DENSITY_LABEL[v]}
+          onSelect={setDensity}
+        />
+        <Segmented
+          label="Accent"
+          testid="appearance-accent"
+          options={ACCENTS}
+          value={appearance.accent}
+          label_of={(v) => ACCENT_LABEL[v]}
+          onSelect={setAccent}
+        />
       </div>
-      <Segmented
-        label="Theme"
-        testid="appearance-theme"
-        options={THEMES}
-        value={appearance.theme}
-        label_of={(v) => THEME_LABEL[v]}
-        onSelect={setTheme}
-      />
-      <Segmented
-        label="Density"
-        testid="appearance-density"
-        options={DENSITIES}
-        value={appearance.density}
-        label_of={(v) => DENSITY_LABEL[v]}
-        onSelect={setDensity}
-      />
-      <Segmented
-        label="Accent"
-        testid="appearance-accent"
-        options={ACCENTS}
-        value={appearance.accent}
-        label_of={(v) => ACCENT_LABEL[v]}
-        onSelect={setAccent}
-      />
-    </section>
+    </SettingsSection>
   );
 };
