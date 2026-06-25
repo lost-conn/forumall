@@ -36,6 +36,7 @@ import {
   requestContact,
 } from "../../lib/social-api.ts";
 import { refreshPresenceSnapshots, subscribePresence } from "../../stores/presence-controller.ts";
+import { initialsFor } from "../../stores/profiles.ts";
 import { session, sessionClient, sessionWs } from "../../stores/session.ts";
 import { EmptyState } from "../shared/EmptyState.tsx";
 import { PresenceDot } from "./PresenceDot.tsx";
@@ -320,7 +321,7 @@ const ContactRow: Component<{ contact: Contact; children: import("solid-js").JSX
     data-direction={props.contact.direction ?? ""}
   >
     <span class="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-surface-2 text-xs font-semibold text-muted">
-      {props.contact.user.slice(0, 2).toUpperCase()}
+      {initialsFor(props.contact.user, 2)}
     </span>
     <div class="min-w-0 flex-1">
       <div class="flex items-center gap-2">

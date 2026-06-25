@@ -51,7 +51,12 @@ import {
   reactionsFor,
   typingFor,
 } from "../../stores/chat.ts";
-import { displayNameForInGroup, setGroupDisplayName, warmProfiles } from "../../stores/profiles.ts";
+import {
+  displayNameForInGroup,
+  initialsFor,
+  setGroupDisplayName,
+  warmProfiles,
+} from "../../stores/profiles.ts";
 import { lastReadSeqFor, markRead, seqFromCursor } from "../../stores/read-markers.ts";
 import { session, sessionClient, sessionWs } from "../../stores/session.ts";
 import { Icon, type IconName } from "../Icon.tsx";
@@ -860,7 +865,7 @@ const MessageRow: Component<{
       >
         <Avatar
           actor={m().author}
-          initials={displayNameForInGroup(m().author, props.groupId).slice(0, 1).toUpperCase()}
+          initials={initialsFor(displayNameForInGroup(m().author, props.groupId))}
         />
       </button>
       <div class="flex min-w-0 flex-1 flex-col gap-1">

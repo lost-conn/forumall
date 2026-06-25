@@ -23,7 +23,12 @@ import {
   setMemberRole,
 } from "../../lib/groups-api.ts";
 import { subscribePresence } from "../../stores/presence-controller.ts";
-import { displayNameForInGroup, setGroupDisplayName, warmProfiles } from "../../stores/profiles.ts";
+import {
+  displayNameForInGroup,
+  initialsFor,
+  setGroupDisplayName,
+  warmProfiles,
+} from "../../stores/profiles.ts";
 import { session, sessionClient, sessionWs } from "../../stores/session.ts";
 import { Avatar } from "../social/Avatar.tsx";
 import { PresenceDot } from "../social/PresenceDot.tsx";
@@ -151,9 +156,7 @@ export const MembersPanel: Component<{ group: Group; myRole: () => string | unde
                     <span class="grid h-8 w-8 shrink-0 place-items-center overflow-hidden rounded-full bg-surface-2 text-xs font-semibold text-muted">
                       <Avatar
                         actor={m.user}
-                        initials={displayNameForInGroup(m.user, groupId())
-                          .slice(0, 2)
-                          .toUpperCase()}
+                        initials={initialsFor(displayNameForInGroup(m.user, groupId()), 2)}
                       />
                     </span>
                     <div class="min-w-0 flex-1">

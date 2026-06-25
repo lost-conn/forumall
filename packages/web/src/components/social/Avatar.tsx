@@ -19,14 +19,19 @@
  */
 import { type Component, Show, createEffect, createSignal } from "solid-js";
 import { resolveAttachmentUrl } from "../../lib/chat-api.ts";
-import { avatarFor } from "../../stores/profiles.ts";
+import { avatarFor, displayNameFor, initialsFor } from "../../stores/profiles.ts";
 
 export const Avatar: Component<{
   /** Full actor (`handle@domain`) whose cached avatar we render. */
   actor: string;
-  /** Pre-computed initials/letter to show when there's no usable photo. */
-  initials: string;
+  /**
+   * Initials/letter shown when there's no usable photo. Optional — defaults to
+   * the first letter of the actor's global display name. Pass explicitly only
+   * for a group-scoped name or a 2-letter fallback.
+   */
+  initials?: string;
 }> = (props) => {
+  const initials = (): string => props.initials ?? initialsFor(displayNameFor(props.actor));
   // Reset the load-failure flag whenever the resolved URL changes, so a later
   // valid avatar (e.g. the user fixes a broken URL) gets a fresh chance to load.
   const [failed, setFailed] = createSignal(false);
@@ -40,7 +45,7 @@ export const Avatar: Component<{
   });
 
   return (
-    <Show when={src() && !failed()} fallback={props.initials}>
+    <Show when={src() && !failed()} fallback={initials()}>
       <img
         src={src()}
         alt=""

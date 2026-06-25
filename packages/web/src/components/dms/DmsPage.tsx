@@ -135,10 +135,7 @@ const NotificationRow: Component<{ n: Notification }> = (props) => {
       data-notification-type={props.n.type}
     >
       <span class="fa-ava fa-ava--sm" classList={{ "fa-ava__fed": isRemoteActor(props.n.author) }}>
-        <Avatar
-          actor={props.n.author}
-          initials={displayNameFor(props.n.author).slice(0, 1).toUpperCase()}
-        />
+        <Avatar actor={props.n.author} />
       </span>
       <span class="min-w-0 flex-1">
         <span class="flex items-center gap-1.5">
@@ -424,10 +421,7 @@ const ConversationRow: Component<{ conv: DmConversationSummary; active: boolean 
     data-counterparty={props.conv.counterparty}
   >
     <span class="fa-ava" classList={{ "fa-ava__fed": isRemoteActor(props.conv.counterparty) }}>
-      <Avatar
-        actor={props.conv.counterparty}
-        initials={displayNameFor(props.conv.counterparty).slice(0, 1).toUpperCase()}
-      />
+      <Avatar actor={props.conv.counterparty} />
     </span>
     <span class="min-w-0 flex-1">
       <span class="flex items-center gap-1.5" data-testid="dm-conv-name">
@@ -611,10 +605,7 @@ const ThreadView: Component<{
             class="fa-ava fa-ava--sm"
             classList={{ "fa-ava__fed": isRemoteActor(counterparty()) }}
           >
-            <Avatar
-              actor={counterparty()}
-              initials={displayNameFor(counterparty()).slice(0, 1).toUpperCase()}
-            />
+            <Avatar actor={counterparty()} />
           </span>
           <h2
             class="font-display text-base font-semibold tracking-tight text-ink"
@@ -883,10 +874,7 @@ const DmMessageRow: Component<{
       <div class="flex items-start gap-[9px]" classList={{ "flex-row-reverse": mine() }}>
         <Show when={!mine()}>
           <span class="fa-ava fa-ava--sm" classList={{ "fa-ava__fed": isRemoteActor(m().author) }}>
-            <Avatar
-              actor={m().author}
-              initials={displayNameFor(m().author).slice(0, 1).toUpperCase()}
-            />
+            <Avatar actor={m().author} />
           </span>
         </Show>
         <div class="flex max-w-[70%] flex-col gap-1" classList={{ "items-end": mine() }}>

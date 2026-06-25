@@ -27,6 +27,16 @@ export function localPart(actor: string): string {
   return at > 0 ? actor.slice(0, at) : actor;
 }
 
+/**
+ * Avatar-fallback initials from a display name: the first `length` characters,
+ * uppercased (1 by default, 2 for the denser member/contact rows). Empty/missing
+ * names yield "?". Centralizes the scattered `name.slice(0, n).toUpperCase()`.
+ */
+export function initialsFor(name: string | undefined, length = 1): string {
+  const trimmed = (name ?? "").trim();
+  return trimmed ? trimmed.slice(0, length).toUpperCase() : "?";
+}
+
 interface CachedProfile {
   /** The resolved global display name, or undefined when the user has none. */
   displayName?: string;
