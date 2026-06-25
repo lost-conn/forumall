@@ -484,3 +484,28 @@ test("typing: A typing in a DM → B sees the indicator; it clears on blur", asy
 
   await b.context().close();
 });
+
+test("inline formatting: A sends a formatted DM → bold/italic/code render for both", async ({
+  page,
+  browser,
+  appServer,
+}) => {
+  const { a, b } = await twoUsersInDm(page, browser, appServer.baseUrl);
+
+  const tag = `fmt-${Date.now().toString(36)}`;
+  await sendDm(a, `${tag} **bold** _italic_ \`code\``);
+
+  // Author's own copy renders the marks as real elements (no raw `**`/`_`).
+  const aBody = dmRow(a, tag).first().getByTestId("dm-message-text");
+  await expect(aBody.locator("strong")).toHaveText("bold");
+  await expect(aBody.locator("em")).toHaveText("italic");
+  await expect(aBody.locator("code")).toHaveText("code");
+
+  // The recipient sees the same formatting live.
+  const bBody = dmRow(b, tag).first().getByTestId("dm-message-text");
+  await expect(bBody.locator("strong")).toHaveText("bold");
+  await expect(bBody.locator("em")).toHaveText("italic");
+  await expect(bBody.locator("code")).toHaveText("code");
+
+  await b.context().close();
+});

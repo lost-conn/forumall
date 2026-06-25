@@ -28,7 +28,7 @@ export function escapeHtml(text: string): string {
 }
 
 /** Allow only safe link schemes; everything else is rejected (→ plain text). */
-function safeHref(rawHref: string): string | null {
+export function safeHref(rawHref: string): string | null {
   const href = rawHref.trim();
   // Relative links and fragments are safe.
   if (/^(#|\/|\.\/|\.\.\/)/.test(href)) return href;
