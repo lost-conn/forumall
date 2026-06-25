@@ -8,6 +8,7 @@
 import { type Component, For, Show, createSignal } from "solid-js";
 import { renderMarkdown } from "../../lib/markdown.ts";
 import { Icon, type IconName } from "../Icon.tsx";
+import { Toggle } from "../shared/Toggle.tsx";
 
 interface ToolItem {
   label?: string;
@@ -243,31 +244,11 @@ export const ArticleEditorOverlay: Component<{
             }}
           />
 
-          <SettingRow label="Allow reactions" on={allowReactions()} set={setAllowReactions} />
-          <SettingRow label="Allow replies" on={allowReplies()} set={setAllowReplies} />
-          <SettingRow label="Pin to channel" on={pinToChannel()} set={setPinToChannel} />
+          <Toggle label="Allow reactions" checked={allowReactions()} onToggle={setAllowReactions} />
+          <Toggle label="Allow replies" checked={allowReplies()} onToggle={setAllowReplies} />
+          <Toggle label="Pin to channel" checked={pinToChannel()} onToggle={setPinToChannel} />
         </div>
       </div>
     </div>
   );
 };
-
-/** A dashed-divider toggle row mirroring the prototype's `.pr-setrow` + `.fa-switch`. */
-const SettingRow: Component<{ label: string; on: boolean; set: (v: boolean) => void }> = (
-  props,
-) => (
-  <div class="flex items-center gap-3 border-b border-dashed border-border py-3">
-    <span class="flex-1 font-body text-[13.5px] text-ink">{props.label}</span>
-    <button
-      type="button"
-      class="fa-switch"
-      classList={{ "fa-switch--on": props.on }}
-      role="switch"
-      aria-checked={props.on}
-      aria-label={props.label}
-      onClick={() => props.set(!props.on)}
-    >
-      <span class="fa-switch__knob" />
-    </button>
-  </div>
-);

@@ -34,41 +34,7 @@ import {
 } from "../../stores/notify-prefs.ts";
 import { sessionClient } from "../../stores/session.ts";
 import { channelsQuery, myGroupsQuery } from "../groups/queries.ts";
-
-/** A labelled on/off switch row matching the design's `fa-switch`. */
-function ToggleRow(props: {
-  testid: string;
-  label: string;
-  detail: string;
-  checked: boolean;
-  disabled?: boolean;
-  onToggle: (on: boolean) => void;
-}): JSX.Element {
-  return (
-    <div class="flex items-center gap-3 border-b border-dashed border-border py-3 last:border-b-0">
-      <div class="flex-1">
-        <div class="font-body text-[13.5px] text-ink">{props.label}</div>
-        <div class="fa-meta mt-[3px]">{props.detail}</div>
-      </div>
-      <button
-        type="button"
-        role="switch"
-        aria-checked={props.checked}
-        data-testid={props.testid}
-        aria-label={props.label}
-        disabled={props.disabled}
-        onClick={() => !props.disabled && props.onToggle(!props.checked)}
-        class="fa-switch"
-        classList={{
-          "fa-switch--on": props.checked,
-          "opacity-50 cursor-not-allowed": props.disabled,
-        }}
-      >
-        <span class="fa-switch__knob" />
-      </button>
-    </div>
-  );
-}
+import { Toggle } from "../shared/Toggle.tsx";
 
 export const NotificationSettings: Component = () => {
   const [pushOn, setPushOn] = createSignal(false);
@@ -144,21 +110,21 @@ export const NotificationSettings: Component = () => {
             Sounds and unread badges. Stored on this device only.
           </p>
         </div>
-        <ToggleRow
+        <Toggle
           testid="notify-sound-toggle"
           label="Notification sounds"
           detail="Play a soft chime for new direct messages, mentions, and replies."
           checked={soundEnabled()}
           onToggle={setSoundEnabled}
         />
-        <ToggleRow
+        <Toggle
           testid="notify-badge-toggle"
           label="Unread badges"
           detail="Show your unread count on the tab title, favicon, and app icon."
           checked={badgeEnabled()}
           onToggle={setBadgeEnabled}
         />
-        <ToggleRow
+        <Toggle
           testid="notify-desktop-toggle"
           label="Desktop alerts when away"
           detail={desktopDetail()}
@@ -166,7 +132,7 @@ export const NotificationSettings: Component = () => {
           disabled={!supported || denied()}
           onToggle={(on) => void toggleDesktop(on)}
         />
-        <ToggleRow
+        <Toggle
           testid="notify-push-toggle"
           label="Push notifications"
           detail={pushDetail()}
