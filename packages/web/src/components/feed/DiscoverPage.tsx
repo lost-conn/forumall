@@ -14,6 +14,7 @@ import { A } from "@solidjs/router";
 import { type Component, For, Match, Show, Switch, createResource, createSignal } from "solid-js";
 import { addFollow, fetchDiscover } from "../../lib/feed-api.ts";
 import { sessionClient } from "../../stores/session.ts";
+import { EmptyState } from "../shared/EmptyState.tsx";
 
 interface DiscoverState {
   kind: "feed" | "not-offered";
@@ -65,9 +66,7 @@ export const DiscoverPage: Component = () => {
             </div>
           </Match>
           <Match when={(data()?.items.length ?? 0) === 0}>
-            <p class="text-sm text-muted" data-testid="discover-empty">
-              No discoverable channels yet.
-            </p>
+            <EmptyState testid="discover-empty" message="No discoverable channels yet." />
           </Match>
           <Match when={true}>
             <ul class="mx-auto flex max-w-2xl flex-col gap-3" data-testid="discover-list">

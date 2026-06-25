@@ -30,6 +30,7 @@ import { type FeedItem, activeFollows, feed, mergedTimeline } from "../../stores
 import { clearFeed } from "../../stores/feed.ts";
 import { session, sessionClient, sessionWs } from "../../stores/session.ts";
 import { AttachmentView, MessageBody } from "../chat/ChatView.tsx";
+import { EmptyState } from "../shared/EmptyState.tsx";
 import { openUserProfile } from "../social/user-profile-store.ts";
 import { type FeedHandle, startFeed } from "./feed-controller.ts";
 
@@ -109,9 +110,10 @@ export const HomeFeed: Component = () => {
             </div>
           </Match>
           <Match when={items().length === 0}>
-            <p class="text-sm text-muted" data-testid="feed-no-messages">
-              No messages in your followed channels yet.
-            </p>
+            <EmptyState
+              testid="feed-no-messages"
+              message="No messages in your followed channels yet."
+            />
           </Match>
           <Match when={true}>
             <ul class="mx-auto flex max-w-2xl flex-col gap-3" data-testid="feed-list">

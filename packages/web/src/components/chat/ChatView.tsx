@@ -62,6 +62,7 @@ import { AttachmentChips } from "../shared/AttachmentChips.tsx";
 // keep importing it from here unchanged after the extraction to `../shared`.
 import { AttachmentView } from "../shared/AttachmentView.tsx";
 import { EditMessageForm } from "../shared/EditMessageForm.tsx";
+import { EmptyState } from "../shared/EmptyState.tsx";
 import { MessageStatus } from "../shared/MessageStatus.tsx";
 import { ReactionBar, ReactionPicker } from "../shared/Reactions.tsx";
 import { ReplyContextPill } from "../shared/ReplyContextPill.tsx";
@@ -578,11 +579,14 @@ export const ChatView: Component<{
                   <Show
                     when={visibleRoots().length > 0}
                     fallback={
-                      <p class="text-sm text-muted" data-testid="chat-empty">
-                        {typeFilter() === "all"
-                          ? "No messages yet. Say hello."
-                          : "Nothing here for this filter yet."}
-                      </p>
+                      <EmptyState
+                        testid="chat-empty"
+                        message={
+                          typeFilter() === "all"
+                            ? "No messages yet. Say hello."
+                            : "Nothing here for this filter yet."
+                        }
+                      />
                     }
                   >
                     <ul class="flex flex-col gap-3">

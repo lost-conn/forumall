@@ -63,6 +63,7 @@ import { Icon, type IconName } from "../Icon.tsx";
 import { AttachmentChips } from "../shared/AttachmentChips.tsx";
 import { AttachmentView } from "../shared/AttachmentView.tsx";
 import { EditMessageForm } from "../shared/EditMessageForm.tsx";
+import { EmptyState } from "../shared/EmptyState.tsx";
 import { MessageStatus } from "../shared/MessageStatus.tsx";
 import { Modal } from "../shared/Modal.tsx";
 import { ReactionBar, ReactionPicker } from "../shared/Reactions.tsx";
@@ -338,9 +339,11 @@ export const DmsPage: Component = () => {
               <Show
                 when={conversations().length > 0}
                 fallback={
-                  <p class="px-2 text-sm text-muted" data-testid="dms-empty">
-                    No conversations yet. Start one with the + button.
-                  </p>
+                  <EmptyState
+                    class="px-2"
+                    testid="dms-empty"
+                    message="No conversations yet. Start one with the + button."
+                  />
                 }
               >
                 <ul class="flex flex-col gap-0.5" data-testid="dm-conversations">
@@ -675,11 +678,7 @@ const ThreadView: Component<{
         </Show>
         <Show
           when={messages().length > 0}
-          fallback={
-            <p class="text-sm text-muted" data-testid="dm-empty-thread">
-              No messages yet. Say hello.
-            </p>
-          }
+          fallback={<EmptyState testid="dm-empty-thread" message="No messages yet. Say hello." />}
         >
           <ul class="flex flex-col gap-3">
             <For each={messages()}>

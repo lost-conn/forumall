@@ -7,6 +7,7 @@ import { useQuery } from "@tanstack/solid-query";
 import { type Component, For, Show, createSignal } from "solid-js";
 import { approveJoinRequest, denyJoinRequest } from "../../lib/groups-api.ts";
 import { sessionClient } from "../../stores/session.ts";
+import { EmptyState } from "../shared/EmptyState.tsx";
 import { requestsQuery, useInvalidateGroup } from "./queries.ts";
 import { ErrorLine, errorMessage } from "./ui.tsx";
 
@@ -50,11 +51,7 @@ export const RequestsPanel: Component<{ group: Group; enabled: () => boolean }> 
       >
         <Show
           when={(requests.data ?? []).length > 0}
-          fallback={
-            <p class="text-sm text-muted" data-testid="requests-empty">
-              No pending requests.
-            </p>
-          }
+          fallback={<EmptyState testid="requests-empty" message="No pending requests." />}
         >
           <ul
             class="flex flex-col divide-y divide-dashed divide-border"

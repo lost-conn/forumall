@@ -37,6 +37,7 @@ import {
 } from "../../lib/social-api.ts";
 import { refreshPresenceSnapshots, subscribePresence } from "../../stores/presence-controller.ts";
 import { session, sessionClient, sessionWs } from "../../stores/session.ts";
+import { EmptyState } from "../shared/EmptyState.tsx";
 import { PresenceDot } from "./PresenceDot.tsx";
 
 function clientOrThrow() {
@@ -273,11 +274,7 @@ export const ContactsPage: Component = () => {
             <h2 class="mb-3 text-sm font-semibold tracking-tight">Contacts</h2>
             <Show
               when={accepted().length > 0}
-              fallback={
-                <p class="text-sm text-muted" data-testid="contacts-empty">
-                  No contacts yet.
-                </p>
-              }
+              fallback={<EmptyState testid="contacts-empty" message="No contacts yet." />}
             >
               <ul
                 class="flex flex-col divide-y divide-dashed divide-border"
