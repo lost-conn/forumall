@@ -63,6 +63,7 @@ import { Icon, type IconName } from "../Icon.tsx";
 import { AttachmentChips } from "../shared/AttachmentChips.tsx";
 import { AttachmentView } from "../shared/AttachmentView.tsx";
 import { EditMessageForm } from "../shared/EditMessageForm.tsx";
+import { MessageStatus } from "../shared/MessageStatus.tsx";
 import { Modal } from "../shared/Modal.tsx";
 import { ReactionBar, ReactionPicker } from "../shared/Reactions.tsx";
 import { ReplyContextPill } from "../shared/ReplyContextPill.tsx";
@@ -996,25 +997,13 @@ const DmMessageRow: Component<{
             </span>
           </Show>
 
-          <Show when={m().pending || m().failed}>
-            <div class="flex items-center gap-2">
-              <Show when={m().pending}>
-                <span class="text-[10px] text-accent" data-testid="dm-message-pending">
-                  sending…
-                </span>
-              </Show>
-              <Show when={m().failed}>
-                <button
-                  type="button"
-                  class="text-[10px] text-danger underline"
-                  data-testid="dm-message-retry"
-                  onClick={retry}
-                >
-                  failed — retry
-                </button>
-              </Show>
-            </div>
-          </Show>
+          <MessageStatus
+            pending={m().pending}
+            failed={m().failed}
+            onRetry={retry}
+            testidPrefix="dm-"
+            pendingColor="text-accent"
+          />
 
           <Show when={actionError()}>
             <p class="text-[10px] text-danger" data-testid="dm-action-error">

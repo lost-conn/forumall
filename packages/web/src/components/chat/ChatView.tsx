@@ -62,6 +62,7 @@ import { AttachmentChips } from "../shared/AttachmentChips.tsx";
 // keep importing it from here unchanged after the extraction to `../shared`.
 import { AttachmentView } from "../shared/AttachmentView.tsx";
 import { EditMessageForm } from "../shared/EditMessageForm.tsx";
+import { MessageStatus } from "../shared/MessageStatus.tsx";
 import { ReactionBar, ReactionPicker } from "../shared/Reactions.tsx";
 import { ReplyContextPill } from "../shared/ReplyContextPill.tsx";
 import { ReplyQuote } from "../shared/ReplyQuote.tsx";
@@ -874,33 +875,23 @@ const MessageRow: Component<{
               (edited)
             </span>
           </Show>
-          <Show when={m().pending}>
-            <span class="text-[10px] text-cyan" data-testid="message-pending">
-              sending…
-            </span>
-          </Show>
-          <Show when={m().failed}>
-            <button
-              type="button"
-              class="text-[10px] text-danger underline"
-              data-testid="message-retry"
-              onClick={() => {
-                const w = ws();
-                if (w && m().clientMessageId) {
-                  retrySend({
-                    ws: w,
-                    groupId: props.groupId,
-                    channelId: props.channelId,
-                    author: m().author,
-                    text: m().content.text ?? "",
-                    clientMessageId: m().clientMessageId as string,
-                  });
-                }
-              }}
-            >
-              failed — retry
-            </button>
-          </Show>
+          <MessageStatus
+            pending={m().pending}
+            failed={m().failed}
+            onRetry={() => {
+              const w = ws();
+              if (w && m().clientMessageId) {
+                retrySend({
+                  ws: w,
+                  groupId: props.groupId,
+                  channelId: props.channelId,
+                  author: m().author,
+                  text: m().content.text ?? "",
+                  clientMessageId: m().clientMessageId as string,
+                });
+              }
+            }}
+          />
 
           {/* Message actions — always visible on touch; hover-revealed on desktop. */}
           <Show when={!isDeleted()}>
