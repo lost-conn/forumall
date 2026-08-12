@@ -8,8 +8,8 @@
  * (`stores/feed.ts#mergedTimeline`) — every followed channel's messages, ordered
  * newest-first and de-duped by id — so a live message, an in-place edit, or a
  * tombstone on ANY followed channel updates here automatically. Each item is
- * rendered with the **same layout as a channel message** (the shared
- * {@link MessageBody}/{@link AttachmentView} from the chat view) so Home reads
+ * rendered with the **same layout as a channel message** ({@link MessageBody}
+ * from the chat view plus the shared {@link AttachmentList}) so Home reads
  * identically to a channel, plus a source channel/group badge for context.
  */
 import { useNavigate } from "@solidjs/router";
@@ -29,7 +29,8 @@ import { reactionsFor } from "../../stores/chat.ts";
 import { type FeedItem, activeFollows, feed, mergedTimeline } from "../../stores/feed.ts";
 import { clearFeed } from "../../stores/feed.ts";
 import { session, sessionClient, sessionWs } from "../../stores/session.ts";
-import { AttachmentView, MessageBody } from "../chat/ChatView.tsx";
+import { MessageBody } from "../chat/ChatView.tsx";
+import { AttachmentList } from "../shared/AttachmentList.tsx";
 import { EmptyState } from "../shared/EmptyState.tsx";
 import { openUserProfile } from "../social/user-profile-store.ts";
 import { type FeedHandle, startFeed } from "./feed-controller.ts";
@@ -201,11 +202,7 @@ const FeedRow: Component<{ item: FeedItem }> = (props) => {
         </Switch>
 
         <Show when={!isDeleted() && (item().attachments?.length ?? 0) > 0}>
-          <div class="flex flex-wrap gap-2">
-            <For each={item().attachments ?? []}>
-              {(att) => <AttachmentView attachment={att} />}
-            </For>
-          </div>
+          <AttachmentList attachments={item().attachments ?? []} />
         </Show>
 
         <Show when={reactions().length > 0}>

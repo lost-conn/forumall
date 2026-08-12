@@ -63,9 +63,7 @@ import { session, sessionClient, sessionWs } from "../../stores/session.ts";
 import { Icon, type IconName } from "../Icon.tsx";
 import { FollowToggle } from "../feed/FollowToggle.tsx";
 import { AttachmentChips } from "../shared/AttachmentChips.tsx";
-// `AttachmentView` is re-exported below so existing importers (the home feed)
-// keep importing it from here unchanged after the extraction to `../shared`.
-import { AttachmentView } from "../shared/AttachmentView.tsx";
+import { AttachmentList } from "../shared/AttachmentList.tsx";
 import { EditMessageForm } from "../shared/EditMessageForm.tsx";
 import { EmptyState } from "../shared/EmptyState.tsx";
 import { MessageStatus } from "../shared/MessageStatus.tsx";
@@ -1001,9 +999,7 @@ const MessageRow: Component<{
 
         {/* Attachments */}
         <Show when={!isDeleted() && (m().attachments?.length ?? 0) > 0}>
-          <div class="flex flex-wrap gap-2" data-testid="attachments">
-            <For each={m().attachments ?? []}>{(att) => <AttachmentView attachment={att} />}</For>
-          </div>
+          <AttachmentList attachments={m().attachments ?? []} testid="attachments" />
         </Show>
 
         {/* Reactions */}
@@ -1585,5 +1581,3 @@ const Composer: Component<{
 
 // Re-export so a parent can read the store reactively if needed.
 export { chat };
-// Re-export the shared `AttachmentView` so the home feed keeps importing it here.
-export { AttachmentView };

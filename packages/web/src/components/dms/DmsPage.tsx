@@ -64,7 +64,7 @@ import { markRead, unreadCountFor } from "../../stores/read-markers.ts";
 import { session, sessionClient, sessionWs } from "../../stores/session.ts";
 import { Icon, type IconName } from "../Icon.tsx";
 import { AttachmentChips } from "../shared/AttachmentChips.tsx";
-import { AttachmentView } from "../shared/AttachmentView.tsx";
+import { AttachmentList } from "../shared/AttachmentList.tsx";
 import { EditMessageForm } from "../shared/EditMessageForm.tsx";
 import { EmptyState } from "../shared/EmptyState.tsx";
 import { MessageStatus } from "../shared/MessageStatus.tsx";
@@ -1030,9 +1030,7 @@ const DmMessageRow: Component<{
 
           {/* Attachments */}
           <Show when={!isDeleted() && (m().attachments?.length ?? 0) > 0}>
-            <div class="flex flex-wrap gap-2" data-testid="dm-attachments">
-              <For each={m().attachments ?? []}>{(att) => <AttachmentView attachment={att} />}</For>
-            </div>
+            <AttachmentList attachments={m().attachments ?? []} testid="dm-attachments" />
           </Show>
 
           {/* Reactions */}

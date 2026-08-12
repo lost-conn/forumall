@@ -15,6 +15,8 @@
  *  5. an `article`-type message renders as markdown; a fabricated unknown-`type`
  *     message renders via the generic text fallback (no crash).
  *  6. attachment: A uploads a small image → it appears for both.
+ *  7. expanded media: clicking an inline image opens the in-page lightbox (no new
+ *     tab), prev/next pages the message's attachments, Escape closes it.
  */
 import type { Browser, Page } from "@playwright/test";
 import { registerUser, uniqueHandle } from "../harness/auth.ts";
@@ -464,4 +466,66 @@ test("attachment upload: A attaches a small image → it appears for both", asyn
     .toBeGreaterThan(0);
 
   await b.context().close();
+});
+
+test("expanded media view: an inline image opens a lightbox IN PAGE, pages with next, and closes on Escape", async ({
+  page,
+  browser,
+  appServer,
+}) => {
+  const { a, b } = await twoUsersInChannel(page, browser, appServer.baseUrl);
+  // B is only needed to build the shared channel; this test is entirely about A's client.
+  await b.context().close();
+
+  // Two 1x1 PNGs on ONE message — the lightbox's sibling set is per-message, so
+  // two attachments is the minimum that exercises prev/next and the indicator.
+  const pngBase64 =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+  const buffer = Buffer.from(pngBase64, "base64");
+  // One at a time: the composer's file input is NOT `multiple` (it reads
+  // `files[0]`), but `useComposerUpload` accumulates pending attachments, so two
+  // sequential picks land on the same message.
+  for (const name of ["first.png", "second.png"]) {
+    await a.getByTestId("file-input").setInputFiles({ name, mimeType: "image/png", buffer });
+    await expect(a.getByTestId("composer-attachments")).toBeVisible({ timeout: 10_000 });
+  }
+  await expect(
+    a.getByTestId("composer-attachments").getByRole("button", { name: "Remove attachment" }),
+  ).toHaveCount(2, { timeout: 10_000 });
+  await compose(a, "two pictures");
+
+  const trigger = a.getByTestId("attachment-image-button").first();
+  await expect(trigger).toBeVisible({ timeout: 10_000 });
+  await expect(a.getByTestId("media-lightbox")).toHaveCount(0);
+
+  // Clicking the inline image expands it IN PAGE — the old behaviour opened the
+  // raw file in a new browser tab, so the tab count is part of the assertion.
+  const pagesBefore = a.context().pages().length;
+  await trigger.click();
+  const lightbox = a.getByTestId("media-lightbox");
+  await expect(lightbox).toBeVisible({ timeout: 10_000 });
+  expect(a.context().pages().length).toBe(pagesBefore);
+
+  // It really is a modal dialog with the expanded image inside it, and it names
+  // the file + keeps an escape hatch to the original bytes.
+  await expect(lightbox.getByTestId("lightbox-image")).toBeVisible();
+  await expect(lightbox.getByTestId("lightbox-filename")).toHaveText("first.png");
+  await expect(lightbox.getByTestId("lightbox-original")).toHaveAttribute("href", /.+/);
+  // Focus moved into the overlay (the browser's `showModal()` focus handling).
+  expect(await a.evaluate(() => document.activeElement?.closest("dialog") !== null)).toBe(true);
+
+  // Next advances the position indicator across the message's attachments.
+  await expect(lightbox.getByTestId("lightbox-position")).toHaveText("1 / 2");
+  await lightbox.getByTestId("lightbox-next").click();
+  await expect(lightbox.getByTestId("lightbox-position")).toHaveText("2 / 2");
+  await expect(lightbox.getByTestId("lightbox-filename")).toHaveText("second.png");
+  // Navigation WRAPS rather than clamping: next from the last slide is the first.
+  await lightbox.getByTestId("lightbox-next").click();
+  await expect(lightbox.getByTestId("lightbox-position")).toHaveText("1 / 2");
+
+  // Escape closes it — without the user first having to click inside the dialog.
+  await a.keyboard.press("Escape");
+  await expect(a.getByTestId("media-lightbox")).toHaveCount(0, { timeout: 10_000 });
+  // Focus is restored to the trigger that opened it.
+  await expect(trigger).toBeFocused();
 });
