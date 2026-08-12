@@ -13,8 +13,13 @@
  *  - DM typing: `typing.start { dmId }` fans `dm.typing` to the counterparty.
  *  - cross-provider storage-follows-message: alice@a reacts (via her home
  *    provider a) to a message she SENT to bob@b (which lives only in bob's
- *    inbox on b) → the reaction is FORWARDED to and stored on b, and bob sees
- *    it in his history aggregate + a `dm.reaction` fan-out.
+ *    inbox on b) → the reaction is FORWARDED to and stored on b (both add AND
+ *    remove), and bob sees it in his history aggregate + a `dm.reaction`
+ *    fan-out.
+ *  - the federation reaction ingest binds the body `actor` to the SIGNING
+ *    provider (§8.1): a provider-signed request naming an actor of a
+ *    DIFFERENT domain is a 403 (nothing stored, nothing fanned out), and a
+ *    missing/blank body actor is a 400.
  *
  * Like the DM suite, the real-time assertions need a REAL socket, so `boot()`
  * starts the app on an ephemeral port; the cross-provider case uses the
@@ -554,7 +559,161 @@ describe("DM reactions — cross-provider forwarding", () => {
       true,
     );
 
+    // alice@a removes the same reaction: the DELETE is forwarded to b the same
+    // way, and bob sees the "removed" fan-out + the aggregate drops it.
+    const del = await signedReqAt(
+      fed.a.base,
+      "a.test",
+      alice,
+      "DELETE",
+      `/api/dms/${dmId}/messages/${msgId}/reactions/heart`,
+    );
+    expect(del.status).toBe(204);
+
+    const removedEvt = await bobWs.ofType("dm.reaction");
+    const rd = removedEvt.data as { messageId: string; author: string; key: string; state: string };
+    expect(rd.messageId).toBe(msgId);
+    expect(rd.author).toBe(alice.actor);
+    expect(rd.key).toBe("heart");
+    expect(rd.state).toBe("removed");
+
+    const hist2 = await signedReqAt(fed.b.base, "b.test", bob, "GET", `/api/dms/${dmId}/messages`);
+    const items2 = (
+      (await hist2.json()) as {
+        items: { id: string; reactions?: { author: string; key: string }[] }[];
+      }
+    ).items;
+    const stored2 = items2.find((m) => m.id === msgId);
+    expect(
+      stored2?.reactions?.some((r) => r.author === alice.actor && r.key === "heart") ?? false,
+    ).toBe(false);
+
     bobWs.close();
+  });
+
+  test("a provider-signed reaction forward may only act for that provider's OWN users (403); nothing stored, nothing fanned out", async () => {
+    const fed = startFederation(tmp, {
+      domainA: "a.test",
+      domainB: "b.test",
+      envA: { FEDERATION_INSECURE_LOCALHOST: "1" },
+      envB: { FEDERATION_INSECURE_LOCALHOST: "1" },
+    });
+    feds.push(fed);
+
+    const alice = await registerAt(fed.a.base, "a.test", "aliceatk");
+    const bob = await registerAt(fed.b.base, "b.test", "bobatk");
+    const dmId = deriveDmId(alice.actor, bob.actor);
+
+    // alice@a → bob@b: the message lives ONLY in bob's inbox on b.
+    const sent = await signedReqAt(
+      fed.b.base,
+      "b.test",
+      alice,
+      "POST",
+      `/api/federation/dms/${dmId}/messages`,
+      { clientMessageId: "atk1", content: { mime: "text/plain", text: "hi bob" } },
+    );
+    expect(sent.status).toBe(201);
+    const msgId = ((await sent.json()) as { id: string }).id;
+
+    const bobWs = await connectAuthenticated(
+      `ws://localhost:${fed.b.server.port}/api/ws`,
+      "b.test",
+      bob,
+    );
+
+    // Provider A forges a request naming BOB — a user of provider B, not one of
+    // its own — signed with A's OWN provider key (§8.1). Before the fix this
+    // body actor was trusted outright; now it must be bound to the signing
+    // provider's domain.
+    const keyA = getProviderSigningKey(fed.a.db);
+    const path = `/api/federation/dms/${dmId}/messages/${msgId}/reactions/heart`;
+    const forgedBody = JSON.stringify({ actor: bob.actor });
+    const signAsA = (method: string) =>
+      signProvider({
+        provider: "a.test",
+        keyId: keyA.keyId,
+        privateKey: keyA.privateKey,
+        authority: "b.test",
+        method,
+        path,
+        body: forgedBody,
+      }).headers;
+
+    const forgedPut = await fetch(`${fed.b.base}${path}`, {
+      method: "PUT",
+      headers: { ...signAsA("PUT"), "content-type": "application/json" },
+      body: forgedBody,
+    });
+    expect(forgedPut.status).toBe(403);
+
+    const forgedDelete = await fetch(`${fed.b.base}${path}`, {
+      method: "DELETE",
+      headers: { ...signAsA("DELETE"), "content-type": "application/json" },
+      body: forgedBody,
+    });
+    expect(forgedDelete.status).toBe(403);
+
+    // Nothing was stored, and bob got no dm.reaction fan-out for either forged
+    // call.
+    await expect(bobWs.ofType("dm.reaction", 300)).rejects.toThrow();
+
+    const hist = await signedReqAt(fed.b.base, "b.test", bob, "GET", `/api/dms/${dmId}/messages`);
+    const items = (
+      (await hist.json()) as {
+        items: { id: string; reactions?: { author: string; key: string }[] }[];
+      }
+    ).items;
+    const stored = items.find((m) => m.id === msgId);
+    expect(stored?.reactions ?? []).toHaveLength(0);
+
+    bobWs.close();
+  });
+
+  test("a missing/blank body actor on the federation reaction ingest is a 400", async () => {
+    const fed = startFederation(tmp, {
+      domainA: "a.test",
+      domainB: "b.test",
+      envA: { FEDERATION_INSECURE_LOCALHOST: "1" },
+      envB: { FEDERATION_INSECURE_LOCALHOST: "1" },
+    });
+    feds.push(fed);
+
+    const alice = await registerAt(fed.a.base, "a.test", "aliceatk2");
+    const bob = await registerAt(fed.b.base, "b.test", "bobatk2");
+    const dmId = deriveDmId(alice.actor, bob.actor);
+
+    const sent = await signedReqAt(
+      fed.b.base,
+      "b.test",
+      alice,
+      "POST",
+      `/api/federation/dms/${dmId}/messages`,
+      { clientMessageId: "atk2-1", content: { mime: "text/plain", text: "hi bob" } },
+    );
+    expect(sent.status).toBe(201);
+    const msgId = ((await sent.json()) as { id: string }).id;
+
+    const keyA = getProviderSigningKey(fed.a.db);
+    const path = `/api/federation/dms/${dmId}/messages/${msgId}/reactions/heart`;
+    for (const bodyObj of [{}, { actor: "" }, { actor: 123 }]) {
+      const body = JSON.stringify(bodyObj);
+      const { headers } = signProvider({
+        provider: "a.test",
+        keyId: keyA.keyId,
+        privateKey: keyA.privateKey,
+        authority: "b.test",
+        method: "PUT",
+        path,
+        body,
+      });
+      const res = await fetch(`${fed.b.base}${path}`, {
+        method: "PUT",
+        headers: { ...headers, "content-type": "application/json" },
+        body,
+      });
+      expect(res.status).toBe(400);
+    }
   });
 });
 

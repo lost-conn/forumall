@@ -471,9 +471,13 @@ export function createFederationDmsRouter() {
   // -- Federation reaction ingest (§8.3 storage-follows-message) ----------
   // A peer forwards a reaction by one of THEIR users to a DM message that lives
   // in a LOCAL recipient's inbox here. Provider-signed (§8.1); the reacting
-  // actor travels in the body. We re-derive the local inbox owner from the
-  // (actor, dmId) pair (the §8.3 recipient-resolution guard), store/remove the
-  // reaction, and fan `dm.reaction` to the local recipient.
+  // actor travels in the body, but the body claim alone is NOT trusted — it is
+  // bound to the signing provider via {@link federationActingActor}, which
+  // requires the named actor's domain to equal the signing provider's domain
+  // (403 otherwise), so provider A cannot forward a reaction as a user of
+  // provider B. We re-derive the local inbox owner from the (actor, dmId) pair
+  // (the §8.3 recipient-resolution guard), store/remove the reaction, and fan
+  // `dm.reaction` to the local recipient.
   const providerSigned = requireProviderSignature();
 
   // PUT /{dmId}/messages/{messageId}/reactions/{key}
@@ -625,8 +629,12 @@ async function handleFederationDmReaction(
   assertValidReactionKey(key);
 
   const body = (await c.req.json().catch(() => ({}))) as { actor?: unknown };
-  const reactingActor = typeof body.actor === "string" ? body.actor : "";
-  if (reactingActor === "") throw AppError.badRequest({ detail: "missing reacting actor" });
+  // Provider-signed (never user-signed here — the routes only mount
+  // `requireProviderSignature()`), so this always takes the provider-signed
+  // branch: the named actor's domain must equal the signing provider's
+  // domain, binding the body actor to the peer that signed the request (a
+  // peer may only act on behalf of its own users). See {@link federationActingActor}.
+  const reactingActor = federationActingActor(c, body.actor);
 
   // §8.3 guard: the local inbox owner is the local user `u` such that
   // deriveDmId(reactingActor, u@authority) === dmId. No match → 400 (the
