@@ -780,6 +780,16 @@ const ThreadView: Component<{
 const DM_UNCONFIRMED_NOTICE =
   "Couldn't confirm — this will reconcile when you reopen the conversation.";
 
+/**
+ * The same notice for a SEND whose outcome the provider never confirmed. The echo
+ * deliberately stays "sending…" rather than flipping to "failed — retry" (see
+ * `sendDm`): the message may already be in the recipient's inbox, and asserting a
+ * failure we cannot observe is the worse lie. §7.4 reads return the caller's own
+ * sent rows, so reopening the conversation shows the provider's copy.
+ */
+const DM_UNCONFIRMED_SEND_NOTICE =
+  "Couldn't confirm this send — it may have gone through. Reopen the conversation to see the provider's copy.";
+
 const DmMessageRow: Component<{
   dmId: string;
   message: DmMessage;
@@ -950,22 +960,40 @@ const DmMessageRow: Component<{
     const me = session.actor;
     if (!client || !store || !me || !m().clientMessageId) return;
     const counterparty = props.counterparty;
-    void resolveDeliveryClient(counterparty).then((deliveryClient) =>
-      retrySendDm({
-        client,
-        ...(deliveryClient ? { deliveryClient } : {}),
-        dmId: props.dmId,
-        me,
-        counterparty,
-        text: m().content.text ?? "",
-        ...(m().attachments && (m().attachments as Attachment[]).length > 0
-          ? { attachments: m().attachments }
-          : {}),
-        ...(m().reference ? { reference: m().reference } : {}),
-        sentStore: store,
-        clientMessageId: m().clientMessageId as string,
-      }),
-    );
+    setActionError(null);
+    void resolveDeliveryClient(counterparty)
+      .then((deliveryClient) =>
+        retrySendDm({
+          client,
+          ...(deliveryClient ? { deliveryClient } : {}),
+          dmId: props.dmId,
+          me,
+          counterparty,
+          text: m().content.text ?? "",
+          ...(m().attachments && (m().attachments as Attachment[]).length > 0
+            ? { attachments: m().attachments }
+            : {}),
+          ...(m().reference ? { reference: m().reference } : {}),
+          sentStore: store,
+          // The ORIGINAL idempotency key: a retry of a send that had in fact
+          // committed dedupes on the recipient's provider instead of delivering
+          // the message a second time (see `retrySendDm`).
+          clientMessageId: m().clientMessageId as string,
+        }),
+      )
+      .catch((err) => {
+        // `retrySendDm` replaces this row's echo synchronously, so a rejection
+        // AFTER that point is already reflected by the new echo (failed → the
+        // retry button returns; unconfirmed → it stays "sending…"). This still
+        // catches — an unhandled rejection otherwise — and surfaces the reason
+        // for a failure BEFORE the re-send starts (e.g. resolving the recipient's
+        // provider), where this row is still mounted.
+        if (err instanceof DmUnconfirmedError) {
+          setActionError(DM_UNCONFIRMED_SEND_NOTICE);
+          return;
+        }
+        setActionError(err instanceof Error ? err.message : "Could not send this message.");
+      });
   };
 
   return (
@@ -1226,6 +1254,13 @@ const DmComposer: Component<{
       )
       .then(() => props.onSent())
       .catch((err) => {
+        // An unconfirmed send is NOT a failure: the echo stays pending and the
+        // message may already have landed, so say "couldn't confirm" rather than
+        // "couldn't send" (mirrors the edit/delete notice).
+        if (err instanceof DmUnconfirmedError) {
+          setSendError(DM_UNCONFIRMED_SEND_NOTICE);
+          return;
+        }
         setSendError(err instanceof Error ? err.message : "Could not send the message.");
       });
   };

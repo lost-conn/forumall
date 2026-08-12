@@ -67,20 +67,36 @@ export interface SendDmResult {
   clientMessageId: string;
 }
 
+/** Options for {@link sendDmMessage}. */
+export interface SendDmMessageOptions {
+  attachments?: Attachment[];
+  reference?: { type: string; id: string };
+  /**
+   * The §7.1 idempotency key to send under. Pass the id the caller already minted
+   * for this logical send — and, on a RETRY, the SAME id as the first attempt:
+   * the recipient's provider dedupes on `(owner, dmId, author, clientMessageId)`
+   * and returns the FIRST stored message (200) rather than storing a second copy,
+   * so a send that committed but was never acknowledged cannot land twice. A
+   * fresh id is minted only when the caller has none.
+   */
+  clientMessageId?: string;
+}
+
 /**
- * Send a DM via `POST /api/federation/dms/{dmId}/messages` (user-signed). Mints
- * a `clientMessageId` for idempotency + optimistic-echo correlation. On success
- * returns the canonical sent {@link Message} (the server's confirmation) which
- * the caller persists to the local sent-store — the recipient receives it via
- * their inbox + a `dm.message` WS event.
+ * Send a DM via `POST /api/federation/dms/{dmId}/messages` (user-signed) under
+ * `opts.clientMessageId` (idempotency + optimistic-echo correlation), minting one
+ * only when the caller omits it. On success returns the canonical sent
+ * {@link Message} (the server's confirmation) which the caller persists to the
+ * local sent-store — the recipient receives it via their inbox + a `dm.message`
+ * WS event.
  */
 export async function sendDmMessage(
   client: OfscpClient,
   dmId: string,
   content: { mime: string; text: string },
-  opts: { attachments?: Attachment[]; reference?: { type: string; id: string } } = {},
+  opts: SendDmMessageOptions = {},
 ): Promise<SendDmResult> {
-  const clientMessageId = newClientMessageId();
+  const clientMessageId = opts.clientMessageId ?? newClientMessageId();
   const res = await client.post<Message>(`/api/federation/dms/${dmId}/messages`, {
     clientMessageId,
     content,

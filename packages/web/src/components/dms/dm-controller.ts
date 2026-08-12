@@ -18,7 +18,10 @@
  *
  * `sendDm(...)` shows an optimistic echo, POSTs the user-signed message, then on
  * success persists the canonical sent message to the local store AND reconciles
- * the echo in place. The recipient gets it via their inbox + a `dm.message`.
+ * the echo in place. The recipient gets it via their inbox + a `dm.message`. One
+ * `clientMessageId` per logical send keys BOTH the echo and the §7.1 idempotency
+ * check, so `retrySendDm(...)` re-sends under the original id and a send that
+ * committed without acknowledging is deduped rather than delivered twice.
  */
 import type {
   Attachment,
@@ -30,6 +33,7 @@ import type {
   WsEnvelope,
 } from "@forumall/shared";
 import { rfc3339Timestamp } from "@forumall/shared";
+import { newClientMessageId } from "../../lib/chat-api.ts";
 import {
   addDmReaction as apiAddDmReaction,
   removeDmReaction as apiRemoveDmReaction,
@@ -366,6 +370,32 @@ export async function openConversation(deps: OpenConversationDeps): Promise<Conv
   };
 }
 
+/**
+ * Thrown by {@link sendDm} / {@link editDm} / {@link deleteDm} when the request
+ * failed in a way that leaves the provider's outcome UNKNOWN — an aborted fetch
+ * (navigation), a network drop, a 5xx — as opposed to a definitive 4xx refusal
+ * (`isDefinitiveRejection`).
+ *
+ * On an unknown outcome the optimistic state is deliberately KEPT rather than
+ * reverted (edit/delete) or marked failed (send). §8.3 leaves the author no
+ * server copy of a message they sent, so a wrong revert used to be permanent: the
+ * author's retained copy would silently diverge from the recipient's stored copy
+ * with nothing to re-sync from. Since `GET /api/dms/{dmId}/messages` also returns
+ * the caller's OWN sent rows (§7.4), the server copy reconciles the truth the
+ * next time the conversation is opened — so keeping the optimistic state is
+ * strictly better than discarding a change that may well have landed. The UI
+ * surfaces this as a distinct "couldn't confirm" notice instead of the plain
+ * failure message.
+ *
+ * The underlying rejection is attached as `cause`.
+ */
+export class DmUnconfirmedError extends Error {
+  constructor(cause: unknown) {
+    super("Could not confirm the change with the provider.", { cause });
+    this.name = "DmUnconfirmedError";
+  }
+}
+
 export interface SendDmArgs {
   /** The home signing client (the sender's own provider) — used as the default. */
   client: OfscpClient;
@@ -386,13 +416,32 @@ export interface SendDmArgs {
   attachments?: Attachment[];
   /** §5.3 reply pointer to the message being replied to. */
   reference?: { type: string; id: string };
+  /**
+   * Re-send under an EXISTING idempotency key instead of minting a fresh one —
+   * how {@link retrySendDm} makes a retry safe. Omitted for a first send.
+   */
+  clientMessageId?: string;
   sentStore: DmSentStore;
 }
 
 /**
  * Send a DM: show an optimistic echo, POST the user-signed message, and on
- * success persist the canonical sent message locally + reconcile the echo. On
- * failure the echo is marked failed for a retry. Returns the `clientMessageId`.
+ * success persist the canonical sent message locally + reconcile the echo.
+ * Returns the `clientMessageId` the send used.
+ *
+ * ONE `clientMessageId` is minted per LOGICAL send (or reused from
+ * `args.clientMessageId` on a retry) and serves both roles: it keys the
+ * optimistic echo AND travels in the request body as the §7.1 idempotency key.
+ * They used to be two different ids — a temporary `local_…` echo key here plus a
+ * separate one minted inside `sendDmMessage` — which meant no id survived a
+ * retry, so re-sending after an unacknowledged send delivered the message TWICE.
+ * With one id the recipient's provider dedupes on
+ * `(owner, dmId, author, clientMessageId)` and returns the first message instead.
+ *
+ * A DEFINITIVE 4xx marks the echo failed (the send certainly did not land, so the
+ * retry affordance is honest). Any other rejection — aborted fetch, network drop,
+ * 5xx — is an unknown outcome: the echo is left PENDING and a
+ * {@link DmUnconfirmedError} is thrown for the UI to distinguish.
  *
  * The send is delivered to the RECIPIENT's home provider (`deliveryClient`, which
  * for a cross-provider DM targets the recipient's domain). The sender still keeps
@@ -405,30 +454,29 @@ export async function sendDm(args: SendDmArgs): Promise<string> {
   const sendClient = deliveryClient ?? client;
   sentStore.rememberCounterparty(dmId, counterparty);
   const content = { mime: mime ?? "text/plain", text };
-  // We don't know the clientMessageId until the API mints one; pre-generate the
-  // optimistic entry with a placeholder created in the API call, so instead we
-  // optimistically echo with a temporary id and reconcile on the response.
   const createdAt = new Date().toISOString();
 
-  // Optimistic echo keyed by a temp client id we control here.
-  const tempCmid = `local_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+  // The single id for this logical send: echo key + §7.1 idempotency key. A retry
+  // passes the original one through so the server dedupes rather than duplicates.
+  const clientMessageId = args.clientMessageId ?? newClientMessageId();
   addDmOptimistic(dmId, {
-    id: `optimistic:${tempCmid}`,
+    id: `optimistic:${clientMessageId}`,
     author: me,
     content,
     ...(attachments.length > 0 ? { attachments } : {}),
     ...(reference ? { reference } : {}),
     createdAt,
-    clientMessageId: tempCmid,
+    clientMessageId,
   });
 
   try {
-    const { message, clientMessageId } = await sendDmMessage(sendClient, dmId, content, {
+    const { message } = await sendDmMessage(sendClient, dmId, content, {
       ...(attachments.length > 0 ? { attachments } : {}),
       ...(reference ? { reference } : {}),
+      clientMessageId,
     });
-    // Reconcile the optimistic echo (matched on our temp client id) with the
-    // canonical message, and stamp the real clientMessageId for cross-tab de-dupe.
+    // Reconcile the optimistic echo with the canonical message: same id on both
+    // sides, so the echo collapses in place instead of duplicating the row.
     upsertDmMessage(dmId, {
       id: message.id,
       author: message.author,
@@ -438,7 +486,7 @@ export async function sendDm(args: SendDmArgs): Promise<string> {
         : {}),
       ...(message.reference ? { reference: message.reference } : {}),
       createdAt: message.createdAt,
-      clientMessageId: tempCmid,
+      clientMessageId,
       mine: true,
     });
     // Persist the canonical sent message locally (the server keeps no copy).
@@ -460,14 +508,32 @@ export async function sendDm(args: SendDmArgs): Promise<string> {
       lastMessageText: message.content.text ?? "",
       updatedAt: message.createdAt,
     });
-    return tempCmid;
+    return clientMessageId;
   } catch (err) {
-    markDmFailed(dmId, tempCmid);
+    // Unknown outcome (aborted fetch, network drop, 5xx): the message may well be
+    // in the recipient's inbox already, so DON'T claim it failed. The echo is left
+    // exactly as it is — "sending…", the honest reading of "we never heard back" —
+    // rather than flipped to "failed — retry", which would assert a delivery
+    // failure we cannot observe. §7.4 reads return the caller's own sent rows, so
+    // the provider's copy is what a reload of the conversation renders.
+    if (!isDefinitiveRejection(err)) throw new DmUnconfirmedError(err);
+    // Definitive 4xx: the provider refused, so nothing was stored — mark the echo
+    // failed and offer the retry, which re-sends under this same id.
+    markDmFailed(dmId, clientMessageId);
     throw err;
   }
 }
 
-/** Retry a failed send: drop the failed echo and re-send its content. */
+/**
+ * Retry a failed send: drop the failed echo and re-send its content under the
+ * ORIGINAL `clientMessageId`.
+ *
+ * Reusing the id is what makes the retry safe. The §7.1 idempotency key is
+ * `(owner, dmId, author, clientMessageId)`, so if the first attempt actually
+ * committed and only its acknowledgement was lost, the recipient's provider
+ * returns THAT message (200) and stores nothing new — where a freshly minted id
+ * would deliver the message a second time.
+ */
 export async function retrySendDm(args: SendDmArgs & { clientMessageId: string }): Promise<string> {
   dropDmOptimistic(args.dmId, args.clientMessageId);
   return sendDm(args);
@@ -580,31 +646,6 @@ function deliveryClientFor(
   me: string,
 ): OfscpClient {
   return messageAuthor === me ? (deliveryClient ?? client) : client;
-}
-
-/**
- * Thrown by {@link editDm} / {@link deleteDm} when the request failed in a way
- * that leaves the provider's outcome UNKNOWN — an aborted fetch (navigation), a
- * network drop, a 5xx — as opposed to a definitive 4xx refusal
- * (`isDefinitiveRejection`).
- *
- * On an unknown outcome the optimistic state is deliberately KEPT rather than
- * reverted. §8.3 leaves the author no server copy of a message they sent, so a
- * wrong revert used to be permanent: the author's retained copy would silently
- * diverge from the recipient's stored copy with nothing to re-sync from. Since
- * `GET /api/dms/{dmId}/messages` also returns the caller's OWN sent rows (§7.4),
- * the server copy reconciles the truth the next time the conversation is opened —
- * so keeping the optimistic state is strictly better than discarding a change
- * that may well have landed. The UI surfaces this as a distinct "couldn't
- * confirm" notice instead of the plain failure message.
- *
- * The underlying rejection is attached as `cause`.
- */
-export class DmUnconfirmedError extends Error {
-  constructor(cause: unknown) {
-    super("Could not confirm the change with the provider.", { cause });
-    this.name = "DmUnconfirmedError";
-  }
 }
 
 /**

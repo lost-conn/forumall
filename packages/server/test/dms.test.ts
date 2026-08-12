@@ -320,7 +320,14 @@ describe("DM send + inbox-only storage (§7.4, §8.3)", () => {
     expect(bobHist.status).toBe(404);
   });
 
-  test("idempotency: same clientMessageId twice → one stored row, same id", async () => {
+  /**
+   * The §7.1 idempotency guard `(owner, dmId, author, clientMessageId)` is what
+   * makes a client RETRY safe: a send that committed but whose acknowledgement
+   * was lost (aborted fetch / network drop / 5xx) is re-sent under the SAME id,
+   * and the recipient must end up with exactly ONE message — the first one,
+   * unchanged — rather than a duplicate delivery.
+   */
+  test("idempotency: same clientMessageId twice → one stored row, the FIRST message", async () => {
     const b = boot("dm-idempotent");
     const alice = await registerUserWithKey(b, "alice");
     const bob = await registerUserWithKey(b, "bob");
@@ -328,18 +335,36 @@ describe("DM send + inbox-only storage (§7.4, §8.3)", () => {
 
     const r1 = await sendDm(b, alice, dmId, "once", "cmsg_dup");
     expect(r1.status).toBe(201);
-    const id1 = ((await r1.json()) as { id: string }).id;
+    const first = (await r1.json()) as { id: string; createdAt: string };
 
+    // The retry replays the same key. Different text on purpose: the guard must
+    // return the STORED message, not re-store or overwrite it with the re-send.
     const r2 = await sendDm(b, alice, dmId, "once-again", "cmsg_dup");
-    // Duplicate returns the existing stored message (200), same id.
+    // Duplicate returns the existing stored message (200), unchanged.
     expect(r2.status).toBe(200);
-    const id2 = ((await r2.json()) as { id: string }).id;
-    expect(id2).toBe(id1);
+    const second = (await r2.json()) as {
+      id: string;
+      createdAt: string;
+      content: { text: string };
+    };
+    expect(second.id).toBe(first.id);
+    expect(second.createdAt).toBe(first.createdAt);
+    expect(second.content.text).toBe("once");
 
-    // Exactly one row in bob's inbox.
+    // Exactly one row in bob's inbox, still carrying the first delivery's content.
     const hist = await signedReq(b, bob, "GET", `/api/dms/${dmId}/messages`);
-    const items = ((await hist.json()) as { items: unknown[] }).items;
+    const items = ((await hist.json()) as { items: { id: string; content: { text: string } }[] })
+      .items;
     expect(items.length).toBe(1);
+    expect(items[0]?.id).toBe(first.id);
+    expect(items[0]?.content.text).toBe("once");
+
+    // …and the author's broadened read (§7.4) sees the single message too — no
+    // second copy surfaces on the sender's side either.
+    const mine = await signedReq(b, alice, "GET", `/api/dms/${dmId}/messages`);
+    const mineItems = ((await mine.json()) as { items: { id: string }[] }).items;
+    expect(mineItems.length).toBe(1);
+    expect(mineItems[0]?.id).toBe(first.id);
   });
 });
 
