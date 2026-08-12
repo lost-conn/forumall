@@ -284,14 +284,32 @@ export const ChatView: Component<{
     return arr.sort((a, b) => reactionTotal(b) - reactionTotal(a)); // "top"
   });
 
+  // Scroll anchor captured for the duration of a "load older" so prepending a
+  // page doesn't move the content the user is reading. Non-null ⇒ a load is in
+  // flight, which also suppresses the pin/"new below" reactions to the growing
+  // message list (older history is not "new").
+  let olderAnchor: { height: number; top: number } | null = null;
+
   const loadOlder = async (): Promise<void> => {
     const h = handle();
     if (!h || loadingOlder()) return;
+    // Capture the pre-load geometry; after the prepend the same content sits
+    // `newHeight - oldHeight` lower, so restoring that delta keeps it still.
+    olderAnchor = scrollEl ? { height: scrollEl.scrollHeight, top: scrollEl.scrollTop } : null;
     setLoadingOlder(true);
     try {
       await h.loadOlder();
     } finally {
       setLoadingOlder(false);
+      // Solid applies the store update synchronously, but late layout (fonts,
+      // avatars) settles a tick later — restore on the next microtask, after the
+      // list effects have run.
+      queueMicrotask(() => {
+        const anchor = olderAnchor;
+        olderAnchor = null;
+        if (!scrollEl || !anchor) return;
+        scrollEl.scrollTop = scrollEl.scrollHeight - anchor.height + anchor.top;
+      });
     }
   };
 
@@ -302,6 +320,9 @@ export const ChatView: Component<{
   // "Near the bottom" tolerance (px). Within this band we keep auto-pinning;
   // beyond it we assume the user is reading history and don't yank them.
   const NEAR_BOTTOM_PX = 80;
+  // "Near the top" trigger band (px) for auto-loading the next older page — wide
+  // enough that the next page is fetched just before the user hits the edge.
+  const NEAR_TOP_PX = 150;
 
   let scrollEl: HTMLDivElement | undefined;
   let contentEl: HTMLDivElement | undefined;
@@ -331,8 +352,13 @@ export const ChatView: Component<{
   };
 
   // User scroll → recompute the pin state (recent mode only). Scrolling back to
-  // the bottom re-arms the pin and clears the jump affordance.
+  // the bottom re-arms the pin and clears the jump affordance. Scrolling to the
+  // TOP pages in the next older window (the "Load older" button is the manual
+  // fallback for the same call).
   const onScroll = (): void => {
+    if (scrollEl && scrollEl.scrollTop < NEAR_TOP_PX && olderCursorFor(channelId())) {
+      void loadOlder();
+    }
     if (!isRecent()) {
       pinned = false;
       setShowJump(false);
@@ -354,6 +380,9 @@ export const ChatView: Component<{
     on(
       () => messages().length,
       (len, prev) => {
+        // A "load older" prepend also grows the list — it must neither yank the
+        // view to the bottom nor claim there are new messages below.
+        if (olderAnchor) return;
         if (!isRecent()) return;
         if (pinned) {
           queueMicrotask(() => scrollToBottom(false));

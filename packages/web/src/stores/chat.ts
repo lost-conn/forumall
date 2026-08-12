@@ -187,37 +187,42 @@ export function reconcileOptimistic(
 }
 
 /**
- * Prepend a page of OLDER history (backward paging). Each item is de-duped by id;
- * the merged list is re-sorted by cursor so order is stable regardless of arrival.
+ * Prepend a page of OLDER history (backward paging), `older` given OLDEST-FIRST.
+ *
+ * Position, not sorting, is what makes this correct: a backward page's keyset is
+ * exclusive, so every message in it is strictly older (lower `seq`) than
+ * everything already loaded — inserting the page at the FRONT, in order, keeps
+ * the timeline chronological without re-sorting rows whose cursors we'd have to
+ * compare (optimistic echoes carry no cursor at all). Items already present are
+ * merged in place instead (a re-fetched overlap must not duplicate).
+ *
+ * The newest-cursor (`cursors`, the WS resume `since`) is deliberately NOT
+ * touched: older history can never advance it.
  */
-export function prependHistory(
-  channelId: string,
-  older: ChatMessage[],
-  nextOlderCursor: string | null,
-): void {
+export function prependHistory(channelId: string, older: ChatMessage[]): void {
   setChat(
     produce((s) => {
       if (!s.messages[channelId]) s.messages[channelId] = [];
       const list = s.messages[channelId];
+      const fresh: ChatMessage[] = [];
       for (const m of older) {
         const idx = list.findIndex((x) => x.id === m.id);
-        if (idx === -1) list.push(m);
+        if (idx === -1) fresh.push(m);
         else list[idx] = { ...list[idx], ...m };
       }
-      // Stable order: by cursor when present (seq order), else keep arrival order.
-      list.sort((a, b) => {
-        if (a.cursor && b.cursor) return cursorLess(a.cursor, b.cursor) ? -1 : 1;
-        return 0;
-      });
-      s.olderCursors[channelId] = nextOlderCursor;
-      // Track the newest cursor so the WS resume `since` is correct.
-      for (const m of older) {
-        if (m.cursor && cursorLess(s.cursors[channelId], m.cursor)) {
-          s.cursors[channelId] = m.cursor;
-        }
-      }
+      list.unshift(...fresh);
     }),
   );
+}
+
+/**
+ * Record the channel's OLDER-history cursor: the cursor the next backward page
+ * continues from, or `null` once the channel is fully paged back. The chat UI
+ * gates its "Load older messages" affordance on this, so the controller MUST
+ * publish it after the initial history page and after every `loadOlder()`.
+ */
+export function setOlderCursor(channelId: string, cursor: string | null): void {
+  setChat("olderCursors", channelId, cursor);
 }
 
 /** Add a local optimistic echo for a just-sent message. */

@@ -9,9 +9,13 @@ import {
   addOptimistic,
   addReactionAgg,
   clearChat,
+  cursorFor,
   messagesFor,
+  olderCursorFor,
+  prependHistory,
   reactionsFor,
   removeReactionAgg,
+  setOlderCursor,
   setTyping,
   tombstoneMessage,
   typingFor,
@@ -116,6 +120,62 @@ describe("reaction aggregation", () => {
     addReactionAgg(CH, reaction({ author: "a@h", key: "+1" }));
     addReactionAgg(CH, reaction({ author: "a@h", key: "+1" }));
     expect(reactionsFor(CH, "m1").find((g) => g.key === "+1")?.authors).toEqual(["a@h"]);
+  });
+});
+
+describe("older-history paging", () => {
+  test("the older cursor round-trips and is cleared with the store", () => {
+    expect(olderCursorFor(CH)).toBeUndefined();
+    setOlderCursor(CH, "cursor_older");
+    expect(olderCursorFor(CH)).toBe("cursor_older");
+    // Fully paged back → explicitly null (distinct from "not loaded yet").
+    setOlderCursor(CH, null);
+    expect(olderCursorFor(CH)).toBeNull();
+    clearChat();
+    expect(olderCursorFor(CH)).toBeUndefined();
+  });
+
+  test("a prepended page lands BEFORE the loaded window, in order", () => {
+    upsertMessage(CH, { id: "m3", author: "a@h", content: { text: "three" }, cursor: "c3" });
+    upsertMessage(CH, { id: "m4", author: "a@h", content: { text: "four" }, cursor: "c4" });
+
+    // A backward page arrives newest-first; the controller reverses it.
+    prependHistory(CH, [
+      { id: "m1", author: "a@h", content: { text: "one" }, cursor: "c1" },
+      { id: "m2", author: "a@h", content: { text: "two" }, cursor: "c2" },
+    ]);
+
+    expect(messagesFor(CH).map((m) => m.id)).toEqual(["m1", "m2", "m3", "m4"]);
+  });
+
+  test("an overlapping page merges in place instead of duplicating", () => {
+    upsertMessage(CH, { id: "m2", author: "a@h", content: { text: "two" }, cursor: "c2" });
+    prependHistory(CH, [
+      { id: "m1", author: "a@h", content: { text: "one" }, cursor: "c1" },
+      { id: "m2", author: "a@h", content: { text: "two (edited)" }, cursor: "c2" },
+    ]);
+    const list = messagesFor(CH);
+    expect(list.map((m) => m.id)).toEqual(["m1", "m2"]);
+    expect(list[1]?.content.text).toBe("two (edited)");
+  });
+
+  test("prepending older history never advances the resume cursor", () => {
+    upsertMessage(CH, { id: "m9", author: "a@h", content: { text: "newest" }, cursor: "c9" });
+    const before = cursorFor(CH);
+    prependHistory(CH, [{ id: "m1", author: "a@h", content: { text: "old" }, cursor: "c1" }]);
+    expect(cursorFor(CH)).toBe(before as string);
+  });
+
+  test("an optimistic echo stays at the bottom across a prepend", () => {
+    upsertMessage(CH, { id: "m5", author: "a@h", content: { text: "five" }, cursor: "c5" });
+    addOptimistic(CH, {
+      id: "optimistic:cmid_1",
+      author: "me@h",
+      content: { text: "sending" },
+      clientMessageId: "cmid_1",
+    });
+    prependHistory(CH, [{ id: "m1", author: "a@h", content: { text: "one" }, cursor: "c1" }]);
+    expect(messagesFor(CH).map((m) => m.id)).toEqual(["m1", "m5", "optimistic:cmid_1"]);
   });
 });
 

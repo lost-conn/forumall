@@ -5,7 +5,10 @@
  * `openChannel(...)` (driven from {@link ChatView}'s `onMount`) does the §7.1/§7.2
  * dance:
  *   1. load the most-recent history page over REST (backward paging) and backfill
- *      the timeline + per-message reaction history,
+ *      the timeline + per-message reaction history — only ONE page, so a busy
+ *      channel doesn't drag its whole history down; the page's `nextCursor` is
+ *      published to the store (`setOlderCursor`) so the view can page back,
+ *      either from the "Load older" button or on a scroll to the top,
  *   2. subscribe over WS with `since` = the newest loaded cursor so live events
  *      resume without a gap (the server replays post-cursor messages; the store
  *      de-dupes the overlap by message id),
@@ -20,6 +23,7 @@
  * store; it never touches the WS client directly.
  */
 import type {
+  Message,
   Reaction,
   WsChannelTyping,
   WsEnvelope,
@@ -38,6 +42,7 @@ import {
 } from "../../lib/chat-api.ts";
 import type { OfscpClient } from "../../lib/ofscp-client.ts";
 import type { OfscpWsClient } from "../../lib/ofscp-ws.ts";
+import type { ChatMessage } from "../../stores/chat.ts";
 import {
   addOptimistic,
   addReactionAgg,
@@ -45,8 +50,10 @@ import {
   cursorFor,
   dropOptimistic,
   markOptimisticFailed,
+  prependHistory,
   reconcileOptimistic,
   removeReactionAgg,
+  setOlderCursor,
   setTyping,
   tombstoneMessage,
   upsertMessage,
@@ -91,6 +98,24 @@ function sendCommand(ws: OfscpWsClient, type: string, data: Record<string, unkno
 
 /** History page size for the initial + "load older" loads. */
 export const HISTORY_PAGE_SIZE = 50;
+
+/** Map a REST history item to the store's message shape (§7.2 page → timeline). */
+function historyItemToMessage(m: Message): ChatMessage {
+  return {
+    id: m.id,
+    author: m.author,
+    type: m.type,
+    content: m.content,
+    attachments: m.attachments,
+    reference: m.reference,
+    replyCount: (m as { replyCount?: number }).replyCount,
+    tags: m.tags,
+    createdAt: m.createdAt,
+    editedAt: m.editedAt,
+    deletedAt: m.deletedAt,
+    cursor: (m as { cursor?: string }).cursor,
+  };
+}
 
 export interface OpenChannelDeps {
   client: OfscpClient;
@@ -210,21 +235,12 @@ export async function openChannel(deps: OpenChannelDeps): Promise<ChannelHandle>
     direction: "backward",
   });
   olderCursor = page.nextCursor;
+  // Publish the older cursor so the UI can offer "load older" / auto-page on a
+  // scroll to the top. The closure variable above stays the fetch's own source
+  // of truth; the store copy is purely what the view renders off.
+  setOlderCursor(channelId, olderCursor);
   for (const m of [...page.messages].reverse()) {
-    upsertMessage(channelId, {
-      id: m.id,
-      author: m.author,
-      type: m.type,
-      content: m.content,
-      attachments: m.attachments,
-      reference: m.reference,
-      replyCount: (m as { replyCount?: number }).replyCount,
-      tags: m.tags,
-      createdAt: m.createdAt,
-      editedAt: m.editedAt,
-      deletedAt: m.deletedAt,
-      cursor: (m as { cursor?: string }).cursor,
-    });
+    upsertMessage(channelId, historyItemToMessage(m));
   }
   for (const r of page.reactions) addReactionAgg(channelId, r);
 
@@ -249,24 +265,12 @@ export async function openChannel(deps: OpenChannelDeps): Promise<ChannelHandle>
         limit: HISTORY_PAGE_SIZE,
         direction: "backward",
       });
-      for (const m of older.messages) {
-        upsertMessage(channelId, {
-          id: m.id,
-          author: m.author,
-          type: m.type,
-          content: m.content,
-          attachments: m.attachments,
-          reference: m.reference,
-          replyCount: (m as { replyCount?: number }).replyCount,
-          tags: m.tags,
-          createdAt: m.createdAt,
-          editedAt: m.editedAt,
-          deletedAt: m.deletedAt,
-          cursor: (m as { cursor?: string }).cursor,
-        });
-      }
+      // A backward page arrives NEWEST-first; reverse it so the block lands at
+      // the front of the timeline in chronological order.
+      prependHistory(channelId, [...older.messages].reverse().map(historyItemToMessage));
       for (const r of older.reactions) addReactionAgg(channelId, r);
       olderCursor = older.nextCursor;
+      setOlderCursor(channelId, olderCursor);
       return olderCursor !== null;
     },
     close(): void {
@@ -356,22 +360,7 @@ export async function loadReplies(deps: {
   const page = await fetchReplies(client, groupId, channelId, messageId, {
     limit: HISTORY_PAGE_SIZE,
   });
-  for (const m of page.messages) {
-    upsertMessage(channelId, {
-      id: m.id,
-      author: m.author,
-      type: m.type,
-      content: m.content,
-      attachments: m.attachments,
-      reference: m.reference,
-      replyCount: (m as { replyCount?: number }).replyCount,
-      tags: m.tags,
-      createdAt: m.createdAt,
-      editedAt: m.editedAt,
-      deletedAt: m.deletedAt,
-      cursor: (m as { cursor?: string }).cursor,
-    });
-  }
+  for (const m of page.messages) upsertMessage(channelId, historyItemToMessage(m));
   for (const r of page.reactions) addReactionAgg(channelId, r);
 }
 

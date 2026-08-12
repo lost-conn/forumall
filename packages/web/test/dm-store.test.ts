@@ -9,6 +9,7 @@
  */
 import { beforeEach, describe, expect, test } from "bun:test";
 import type { Reaction } from "@forumall/shared";
+import { DM_HISTORY_PAGE_SIZE, sentWindow } from "../src/components/dms/dm-controller.ts";
 import { DmSentStore, type SentDmMessage } from "../src/lib/dm-store.ts";
 import {
   type DmMessage,
@@ -17,10 +18,13 @@ import {
   applyDmEdit,
   clearDms,
   dmConversations,
+  dmHasOlder,
+  dmOlderCursorFor,
   dmReactionsFor,
   dmThread,
   dmTypingFor,
   removeDmReactionAgg,
+  setDmOlderCursor,
   setDmTyping,
   tombstoneDmMessage,
   upsertConversation,
@@ -293,6 +297,95 @@ describe("DM store: attachments + reference on the message model", () => {
     const m = dmThread(DM)[0];
     expect(m?.attachments).toHaveLength(1);
     expect(m?.reference?.id).toBe("parent");
+  });
+});
+
+describe("DM store: older-history paging state", () => {
+  beforeEach(() => clearDms());
+
+  test("cursor + hasOlder round-trip and are cleared with the store", () => {
+    expect(dmOlderCursorFor(DM)).toBeUndefined();
+    expect(dmHasOlder(DM)).toBe(false);
+
+    setDmOlderCursor(DM, "cursor_older", true);
+    expect(dmOlderCursorFor(DM)).toBe("cursor_older");
+    expect(dmHasOlder(DM)).toBe(true);
+
+    // The inbox can be exhausted while local sent backlog remains — the two
+    // signals are independent (that's why `hasOlder` isn't derived from the
+    // cursor).
+    setDmOlderCursor(DM, null, true);
+    expect(dmOlderCursorFor(DM)).toBeNull();
+    expect(dmHasOlder(DM)).toBe(true);
+
+    setDmOlderCursor(DM, null, false);
+    expect(dmHasOlder(DM)).toBe(false);
+
+    setDmOlderCursor(DM, "c", true);
+    clearDms();
+    expect(dmOlderCursorFor(DM)).toBeUndefined();
+    expect(dmHasOlder(DM)).toBe(false);
+  });
+});
+
+describe("sent-store windowing (which sent messages belong in the window)", () => {
+  /** `n` sent messages, ascending, one second apart from 00:00:00. */
+  const log = (n: number): SentDmMessage[] =>
+    Array.from({ length: n }, (_, i) =>
+      sent({
+        id: `msg_${String(i).padStart(3, "0")}`,
+        createdAt: `2026-06-05T00:00:${String(i).padStart(2, "0")}.000Z`,
+      }),
+    );
+
+  test("takes only the newest `limit` when there's no received floor", () => {
+    const window = sentWindow(log(10), { limit: 3 });
+    expect(window.map((m) => m.id)).toEqual(["msg_007", "msg_008", "msg_009"]);
+  });
+
+  test("an only-sent conversation (no inbox row) still renders its newest page", () => {
+    const all = log(DM_HISTORY_PAGE_SIZE + 5);
+    const window = sentWindow(all, { limit: DM_HISTORY_PAGE_SIZE });
+    expect(window).toHaveLength(DM_HISTORY_PAGE_SIZE);
+    expect(window[window.length - 1]?.id).toBe(all[all.length - 1]?.id);
+    // …and paging back reveals the rest, one page at a time.
+    expect(sentWindow(all, { limit: DM_HISTORY_PAGE_SIZE * 2 })).toHaveLength(all.length);
+  });
+
+  test("extends DOWN to the oldest loaded received message (no hole in the merge)", () => {
+    // Received history reaches back to 00:00:02, so every sent message at or
+    // after it must be hydrated even though `limit` alone would stop at 5.
+    const window = sentWindow(log(10), { limit: 5, downTo: "2026-06-05T00:00:02.000Z" });
+    expect(window.map((m) => m.id)).toEqual([
+      "msg_002",
+      "msg_003",
+      "msg_004",
+      "msg_005",
+      "msg_006",
+      "msg_007",
+      "msg_008",
+      "msg_009",
+    ]);
+  });
+
+  test("the floor extension is capped at one extra page (second-precision bursts)", () => {
+    // Every message shares one `createdAt` second (a burst): an uncapped floor
+    // would hydrate the entire log, so the window stops at 2 × limit.
+    const burst = Array.from({ length: 10 }, (_, i) =>
+      sent({ id: `msg_${String(i).padStart(3, "0")}`, createdAt: "2026-06-05T00:00:00.000Z" }),
+    );
+    const window = sentWindow(burst, { limit: 2, downTo: "2026-06-05T00:00:00.000Z" });
+    expect(window.map((m) => m.id)).toEqual(["msg_006", "msg_007", "msg_008", "msg_009"]);
+  });
+
+  test("a floor NEWER than the limit window never shrinks it", () => {
+    const window = sentWindow(log(10), { limit: 5, downTo: "2026-06-05T00:00:09.000Z" });
+    expect(window).toHaveLength(5);
+  });
+
+  test("a shorter log than the limit is fully hydrated", () => {
+    expect(sentWindow(log(2), { limit: 50 })).toHaveLength(2);
+    expect(sentWindow([], { limit: 50 })).toHaveLength(0);
   });
 });
 

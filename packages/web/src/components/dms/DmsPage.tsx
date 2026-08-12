@@ -7,7 +7,9 @@
  * sent-store) — plus a "new DM" entry point. The right pane is the selected
  * thread: the merged timeline of RECEIVED (server inbox) + locally-retained SENT
  * messages, ordered by `createdAt`, with a live `dm.message` subscription and a
- * composer.
+ * composer. The timeline is WINDOWED — one page from each source, with older
+ * windows pulled in on demand (the "Load older messages" button, or a scroll to
+ * the top) and the reading position anchored across the prepend.
  *
  * Route-driven: `/dms` shows the list with an empty state; `/dms/{dmId}` opens a
  * thread. A small trust-boundary notice makes the §8.3 confidentiality model
@@ -42,6 +44,7 @@ import {
   type DmConversationSummary,
   type DmMessage,
   dmConversations,
+  dmHasOlder,
   dmReactionsFor,
   dmThread,
   dmTypingFor,
@@ -569,7 +572,54 @@ const ThreadView: Component<{
       if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight;
     });
   };
-  createEffect(on(() => messages().length, scrollToBottom));
+  createEffect(
+    on(
+      () => messages().length,
+      () => {
+        // A "load older" prepend also grows the thread — it must not yank the
+        // reader back to the bottom (see `olderAnchor`).
+        if (olderAnchor) return;
+        scrollToBottom();
+      },
+    ),
+  );
+
+  // ---- Older-history paging (windowed thread, §7.4/§8.3) ------------------
+  // The thread loads one page from each source (inbox + local sent log); older
+  // windows are pulled in on demand — from the button below, or automatically
+  // when the reader scrolls near the top. `olderAnchor` holds the pre-load scroll
+  // geometry so the prepend doesn't move what the user is reading.
+  const NEAR_TOP_PX = 150;
+  const [loadingOlder, setLoadingOlder] = createSignal(false);
+  let olderAnchor: { height: number; top: number } | null = null;
+
+  const loadOlder = async (): Promise<void> => {
+    const h = handle();
+    if (!h || loadingOlder()) return;
+    olderAnchor = scrollEl ? { height: scrollEl.scrollHeight, top: scrollEl.scrollTop } : null;
+    setLoadingOlder(true);
+    try {
+      await h.loadOlder();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoadingOlder(false);
+      // Restore the reading position: the same content now sits
+      // `newHeight - oldHeight` lower in the scroll box.
+      queueMicrotask(() => {
+        const anchor = olderAnchor;
+        olderAnchor = null;
+        if (!scrollEl || !anchor) return;
+        scrollEl.scrollTop = scrollEl.scrollHeight - anchor.height + anchor.top;
+      });
+    }
+  };
+
+  const onThreadScroll = (): void => {
+    if (!scrollEl || scrollEl.scrollTop >= NEAR_TOP_PX) return;
+    if (!dmHasOlder(props.dmId)) return;
+    void loadOlder();
+  };
 
   // Jump to a parent message when its reply-quote is clicked: scroll its row into
   // view + flash a transient highlight (no-op if it's outside the loaded window).
@@ -659,6 +709,7 @@ const ThreadView: Component<{
 
       <div
         ref={scrollEl}
+        onScroll={onThreadScroll}
         class="min-h-0 flex-1 overflow-auto px-6 py-4"
         data-testid="dm-message-list"
       >
@@ -666,6 +717,19 @@ const ThreadView: Component<{
           <p class="text-sm text-danger" data-testid="dm-error">
             {error()}
           </p>
+        </Show>
+        <Show when={dmHasOlder(props.dmId)}>
+          <div class="mb-3 flex justify-center">
+            <button
+              type="button"
+              class="btn-ghost px-3 py-1 text-xs"
+              onClick={() => void loadOlder()}
+              disabled={loadingOlder()}
+              data-testid="dm-load-older"
+            >
+              {loadingOlder() ? "Loading…" : "Load older messages"}
+            </button>
+          </div>
         </Show>
         <Show
           when={messages().length > 0}

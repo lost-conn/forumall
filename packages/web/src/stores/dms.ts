@@ -75,6 +75,19 @@ interface DmState {
   reactions: Record<string, Record<string, Record<string, DmReactionGroup>>>;
   /** Typing actors per dmId (the counterparty; cleared on stop/timeout). */
   typing: Record<string, string[]>;
+  /**
+   * Oldest-loaded inbox cursor per dmId — what the next BACKWARD page continues
+   * from, `null` once the inbox side is fully paged back.
+   */
+  olderCursors: Record<string, string | null>;
+  /**
+   * Whether ANY older history remains for a dmId. Not the same as
+   * `olderCursors`: a thread's older window can also live purely in the local
+   * sent-store (§8.3 — the caller's own messages have no server copy), so the
+   * inbox cursor can be `null` while there is still backlog to reveal. The UI
+   * gates its "Load older messages" affordance on THIS.
+   */
+  hasOlder: Record<string, boolean>;
 }
 
 const [dms, setDms] = createStore<DmState>({
@@ -82,6 +95,8 @@ const [dms, setDms] = createStore<DmState>({
   threads: {},
   reactions: {},
   typing: {},
+  olderCursors: {},
+  hasOlder: {},
 });
 
 export { dms };
@@ -302,6 +317,31 @@ export function dmThread(dmId: string): DmMessage[] {
   return dms.threads[dmId] ?? [];
 }
 
+/**
+ * Record a conversation's older-history state: the inbox cursor the next
+ * backward page continues from (`null` when the inbox is exhausted) and whether
+ * any older history remains at all (inbox page OR local sent backlog). The DM
+ * controller publishes both after the initial page and after every `loadOlder()`.
+ */
+export function setDmOlderCursor(dmId: string, cursor: string | null, hasOlder: boolean): void {
+  setDms(
+    produce((s) => {
+      s.olderCursors[dmId] = cursor;
+      s.hasOlder[dmId] = hasOlder;
+    }),
+  );
+}
+
+/** The next backward-page cursor for a conversation's inbox, if any. */
+export function dmOlderCursorFor(dmId: string): string | null | undefined {
+  return dms.olderCursors[dmId];
+}
+
+/** Whether older history remains for a conversation (inbox page or sent backlog). */
+export function dmHasOlder(dmId: string): boolean {
+  return dms.hasOlder[dmId] === true;
+}
+
 /** All known conversations, newest-activity first. */
 export function dmConversations(): DmConversationSummary[] {
   return Object.values(dms.conversations).sort((a, b) => {
@@ -314,5 +354,12 @@ export function dmConversations(): DmConversationSummary[] {
 
 /** Reset all DM state (logout / account switch). */
 export function clearDms(): void {
-  setDms({ conversations: {}, threads: {}, reactions: {}, typing: {} });
+  setDms({
+    conversations: {},
+    threads: {},
+    reactions: {},
+    typing: {},
+    olderCursors: {},
+    hasOlder: {},
+  });
 }
