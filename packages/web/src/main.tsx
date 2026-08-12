@@ -50,12 +50,15 @@ if (!root) throw new Error("#root not found");
   upsertMessage(channelId, message);
 };
 
-// Test/debug hook: read the live session's OWN DM inbox for a conversation via a
-// SIGNED `GET /api/dms/{dmId}/messages` and return just the message texts. The
-// e2e DM suite uses this to prove the §8.3 invariant directly against the server:
-// the SENDER's inbox does NOT contain its own sent message (no sender copy), while
-// the recipient's does. It exposes no key material — only the active client's own
-// signed read path, which already lives in this browser (mirrors the hooks above).
+// Test/debug hook: read the live session's DM conversation VIEW for a dmId via a
+// SIGNED `GET /api/dms/{dmId}/messages` and return just the message texts. Per
+// §7.4 this is the caller's FULL view — what they received (their own inbox) ∪
+// what they sent (rows authored by them, held in the counterparty's inbox) — so
+// it proves the broadened read, NOT inbox ownership. For the §8.3 "no sender
+// copy" invariant use `__forumall_dmConversations` below (conversation rows are
+// per-INBOX, so they expose ownership; this endpoint does not). It exposes no key
+// material — only the active client's own signed read path (mirrors the hooks
+// above).
 (
   globalThis as unknown as { __forumall_dmInbox?: (dmId: string) => Promise<string[]> }
 ).__forumall_dmInbox = async (dmId: string): Promise<string[]> => {
@@ -78,6 +81,29 @@ if (!root) throw new Error("#root not found");
     }
     throw err;
   }
+};
+
+// Test/debug hook: read the live session's OWN DM conversation rows via a SIGNED
+// `GET /api/me/dms`, returning `{dmId, lastMessageText}` per row. A conversation
+// row exists ONLY for an inbox that holds messages (`dm_conversations.owner`), and
+// its `lastMessage` is that inbox's newest row — so this is the honest server-side
+// probe of the §8.3 "no sender copy" invariant: a user who has only SENT in a
+// conversation has NO row for it, and a user's row never surfaces their own sent
+// message. Signed read path only, no key material (mirrors the hooks above).
+(
+  globalThis as unknown as {
+    __forumall_dmConversations?: () => Promise<{ dmId: string; lastMessageText: string }[]>;
+  }
+).__forumall_dmConversations = async (): Promise<{ dmId: string; lastMessageText: string }[]> => {
+  const client = sessionClient();
+  if (!client) return [];
+  const res = await client.get<{
+    items: { id: string; lastMessage?: { content?: { text?: string } } }[];
+  }>("/api/me/dms");
+  return (res.data.items ?? []).map((c) => ({
+    dmId: c.id,
+    lastMessageText: c.lastMessage?.content?.text ?? "",
+  }));
 };
 
 // Test/debug hook: drive a SIGNED cross-provider request through a per-host

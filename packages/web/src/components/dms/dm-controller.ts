@@ -534,19 +534,51 @@ function optimisticReaction(
 }
 
 /**
+ * Pick the client an edit/delete of `message` must be addressed to, following
+ * §8.3 storage-follows-message:
+ *
+ *  - a message the caller **sent** is stored ONLY in the recipient's inbox, so
+ *    the operation goes to the RECIPIENT's provider — the same delivery target
+ *    `sendDm` resolves (`deliveryClient`, `undefined` when same-provider);
+ *  - a message the caller **received** is stored in the caller's OWN inbox on
+ *    their home provider (delete-from-my-inbox), so it goes to `client`.
+ *
+ * Falls back to the home `client` whenever no delivery client was resolvable
+ * (same-provider recipient, or no signing identity) — same shape as `sendDm`.
+ */
+function deliveryClientFor(
+  client: OfscpClient,
+  deliveryClient: OfscpClient | undefined,
+  message: DmMessageLike,
+  me: string,
+): OfscpClient {
+  return message.author === me ? (deliveryClient ?? client) : client;
+}
+
+/**
  * Edit one of the caller's OWN DM messages in place.
  *
  * §8.3 reality: the author's sent copy is retained CLIENT-SIDE (the server keeps
  * no sender copy); the server's stored copy lives in the RECIPIENT's inbox. The
- * server now routes the `PATCH` storage-follows-message: it edits the caller's
- * own inbox copy when one exists (a self-DM), else applies/forwards the edit to
- * the recipient's inbox copy — so the call SUCCEEDS instead of 404ing, and the
+ * server routes the `PATCH` storage-follows-message: it edits the caller's own
+ * inbox copy when one exists (a received copy or a self/same-node DM), else the
+ * recipient's inbox copy — so the call SUCCEEDS instead of 404ing, and the
  * recipient receives the edit live over `dm.message`. We apply the edit
  * optimistically (own view + local sent-store, so it survives reload) and revert
  * on a genuine REST failure (e.g. an expired edit window → 403).
+ *
+ * The request goes to the provider that HOLDS the message ({@link deliveryClientFor}):
+ * for a message the caller SENT that is the recipient's provider (the same
+ * delivery target `sendDm` uses, §8.3), otherwise the caller's home provider.
  */
 export async function editDm(args: {
   client: OfscpClient;
+  /**
+   * The RECIPIENT's provider client for a cross-provider conversation (built by
+   * the caller via `clientForHost`, exactly as for {@link sendDm}). Omitted /
+   * `undefined` for a same-provider recipient → the home `client` is used.
+   */
+  deliveryClient?: OfscpClient;
   dmId: string;
   message: DmMessageLike;
   me: string;
@@ -555,6 +587,7 @@ export async function editDm(args: {
   sentStore: DmSentStore;
 }): Promise<void> {
   const { client, dmId, message, me, text, mime, sentStore } = args;
+  const target = deliveryClientFor(client, args.deliveryClient, message, me);
   const content = { mime: mime ?? message.content.mime ?? "text/plain", text };
   const editedAt = rfc3339Timestamp();
   const mine = message.author === me;
@@ -586,7 +619,7 @@ export async function editDm(args: {
   });
 
   try {
-    await editDmMessage(client, dmId, message.id, content);
+    await editDmMessage(target, dmId, message.id, content);
   } catch (err) {
     // Genuine failure (expired window, etc.): revert the optimistic edit back to
     // the prior content so the author's view + local store stay truthful.
@@ -612,20 +645,24 @@ export async function editDm(args: {
 }
 
 /**
- * Delete (tombstone) one of the caller's OWN DM messages. Like {@link editDm},
- * the server now routes the `DELETE` storage-follows-message, so it SUCCEEDS
- * (applying / forwarding the tombstone to the recipient's inbox copy) and the
- * recipient receives it live over `dm.message`. We tombstone optimistically (own
- * view + local sent-store) and revert on a genuine failure.
+ * Delete (tombstone) a DM message. Like {@link editDm}, the server routes the
+ * `DELETE` storage-follows-message, so it SUCCEEDS (tombstoning the copy that
+ * actually exists) and the inbox owner receives it live over `dm.message`, and
+ * the request is addressed to the provider that HOLDS the message
+ * ({@link deliveryClientFor}). We tombstone optimistically (own view + local
+ * sent-store) and revert on a genuine failure.
  */
 export async function deleteDm(args: {
   client: OfscpClient;
+  /** As {@link editDm}: the RECIPIENT's provider client, cross-provider only. */
+  deliveryClient?: OfscpClient;
   dmId: string;
   message: DmMessageLike;
   me: string;
   sentStore: DmSentStore;
 }): Promise<void> {
   const { client, dmId, message, me, sentStore } = args;
+  const target = deliveryClientFor(client, args.deliveryClient, message, me);
   const deletedAt = rfc3339Timestamp();
 
   // Optimistic tombstone: in-memory thread + local sent-store (survives reload).
@@ -639,7 +676,7 @@ export async function deleteDm(args: {
   });
 
   try {
-    await deleteDmMessage(client, dmId, message.id);
+    await deleteDmMessage(target, dmId, message.id);
   } catch (err) {
     // Genuine failure: restore the message to its prior content (un-tombstone).
     upsertDmMessage(dmId, {

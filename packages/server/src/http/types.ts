@@ -14,6 +14,14 @@ import type { PresenceRegistry } from "../provider/presence.ts";
 import type { Hub } from "../provider/ws-hub.ts";
 
 /**
+ * Which identity a signed request authenticated as (§4.5): a user **device key**
+ * (`X-OFSCP-Actor`, §4.4) or the **provider signing key** (`X-OFSCP-Provider`,
+ * §8.1). Exposed on `c.var.signatureMode` alongside `c.var.actor` so a route that
+ * accepts BOTH (see `requireActorOrProviderSignature`) can tell them apart.
+ */
+export type SignatureMode = "actor" | "provider";
+
+/**
  * The authenticated identity established by the signed-request middleware
  * (`requireSignature`, §4.5). Present on `c.var.actor` only on routes guarded by
  * that middleware; unauthenticated routes leave it `undefined`.
@@ -67,6 +75,13 @@ export interface AppVariables {
   readonly userKeysCache: RemoteUserKeysCache;
   /** Set by `requireSignature` on success; undefined on unauthenticated routes. */
   actor?: AuthenticatedActor;
+  /**
+   * The identity mode that verified the request, set alongside `actor`. Only
+   * interesting on routes that accept EITHER identity (§4.4 user-signed *or*
+   * §8.1 provider-signed) — they read it to decide whose authority the acting
+   * actor is drawn from. Undefined on unauthenticated routes.
+   */
+  signatureMode?: SignatureMode;
 }
 
 export interface AppBindings {

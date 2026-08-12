@@ -864,7 +864,21 @@ const DmMessageRow: Component<{
     const text = editText().trim();
     if (!client || !store || !me || text.length === 0) return;
     setEditError(null);
-    void editDm({ client, dmId: props.dmId, message: m(), me, text, sentStore: store })
+    // Storage-follows-message (§8.3): a message the caller SENT lives on the
+    // RECIPIENT's provider, so the edit is addressed there — the same delivery
+    // client the send used (null → same provider → the home client).
+    void resolveDeliveryClient(props.counterparty)
+      .then((deliveryClient) =>
+        editDm({
+          client,
+          ...(deliveryClient ? { deliveryClient } : {}),
+          dmId: props.dmId,
+          message: m(),
+          me,
+          text,
+          sentStore: store,
+        }),
+      )
       .then(() => setEditing(false))
       .catch((err) =>
         setEditError(err instanceof Error ? err.message : "Could not edit this message."),
@@ -877,9 +891,22 @@ const DmMessageRow: Component<{
     if (!client || !store || !me) return;
     if (!confirm("Delete this message?")) return;
     setActionError(null);
-    void deleteDm({ client, dmId: props.dmId, message: m(), me, sentStore: store }).catch((err) =>
-      setActionError(err instanceof Error ? err.message : "Could not delete this message."),
-    );
+    // Same §8.3 routing as the edit above (`deleteDm` keeps a received message's
+    // delete on the home provider — that copy lives in the caller's own inbox).
+    void resolveDeliveryClient(props.counterparty)
+      .then((deliveryClient) =>
+        deleteDm({
+          client,
+          ...(deliveryClient ? { deliveryClient } : {}),
+          dmId: props.dmId,
+          message: m(),
+          me,
+          sentStore: store,
+        }),
+      )
+      .catch((err) =>
+        setActionError(err instanceof Error ? err.message : "Could not delete this message."),
+      );
   };
 
   const retry = (): void => {

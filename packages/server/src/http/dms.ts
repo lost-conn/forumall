@@ -7,10 +7,12 @@
  *    (this provider, in the all-local case) stores the message in the LOCAL
  *    recipient's inbox and emits `dm.message`. NO sender copy is kept (§8.3).
  *  - `GET /api/me/dms` — paged list of the caller's DM conversations (§7.4).
- *  - `GET /api/dms/{dmId}/messages` — paged history from the caller's OWN inbox
- *    for the conversation, participant-only (§7.4).
+ *  - `GET /api/dms/{dmId}/messages` — paged history: the caller's FULL
+ *    conversation view (what they received ∪ what they sent), participant-only
+ *    (§7.4).
  *
- * Plus edit/delete on the recipient's stored copy (author/tombstone, §7.1):
+ * Plus edit/delete on the stored copy, wherever it lives (author/tombstone,
+ * §7.1) — see the routing decision table on the routes themselves:
  *  - `PATCH /api/dms/{dmId}/messages/{messageId}` (author-only, edit window).
  *  - `DELETE /api/dms/{dmId}/messages/{messageId}` (tombstone).
  *
@@ -70,7 +72,11 @@ import type { FederationFetch } from "../provider/federation/http.ts";
 import { signedProviderFetch } from "../provider/federation/http.ts";
 import { previewText, sendPushToRecipient } from "../provider/push-send.ts";
 import { AppError } from "./errors.ts";
-import { requireProviderSignature, requireSignature } from "./signature.ts";
+import {
+  requireActorOrProviderSignature,
+  requireProviderSignature,
+  requireSignature,
+} from "./signature.ts";
 import type { AppBindings } from "./types.ts";
 
 /** Max length of a reaction key (matches the channel reaction key bound). */
@@ -481,22 +487,28 @@ export function createFederationDmsRouter() {
   );
 
   // -- Federation edit/delete ingest (§8.3 storage-follows-message) -------
-  // A peer forwards an edit/delete by one of THEIR users of a DM message that
-  // lives in a LOCAL recipient's inbox here. Provider-signed (§8.1); the acting
-  // actor (and, for edit, the new content) travel in the body. We re-derive the
-  // local inbox owner from (actor, dmId) — the same §8.3 guard — enforce
-  // author-only + the edit window against the stored copy, apply, and fan
-  // `dm.message` to the local recipient.
+  // The same operation arrives here in EITHER of the two §8.3 delivery shapes,
+  // so both signatures are accepted (see {@link federationActingActor}):
+  //  - **user-signed** (§4.4) — "the author signs and delivers to the message's
+  //    home provider": the AUTHOR calls us directly about a message of theirs
+  //    that lives in a LOCAL recipient's inbox. The acting actor is the
+  //    authenticated actor; a body `actor` is ignored.
+  //  - **provider-signed** (§8.1) — a peer forwards an edit/delete by one of
+  //    THEIR users; the acting actor travels in the body (a provider-signed
+  //    request carries no `X-OFSCP-Actor`) and must belong to that peer.
+  // Either way we re-derive the local inbox owner from (actor, dmId) — the same
+  // §8.3 guard the send ingest applies — enforce author-only + the edit window
+  // against the stored copy, apply, and fan `dm.message` to the local recipient.
+  const actorOrProviderSigned = requireActorOrProviderSignature();
 
   // PATCH /{dmId}/messages/{messageId}
-  router.patch("/:dmId/messages/:messageId", providerSigned, async (c) => {
+  router.patch("/:dmId/messages/:messageId", actorOrProviderSigned, async (c) => {
     const { db, config, hub } = c.var;
     const dmId = requireParam(c, "dmId");
     const messageId = requireParam(c, "messageId");
 
     const raw = (await c.req.json().catch(() => ({}))) as { actor?: unknown; content?: unknown };
-    const actingActor = typeof raw.actor === "string" ? raw.actor : "";
-    if (actingActor === "") throw AppError.badRequest({ detail: "missing acting actor" });
+    const actingActor = federationActingActor(c, raw.actor);
     const content = MessageUpdateRequestSchema.parse({ content: raw.content }).content as Content;
 
     const { owner, ownerActor } = resolveFederationDmOwner(db, config, actingActor, dmId);
@@ -516,14 +528,13 @@ export function createFederationDmsRouter() {
   });
 
   // DELETE /{dmId}/messages/{messageId}
-  router.delete("/:dmId/messages/:messageId", providerSigned, async (c) => {
+  router.delete("/:dmId/messages/:messageId", actorOrProviderSigned, async (c) => {
     const { db, config, hub } = c.var;
     const dmId = requireParam(c, "dmId");
     const messageId = requireParam(c, "messageId");
 
     const raw = (await c.req.json().catch(() => ({}))) as { actor?: unknown };
-    const actingActor = typeof raw.actor === "string" ? raw.actor : "";
-    if (actingActor === "") throw AppError.badRequest({ detail: "missing acting actor" });
+    const actingActor = federationActingActor(c, raw.actor);
 
     const { owner, ownerActor } = resolveFederationDmOwner(db, config, actingActor, dmId);
     const row = getDmMessageRow(db, owner, dmId, messageId);
@@ -542,6 +553,36 @@ export function createFederationDmsRouter() {
   });
 
   return router;
+}
+
+/**
+ * The acting user of a federation DM edit/delete ingest, derived from **how the
+ * request was signed** — never from an unauthenticated claim:
+ *
+ *  - **user-signed** (§4.4 / §8.3 "the author signs and delivers to the
+ *    message's home provider"): the acting actor IS the authenticated actor. A
+ *    body `actor` field is IGNORED — a signed-in user may only act as itself, so
+ *    naming someone else buys nothing.
+ *  - **provider-signed** (§8.1 peer forward): the request carries no
+ *    `X-OFSCP-Actor`, so the peer names its user in the body. A peer is trusted
+ *    for its OWN users only, so the named actor's domain MUST equal the signing
+ *    provider's domain (403 otherwise); a missing/blank actor is a 400.
+ *
+ * Downstream, `resolveFederationDmOwner` still applies the §8.3 dmId guard and
+ * `applyDmEdit`/`applyDmDelete` still enforce §7.1 author-only + the edit window
+ * against the stored copy — this only decides WHO is acting.
+ */
+function federationActingActor(c: Context<AppBindings>, bodyActor: unknown): string {
+  const signer = c.var.actor;
+  if (!signer) throw AppError.unauthorized();
+  if (c.var.signatureMode !== "provider") return signer.actor;
+
+  const actingActor = typeof bodyActor === "string" ? bodyActor : "";
+  if (actingActor === "") throw AppError.badRequest({ detail: "missing acting actor" });
+  if (domainOf(actingActor) !== signer.domain) {
+    throw AppError.forbidden({ detail: "a provider may only act on behalf of its own users" });
+  }
+  return actingActor;
 }
 
 /**
@@ -870,29 +911,48 @@ export function createDmsRouter() {
   });
 
   // -- PATCH /{dmId}/messages/{messageId} (§7.1 edit) ---------------------
-  // Author-only + edit window. Storage-follows-message (§8.3): if the target
-  // lives in the caller's OWN inbox (a self-DM, or both parties on this node) it
-  // is edited + fanned out locally; if the caller is editing a message they SENT
-  // to a REMOTE peer (no local copy), the edit is FORWARDED to the peer (mirrors
-  // the reaction path); if the counterparty is local, it is applied to their
-  // inbox copy here.
+  // Author-only + edit window (both enforced by `applyDmEdit`). Storage-follows-
+  // message (§8.3): a DM is stored ONLY in the recipient's inbox, so what decides
+  // where the edit lands is *where the message lives* — NOT whether the caller
+  // happens to own an inbox conversation row. Gating on the latter 404s an author
+  // who has only ever SENT in the conversation (they have no inbox row at all),
+  // even though their message is sitting right here in the recipient's inbox.
+  //
+  // Routing decision table (first match wins; DELETE below is identical):
+  //
+  //  | # | condition                                        | action                        |
+  //  |---|--------------------------------------------------|-------------------------------|
+  //  | a | a row for {dmId,messageId} in the CALLER's OWN    | apply here, owner = caller    |
+  //  |   | inbox (a received copy, or a self/same-node DM)   |                               |
+  //  | b | else a row on THIS node owned by the local user   | apply to that copy,           |
+  //  |   | `u` with deriveDmId(caller, u@authority)={dmId}   | AUTHOR-ONLY (only-sent case)  |
+  //  | c | else the caller has an inbox row naming a REMOTE  | forward to that peer (§8.1)   |
+  //  |   | counterparty                                     |                               |
+  //  | d | else                                             | 404 — not stored here         |
+  //
+  // (b) cannot leak: the inbox owner is derived from the CALLER's own actor via
+  // the §8.3 dmId derivation, so it only ever resolves a conversation the caller
+  // is a participant of — a third party matches no case and falls through to (d).
+  // (b) runs before (c) because a dmId fixes its participant pair: a conversation
+  // whose counterparty is remote has no local owner to resolve, so the two are
+  // mutually exclusive. Note (c) needs the inbox row: with no row we cannot learn
+  // the remote counterparty (the dmId is a one-way digest), so an only-sent
+  // CROSS-provider author must address the recipient's provider directly (which
+  // the client does — see `resolveDeliveryClient` / the §8.3 federation ingest).
   router.patch("/:dmId/messages/:messageId", signed, async (c) => {
     const { db, config, hub, federationFetch } = c.var;
     const actor = c.var.actor;
     if (!actor) throw AppError.unauthorized();
     const dmId = requireParam(c, "dmId");
     const messageId = requireParam(c, "messageId");
+    const authority = canonicalAuthority(config.domain);
 
     const body = MessageUpdateRequestSchema.parse(await c.req.json());
     const content = body.content as Content;
 
-    // Participation: the caller must have an inbox conversation row for dmId.
-    const counterparty = counterpartyOf(db, actor.handle, dmId);
-    if (counterparty === null) throw AppError.notFound({ detail: "no such conversation" });
-
-    // Does the target message live in the caller's own inbox?
-    const local = getDmMessageRow(db, actor.handle, dmId, messageId);
-    if (local) {
+    // (a) The target lives in the caller's own inbox.
+    const own = getDmMessageRow(db, actor.handle, dmId, messageId);
+    if (own) {
       const message = applyDmEdit(db, hub, {
         owner: actor.handle,
         ownerActor: actor.actor,
@@ -900,15 +960,30 @@ export function createDmsRouter() {
         messageId,
         actor: actor.actor,
         content,
-        row: local,
+        row: own,
       });
       return c.json(MessageSchema.parse(message));
     }
 
-    // No local copy → the caller SENT this message; it lives in the
-    // counterparty's inbox. Remote → forward; local → apply to their copy.
-    const cpDomain = domainOf(counterparty);
-    const authority = canonicalAuthority(config.domain);
+    // (b) The target lives in a LOCAL counterparty's inbox — the caller SENT it.
+    const owner = resolveLocalDmOwner(db, config, actor.actor, dmId);
+    const row = owner !== null ? getDmMessageRow(db, owner, dmId, messageId) : null;
+    if (owner !== null && row) {
+      const message = applyDmEdit(db, hub, {
+        owner,
+        ownerActor: `${owner}@${authority}`,
+        dmId,
+        messageId,
+        actor: actor.actor,
+        content,
+        row,
+      });
+      return c.json(MessageSchema.parse(message));
+    }
+
+    // (c) The counterparty is REMOTE → the message lives on their provider.
+    const counterparty = counterpartyOf(db, actor.handle, dmId);
+    const cpDomain = counterparty !== null ? domainOf(counterparty) : "";
     if (cpDomain !== "" && cpDomain !== authority) {
       const res = await forwardDmEdit(db, config, federationFetch, {
         dmId,
@@ -920,51 +995,58 @@ export function createDmsRouter() {
       return c.body(await res.text(), res.status as 200 | 400 | 403 | 404);
     }
 
-    const owner = resolveLocalDmOwner(db, config, actor.actor, dmId);
-    const row = owner !== null ? getDmMessageRow(db, owner, dmId, messageId) : null;
-    if (owner === null || !row) throw AppError.notFound({ detail: "no such message" });
-    const message = applyDmEdit(db, hub, {
-      owner,
-      ownerActor: `${owner}@${authority}`,
-      dmId,
-      messageId,
-      actor: actor.actor,
-      content,
-      row,
-    });
-    return c.json(MessageSchema.parse(message));
+    // (d) Not stored here.
+    throw AppError.notFound({ detail: "no such message" });
   });
 
   // -- DELETE /{dmId}/messages/{messageId} (§7.1 tombstone) --------------
-  // Author-only. Same storage-follows-message routing as PATCH.
+  // Same storage-follows-message decision table as PATCH above. The two cases
+  // differ in WHO may tombstone: (a) the caller's own inbox copy may be deleted
+  // by its owner regardless of authorship (delete-from-my-inbox), while (b) a
+  // copy sitting in the counterparty's inbox is author-only — mirroring the
+  // federation ingest.
   router.delete("/:dmId/messages/:messageId", signed, async (c) => {
     const { db, config, hub, federationFetch } = c.var;
     const actor = c.var.actor;
     if (!actor) throw AppError.unauthorized();
     const dmId = requireParam(c, "dmId");
     const messageId = requireParam(c, "messageId");
+    const authority = canonicalAuthority(config.domain);
 
-    const counterparty = counterpartyOf(db, actor.handle, dmId);
-    if (counterparty === null) throw AppError.notFound({ detail: "no such conversation" });
-
-    const local = getDmMessageRow(db, actor.handle, dmId, messageId);
-    if (local) {
-      // Own inbox copy: the owner may tombstone it regardless of authorship
-      // (original DM-delete semantics — delete-from-my-inbox).
+    // (a) The target lives in the caller's own inbox.
+    const own = getDmMessageRow(db, actor.handle, dmId, messageId);
+    if (own) {
       applyDmDelete(db, hub, {
         owner: actor.handle,
         ownerActor: actor.actor,
         dmId,
         messageId,
         actor: actor.actor,
-        row: local,
+        row: own,
         requireAuthor: false,
       });
       return c.body(null, 204);
     }
 
-    const cpDomain = domainOf(counterparty);
-    const authority = canonicalAuthority(config.domain);
+    // (b) The target lives in a LOCAL counterparty's inbox — the caller SENT it.
+    const owner = resolveLocalDmOwner(db, config, actor.actor, dmId);
+    const row = owner !== null ? getDmMessageRow(db, owner, dmId, messageId) : null;
+    if (owner !== null && row) {
+      applyDmDelete(db, hub, {
+        owner,
+        ownerActor: `${owner}@${authority}`,
+        dmId,
+        messageId,
+        actor: actor.actor,
+        row,
+        requireAuthor: true,
+      });
+      return c.body(null, 204);
+    }
+
+    // (c) The counterparty is REMOTE → the message lives on their provider.
+    const counterparty = counterpartyOf(db, actor.handle, dmId);
+    const cpDomain = counterparty !== null ? domainOf(counterparty) : "";
     if (cpDomain !== "" && cpDomain !== authority) {
       const res = await forwardDmDelete(db, config, federationFetch, {
         dmId,
@@ -976,21 +1058,8 @@ export function createDmsRouter() {
       return c.body(await res.text(), res.status as 400 | 403 | 404);
     }
 
-    // The message lives in a LOCAL counterparty's inbox; the caller SENT it, so
-    // only the author may delete it (author-only — mirrors the federation ingest).
-    const owner = resolveLocalDmOwner(db, config, actor.actor, dmId);
-    const row = owner !== null ? getDmMessageRow(db, owner, dmId, messageId) : null;
-    if (owner === null || !row) throw AppError.notFound({ detail: "no such message" });
-    applyDmDelete(db, hub, {
-      owner,
-      ownerActor: `${owner}@${authority}`,
-      dmId,
-      messageId,
-      actor: actor.actor,
-      row,
-      requireAuthor: true,
-    });
-    return c.body(null, 204);
+    // (d) Not stored here.
+    throw AppError.notFound({ detail: "no such message" });
   });
 
   return router;

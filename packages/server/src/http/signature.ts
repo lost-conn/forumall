@@ -59,13 +59,13 @@ import {
 } from "../provider/nonce-store.ts";
 import { getProviderSigningKeyById } from "../provider/signing-key.ts";
 import { AppError } from "./errors.ts";
-import type { AppBindings, AuthenticatedActor } from "./types.ts";
+import type { AppBindings, AuthenticatedActor, SignatureMode } from "./types.ts";
 
 /** Default allowed timestamp skew (±300s, §4.5 step 3). */
 export const DEFAULT_TIMESTAMP_SKEW_SECONDS = 300;
 
 /** Identity mode: a user device key (§4.4) or the provider signing key (§8.1). */
-export type SignatureMode = "actor" | "provider";
+export type { SignatureMode } from "./types.ts";
 
 export interface RequireSignatureOptions {
   /** `"actor"` (user device key, default) or `"provider"` (provider key). */
@@ -428,6 +428,8 @@ async function verifyAndSetActor(c: Context, vctx: VerifyContext): Promise<void>
 
     // Authenticated. Authorization (membership/tier) is applied separately.
     c.set("actor", signer.actor);
+    // Record WHICH identity verified, for routes that accept either (§8.1).
+    c.set("signatureMode", mode);
   }
 }
 
@@ -478,6 +480,44 @@ export function optionalSignature(
         identityHeader,
       });
     }
+    await next();
+  };
+}
+
+/**
+ * Accept EITHER identity on one route: a **user-signed** request (§4.4, the
+ * actor's device key) or a **provider-signed** one (§8.1, the peer's signing
+ * key). Needed where the spec defines the same operation with two delivery
+ * shapes — e.g. a DM edit/delete (§8.3), which the AUTHOR may deliver directly
+ * to the message's home provider (user-signed) *and* which a peer may forward on
+ * one of its users' behalf (provider-signed).
+ *
+ * The mode is chosen by which identity header the request carries:
+ * `X-OFSCP-Provider` present → provider (§8.1); otherwise the user path (§4.4) —
+ * including when NO identity header is present, so a headerless request still
+ * fails with the exact §4.5 step-1 401. The full ordered §4.5 pipeline runs
+ * either way (one shared nonce store), and the chosen mode is exposed on
+ * `c.var.signatureMode` so the handler can tell whose authority it is acting on:
+ * a user-signed request may only act as ITSELF, while a provider-signed one
+ * names its user out-of-band (a provider-signed request has no `X-OFSCP-Actor`)
+ * and must be trusted only for that provider's own users.
+ */
+export function requireActorOrProviderSignature(
+  opts: Omit<RequireSignatureOptions, "mode"> = {},
+): MiddlewareHandler<AppBindings> {
+  const skewSeconds = opts.skewSeconds ?? DEFAULT_TIMESTAMP_SKEW_SECONDS;
+  const nonceRetentionMs = opts.nonceRetentionMs ?? DEFAULT_NONCE_RETENTION_MS;
+  const nonceStore = opts.nonceStore ?? new InMemoryNonceStore();
+
+  return async (c, next) => {
+    const mode: SignatureMode = c.req.header(HEADER.PROVIDER) !== undefined ? "provider" : "actor";
+    await verifyAndSetActor(c, {
+      mode,
+      skewSeconds,
+      nonceRetentionMs,
+      nonceStore,
+      identityHeader: mode === "provider" ? HEADER.PROVIDER : HEADER.ACTOR,
+    });
     await next();
   };
 }

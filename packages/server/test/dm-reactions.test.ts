@@ -31,6 +31,7 @@ import {
   generateKeyPair,
   rfc3339Timestamp,
   sign,
+  signProvider,
   signWsAuthenticate,
 } from "@forumall/shared";
 
@@ -38,6 +39,7 @@ import { type AppWithWebSocket, createApp } from "../src/app.ts";
 import { type Argon2Params, type Config, loadConfig } from "../src/config.ts";
 import { openDb } from "../src/db/index.ts";
 import { migrate } from "../src/db/migrate.ts";
+import { getProviderSigningKey } from "../src/provider/signing-key.ts";
 import type { Hub } from "../src/provider/ws-hub.ts";
 import { type Federation, startFederation } from "./helpers/two-provider.ts";
 
@@ -788,5 +790,317 @@ describe("DM edit/delete — cross-provider forwarding", () => {
     expect((delEvt.data as { message: { deletedAt?: string } }).message.deletedAt).toBeTruthy();
 
     bobWs.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests — edit/delete by an author who has ONLY SENT in the conversation.
+//
+// Regression: the routes used to gate participation on the CALLER owning an
+// inbox conversation row, which an only-sent author never has (§8.3 keeps no
+// sender copy) — so editing/deleting a message they sent 404'd until the
+// counterparty happened to reply. Routing now follows where the message is
+// STORED, so the only-sent author is served on the first message.
+// ---------------------------------------------------------------------------
+
+describe("DM edit/delete — only-sent author (no inbox row of their own)", () => {
+  test("author edits + deletes their sent message with no reply ever received", async () => {
+    const b = boot("dmedit-onlysent");
+    const alice = await register(b, "alice");
+    const bob = await register(b, "bob");
+    const dmId = deriveDmId(alice.actor, bob.actor);
+
+    // alice → bob and NOTHING else: bob holds the only copy + the only
+    // conversation row. alice's `/api/me/dms` is empty (no sender copy, §8.3).
+    const sent = await sendDm(b, alice, dmId, { text: "typo heer", clientMessageId: "os1" });
+    expect(sent.status).toBe(201);
+    const msgId = ((await sent.json()) as { id: string }).id;
+    const convs = await signedReq(b, alice, "GET", "/api/me/dms");
+    expect(((await convs.json()) as { items: unknown[] }).items).toEqual([]);
+
+    const bobWs = await connectAuthenticated(b.url, b.domain, bob);
+
+    // Edit → applied to bob's inbox copy + fanned to bob.
+    const patch = await signedReq(b, alice, "PATCH", `/api/dms/${dmId}/messages/${msgId}`, {
+      content: { mime: "text/plain", text: "typo here" },
+    });
+    expect(patch.status).toBe(200);
+    const edited = (await patch.json()) as { content: { text: string }; editedAt?: string };
+    expect(edited.content.text).toBe("typo here");
+    expect(edited.editedAt).toBeTruthy();
+
+    const editEvt = await bobWs.next(
+      (f) =>
+        f.type === "dm.message" && (f.data as { message?: { id?: string } }).message?.id === msgId,
+    );
+    expect((editEvt.data as { message: { content: { text: string } } }).message.content.text).toBe(
+      "typo here",
+    );
+
+    // Delete → tombstones bob's stored copy + fans the tombstone to bob.
+    const del = await signedReq(b, alice, "DELETE", `/api/dms/${dmId}/messages/${msgId}`);
+    expect(del.status).toBe(204);
+
+    const delEvt = await bobWs.next(
+      (f) =>
+        f.type === "dm.message" &&
+        (f.data as { message?: { id?: string; deletedAt?: string } }).message?.id === msgId &&
+        Boolean((f.data as { message?: { deletedAt?: string } }).message?.deletedAt),
+    );
+    expect((delEvt.data as { message: { deletedAt?: string } }).message.deletedAt).toBeTruthy();
+
+    const hist = await signedReq(b, bob, "GET", `/api/dms/${dmId}/messages`);
+    const items = (
+      (await hist.json()) as {
+        items: { id: string; deletedAt?: string; content: { text: string } }[];
+      }
+    ).items;
+    const tomb = items.find((x) => x.id === msgId);
+    expect(tomb?.deletedAt).toBeTruthy();
+    expect(tomb?.content.text).toBe("");
+
+    bobWs.close();
+  });
+
+  test("a third party (neither participant) still gets 404 on edit and delete", async () => {
+    const b = boot("dmedit-thirdparty");
+    const alice = await register(b, "alice");
+    const bob = await register(b, "bob");
+    const carol = await register(b, "carol");
+    const dmId = deriveDmId(alice.actor, bob.actor);
+
+    const sent = await sendDm(b, alice, dmId, { text: "private", clientMessageId: "tp1" });
+    const msgId = ((await sent.json()) as { id: string }).id;
+
+    // carol owns no copy, and no local user derives {dmId} with carol → 404,
+    // both before and after a reply exists (i.e. regardless of inbox rows).
+    const patch = await signedReq(b, carol, "PATCH", `/api/dms/${dmId}/messages/${msgId}`, {
+      content: { mime: "text/plain", text: "hijacked" },
+    });
+    expect(patch.status).toBe(404);
+    const del = await signedReq(b, carol, "DELETE", `/api/dms/${dmId}/messages/${msgId}`);
+    expect(del.status).toBe(404);
+
+    await sendDm(b, bob, dmId, { text: "reply", clientMessageId: "tp2" });
+    const patch2 = await signedReq(b, carol, "PATCH", `/api/dms/${dmId}/messages/${msgId}`, {
+      content: { mime: "text/plain", text: "hijacked" },
+    });
+    expect(patch2.status).toBe(404);
+
+    // The stored copy is untouched by every rejected attempt.
+    const hist = await signedReq(b, bob, "GET", `/api/dms/${dmId}/messages`);
+    const items = ((await hist.json()) as { items: { id: string; content: { text: string } }[] })
+      .items;
+    expect(items.find((x) => x.id === msgId)?.content.text).toBe("private");
+  });
+
+  test("the §7.1 edit window still rejects an only-sent author (403)", async () => {
+    const b = boot("dmedit-onlysent-window", { MESSAGE_EDIT_WINDOW_SECONDS: "0" });
+    const alice = await register(b, "alice");
+    const bob = await register(b, "bob");
+    const dmId = deriveDmId(alice.actor, bob.actor);
+
+    const sent = await sendDm(b, alice, dmId, { text: "late", clientMessageId: "w1" });
+    const msgId = ((await sent.json()) as { id: string }).id;
+    await new Promise((r) => setTimeout(r, 10)); // ensure the window has elapsed
+
+    const patch = await signedReq(b, alice, "PATCH", `/api/dms/${dmId}/messages/${msgId}`, {
+      content: { mime: "text/plain", text: "too late" },
+    });
+    expect(patch.status).toBe(403);
+
+    // A delete is NOT window-bound; the author may still tombstone it.
+    const del = await signedReq(b, alice, "DELETE", `/api/dms/${dmId}/messages/${msgId}`);
+    expect(del.status).toBe(204);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests — §8.3 author-signed delivery of an edit/delete to the message's HOME
+// provider (the cross-provider only-sent case: the author's own provider stores
+// nothing and cannot learn the remote counterparty, so the client addresses the
+// recipient's provider directly, exactly as it does for the DM send).
+// ---------------------------------------------------------------------------
+
+describe("DM edit/delete — author-signed on the message's home provider (§8.3)", () => {
+  function fedForEdit(): Federation {
+    const fed = startFederation(tmp, {
+      domainA: "aedit2.test",
+      domainB: "bedit2.test",
+      envA: { FEDERATION_INSECURE_LOCALHOST: "1" },
+      envB: { FEDERATION_INSECURE_LOCALHOST: "1" },
+    });
+    feds.push(fed);
+    return fed;
+  }
+
+  test("alice@a edits/deletes on b with her OWN signature, having only sent", async () => {
+    const fed = fedForEdit();
+    const alice = await registerAt(fed.a.base, "aedit2.test", "aliceedit2a");
+    const bob = await registerAt(fed.b.base, "bedit2.test", "bobedit2a");
+    const dmId = deriveDmId(alice.actor, bob.actor);
+
+    // alice@a → bob@b (delivered straight to b, §8.3). No reply: alice has no
+    // conversation row anywhere, so her home provider could not forward.
+    const sent = await signedReqAt(
+      fed.b.base,
+      "bedit2.test",
+      alice,
+      "POST",
+      `/api/federation/dms/${dmId}/messages`,
+      { clientMessageId: "f1", content: { mime: "text/plain", text: "typo heer" } },
+    );
+    expect(sent.status).toBe(201);
+    const msgId = ((await sent.json()) as { id: string }).id;
+
+    const bobWs = await connectAuthenticated(
+      `ws://localhost:${fed.b.server.port}/api/ws`,
+      "bedit2.test",
+      bob,
+    );
+
+    // (1) The §8.3-named federation surface, USER-signed by the author.
+    const patch = await signedReqAt(
+      fed.b.base,
+      "bedit2.test",
+      alice,
+      "PATCH",
+      `/api/federation/dms/${dmId}/messages/${msgId}`,
+      { content: { mime: "text/plain", text: "typo here" } },
+    );
+    expect(patch.status).toBe(200);
+    expect(((await patch.json()) as { content: { text: string } }).content.text).toBe("typo here");
+    const editEvt = await bobWs.next(
+      (f) =>
+        f.type === "dm.message" && (f.data as { message?: { id?: string } }).message?.id === msgId,
+    );
+    expect((editEvt.data as { message: { content: { text: string } } }).message.content.text).toBe(
+      "typo here",
+    );
+
+    // (2) The plain DM surface on the SAME provider (what the web client uses
+    // once it resolves the recipient's delivery client) resolves identically.
+    const patch2 = await signedReqAt(
+      fed.b.base,
+      "bedit2.test",
+      alice,
+      "PATCH",
+      `/api/dms/${dmId}/messages/${msgId}`,
+      { content: { mime: "text/plain", text: "typo here!" } },
+    );
+    expect(patch2.status).toBe(200);
+
+    // (3) Delete, user-signed, on the federation surface → tombstone + fan-out.
+    const del = await signedReqAt(
+      fed.b.base,
+      "bedit2.test",
+      alice,
+      "DELETE",
+      `/api/federation/dms/${dmId}/messages/${msgId}`,
+    );
+    expect(del.status).toBe(204);
+    const delEvt = await bobWs.next(
+      (f) =>
+        f.type === "dm.message" &&
+        (f.data as { message?: { id?: string; deletedAt?: string } }).message?.id === msgId &&
+        Boolean((f.data as { message?: { deletedAt?: string } }).message?.deletedAt),
+    );
+    expect((delEvt.data as { message: { deletedAt?: string } }).message.deletedAt).toBeTruthy();
+
+    bobWs.close();
+  });
+
+  test("a user-signed ingest may not act as someone else (the body actor is ignored)", async () => {
+    const fed = fedForEdit();
+    const alice = await registerAt(fed.a.base, "aedit2.test", "aliceedit2b");
+    const mallory = await registerAt(fed.a.base, "aedit2.test", "mallory2b");
+    const bob = await registerAt(fed.b.base, "bedit2.test", "bobedit2b");
+    const dmId = deriveDmId(alice.actor, bob.actor);
+
+    const sent = await signedReqAt(
+      fed.b.base,
+      "bedit2.test",
+      alice,
+      "POST",
+      `/api/federation/dms/${dmId}/messages`,
+      { clientMessageId: "m1", content: { mime: "text/plain", text: "alice's words" } },
+    );
+    const msgId = ((await sent.json()) as { id: string }).id;
+
+    // mallory signs for herself but names alice in the body: the body is not
+    // trusted, so she is judged as mallory — no local user derives {dmId} with
+    // her → the §8.3 recipient-resolution guard rejects with 400.
+    const patch = await signedReqAt(
+      fed.b.base,
+      "bedit2.test",
+      mallory,
+      "PATCH",
+      `/api/federation/dms/${dmId}/messages/${msgId}`,
+      { actor: alice.actor, content: { mime: "text/plain", text: "hijacked" } },
+    );
+    expect(patch.status).toBe(400);
+
+    const hist = await signedReqAt(
+      fed.b.base,
+      "bedit2.test",
+      bob,
+      "GET",
+      `/api/dms/${dmId}/messages`,
+    );
+    const items = ((await hist.json()) as { items: { id: string; content: { text: string } }[] })
+      .items;
+    expect(items.find((x) => x.id === msgId)?.content.text).toBe("alice's words");
+  });
+
+  test("a provider-signed forward may only act for that provider's OWN users (403)", async () => {
+    const fed = fedForEdit();
+    const alice = await registerAt(fed.a.base, "aedit2.test", "aliceedit2c");
+    const bob = await registerAt(fed.b.base, "bedit2.test", "bobedit2c");
+    const dmId = deriveDmId(alice.actor, bob.actor);
+
+    const sent = await signedReqAt(
+      fed.b.base,
+      "bedit2.test",
+      alice,
+      "POST",
+      `/api/federation/dms/${dmId}/messages`,
+      { clientMessageId: "p1", content: { mime: "text/plain", text: "alice's words" } },
+    );
+    const msgId = ((await sent.json()) as { id: string }).id;
+
+    // A THIRD provider (here: b itself, signing as b) forwards an edit naming
+    // alice@a — a user it has no authority over → 403, message untouched.
+    const key = getProviderSigningKey(fed.b.db);
+    const path = `/api/federation/dms/${dmId}/messages/${msgId}`;
+    const body = JSON.stringify({
+      actor: alice.actor,
+      content: { mime: "text/plain", text: "hijacked" },
+    });
+    const { headers } = signProvider({
+      provider: "bedit2.test",
+      keyId: key.keyId,
+      privateKey: key.privateKey,
+      authority: "bedit2.test",
+      method: "PATCH",
+      path,
+      body,
+    });
+    const res = await fetch(`${fed.b.base}${path}`, {
+      method: "PATCH",
+      headers: { ...headers, "content-type": "application/json" },
+      body,
+    });
+    expect(res.status).toBe(403);
+
+    const hist = await signedReqAt(
+      fed.b.base,
+      "bedit2.test",
+      bob,
+      "GET",
+      `/api/dms/${dmId}/messages`,
+    );
+    const items = ((await hist.json()) as { items: { id: string; content: { text: string } }[] })
+      .items;
+    expect(items.find((x) => x.id === msgId)?.content.text).toBe("alice's words");
   });
 });

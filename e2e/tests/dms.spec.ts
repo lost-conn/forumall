@@ -6,8 +6,11 @@
  *
  *  1. A opens a DM to B and sends → B sees it live (inbox + `dm.message`) and it
  *     appears in B's conversation list.
- *  2. A's OWN thread shows A's sent message from the LOCAL sent-store, while A's
- *     inbox (`GET /api/dms/{dmId}/messages`) does NOT contain it (no sender copy).
+ *  2. A's OWN thread shows A's sent message from the LOCAL sent-store, while the
+ *     server stored NO sender copy (§8.3): A gets no conversation row of their own
+ *     for a conversation they have only sent in, and once they do have one it
+ *     summarizes only their INBOX. (A's §7.4 read still returns the sent message —
+ *     the conversation view is sent ∪ received.)
  *  3. B replies → A sees the reply live; both threads show the full back-and-forth.
  *  4. Reload persistence: A still sees their sent history (local store) and B still
  *     sees received history (server).
@@ -69,7 +72,12 @@ function dmRow(page: Page, text: string) {
   return page.locator('[data-testid="dm-message"]').filter({ hasText: text });
 }
 
-/** Drive the in-browser signing client to read A's own inbox for a dmId. */
+/**
+ * Drive the in-browser signing client to read the caller's §7.4 conversation VIEW
+ * for a dmId (`GET /api/dms/{dmId}/messages`). Note this is sent ∪ received — it
+ * says nothing about which inbox stores a message; use {@link conversationRows}
+ * for the §8.3 no-sender-copy invariant.
+ */
 async function inboxTextsFor(page: Page, dmId: string): Promise<string[]> {
   return page.evaluate(async (id) => {
     const client = (
@@ -80,6 +88,23 @@ async function inboxTextsFor(page: Page, dmId: string): Promise<string[]> {
     if (!client) throw new Error("__forumall_dmInbox hook missing");
     return client(id);
   }, dmId);
+}
+
+/**
+ * The caller's OWN DM conversation rows (`GET /api/me/dms`). A row exists only
+ * for an inbox that stores messages, and its `lastMessageText` is that INBOX's
+ * newest message — the server-side probe for "no sender copy" (§8.3).
+ */
+async function conversationRows(page: Page): Promise<{ dmId: string; lastMessageText: string }[]> {
+  return page.evaluate(async () => {
+    const hook = (
+      globalThis as unknown as {
+        __forumall_dmConversations?: () => Promise<{ dmId: string; lastMessageText: string }[]>;
+      }
+    ).__forumall_dmConversations;
+    if (!hook) throw new Error("__forumall_dmConversations hook missing");
+    return hook();
+  });
 }
 
 test("A → B live DM: B sees it live + in the list; A's copy is local-only (no sender inbox copy)", async ({
@@ -121,13 +146,17 @@ test("A → B live DM: B sees it live + in the list; A's copy is local-only (no 
     b.page.locator(`[data-testid="dm-conversation"][data-counterparty="${a.actor}"]`),
   ).toHaveCount(1);
 
-  // §8.3: A's OWN inbox for this dmId does NOT contain the sent message — the UI
-  // showed it purely from the local sent-store.
-  const aInbox = await inboxTextsFor(a.page, dmIdA);
-  expect(aInbox).not.toContain(msg1);
-  // B's inbox DOES contain it (the recipient's provider stored it).
-  const bInbox = await inboxTextsFor(b.page, dmIdB);
-  expect(bInbox).toContain(msg1);
+  // §8.3 no sender copy: the send created a conversation row for B's inbox ONLY.
+  // A — who has only SENT here — has no row for this dmId at all (nothing was
+  // stored on A's side; A's thread rendered purely from the local sent-store).
+  const aConvRows = await conversationRows(a.page);
+  expect(aConvRows.map((r) => r.dmId)).not.toContain(dmIdA);
+  const bConv = (await conversationRows(b.page)).find((r) => r.dmId === dmIdB);
+  expect(bConv?.lastMessageText).toBe(msg1);
+  // §7.4 broadened read: each side's conversation view contains the message —
+  // A reads back what they sent (rows authored by them, held in B's inbox).
+  expect(await inboxTextsFor(a.page, dmIdA)).toContain(msg1);
+  expect(await inboxTextsFor(b.page, dmIdB)).toContain(msg1);
 
   await b.page.context().close();
 });
@@ -219,8 +248,13 @@ test("reload persistence: A keeps sent history (local), B keeps received history
     1,
     { timeout: 15_000 },
   );
-  // A's own inbox still does NOT contain A's sent message (proves local-only).
-  expect(await inboxTextsFor(page, dmIdA)).not.toContain(aMsg);
+  // §8.3 no sender copy: A's conversation row exists only because B REPLIED, and
+  // it summarizes A's INBOX — whose newest (only) message is B's reply. A's own
+  // sent message was never stored on A's side; it came back from the local store.
+  const aConv = (await conversationRows(page)).find((r) => r.dmId === dmIdA);
+  expect(aConv?.lastMessageText).toBe(bMsg);
+  // …while the §7.4 view (sent ∪ received) does return A's sent message.
+  expect(await inboxTextsFor(page, dmIdA)).toContain(aMsg);
 
   // Reload B: their received history (A's message) is restored from the server.
   await b.page.reload();
