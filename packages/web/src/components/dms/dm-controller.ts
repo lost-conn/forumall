@@ -479,8 +479,21 @@ export async function retrySendDm(args: SendDmArgs & { clientMessageId: string }
 
 export interface DmReactionArgs {
   client: OfscpClient;
+  /**
+   * The RECIPIENT's provider client for a cross-provider conversation (built by
+   * the caller via `clientForHost`, exactly as for {@link sendDm}). Omitted /
+   * `undefined` for a same-provider recipient → the home `client` is used. Only
+   * consulted for a message the caller SENT — see {@link deliveryClientFor}.
+   */
+  deliveryClient?: OfscpClient;
   dmId: string;
   messageId: string;
+  /**
+   * Who WROTE the message being reacted to (not who is reacting). §8.3 stores a
+   * DM only in the recipient's inbox, so this — not the reacting actor — decides
+   * which provider holds the copy the reaction attaches to.
+   */
+  messageAuthor: string;
   /** The reacting actor (the current user) — for the optimistic aggregate. */
   me: string;
   key: string;
@@ -489,17 +502,25 @@ export interface DmReactionArgs {
 
 /**
  * Toggle the caller's reaction on a DM message: optimistically fold the change
- * into the local aggregate, then `PUT`/`DELETE` via the signed session client.
+ * into the local aggregate, then `PUT`/`DELETE` via a signed client.
  * The server fans `dm.reaction` back to BOTH participants (idempotent against the
  * aggregate), so the live confirmation is a no-op; on a REST failure we revert.
+ *
+ * The request goes to the provider that HOLDS the message ({@link deliveryClientFor}):
+ * a message the caller RECEIVED sits in their own inbox on their home provider,
+ * while one they SENT sits in the recipient's inbox on the RECIPIENT's provider
+ * (§8.3) — which is also the only address that works for a conversation the
+ * caller has only ever sent in, since their home provider stores nothing for it
+ * and cannot learn the remote counterparty to forward to.
  */
 export async function toggleDmReaction(args: DmReactionArgs & { has: boolean }): Promise<void> {
-  const { client, dmId, messageId, me, key, unicode, has } = args;
+  const { client, dmId, messageId, messageAuthor, me, key, unicode, has } = args;
+  const target = deliveryClientFor(client, args.deliveryClient, messageAuthor, me);
   if (has) {
     // Optimistic remove → DELETE; revert on failure.
     removeDmReactionAgg(dmId, messageId, key, me);
     try {
-      await apiRemoveDmReaction(client, dmId, messageId, key);
+      await apiRemoveDmReaction(target, dmId, messageId, key);
     } catch (err) {
       addDmReactionAgg(dmId, optimisticReaction(messageId, me, key, unicode));
       throw err;
@@ -509,7 +530,7 @@ export async function toggleDmReaction(args: DmReactionArgs & { has: boolean }):
   // Optimistic add → PUT; revert on failure.
   addDmReactionAgg(dmId, optimisticReaction(messageId, me, key, unicode));
   try {
-    await apiAddDmReaction(client, dmId, messageId, key);
+    await apiAddDmReaction(target, dmId, messageId, key);
   } catch (err) {
     removeDmReactionAgg(dmId, messageId, key, me);
     throw err;
@@ -535,8 +556,8 @@ function optimisticReaction(
 }
 
 /**
- * Pick the client an edit/delete of `message` must be addressed to, following
- * §8.3 storage-follows-message:
+ * Pick the client an operation on a message written by `messageAuthor` must be
+ * addressed to, following §8.3 storage-follows-message:
  *
  *  - a message the caller **sent** is stored ONLY in the recipient's inbox, so
  *    the operation goes to the RECIPIENT's provider — the same delivery target
@@ -544,16 +565,21 @@ function optimisticReaction(
  *  - a message the caller **received** is stored in the caller's OWN inbox on
  *    their home provider (delete-from-my-inbox), so it goes to `client`.
  *
+ * Note the target is decided by WHO WROTE the message, not by who is acting —
+ * which matters for a reaction, where either participant may act on either
+ * side's message: reacting to a message the caller RECEIVED stays on their home
+ * provider, while reacting to one they SENT goes to the recipient's provider.
+ *
  * Falls back to the home `client` whenever no delivery client was resolvable
  * (same-provider recipient, or no signing identity) — same shape as `sendDm`.
  */
 function deliveryClientFor(
   client: OfscpClient,
   deliveryClient: OfscpClient | undefined,
-  message: DmMessageLike,
+  messageAuthor: string,
   me: string,
 ): OfscpClient {
-  return message.author === me ? (deliveryClient ?? client) : client;
+  return messageAuthor === me ? (deliveryClient ?? client) : client;
 }
 
 /**
@@ -616,7 +642,7 @@ export async function editDm(args: {
   sentStore: DmSentStore;
 }): Promise<void> {
   const { client, dmId, message, me, text, mime, sentStore } = args;
-  const target = deliveryClientFor(client, args.deliveryClient, message, me);
+  const target = deliveryClientFor(client, args.deliveryClient, message.author, me);
   const content = { mime: mime ?? message.content.mime ?? "text/plain", text };
   /** The pre-edit snapshot, captured before the optimistic apply overwrites it. */
   const priorContent = {
@@ -707,7 +733,7 @@ export async function deleteDm(args: {
   sentStore: DmSentStore;
 }): Promise<void> {
   const { client, dmId, message, me, sentStore } = args;
-  const target = deliveryClientFor(client, args.deliveryClient, message, me);
+  const target = deliveryClientFor(client, args.deliveryClient, message.author, me);
   const deletedAt = rfc3339Timestamp();
   /** The pre-delete snapshot, captured before the optimistic tombstone lands. */
   const priorContent = {

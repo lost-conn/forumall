@@ -851,17 +851,27 @@ const DmMessageRow: Component<{
     const me = session.actor;
     if (!client || !me) return;
     setActionError(null);
-    void toggleDmReaction({
-      client,
-      dmId: props.dmId,
-      messageId: m().id,
-      me,
-      key,
-      unicode,
-      has: myReactionKeys().has(key),
-    }).catch((err) =>
-      setActionError(err instanceof Error ? err.message : "Could not update the reaction."),
-    );
+    // Storage-follows-message (§8.3), same routing as the edit/delete below —
+    // but keyed on WHO WROTE this message, since either participant may react to
+    // either side's: a message the caller SENT lives on the RECIPIENT's provider,
+    // one they RECEIVED lives in their own inbox on the home provider.
+    void resolveDeliveryClient(props.counterparty)
+      .then((deliveryClient) =>
+        toggleDmReaction({
+          client,
+          ...(deliveryClient ? { deliveryClient } : {}),
+          dmId: props.dmId,
+          messageId: m().id,
+          messageAuthor: m().author,
+          me,
+          key,
+          unicode,
+          has: myReactionKeys().has(key),
+        }),
+      )
+      .catch((err) =>
+        setActionError(err instanceof Error ? err.message : "Could not update the reaction."),
+      );
   };
 
   const startEdit = (): void => {

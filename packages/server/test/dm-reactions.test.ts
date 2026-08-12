@@ -20,6 +20,14 @@
  *    provider (§8.1): a provider-signed request naming an actor of a
  *    DIFFERENT domain is a 403 (nothing stored, nothing fanned out), and a
  *    missing/blank body actor is a 400.
+ *  - only-sent participant: an author who has never received in a conversation
+ *    (so owns NO inbox conversation row, §8.3) can still add AND remove a
+ *    reaction on their own message, same-provider — with the fan-out reaching
+ *    BOTH participants — while a third party is still a 404.
+ *  - the same case CROSS-provider: the reacting participant USER-signs the
+ *    reaction straight to the message's home provider (their own provider holds
+ *    nothing to forward), on both the `/api/federation/dms` and plain
+ *    `/api/dms` surfaces; a user-signed ingest cannot act as someone else.
  *
  * Like the DM suite, the real-time assertions need a REAL socket, so `boot()`
  * starts the app on an ephemeral port; the cross-provider case uses the
@@ -1261,5 +1269,329 @@ describe("DM edit/delete — author-signed on the message's home provider (§8.3
     const items = ((await hist.json()) as { items: { id: string; content: { text: string } }[] })
       .items;
     expect(items.find((x) => x.id === msgId)?.content.text).toBe("alice's words");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests — reactions by a participant who has ONLY SENT in the conversation.
+//
+// Regression: both reaction routes used to gate participation on the CALLER
+// owning an inbox conversation row, which an only-sent participant never has
+// (§8.3 keeps no sender copy) — so reacting to their own message 404'd until the
+// counterparty happened to reply. Routing now follows where the message is
+// STORED (the same decision table `fc6b9a8` gave edit/delete), so the only-sent
+// author is served on the first message.
+// ---------------------------------------------------------------------------
+
+describe("DM reactions — only-sent author (no inbox row of their own)", () => {
+  test("author adds + removes a reaction on their own sent message, no reply ever received", async () => {
+    const b = boot("dmreact-onlysent");
+    const alice = await register(b, "alice");
+    const bob = await register(b, "bob");
+    const dmId = deriveDmId(alice.actor, bob.actor);
+
+    // alice → bob and NOTHING else: bob holds the only copy + the only
+    // conversation row. alice's `/api/me/dms` is empty (no sender copy, §8.3).
+    const sent = await sendDm(b, alice, dmId, { text: "ship it", clientMessageId: "os1" });
+    expect(sent.status).toBe(201);
+    const msgId = ((await sent.json()) as { id: string }).id;
+    const convs = await signedReq(b, alice, "GET", "/api/me/dms");
+    expect(((await convs.json()) as { items: unknown[] }).items).toEqual([]);
+
+    const aliceWs = await connectAuthenticated(b.url, b.domain, alice);
+    const bobWs = await connectAuthenticated(b.url, b.domain, bob);
+
+    // Add → stored on bob's inbox copy; 201 (first add).
+    const put = await signedReq(
+      b,
+      alice,
+      "PUT",
+      `/api/dms/${dmId}/messages/${msgId}/reactions/heart`,
+    );
+    expect(put.status).toBe(201);
+    expect(((await put.json()) as { author: string; key: string }).author).toBe(alice.actor);
+
+    // The fan-out reaches BOTH participants — alice (the reacting only-sent
+    // author, who has no inbox row) and bob (who holds the message). Case (b)
+    // has no conversation row to read the counterparty off, so bob's copy of the
+    // event only arrives if the participants are derived from the resolved local
+    // inbox owner.
+    for (const [who, ws] of [
+      ["alice", aliceWs],
+      ["bob", bobWs],
+    ] as const) {
+      const evt = await nextDmReaction(ws, msgId);
+      expect(`${who}:${evt.state}`).toBe(`${who}:added`);
+      expect(evt.author).toBe(alice.actor);
+      expect(evt.key).toBe("heart");
+    }
+
+    // It shows up in bob's history aggregate (the inbox that stores it)…
+    const hist = await signedReq(b, bob, "GET", `/api/dms/${dmId}/messages`);
+    const items = (
+      (await hist.json()) as {
+        items: { id: string; reactions?: { author: string; key: string }[] }[];
+      }
+    ).items;
+    expect(
+      items.find((m) => m.id === msgId)?.reactions?.some((r) => r.author === alice.actor) ?? false,
+    ).toBe(true);
+
+    // …and an idempotent repeat is a 200, not a second row.
+    const again = await signedReq(
+      b,
+      alice,
+      "PUT",
+      `/api/dms/${dmId}/messages/${msgId}/reactions/heart`,
+    );
+    expect(again.status).toBe(200);
+    await nextDmReaction(aliceWs, msgId);
+    await nextDmReaction(bobWs, msgId);
+
+    // Remove → 204, `removed` to BOTH, and the aggregate drops it.
+    const del = await signedReq(
+      b,
+      alice,
+      "DELETE",
+      `/api/dms/${dmId}/messages/${msgId}/reactions/heart`,
+    );
+    expect(del.status).toBe(204);
+    for (const ws of [aliceWs, bobWs]) {
+      const evt = await nextDmReaction(ws, msgId);
+      expect(evt.state).toBe("removed");
+      expect(evt.author).toBe(alice.actor);
+    }
+
+    const hist2 = await signedReq(b, bob, "GET", `/api/dms/${dmId}/messages`);
+    const items2 = (
+      (await hist2.json()) as {
+        items: { id: string; reactions?: { author: string; key: string }[] }[];
+      }
+    ).items;
+    expect(items2.find((m) => m.id === msgId)?.reactions ?? []).toHaveLength(0);
+
+    aliceWs.close();
+    bobWs.close();
+  });
+
+  test("a third party (neither participant) still gets 404 on add and remove", async () => {
+    const b = boot("dmreact-thirdparty");
+    const alice = await register(b, "alice");
+    const bob = await register(b, "bob");
+    const carol = await register(b, "carol");
+    const dmId = deriveDmId(alice.actor, bob.actor);
+
+    const sent = await sendDm(b, alice, dmId, { text: "private", clientMessageId: "tp1" });
+    const msgId = ((await sent.json()) as { id: string }).id;
+
+    // carol owns no copy, and no local user derives {dmId} with carol → 404,
+    // both before and after a reply exists (i.e. regardless of inbox rows).
+    const path = `/api/dms/${dmId}/messages/${msgId}/reactions/heart`;
+    expect((await signedReq(b, carol, "PUT", path)).status).toBe(404);
+    expect((await signedReq(b, carol, "DELETE", path)).status).toBe(404);
+
+    await sendDm(b, bob, dmId, { text: "reply", clientMessageId: "tp2" });
+    expect((await signedReq(b, carol, "PUT", path)).status).toBe(404);
+    expect((await signedReq(b, carol, "DELETE", path)).status).toBe(404);
+
+    // Nothing was ever stored by a rejected attempt.
+    const hist = await signedReq(b, bob, "GET", `/api/dms/${dmId}/messages`);
+    const items = ((await hist.json()) as { items: { id: string; reactions?: unknown[] }[] }).items;
+    expect(items.find((m) => m.id === msgId)?.reactions ?? []).toHaveLength(0);
+  });
+
+  test("a reaction on a RECEIVED message still lands on the caller's own inbox copy", async () => {
+    // Case (a) of the table — the pre-existing behaviour, kept honest: the
+    // counterparty for the fan-out comes off the caller's OWN conversation row.
+    const b = boot("dmreact-received");
+    const alice = await register(b, "alice");
+    const bob = await register(b, "bob");
+    const dmId = deriveDmId(alice.actor, bob.actor);
+
+    const sent = await sendDm(b, alice, dmId, { text: "hi bob", clientMessageId: "rc1" });
+    const msgId = ((await sent.json()) as { id: string }).id;
+
+    const aliceWs = await connectAuthenticated(b.url, b.domain, alice);
+    const bobWs = await connectAuthenticated(b.url, b.domain, bob);
+
+    // bob (the RECIPIENT, reacting to a message he did NOT author) → 201.
+    const put = await signedReq(b, bob, "PUT", `/api/dms/${dmId}/messages/${msgId}/reactions/tada`);
+    expect(put.status).toBe(201);
+    for (const ws of [aliceWs, bobWs]) {
+      const evt = await nextDmReaction(ws, msgId);
+      expect(evt.state).toBe("added");
+      expect(evt.author).toBe(bob.actor);
+    }
+
+    aliceWs.close();
+    bobWs.close();
+  });
+});
+
+/** Await the next `dm.reaction` for `messageId` on `ws` and return its data. */
+async function nextDmReaction(
+  ws: WsClient,
+  messageId: string,
+): Promise<{ messageId: string; author: string; key: string; state: string }> {
+  const evt = await ws.next(
+    (f) => f.type === "dm.reaction" && (f.data as { messageId?: string }).messageId === messageId,
+  );
+  return evt.data as { messageId: string; author: string; key: string; state: string };
+}
+
+// ---------------------------------------------------------------------------
+// Tests — §8.3 author-signed delivery of a REACTION to the message's HOME
+// provider (the cross-provider only-sent case: the reacting participant's own
+// provider stores nothing for the conversation and cannot learn the remote
+// counterparty, so the client addresses the provider that holds the message
+// directly — exactly as it does for the DM send and, since `fc6b9a8`, for
+// edit/delete).
+// ---------------------------------------------------------------------------
+
+describe("DM reactions — author-signed on the message's home provider (§8.3)", () => {
+  function fedForReact(): Federation {
+    const fed = startFederation(tmp, {
+      domainA: "areact2.test",
+      domainB: "breact2.test",
+      envA: { FEDERATION_INSECURE_LOCALHOST: "1" },
+      envB: { FEDERATION_INSECURE_LOCALHOST: "1" },
+    });
+    feds.push(fed);
+    return fed;
+  }
+
+  test("alice@a adds/removes a reaction on b with her OWN signature, having only sent", async () => {
+    const fed = fedForReact();
+    const alice = await registerAt(fed.a.base, "areact2.test", "alicereact2a");
+    const bob = await registerAt(fed.b.base, "breact2.test", "bobreact2a");
+    const dmId = deriveDmId(alice.actor, bob.actor);
+
+    // alice@a → bob@b (delivered straight to b, §8.3). No reply: alice has no
+    // conversation row anywhere, so her home provider could not forward.
+    const sent = await signedReqAt(
+      fed.b.base,
+      "breact2.test",
+      alice,
+      "POST",
+      `/api/federation/dms/${dmId}/messages`,
+      { clientMessageId: "fr1", content: { mime: "text/plain", text: "hi bob" } },
+    );
+    expect(sent.status).toBe(201);
+    const msgId = ((await sent.json()) as { id: string }).id;
+
+    const bobWs = await connectAuthenticated(
+      `ws://localhost:${fed.b.server.port}/api/ws`,
+      "breact2.test",
+      bob,
+    );
+
+    // (1) The §8.3-named federation surface, USER-signed by the reacting author.
+    const put = await signedReqAt(
+      fed.b.base,
+      "breact2.test",
+      alice,
+      "PUT",
+      `/api/federation/dms/${dmId}/messages/${msgId}/reactions/heart`,
+    );
+    expect(put.status).toBe(200);
+    expect(((await put.json()) as { author: string }).author).toBe(alice.actor);
+    const added = await nextDmReaction(bobWs, msgId);
+    expect(added.state).toBe("added");
+    expect(added.author).toBe(alice.actor);
+
+    // (2) The plain DM surface on the SAME provider (what the web client uses
+    // once it resolves the delivery client) resolves identically — 200 here
+    // because the reaction already exists (idempotent add).
+    const put2 = await signedReqAt(
+      fed.b.base,
+      "breact2.test",
+      alice,
+      "PUT",
+      `/api/dms/${dmId}/messages/${msgId}/reactions/heart`,
+    );
+    expect(put2.status).toBe(200);
+    await nextDmReaction(bobWs, msgId);
+
+    // …and it is in bob's aggregate exactly once.
+    const hist = await signedReqAt(
+      fed.b.base,
+      "breact2.test",
+      bob,
+      "GET",
+      `/api/dms/${dmId}/messages`,
+    );
+    const items = (
+      (await hist.json()) as {
+        items: { id: string; reactions?: { author: string; key: string }[] }[];
+      }
+    ).items;
+    expect(items.find((m) => m.id === msgId)?.reactions ?? []).toHaveLength(1);
+
+    // (3) Remove, user-signed, on the federation surface → 204 + fan-out.
+    const del = await signedReqAt(
+      fed.b.base,
+      "breact2.test",
+      alice,
+      "DELETE",
+      `/api/federation/dms/${dmId}/messages/${msgId}/reactions/heart`,
+    );
+    expect(del.status).toBe(204);
+    const removed = await nextDmReaction(bobWs, msgId);
+    expect(removed.state).toBe("removed");
+
+    const hist2 = await signedReqAt(
+      fed.b.base,
+      "breact2.test",
+      bob,
+      "GET",
+      `/api/dms/${dmId}/messages`,
+    );
+    const items2 = ((await hist2.json()) as { items: { id: string; reactions?: unknown[] }[] })
+      .items;
+    expect(items2.find((m) => m.id === msgId)?.reactions ?? []).toHaveLength(0);
+
+    bobWs.close();
+  });
+
+  test("a user-signed reaction ingest may not act as someone else (the body actor is ignored)", async () => {
+    const fed = fedForReact();
+    const alice = await registerAt(fed.a.base, "areact2.test", "alicereact2b");
+    const mallory = await registerAt(fed.a.base, "areact2.test", "malloryreact2b");
+    const bob = await registerAt(fed.b.base, "breact2.test", "bobreact2b");
+    const dmId = deriveDmId(alice.actor, bob.actor);
+
+    const sent = await signedReqAt(
+      fed.b.base,
+      "breact2.test",
+      alice,
+      "POST",
+      `/api/federation/dms/${dmId}/messages`,
+      { clientMessageId: "mr1", content: { mime: "text/plain", text: "alice's words" } },
+    );
+    const msgId = ((await sent.json()) as { id: string }).id;
+
+    // mallory signs for herself but names alice in the body: the body is not
+    // trusted, so she is judged as mallory — no local user derives {dmId} with
+    // her → the §8.3 recipient-resolution guard rejects with 400, and nothing is
+    // stored under alice's name.
+    const res = await signedReqAt(
+      fed.b.base,
+      "breact2.test",
+      mallory,
+      "PUT",
+      `/api/federation/dms/${dmId}/messages/${msgId}/reactions/heart`,
+      { actor: alice.actor },
+    );
+    expect(res.status).toBe(400);
+
+    const hist = await signedReqAt(
+      fed.b.base,
+      "breact2.test",
+      bob,
+      "GET",
+      `/api/dms/${dmId}/messages`,
+    );
+    const items = ((await hist.json()) as { items: { id: string; reactions?: unknown[] }[] }).items;
+    expect(items.find((m) => m.id === msgId)?.reactions ?? []).toHaveLength(0);
   });
 });
