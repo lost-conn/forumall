@@ -17,8 +17,10 @@
  * ## Cursor → seq
  * Markers are keyed on the global monotonic `seq` (a number). Messages on the
  * client carry an OPAQUE cursor (`base64url(JSON.stringify({ seq }))`, the §7.2
- * encoding). {@link seqFromCursor} decodes a cursor to its `seq` so a caller can
- * advance a marker from the newest loaded message.
+ * encoding); `lib/cursor.ts` `seqFromCursor` decodes one to its `seq` so a
+ * caller can advance a marker from the newest loaded message. That codec lives
+ * in `lib/` rather than here because cursor ORDERING (chat/DM/feed timelines,
+ * the WS resume `since`) needs it too, and a store is the wrong home for it.
  */
 import type { ReadMarker } from "@forumall/shared";
 import { createStore, reconcile } from "solid-js/store";
@@ -42,25 +44,6 @@ interface ReadMarkerState {
 const [readState, setReadState] = createStore<ReadMarkerState>({ scopes: {} });
 
 export { readState };
-
-/**
- * Decode an opaque §7.2 message cursor to its `seq`, or `null` if it's malformed.
- * Mirrors the server `decodeMessageCursor` (base64url JSON `{ seq }`).
- */
-export function seqFromCursor(cursor: string | undefined | null): number | null {
-  if (!cursor) return null;
-  try {
-    const b64 = cursor.replace(/-/g, "+").replace(/_/g, "/");
-    const json =
-      typeof atob === "function"
-        ? decodeURIComponent(escape(atob(b64)))
-        : Buffer.from(b64, "base64").toString("utf8");
-    const pos = JSON.parse(json) as { seq?: unknown };
-    return typeof pos.seq === "number" ? pos.seq : null;
-  } catch {
-    return null;
-  }
-}
 
 /** Replace the whole summary (hydrate). */
 function setSummary(entries: ReadMarker[]): void {

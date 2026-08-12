@@ -33,6 +33,7 @@ import {
   onCleanup,
   onMount,
 } from "solid-js";
+import { seqFromCursor } from "../../lib/cursor.ts";
 import { listMembers } from "../../lib/groups-api.ts";
 import { renderMarkdown } from "../../lib/markdown.ts";
 import {
@@ -57,7 +58,7 @@ import {
   setGroupDisplayName,
   warmProfiles,
 } from "../../stores/profiles.ts";
-import { lastReadSeqFor, markRead, seqFromCursor } from "../../stores/read-markers.ts";
+import { lastReadSeqFor, markRead } from "../../stores/read-markers.ts";
 import { session, sessionClient, sessionWs } from "../../stores/session.ts";
 import { Icon, type IconName } from "../Icon.tsx";
 import { FollowToggle } from "../feed/FollowToggle.tsx";

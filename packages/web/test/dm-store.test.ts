@@ -197,6 +197,74 @@ describe("DM store: merge received + sent", () => {
   });
 });
 
+/**
+ * §4.4.2 timestamps are SECOND-precision, so a burst of messages inside one
+ * second all share a `createdAt`. Breaking that tie on the random `id` rendered
+ * the burst in effectively random order; the tie-break is now the decoded cursor
+ * `seq` — the provider's real timeline position — with `id` used only for rows
+ * that carry no cursor at all (local sent copies / un-confirmed echoes, §8.3).
+ */
+describe("DM store: same-second ordering", () => {
+  beforeEach(() => clearDms());
+
+  /** Encode a cursor exactly as the server does: base64url of `{"seq":N}`. */
+  const cur = (seq: number): string =>
+    btoa(JSON.stringify({ seq })).replace(/\+/g, "-").replace(/\//g, "_");
+
+  const T = "2026-06-05T00:00:00Z";
+  const msg = (id: string, over: Partial<DmMessage> = {}): DmMessage => ({
+    id,
+    author: "bob@h",
+    content: { text: id },
+    createdAt: T,
+    ...over,
+  });
+
+  test("a same-second burst orders by seq, not by id", () => {
+    // Ids are chosen so alphabetical order is the REVERSE of the seq order —
+    // exactly the shuffle the old comparator produced.
+    upsertDmMessage(DM, msg("msg_c", { cursor: cur(9) }));
+    upsertDmMessage(DM, msg("msg_a", { cursor: cur(1000) }));
+    upsertDmMessage(DM, msg("msg_b", { cursor: cur(100) }));
+    expect(dmThread(DM).map((m) => m.id)).toEqual(["msg_c", "msg_b", "msg_a"]);
+  });
+
+  test("createdAt still wins over seq (a later second sorts later)", () => {
+    upsertDmMessage(DM, msg("msg_late", { createdAt: "2026-06-05T00:00:01Z", cursor: cur(1) }));
+    upsertDmMessage(DM, msg("msg_early", { cursor: cur(999) }));
+    expect(dmThread(DM).map((m) => m.id)).toEqual(["msg_early", "msg_late"]);
+  });
+
+  test("cursored messages precede cursorless ones within the same second", () => {
+    // The caller's own retained/optimistic copies have no server cursor.
+    upsertDmMessage(DM, msg("msg_aaa", { author: "alice@h", mine: true }));
+    upsertDmMessage(DM, msg("msg_zzz", { cursor: cur(7) }));
+    expect(dmThread(DM).map((m) => m.id)).toEqual(["msg_zzz", "msg_aaa"]);
+  });
+
+  test("two cursorless messages in the same second fall back to id", () => {
+    upsertDmMessage(DM, msg("msg_b", { mine: true }));
+    upsertDmMessage(DM, msg("msg_a", { mine: true }));
+    expect(dmThread(DM).map((m) => m.id)).toEqual(["msg_a", "msg_b"]);
+  });
+
+  test("re-sorting on every upsert is stable (the order never thrashes)", () => {
+    const seeded = [
+      msg("msg_c", { cursor: cur(9) }),
+      msg("msg_a", { cursor: cur(1000) }),
+      msg("msg_d"),
+      msg("msg_b", { cursor: cur(100) }),
+    ];
+    for (const m of seeded) upsertDmMessage(DM, m);
+    const order = dmThread(DM).map((m) => m.id);
+    // Re-upserting every message (an edit re-fan, a history overlap) must not
+    // move anything: the comparator has to be a consistent total order.
+    for (const m of seeded) upsertDmMessage(DM, m);
+    expect(dmThread(DM).map((m) => m.id)).toEqual(order);
+    expect(order).toEqual(["msg_c", "msg_b", "msg_a", "msg_d"]);
+  });
+});
+
 describe("DM store: reactions (client-side aggregation)", () => {
   beforeEach(() => clearDms());
 

@@ -22,6 +22,7 @@
  * the Home feed automatically.
  */
 import { createStore, produce } from "solid-js/store";
+import { compareByCursorThenId } from "../lib/cursor.ts";
 import { type ChatMessage, chat } from "./chat.ts";
 
 /** A followed channel as the feed cares about it (a pointer + render metadata). */
@@ -127,12 +128,15 @@ export function mergedTimeline(): FeedItem[] {
   }
   // Newest-first by `createdAt`. Server timestamps are second-resolution (the
   // shared `rfc3339Timestamp` drops millis), so two messages posted within the
-  // same second tie — break the tie by the opaque resume `cursor`, which is
-  // monotonic seq order across one provider's timeline (mirrors `stores/chat.ts`).
+  // same second tie — break the tie by the DECODED cursor `seq`, which is the
+  // provider's monotonic timeline position (`lib/cursor.ts`; the encoded string
+  // is base64 JSON and is NOT order-preserving). This list renders newest-first,
+  // so the shared ascending comparator is negated — which also flips its
+  // cursorless-last clause, putting a (rare, non-`pending`) cursorless row first.
   items.sort((a, b) => {
     const dt = timeOf(b) - timeOf(a);
     if (dt !== 0) return dt;
-    return cursorLess(a.cursor, b.cursor) ? 1 : -1; // larger cursor = newer = first
+    return -compareByCursorThenId(a, b);
   });
   return items;
 }
@@ -141,18 +145,6 @@ export function mergedTimeline(): FeedItem[] {
 function timeOf(m: ChatMessage): number {
   const t = m.createdAt ? Date.parse(m.createdAt) : Number.NaN;
   return Number.isNaN(t) ? 0 : t;
-}
-
-/**
- * Order two opaque cursors (longer-then-lexical compares the encoded seq) — the
- * same total order `stores/chat.ts` uses. `a < b` ⇒ `a` is older.
- */
-function cursorLess(a: string | undefined, b: string | undefined): boolean {
-  if (a === b) return false;
-  if (a === undefined) return true;
-  if (b === undefined) return false;
-  if (a.length !== b.length) return a.length < b.length;
-  return a < b;
 }
 
 /** Reset the feed store (logout). */

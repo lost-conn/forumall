@@ -24,6 +24,10 @@ import {
 
 const CH = "ch_test";
 
+/** Encode a cursor exactly as the server does: base64url of `{"seq":N}`. */
+const cur = (seq: number): string =>
+  btoa(JSON.stringify({ seq })).replace(/\+/g, "-").replace(/\//g, "_");
+
 function reaction(over: Partial<Reaction>): Reaction {
   return {
     id: over.id ?? "rx_1",
@@ -160,9 +164,10 @@ describe("older-history paging", () => {
   });
 
   test("prepending older history never advances the resume cursor", () => {
-    upsertMessage(CH, { id: "m9", author: "a@h", content: { text: "newest" }, cursor: "c9" });
+    upsertMessage(CH, { id: "m9", author: "a@h", content: { text: "newest" }, cursor: cur(9) });
     const before = cursorFor(CH);
-    prependHistory(CH, [{ id: "m1", author: "a@h", content: { text: "old" }, cursor: "c1" }]);
+    expect(before).toBe(cur(9));
+    prependHistory(CH, [{ id: "m1", author: "a@h", content: { text: "old" }, cursor: cur(1) }]);
     expect(cursorFor(CH)).toBe(before as string);
   });
 
@@ -176,6 +181,72 @@ describe("older-history paging", () => {
     });
     prependHistory(CH, [{ id: "m1", author: "a@h", content: { text: "one" }, cursor: "c1" }]);
     expect(messagesFor(CH).map((m) => m.id)).toEqual(["m1", "m5", "optimistic:cmid_1"]);
+  });
+});
+
+/**
+ * `chat.cursors[channelId]` IS the WS resume `since` (§7.1) — a wrong pick makes a
+ * reconnect replay or DROP messages. It must therefore track the highest DECODED
+ * `seq`, never the "largest" cursor string (base64 JSON is not order-preserving).
+ */
+describe("resume cursor advances by seq", () => {
+  test("advances to the higher seq even when its cursor string sorts lower", () => {
+    // seq 99 → "eyJzZXEiOjk5fQ==", seq 100 → "eyJzZXEiOjEwMH0=" — the same
+    // length, and the *older* one is lexically LARGER. The old comparator
+    // therefore refused to advance here.
+    upsertMessage(CH, { id: "m99", author: "a@h", content: { text: "99" }, cursor: cur(99) });
+    upsertMessage(CH, { id: "m100", author: "a@h", content: { text: "100" }, cursor: cur(100) });
+    expect(cursorFor(CH)).toBe(cur(100));
+  });
+
+  test("an out-of-order (older) arrival never rewinds the cursor", () => {
+    upsertMessage(CH, { id: "m1000", author: "a@h", content: { text: "x" }, cursor: cur(1000) });
+    upsertMessage(CH, { id: "m999", author: "a@h", content: { text: "y" }, cursor: cur(999) });
+    expect(cursorFor(CH)).toBe(cur(1000));
+  });
+
+  test("an undecodable or absent cursor never advances it", () => {
+    upsertMessage(CH, { id: "m5", author: "a@h", content: { text: "five" }, cursor: cur(5) });
+    // A forged/garbage cursor…
+    upsertMessage(CH, {
+      id: "mx",
+      author: "a@h",
+      content: { text: "junk" },
+      cursor: "!!garbage!!",
+    });
+    expect(cursorFor(CH)).toBe(cur(5));
+    // …and a local optimistic echo, which has no server cursor at all.
+    addOptimistic(CH, {
+      id: "optimistic:cmid_1",
+      author: "me@h",
+      content: { text: "sending" },
+      clientMessageId: "cmid_1",
+    });
+    upsertMessage(CH, {
+      id: "m_real",
+      author: "me@h",
+      content: { text: "sending" },
+      clientMessageId: "cmid_1",
+    });
+    expect(cursorFor(CH)).toBe(cur(5));
+  });
+
+  test("a reconciled echo carrying a cursor DOES advance it", () => {
+    upsertMessage(CH, { id: "m9", author: "a@h", content: { text: "nine" }, cursor: cur(9) });
+    addOptimistic(CH, {
+      id: "optimistic:cmid_1",
+      author: "me@h",
+      content: { text: "mine" },
+      clientMessageId: "cmid_1",
+    });
+    upsertMessage(CH, {
+      id: "m10",
+      author: "me@h",
+      content: { text: "mine" },
+      clientMessageId: "cmid_1",
+      cursor: cur(10),
+    });
+    expect(cursorFor(CH)).toBe(cur(10));
   });
 });
 

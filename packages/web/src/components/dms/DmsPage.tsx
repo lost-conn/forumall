@@ -33,6 +33,7 @@ import {
   onCleanup,
   onMount,
 } from "solid-js";
+import { seqFromCursor } from "../../lib/cursor.ts";
 import { fetchDmConversations, fetchDmReplies } from "../../lib/dm-api.ts";
 import { DmSentStore } from "../../lib/dm-store.ts";
 import { clientForHost, domainOf, isLocalActor } from "../../lib/federation.ts";
@@ -59,7 +60,7 @@ import {
 } from "../../stores/notifications.ts";
 import { subscribePresence } from "../../stores/presence-controller.ts";
 import { displayNameFor, warmProfile, warmProfiles } from "../../stores/profiles.ts";
-import { markRead, seqFromCursor, unreadCountFor } from "../../stores/read-markers.ts";
+import { markRead, unreadCountFor } from "../../stores/read-markers.ts";
 import { session, sessionClient, sessionWs } from "../../stores/session.ts";
 import { Icon, type IconName } from "../Icon.tsx";
 import { AttachmentChips } from "../shared/AttachmentChips.tsx";

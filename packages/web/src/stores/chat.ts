@@ -23,6 +23,7 @@
  */
 import type { Attachment, Reaction } from "@forumall/shared";
 import { createStore, produce } from "solid-js/store";
+import { cursorAdvances } from "../lib/cursor.ts";
 
 /** A message as the client cares about it (superset of the WS payload). */
 export interface ChatMessage {
@@ -72,7 +73,12 @@ interface ChatState {
   channels: Record<string, ChannelSummary>;
   /** Message timeline per channel id (ascending by arrival/seq). */
   messages: Record<string, ChatMessage[]>;
-  /** Latest resume cursor seen per channel id (newest loaded). */
+  /**
+   * Latest resume cursor seen per channel id — the WS `since` on reconnect. Kept
+   * as the highest DECODED `seq` (`lib/cursor.ts` `cursorAdvances`), never the
+   * "largest" cursor string: the encoding is base64 JSON, so string order flips
+   * at every decimal rollover and a wrong pick replays or drops messages.
+   */
   cursors: Record<string, string>;
   /** Oldest-loaded history cursor per channel (for "load older" backward paging). */
   olderCursors: Record<string, string | null>;
@@ -97,15 +103,6 @@ export function upsertChannel(channel: ChannelSummary): void {
   setChat("channels", channel.id, (prev) => ({ ...prev, ...channel }));
 }
 
-/** Compare two cursors as opaque base-comparable strings (history is seq-ordered). */
-function cursorLess(a: string | undefined, b: string | undefined): boolean {
-  if (a === undefined) return true;
-  if (b === undefined) return false;
-  // Cursors share one ordered space; longer-then-lexical compares the encoded seq.
-  if (a.length !== b.length) return a.length < b.length;
-  return a < b;
-}
-
 /**
  * Append or replace a message in a channel timeline. De-dupes by `id`, and — when
  * the message carries a `clientMessageId` — reconciles a matching optimistic echo
@@ -124,7 +121,7 @@ export function upsertMessage(channelId: string, message: ChatMessage): void {
         );
         if (echoIdx !== -1) {
           list[echoIdx] = { ...list[echoIdx], ...message, pending: false, failed: false };
-          if (message.cursor && cursorLess(s.cursors[channelId], message.cursor)) {
+          if (message.cursor && cursorAdvances(s.cursors[channelId], message.cursor)) {
             s.cursors[channelId] = message.cursor;
           }
           return;
@@ -136,7 +133,7 @@ export function upsertMessage(channelId: string, message: ChatMessage): void {
       if (idx === -1) list.push(message);
       else list[idx] = { ...list[idx], ...message };
 
-      if (message.cursor && cursorLess(s.cursors[channelId], message.cursor)) {
+      if (message.cursor && cursorAdvances(s.cursors[channelId], message.cursor)) {
         s.cursors[channelId] = message.cursor;
       }
     }),
@@ -179,7 +176,7 @@ export function reconcileOptimistic(
       } else {
         list[dupeIdx] = { ...list[dupeIdx], ...message };
       }
-      if (message.cursor && cursorLess(s.cursors[channelId], message.cursor)) {
+      if (message.cursor && cursorAdvances(s.cursors[channelId], message.cursor)) {
         s.cursors[channelId] = message.cursor;
       }
     }),

@@ -20,6 +20,7 @@
  */
 import type { Attachment, Reaction } from "@forumall/shared";
 import { createStore, produce } from "solid-js/store";
+import { compareByCursorThenId } from "../lib/cursor.ts";
 
 /** A DM message as the thread renders it (received OR locally-retained sent). */
 export interface DmMessage {
@@ -101,10 +102,26 @@ const [dms, setDms] = createStore<DmState>({
 
 export { dms };
 
-/** Stable ascending order by `createdAt`, breaking ties by `id`. */
+/**
+ * Stable ascending timeline order: `createdAt` first, then the shared cursor
+ * ordering (`lib/cursor.ts`).
+ *
+ * The tie-break is load-bearing, not cosmetic: §4.4.2 timestamps are
+ * SECOND-precision, so a burst of messages inside one second all carry the same
+ * `createdAt`. Ordering those by `id` alone shuffles them at random (ids are
+ * random bytes), so the fix is to break the tie on the decoded cursor `seq` —
+ * the provider's true timeline position — and fall back to `id` only for rows
+ * that have no cursor to compare (the caller's locally-retained sent copies and
+ * un-confirmed optimistic echoes; §8.3 keeps no server-side sender copy).
+ * Cursored rows sort BEFORE cursorless ones within a tie.
+ *
+ * This must stay a strict total order: the store re-sorts the whole thread on
+ * every upsert, and a comparator that answered inconsistently for the same pair
+ * would make the rendered order thrash.
+ */
 function compareMessages(a: DmMessage, b: DmMessage): number {
   if (a.createdAt !== b.createdAt) return a.createdAt < b.createdAt ? -1 : 1;
-  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  return compareByCursorThenId(a, b);
 }
 
 /**
