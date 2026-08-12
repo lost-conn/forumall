@@ -398,6 +398,40 @@ test("scroll: recent mode pins to bottom; oldest doesn't; jump-to-latest returns
   await b.context().close();
 });
 
+test("attachment upload: A attaches a video → it renders as an attachment-video element", async ({
+  page,
+  browser,
+  appServer,
+}) => {
+  const { a, b } = await twoUsersInChannel(page, browser, appServer.baseUrl);
+
+  // The composer has no `accept` filter and the server stores any mime, so a
+  // handful of arbitrary bytes with a video/mp4 mime type is enough to exercise
+  // client-side kind classification — this isn't a real, decodable video, and
+  // the assertion below is about which ELEMENT the client renders, not playback.
+  const buffer = Buffer.from("not-real-mp4-bytes");
+
+  await a.getByTestId("file-input").setInputFiles({
+    name: "clip.mp4",
+    mimeType: "video/mp4",
+    buffer,
+  });
+  await expect(a.getByTestId("composer-attachments")).toBeVisible({ timeout: 10_000 });
+  await compose(a, "check this out");
+
+  // Renders as <video data-testid="attachment-video"> — the classifier picked
+  // "video", not the generic download-link fallback used for unknown mimes.
+  // (A download link DOES still exist, nested inside the <video> as its
+  // fallback content for browsers that can't play the source — that's expected,
+  // not the thing under test here.)
+  const aVideo = a.getByTestId("attachment-video").first();
+  await expect(aVideo).toBeVisible({ timeout: 10_000 });
+  const bVideo = b.getByTestId("attachment-video").first();
+  await expect(bVideo).toBeVisible({ timeout: 10_000 });
+
+  await b.context().close();
+});
+
 test("attachment upload: A attaches a small image → it appears for both", async ({
   page,
   browser,

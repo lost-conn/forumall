@@ -173,9 +173,25 @@ export function resolveAttachmentUrl(url: string): string {
   }
 }
 
+/**
+ * Attachment rendering kind, derived solely from the `mime` prefix (ignoring any
+ * `; codecs=…` parameters). This is the SINGLE source of truth for how
+ * {@link AttachmentView} chooses an element — do not re-derive kind elsewhere.
+ */
+export type AttachmentKind = "image" | "video" | "audio" | "file";
+
+/** Classify an attachment's `mime` into a rendering kind. */
+export function attachmentKind(att: Attachment): AttachmentKind {
+  const mime = att.mime.split(";", 1)[0]?.trim() ?? "";
+  if (mime.startsWith("image/")) return "image";
+  if (mime.startsWith("video/")) return "video";
+  if (mime.startsWith("audio/")) return "audio";
+  return "file";
+}
+
 /** True when an attachment is an image we can render inline. */
 export function isImageAttachment(att: Attachment): boolean {
-  return att.mime.startsWith("image/");
+  return attachmentKind(att) === "image";
 }
 
 /** A fresh client message id for optimistic-echo correlation. */
