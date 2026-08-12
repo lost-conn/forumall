@@ -156,7 +156,9 @@ describe("requireAdmin guard", () => {
       c.set("db", db);
       c.set("actor", {
         actor: `${actorHandle}@${DOMAIN}`,
-        handle: actorHandle,
+        // A LOCAL actor: the handle is this provider's namespace (see
+        // `AuthenticatedActor.localHandle`). A remote actor would carry none.
+        localHandle: actorHandle,
         keyId: "k1",
         domain: DOMAIN,
       });

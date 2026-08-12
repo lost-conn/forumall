@@ -36,6 +36,14 @@
  * For any **remote** signer the §8 allow/deny policy ({@link isProviderAllowed})
  * is checked *before* any network key fetch — a disallowed peer is rejected with
  * a **403** without resolving keys. Local actors are unaffected.
+ *
+ * ## Local vs remote identity (read this before using the handle)
+ * Because a remote actor authenticates here just as fully as a local one, the
+ * resolved {@link AuthenticatedActor} exposes a bare handle ONLY when the signer
+ * belongs to this provider (`localHandle`) — see the identity rule documented on
+ * that type. {@link requireLocalActor} (middleware) and
+ * {@link requireLocalHandle} (in-handler) are the two ways to demand a local
+ * caller; everything else must key storage on the full `actor`.
  */
 import {
   HEADER,
@@ -121,6 +129,12 @@ interface VerifyTarget {
  *
  * The §8 allow/deny policy for remote actors is enforced *before* this resolver
  * runs (see {@link verifyAndSetActor}), so no key fetch happens for a denied peer.
+ *
+ * ## Identity shape (security-critical)
+ * The LOCAL branch is the ONLY one that sets `localHandle` — the resolved bare
+ * handle is a key into this provider's own tables, and a remote signer's handle
+ * lives in a different namespace (it may collide with a local user's). See the
+ * identity rule on {@link AuthenticatedActor}.
  */
 async function resolveActorSigner(
   db: Db,
@@ -140,7 +154,8 @@ async function resolveActorSigner(
     if (!key) return null; // unknown id, revoked (omitted), or wrong owner
     return {
       publicKey: key.publicKey,
-      actor: { actor: actorHeader, handle, keyId, domain: actorDomain },
+      // Local signer → the handle IS a local handle; safe as a storage key.
+      actor: { actor: actorHeader, localHandle: handle, keyId, domain: actorDomain },
     };
   }
 
@@ -150,11 +165,13 @@ async function resolveActorSigner(
   // retry, so a rotated/revoked key set is picked up promptly (§4.6, §4.7.1).
   const verifyWith = (publicKey: string) => verify({ publicKey, ...target });
 
+  // NOTE: no `localHandle` on either remote result — `handle` here names a user
+  // of `actorDomain`, not of this provider (§4.6). See {@link AuthenticatedActor}.
   const cached = await userKeysCache.getActorKey(actorHeader, keyId);
   if (cached && verifyWith(cached.publicKey)) {
     return {
       publicKey: cached.publicKey,
-      actor: { actor: actorHeader, handle, keyId, domain: actorDomain },
+      actor: { actor: actorHeader, keyId, domain: actorDomain },
       verified: true,
     };
   }
@@ -164,7 +181,7 @@ async function resolveActorSigner(
   if (fresh && verifyWith(fresh.publicKey)) {
     return {
       publicKey: fresh.publicKey,
-      actor: { actor: actorHeader, handle, keyId, domain: actorDomain },
+      actor: { actor: actorHeader, keyId, domain: actorDomain },
       verified: true,
     };
   }
@@ -222,9 +239,10 @@ async function resolveProviderSigner(
     if (!key) return null;
     return {
       publicKey: key.publicKey,
-      // For a provider identity there is no user handle; expose the domain as
-      // both the actor string and the domain, with an empty handle.
-      actor: { actor: providerHeader, handle: "", keyId, domain: providerDomain },
+      // For a provider identity there is no user at all; expose the domain as
+      // both the actor string and the domain, and NO `localHandle` (even for our
+      // own domain — a provider signature is not a user of this provider).
+      actor: { actor: providerHeader, keyId, domain: providerDomain },
     };
   }
 
@@ -238,7 +256,7 @@ async function resolveProviderSigner(
   if (cached && verifyWith(cached.publicKey)) {
     return {
       publicKey: cached.publicKey,
-      actor: { actor: providerHeader, handle: "", keyId, domain: providerDomain },
+      actor: { actor: providerHeader, keyId, domain: providerDomain },
       verified: true,
     };
   }
@@ -248,7 +266,7 @@ async function resolveProviderSigner(
   if (fresh && verifyWith(fresh.publicKey)) {
     return {
       publicKey: fresh.publicKey,
-      actor: { actor: providerHeader, handle: "", keyId, domain: providerDomain },
+      actor: { actor: providerHeader, keyId, domain: providerDomain },
       verified: true,
     };
   }
@@ -427,6 +445,13 @@ async function verifyAndSetActor(c: Context, vctx: VerifyContext): Promise<void>
     }
 
     // Authenticated. Authorization (membership/tier) is applied separately.
+    //
+    // NOTE the identity shape: `signer.actor.localHandle` is set by the resolvers
+    // ONLY for a user actor whose domain equals `authority` (= this provider's
+    // `canonicalAuthority(config.domain)`, the same locality notion the DM reads
+    // use). A remote actor (§4.6) and a provider identity (§8.1) carry no local
+    // handle at all, so no handler can accidentally key local storage on a
+    // foreign namespace's handle. See {@link AuthenticatedActor}.
     c.set("actor", signer.actor);
     // Record WHICH identity verified, for routes that accept either (§8.1).
     c.set("signatureMode", mode);
@@ -518,6 +543,64 @@ export function requireActorOrProviderSignature(
       nonceStore,
       identityHeader: mode === "provider" ? HEADER.PROVIDER : HEADER.ACTOR,
     });
+    await next();
+  };
+}
+
+/**
+ * The authenticated caller's handle **in this provider's namespace**, or a clean
+ * rejection if there isn't one.
+ *
+ * Use this (never a handle split out of `actor.actor`) wherever a route reads or
+ * writes provider-local, per-user storage: `users`, `presence`,
+ * `privacy_settings`, `contacts`, `read_markers`, `follows`, notification prefs /
+ * feed, push subscriptions, notification endpoints, DM inboxes keyed by `owner`.
+ *
+ *  - **401** when the request is not authenticated at all (defensive: unreachable
+ *    behind `requireSignature()`).
+ *  - **403** when the caller authenticated as a REMOTE actor (§4.6) or as a
+ *    PROVIDER (§8.1). Neither has an account on this provider, so there is no
+ *    local record for them to act on — and treating their bare handle as a local
+ *    one would hand them the local user of the same name.
+ *
+ * MUST run after `requireSignature()`. {@link requireLocalActor} is the
+ * middleware form, for mounting on a whole router.
+ */
+export function requireLocalHandle(c: Context<AppBindings>): string {
+  const actor = c.var.actor;
+  if (!actor) {
+    throw AppError.unauthorized({ detail: "authentication required" });
+  }
+  const localHandle = actor.localHandle;
+  if (localHandle === undefined) {
+    throw AppError.forbidden({
+      detail: "this endpoint serves only users of this provider; sign in at your home provider",
+    });
+  }
+  return localHandle;
+}
+
+/**
+ * Middleware form of {@link requireLocalHandle}: reject any caller that is not a
+ * user of THIS provider with a 403, before the handler runs.
+ *
+ * Mounted after `requireSignature()` on every `/api/me/*` router, the §10
+ * notification-endpoint router, the push-subscription routes, and the provider
+ * admin guard — routes whose entire subject matter is the caller's own
+ * provider-local record, which a remote actor (§4.6) simply does not have. It is
+ * NOT mounted on routes that legitimately serve remote members (group/channel
+ * reads, DM history + edit/delete/reaction, the federation ingest); those key
+ * storage on the full `actor` instead.
+ *
+ * ```ts
+ * const signed = requireSignature();
+ * const local = requireLocalActor();
+ * router.get("/follows", signed, local, (c) => { const me = requireLocalHandle(c); … });
+ * ```
+ */
+export function requireLocalActor(): MiddlewareHandler<AppBindings> {
+  return async (c, next) => {
+    requireLocalHandle(c);
     await next();
   };
 }

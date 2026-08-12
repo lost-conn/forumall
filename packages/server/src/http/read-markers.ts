@@ -24,7 +24,7 @@ import { Hono } from "hono";
 import { getUserRow } from "../provider/guests.ts";
 import { getUnreadSummary, setReadMarkers, unreadEntryFor } from "../provider/read-markers.ts";
 import { AppError } from "./errors.ts";
-import { requireSignature } from "./signature.ts";
+import { requireLocalActor, requireLocalHandle, requireSignature } from "./signature.ts";
 import type { AppBindings } from "./types.ts";
 
 /**
@@ -34,27 +34,27 @@ import type { AppBindings } from "./types.ts";
 export function createMeReadMarkersRouter() {
   const router = new Hono<AppBindings>();
   const signed = requireSignature();
+  // Read state is private + per-LOCAL-account, keyed on the caller's handle.
+  const local = requireLocalActor();
 
   // -- GET /api/me/read-markers (signed) ----------------------------------
-  router.get("/read-markers", signed, (c) => {
+  router.get("/read-markers", signed, local, (c) => {
     const { config, db } = c.var;
     const actor = c.var.actor;
     if (!actor) throw AppError.unauthorized();
 
-    const scopes = getUnreadSummary(
-      db,
-      actor.handle,
-      `${actor.handle}@${canonicalAuthority(config.domain)}`,
-    );
+    const handle = requireLocalHandle(c);
+    const scopes = getUnreadSummary(db, handle, `${handle}@${canonicalAuthority(config.domain)}`);
     return c.json(ReadMarkersResponseSchema.parse({ scopes }), 200);
   });
 
   // -- PATCH /api/me/read-markers (signed) --------------------------------
-  router.patch("/read-markers", signed, async (c) => {
+  router.patch("/read-markers", signed, local, async (c) => {
     const { config, db, hub } = c.var;
     const actor = c.var.actor;
     if (!actor) throw AppError.unauthorized();
-    if (!getUserRow(db, actor.handle)) throw AppError.notFound({ detail: "no such user" });
+    const handle = requireLocalHandle(c);
+    if (!getUserRow(db, handle)) throw AppError.notFound({ detail: "no such user" });
 
     const raw = await c.req.json().catch(() => {
       throw AppError.badRequest({ detail: "request body must be valid JSON" });
@@ -67,12 +67,12 @@ export function createMeReadMarkersRouter() {
       });
     }
 
-    const canonicalActor = `${actor.handle}@${canonicalAuthority(config.domain)}`;
+    const canonicalActor = `${handle}@${canonicalAuthority(config.domain)}`;
 
     // Persist monotonically; `advanced` is the set of scopes actually moved.
     const advanced = setReadMarkers(
       db,
-      actor.handle,
+      handle,
       parsed.data.markers.map((m) => ({ scopeId: m.scopeId, lastReadSeq: m.lastReadSeq })),
     );
 
@@ -81,7 +81,7 @@ export function createMeReadMarkersRouter() {
     // dropped). For each advanced scope we read back the persisted lastReadSeq.
     const markers = parsed.data.markers
       .filter((m) => advanced.has(m.scopeId))
-      .map((m) => unreadEntryFor(db, actor.handle, canonicalActor, m.scopeId, m.lastReadSeq));
+      .map((m) => unreadEntryFor(db, handle, canonicalActor, m.scopeId, m.lastReadSeq));
 
     // Multi-device sync (§7.1 style): fan the advance to the actor's OTHER
     // connections. Self-receipt on the originating device is harmless (the

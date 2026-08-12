@@ -44,7 +44,7 @@ import {
 } from "../provider/contacts.ts";
 import { getUserRow } from "../provider/guests.ts";
 import { AppError } from "./errors.ts";
-import { requireSignature } from "./signature.ts";
+import { requireLocalActor, requireLocalHandle, requireSignature } from "./signature.ts";
 import type { AppBindings } from "./types.ts";
 
 /** Read a path param guaranteed present by the mounted route. */
@@ -73,11 +73,15 @@ function localHandleOf(c: Context<AppBindings>, actor: string): string | null {
 export function createMeContactsRouter() {
   const router = new Hono<AppBindings>();
   const signed = requireSignature();
+  // A `Contact` row is held from a LOCAL owner's perspective, so the caller must
+  // be a user of this provider; a remote actor (§4.6) mirrors its own side via
+  // the federation receiver below, never through these routes.
+  const local = requireLocalActor();
 
   // -- POST /contacts (§6.7 — signed) -------------------------------------
   // Record an outgoing pending entry for the caller. If the counterparty is a
   // LOCAL user, also record their mirror incoming pending entry directly.
-  router.post("/contacts", signed, async (c) => {
+  router.post("/contacts", signed, local, async (c) => {
     const { db } = c.var;
     const actor = c.var.actor;
     if (!actor) throw AppError.unauthorized();
@@ -88,7 +92,7 @@ export function createMeContactsRouter() {
       throw AppError.badRequest({ detail: "cannot add yourself as a contact" });
     }
 
-    const contact = upsertContact(db, actor.handle, other, "pending", "outgoing");
+    const contact = upsertContact(db, requireLocalHandle(c), other, "pending", "outgoing");
 
     // Local counterparty → mirror the incoming pending row on their side. A
     // remote counterparty's side is mirrored by the client (P8) via the
@@ -104,18 +108,19 @@ export function createMeContactsRouter() {
   // -- POST /contacts/{userRef}/accept (§6.7 — signed) --------------------
   // Promote the caller's incoming pending entry to accepted. If the
   // counterparty is local, flip their outgoing row to accepted too.
-  router.post("/contacts/:userRef/accept", signed, (c) => {
+  router.post("/contacts/:userRef/accept", signed, local, (c) => {
     const { db } = c.var;
     const actor = c.var.actor;
     if (!actor) throw AppError.unauthorized();
     const other = decodeURIComponent(requireParam(c, "userRef"));
 
-    const row = getContactRow(db, actor.handle, other);
+    const me = requireLocalHandle(c);
+    const row = getContactRow(db, me, other);
     if (!row || row.state !== "pending" || row.direction !== "incoming") {
       throw AppError.notFound({ detail: "no incoming pending contact request from this user" });
     }
 
-    const contact = acceptContact(db, actor.handle, other);
+    const contact = acceptContact(db, me, other);
 
     const otherHandle = localHandleOf(c, other);
     if (otherHandle !== null) {
@@ -131,13 +136,13 @@ export function createMeContactsRouter() {
   // Cancel an outgoing request, decline an incoming one, or remove an
   // established contact — removes the caller's row; if the counterparty is
   // local, remove their mirror too.
-  router.delete("/contacts/:userRef", signed, (c) => {
+  router.delete("/contacts/:userRef", signed, local, (c) => {
     const { db } = c.var;
     const actor = c.var.actor;
     if (!actor) throw AppError.unauthorized();
     const other = decodeURIComponent(requireParam(c, "userRef"));
 
-    removeContact(db, actor.handle, other);
+    removeContact(db, requireLocalHandle(c), other);
 
     const otherHandle = localHandleOf(c, other);
     if (otherHandle !== null) {
@@ -150,12 +155,12 @@ export function createMeContactsRouter() {
   // -- GET /contacts (§6.7 — signed) --------------------------------------
   // List the caller's contacts, including outstanding pending in both
   // directions.
-  router.get("/contacts", signed, (c) => {
+  router.get("/contacts", signed, local, (c) => {
     const { db } = c.var;
     const actor = c.var.actor;
     if (!actor) throw AppError.unauthorized();
 
-    const items: Contact[] = listContacts(db, actor.handle);
+    const items: Contact[] = listContacts(db, requireLocalHandle(c));
     return c.json(ContactsResponseSchema.parse({ contacts: items, metadata: [] }));
   });
 

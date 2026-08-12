@@ -20,13 +20,21 @@ import { Hono } from "hono";
 import { egressCheck } from "../provider/push-egress-check.ts";
 import { addSubscription, getVapidKey, removeSubscription } from "../provider/push.ts";
 import { AppError } from "./errors.ts";
-import { optionalSignature, requireSignature } from "./signature.ts";
+import {
+  optionalSignature,
+  requireLocalActor,
+  requireLocalHandle,
+  requireSignature,
+} from "./signature.ts";
 import type { AppBindings } from "./types.ts";
 
 /** The push router: VAPID public key + subscribe / unsubscribe. */
 export function createPushRouter() {
   const router = new Hono<AppBindings>();
   const signed = requireSignature();
+  // A push subscription belongs to a LOCAL account (its handle is the storage
+  // key, and `sendPushToRecipient` only ever pushes local recipients).
+  const local = requireLocalActor();
 
   // -- GET /public-key (public) -------------------------------------------
   // The VAPID application-server public key. Generated + persisted on first use.
@@ -53,7 +61,7 @@ export function createPushRouter() {
 
   // -- POST /subscribe (signed) -------------------------------------------
   // Register the caller's browser PushSubscription → 201 with the row id.
-  router.post("/subscribe", signed, async (c) => {
+  router.post("/subscribe", signed, local, async (c) => {
     const { db } = c.var;
     const actor = c.var.actor;
     if (!actor) throw AppError.unauthorized();
@@ -69,7 +77,7 @@ export function createPushRouter() {
       });
     }
 
-    const id = addSubscription(db, actor.handle, {
+    const id = addSubscription(db, requireLocalHandle(c), {
       endpoint: parsed.data.endpoint,
       keys: { p256dh: parsed.data.keys.p256dh, auth: parsed.data.keys.auth },
     });
@@ -78,7 +86,7 @@ export function createPushRouter() {
 
   // -- POST /unsubscribe (signed) -----------------------------------------
   // Remove the caller's subscription by endpoint. 204 whether or not it existed.
-  router.post("/unsubscribe", signed, async (c) => {
+  router.post("/unsubscribe", signed, local, async (c) => {
     const { db } = c.var;
     const actor = c.var.actor;
     if (!actor) throw AppError.unauthorized();
@@ -91,7 +99,7 @@ export function createPushRouter() {
       throw AppError.badRequest({ detail: "invalid unsubscribe request" });
     }
 
-    removeSubscription(db, actor.handle, parsed.data.endpoint);
+    removeSubscription(db, requireLocalHandle(c), parsed.data.endpoint);
     return c.body(null, 204);
   });
 

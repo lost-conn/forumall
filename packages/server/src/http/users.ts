@@ -51,7 +51,7 @@ import {
 import { getPrivacySettings, updatePrivacySettings } from "../provider/privacy.ts";
 import { canView } from "../provider/visibility.ts";
 import { AppError } from "./errors.ts";
-import { requireSignature } from "./signature.ts";
+import { requireLocalActor, requireLocalHandle, requireSignature } from "./signature.ts";
 import type { AppBindings, AuthenticatedActor } from "./types.ts";
 
 /**
@@ -118,9 +118,16 @@ function localHandleOfRef(c: Context<AppBindings>, ref: string): string | null {
   return getUserRow(db, handle) ? handle : null;
 }
 
-/** The viewer shape {@link canView} expects, from the authenticated actor. */
+/**
+ * The viewer shape {@link canView} expects, from the authenticated actor. The
+ * viewer MAY be remote (§4.6) — `canView` compares the FULL actor, and the
+ * `handle` field is the viewer's LOCAL handle (empty for a remote/provider
+ * identity), never a remote handle passed off as a local one.
+ */
 function viewerOf(actor: AuthenticatedActor | undefined) {
-  return actor ? { actor: actor.actor, handle: actor.handle, domain: actor.domain } : null;
+  return actor
+    ? { actor: actor.actor, handle: actor.localHandle ?? "", domain: actor.domain }
+    : null;
 }
 
 /**
@@ -130,24 +137,28 @@ function viewerOf(actor: AuthenticatedActor | undefined) {
 export function createMeUserRouter() {
   const router = new Hono<AppBindings>();
   const signed = requireSignature();
+  // Every route here reads/writes the CALLER'S OWN provider-local record, which a
+  // remote actor (§4.6) does not have — reject them before the handler runs.
+  const local = requireLocalActor();
 
   // -- GET /api/me (§5.1.2 — signed) --------------------------------------
   // The caller's private `UserAccount` = { profile, settings }. Never exposes
   // another user's fields; settings is a minimal placeholder bag. The
   // `isAdmin` field (Forumall extension, via UserAccountSchema's passthrough) is
   // attached ONLY on this self view — never on another user's public profile.
-  router.get("/", signed, (c) => {
+  router.get("/", signed, local, (c) => {
     const { config, db } = c.var;
     const actor = c.var.actor;
     if (!actor) throw AppError.unauthorized();
 
-    const profile = buildUserProfile(db, canonicalAuthority(config.domain), actor.handle);
+    const handle = requireLocalHandle(c);
+    const profile = buildUserProfile(db, canonicalAuthority(config.domain), handle);
     if (!profile) throw AppError.notFound({ detail: "no such user" });
 
     const account = UserAccountSchema.parse({
       profile,
       settings: {},
-      isAdmin: isProviderAdmin(db, config, actor.handle),
+      isAdmin: isProviderAdmin(db, config, handle),
     });
     return c.json(account, 200);
   });
@@ -159,7 +170,7 @@ export function createMeUserRouter() {
   // SAME device keypair + keyId, which now resolves to the new actor. Returns
   // `{ actor, keyId, profile }`. 409 if already a full account / handle taken;
   // 400 on an invalid or reserved handle.
-  router.post("/claim", signed, async (c) => {
+  router.post("/claim", signed, local, async (c) => {
     const { config, db } = c.var;
     const actor = c.var.actor;
     if (!actor) throw AppError.unauthorized();
@@ -175,7 +186,7 @@ export function createMeUserRouter() {
       });
     }
 
-    const result = claimGuestAccount(db, config, actor.handle, {
+    const result = claimGuestAccount(db, config, requireLocalHandle(c), {
       newHandle: parsed.data.handle,
       password: parsed.data.password,
       ...(parsed.data.displayName !== undefined ? { displayName: parsed.data.displayName } : {}),
@@ -196,7 +207,7 @@ export function createMeUserRouter() {
   // the guest row is deleted. Returns `{ actor, keyId, profile }` (the target's).
   // 401 on a bad handle/password (uniform, no enumeration); 409 if the caller is
   // already a full account.
-  router.post("/merge", signed, async (c) => {
+  router.post("/merge", signed, local, async (c) => {
     const { config, db } = c.var;
     const actor = c.var.actor;
     if (!actor) throw AppError.unauthorized();
@@ -212,7 +223,7 @@ export function createMeUserRouter() {
       });
     }
 
-    const result = mergeGuestIntoAccount(db, config, actor.handle, {
+    const result = mergeGuestIntoAccount(db, config, requireLocalHandle(c), {
       targetHandle: parsed.data.handle,
       password: parsed.data.password,
     });
@@ -226,11 +237,12 @@ export function createMeUserRouter() {
   // -- PATCH /api/me/profile (§6.3 — signed) ------------------------------
   // Update displayName / avatar / bio / metadata; bump updatedAt; return the
   // updated public profile (with the caller's own bio, since self is visible).
-  router.patch("/profile", signed, async (c) => {
+  router.patch("/profile", signed, local, async (c) => {
     const { config, db } = c.var;
     const actor = c.var.actor;
     if (!actor) throw AppError.unauthorized();
-    if (!getUserRow(db, actor.handle)) throw AppError.notFound({ detail: "no such user" });
+    const handle = requireLocalHandle(c);
+    if (!getUserRow(db, handle)) throw AppError.notFound({ detail: "no such user" });
 
     const raw = await c.req.json().catch(() => {
       throw AppError.badRequest({ detail: "request body must be valid JSON" });
@@ -243,12 +255,12 @@ export function createMeUserRouter() {
       });
     }
 
-    updateUserProfile(db, actor.handle, parsed.data);
+    updateUserProfile(db, handle, parsed.data);
 
     const host = canonicalAuthority(config.domain);
-    const profile = buildUserProfile(db, host, actor.handle);
+    const profile = buildUserProfile(db, host, handle);
     if (!profile) throw AppError.notFound({ detail: "no such user" });
-    const row = getUserRow(db, actor.handle);
+    const row = getUserRow(db, handle);
     // Self always sees their own bio.
     return c.json(
       UserPublicProfileResponseSchema.parse({
@@ -260,12 +272,12 @@ export function createMeUserRouter() {
   });
 
   // -- GET /api/me/privacy (§6.6 — signed) --------------------------------
-  router.get("/privacy", signed, (c) => {
+  router.get("/privacy", signed, local, (c) => {
     const { db } = c.var;
     const actor = c.var.actor;
     if (!actor) throw AppError.unauthorized();
 
-    const settings = getPrivacySettings(db, actor.handle);
+    const settings = getPrivacySettings(db, requireLocalHandle(c));
     return c.json(
       PrivacySettingsSchema.parse({
         presenceVisibility: settings.presenceVisibility,
@@ -280,7 +292,7 @@ export function createMeUserRouter() {
   });
 
   // -- PUT /api/me/privacy (§6.6 — signed) --------------------------------
-  router.put("/privacy", signed, async (c) => {
+  router.put("/privacy", signed, local, async (c) => {
     const { db } = c.var;
     const actor = c.var.actor;
     if (!actor) throw AppError.unauthorized();
@@ -306,7 +318,7 @@ export function createMeUserRouter() {
       ? (body.denyList.filter((x) => typeof x === "string") as string[])
       : undefined;
 
-    const settings = updatePrivacySettings(db, actor.handle, {
+    const settings = updatePrivacySettings(db, requireLocalHandle(c), {
       ...(parsed.data.presenceVisibility !== undefined
         ? { presenceVisibility: parsed.data.presenceVisibility }
         : {}),
@@ -338,11 +350,12 @@ export function createMeUserRouter() {
   // EXPLICIT availability/status (the request body's enum rejects `offline`) and
   // fan out a privacy-filtered `presence.update` to subscribers over the shared
   // registry. The response echoes the caller's own (self-visible) presence.
-  router.put("/presence", signed, async (c) => {
+  router.put("/presence", signed, local, async (c) => {
     const { config, db, hub, presenceRegistry } = c.var;
     const actor = c.var.actor;
     if (!actor) throw AppError.unauthorized();
-    if (!getUserRow(db, actor.handle)) throw AppError.notFound({ detail: "no such user" });
+    const handle = requireLocalHandle(c);
+    if (!getUserRow(db, handle)) throw AppError.notFound({ detail: "no such user" });
 
     const raw = await c.req.json().catch(() => {
       throw AppError.badRequest({ detail: "request body must be valid JSON" });
@@ -362,16 +375,16 @@ export function createMeUserRouter() {
 
     setExplicitPresence(
       db,
-      actor.handle,
+      handle,
       parsed.data.availability as ExplicitAvailability,
       parsed.data.status ?? undefined,
     );
-    fanOutPresence(db, hub, config, presenceRegistry, actor.handle);
+    fanOutPresence(db, hub, config, presenceRegistry, handle);
 
     // The caller always sees their own real presence (self-visibility).
-    const eff = filterPresenceFor(db, hub, config, actor.handle, {
+    const eff = filterPresenceFor(db, hub, config, handle, {
       actor: actor.actor,
-      handle: actor.handle,
+      handle,
       domain: actor.domain,
     });
     return c.json(toPresence(eff), 200);

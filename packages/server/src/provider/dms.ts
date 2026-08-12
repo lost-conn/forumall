@@ -268,9 +268,18 @@ export function isDmParticipant(db: Db, owner: string, dmId: string): boolean {
  * and is scoped purely by `author`.
  */
 export interface DmViewer {
-  readonly handle: string;
+  /** The viewer's full actor (`handle@domain`) — the `dm_messages.author` key. */
   readonly actor: string;
-  readonly local: boolean;
+  /**
+   * The viewer's handle **in this provider's namespace**, set only when the
+   * viewer is a LOCAL user — it is the `dm_messages.owner` / `dm_conversations.
+   * owner` inbox key. `undefined` for a REMOTE viewer (§4.6), whose bare handle
+   * belongs to another provider's namespace and must never select an inbox here;
+   * a remote viewer is scoped to the rows they AUTHORED. Mirrors
+   * `AuthenticatedActor.localHandle` — build it from that, never by splitting the
+   * actor string.
+   */
+  readonly localHandle?: string;
 }
 
 /**
@@ -282,7 +291,12 @@ export interface DmViewer {
  * sit in a local recipient's inbox). A true non-participant matches neither.
  */
 export function isDmThreadParticipant(db: Db, dmId: string, viewer: DmViewer): boolean {
-  if (viewer.local && getDmConversationRow(db, viewer.handle, dmId) != null) return true;
+  if (
+    viewer.localHandle !== undefined &&
+    getDmConversationRow(db, viewer.localHandle, dmId) != null
+  ) {
+    return true;
+  }
   const row = db.drizzle
     .select({ owner: dmConversations.owner })
     .from(dmConversations)
@@ -441,8 +455,8 @@ export function listDmMessages(
   // but it's a single row under OR, so no duplication.
   const scope = and(
     eq(dmMessages.dmId, dmId),
-    viewer.local
-      ? or(eq(dmMessages.author, viewer.actor), eq(dmMessages.owner, viewer.handle))
+    viewer.localHandle !== undefined
+      ? or(eq(dmMessages.author, viewer.actor), eq(dmMessages.owner, viewer.localHandle))
       : eq(dmMessages.author, viewer.actor),
   );
   const where =

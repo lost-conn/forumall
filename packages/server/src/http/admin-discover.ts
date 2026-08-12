@@ -71,7 +71,7 @@ export function createAdminDiscoverRouter(): Hono<AppBindings> {
     const actor = c.var.actor;
     const groupId = c.req.param("groupId");
     // `actor` is set by requireSignature(); fall back to its handle for audit.
-    const addedBy = actor?.handle ?? "";
+    const addedBy = actor?.localHandle ?? "";
     featureGroup(db, groupId, addedBy);
     const row = getGroupRow(db, groupId);
     // featureGroup already validated existence, but guard a raced delete.

@@ -38,7 +38,7 @@ import { type Context, Hono } from "hono";
 import { channelVisibleTo, getChannelRow } from "../provider/channels.ts";
 import { addFollow, listFollows, removeFollow } from "../provider/follows.ts";
 import { AppError } from "./errors.ts";
-import { requireSignature } from "./signature.ts";
+import { requireLocalActor, requireLocalHandle, requireSignature } from "./signature.ts";
 import type { AppBindings } from "./types.ts";
 
 /** Read a path param guaranteed present by the mounted route. */
@@ -85,16 +85,18 @@ function classifyChannelRef(
 export function createMeFollowsRouter() {
   const router = new Hono<AppBindings>();
   const signed = requireSignature();
+  // Follows are provider-local rows keyed on the caller's own handle (§7.6).
+  const local = requireLocalActor();
 
   // -- GET /follows (§7.6 — signed) ---------------------------------------
   // The caller's follow list — pointers only. Validated against the shared
   // FollowsResponseSchema.
-  router.get("/", signed, (c) => {
+  router.get("/", signed, local, (c) => {
     const { db } = c.var;
     const actor = c.var.actor;
     if (!actor) throw AppError.unauthorized();
 
-    const items = listFollows(db, actor.handle);
+    const items = listFollows(db, requireLocalHandle(c));
     return c.json(FollowsResponseSchema.parse({ follows: items, metadata: [] }), 200);
   });
 
@@ -103,7 +105,7 @@ export function createMeFollowsRouter() {
   // local channel → channelVisibleTo (403 if not visible, 404 if no such
   // channel); remote channel → stored without a remote access check (P7).
   // Idempotent: already-followed → existing Follow (200); new → 201.
-  router.post("/", signed, async (c) => {
+  router.post("/", signed, local, async (c) => {
     const { db } = c.var;
     const actor = c.var.actor;
     if (!actor) throw AppError.unauthorized();
@@ -139,19 +141,19 @@ export function createMeFollowsRouter() {
     // federation (P7) — store the pointer without a remote access check for now.
     // P7 can add a remote access check here before recording the follow.
 
-    const { follow, created } = addFollow(db, actor.handle, channel, groupId);
+    const { follow, created } = addFollow(db, requireLocalHandle(c), channel, groupId);
     return c.json(follow, created ? 201 : 200);
   });
 
   // -- DELETE /follows/{channelRef} (§7.6 — signed) -----------------------
   // Stop following. Idempotent: always 204, whether or not a row existed.
-  router.delete("/:channelRef", signed, (c) => {
+  router.delete("/:channelRef", signed, local, (c) => {
     const { db } = c.var;
     const actor = c.var.actor;
     if (!actor) throw AppError.unauthorized();
 
     const channel = decodeURIComponent(requireParam(c, "channelRef"));
-    removeFollow(db, actor.handle, channel);
+    removeFollow(db, requireLocalHandle(c), channel);
     return c.body(null, 204);
   });
 

@@ -18,7 +18,7 @@ import { type Context, Hono } from "hono";
 
 import { deleteEndpoint, listEndpoints, registerEndpoint } from "../provider/notifications.ts";
 import { AppError } from "./errors.ts";
-import { requireSignature } from "./signature.ts";
+import { requireLocalActor, requireLocalHandle, requireSignature } from "./signature.ts";
 import type { AppBindings } from "./types.ts";
 
 /** Read a path param guaranteed present by the mounted route. */
@@ -49,7 +49,7 @@ export function createNotificationsRouter() {
       });
     }
 
-    const endpoint = registerEndpoint(db, actor.handle, parsed.data);
+    const endpoint = registerEndpoint(db, requireLocalHandle(c), parsed.data);
     return c.json(endpoint, 201);
   });
 
@@ -59,7 +59,7 @@ export function createNotificationsRouter() {
     const { db } = c.var;
     const actor = c.var.actor;
     if (!actor) throw AppError.unauthorized();
-    return c.json({ endpoints: listEndpoints(db, actor.handle) }, 200);
+    return c.json({ endpoints: listEndpoints(db, requireLocalHandle(c)) }, 200);
   });
 
   // -- DELETE /endpoints/{id} (§10 — signed) ------------------------------
@@ -71,7 +71,7 @@ export function createNotificationsRouter() {
     if (!actor) throw AppError.unauthorized();
 
     const id = requireParam(c, "id");
-    if (!deleteEndpoint(db, actor.handle, id)) {
+    if (!deleteEndpoint(db, requireLocalHandle(c), id)) {
       throw AppError.notFound({ detail: "no such notification endpoint" });
     }
     return c.body(null, 204);

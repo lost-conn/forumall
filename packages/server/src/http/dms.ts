@@ -75,8 +75,13 @@ import type { FederationFetch } from "../provider/federation/http.ts";
 import { signedProviderFetch } from "../provider/federation/http.ts";
 import { previewText, sendPushToRecipient } from "../provider/push-send.ts";
 import { AppError } from "./errors.ts";
-import { requireActorOrProviderSignature, requireSignature } from "./signature.ts";
-import type { AppBindings } from "./types.ts";
+import {
+  requireActorOrProviderSignature,
+  requireLocalActor,
+  requireLocalHandle,
+  requireSignature,
+} from "./signature.ts";
+import type { AppBindings, AuthenticatedActor } from "./types.ts";
 
 /** Max length of a reaction key (matches the channel reaction key bound). */
 const MAX_REACTION_KEY_LENGTH = 64;
@@ -147,9 +152,26 @@ function resolveLocalDmOwner(db: Db, config: Config, author: string, dmId: strin
   return null;
 }
 
-/** The other actor in `dmId` from `caller`'s perspective, or `null`. */
+/**
+ * The other actor in `dmId` from the perspective of the LOCAL inbox `owner`, or
+ * `null`. `owner` is a local handle (the inbox key) — a remote caller has no
+ * inbox here, so callers must not reach for this with a foreign handle.
+ */
 function counterpartyOf(db: Db, owner: string, dmId: string): string | null {
   return getDmConversationRow(db, owner, dmId)?.counterparty ?? null;
+}
+
+/**
+ * The {@link DmViewer} for an authenticated caller. A LOCAL caller sees both what
+ * they authored and their own inbox; a REMOTE caller (§4.6) — legitimately
+ * reading/mutating a thread on the recipient's provider (§8.3) — is scoped to the
+ * rows they AUTHORED, never to a local inbox that merely shares their handle.
+ */
+function dmViewerOf(actor: AuthenticatedActor): DmViewer {
+  return {
+    actor: actor.actor,
+    ...(actor.localHandle !== undefined ? { localHandle: actor.localHandle } : {}),
+  };
 }
 
 /** The host (domain) part of `handle@domain`, canonicalized; "" if malformed. */
@@ -677,15 +699,19 @@ async function handleFederationDmReaction(
 export function createMeDmsRouter() {
   const router = new Hono<AppBindings>();
   const signed = requireSignature();
+  // The conversation list IS the caller's local inbox index (`dm_conversations.
+  // owner`), which only a user of this provider has; a remote actor reads its
+  // conversations at its own home provider.
+  const local = requireLocalActor();
 
-  // -- GET /dms (§7.4 — signed) -------------------------------------------
-  router.get("/dms", signed, (c) => {
+  // -- GET /dms (§7.4 — signed, local caller) ------------------------------
+  router.get("/dms", signed, local, (c) => {
     const { db } = c.var;
     const actor = c.var.actor;
     if (!actor) throw AppError.unauthorized();
 
     const { cursor, limit } = pageQuery(c);
-    const page = listDmConversations(db, actor.handle, {
+    const page = listDmConversations(db, requireLocalHandle(c), {
       cursor,
       ...(limit !== undefined ? { limit } : {}),
     });
@@ -724,15 +750,11 @@ export function createDmsRouter() {
   // cross-provider (a remote sender reading the recipient's provider gets their
   // sent rows by `author` scope).
   router.get("/:dmId/messages", signed, (c) => {
-    const { db, config } = c.var;
+    const { db } = c.var;
     const actor = c.var.actor;
     if (!actor) throw AppError.unauthorized();
     const dmId = requireParam(c, "dmId");
-    const viewer: DmViewer = {
-      handle: actor.handle,
-      actor: actor.actor,
-      local: actor.domain === canonicalAuthority(config.domain),
-    };
+    const viewer: DmViewer = dmViewerOf(actor);
 
     // Participation: the caller must own a local inbox row for dmId, OR be named
     // as the counterparty of some local inbox row for dmId (covers an only-sent /
@@ -758,16 +780,12 @@ export function createDmsRouter() {
   // Paged list of the replies to a DM message within the caller's inbox. Same
   // participant-only gate + `messages-page` shape as the history read.
   router.get("/:dmId/messages/:messageId/replies", signed, (c) => {
-    const { db, config } = c.var;
+    const { db } = c.var;
     const actor = c.var.actor;
     if (!actor) throw AppError.unauthorized();
     const dmId = requireParam(c, "dmId");
     const messageId = requireParam(c, "messageId");
-    const viewer: DmViewer = {
-      handle: actor.handle,
-      actor: actor.actor,
-      local: actor.domain === canonicalAuthority(config.domain),
-    };
+    const viewer: DmViewer = dmViewerOf(actor);
 
     if (!isDmThreadParticipant(db, dmId, viewer)) {
       throw AppError.notFound({ detail: "no such conversation" });
@@ -823,6 +841,14 @@ export function createDmsRouter() {
   // the event for the other side: (a) reads the counterparty off the CALLER's
   // conversation row, while (b) has no such row — there the counterparty IS the
   // resolved local inbox owner, `u@authority`.
+  //
+  // Cases (a) and (c) both key on the caller's OWN LOCAL INBOX (`dm_messages.
+  // owner` / `dm_conversations.owner`), so they apply ONLY to a caller that has a
+  // local handle. A REMOTE caller (§4.6) has no inbox here — their bare handle
+  // names a user of THEIR provider — so they skip straight to (b), which resolves
+  // the inbox from their FULL actor via the §8.3 dmId derivation. That keeps the
+  // only-sent remote author working exactly as before, while a remote handle can
+  // never select the like-named LOCAL user's inbox.
   router.put("/:dmId/messages/:messageId/reactions/:key", signed, async (c) => {
     const { db, config, hub, federationFetch } = c.var;
     const actor = c.var.actor;
@@ -833,12 +859,13 @@ export function createDmsRouter() {
     assertValidReactionKey(key);
     const authority = canonicalAuthority(config.domain);
 
-    // (a) The target lives in the caller's own inbox. Its conversation row is
+    // (a) The target lives in the caller's own LOCAL inbox. Its conversation row is
     // written alongside every stored inbox message, so the counterparty is
     // always resolvable here; were it ever not, we fall through rather than fan
     // out an event that names nobody.
-    const own = getDmMessageRow(db, actor.handle, dmId, messageId);
-    const ownCounterparty = own ? counterpartyOf(db, actor.handle, dmId) : null;
+    const me = actor.localHandle;
+    const own = me !== undefined ? getDmMessageRow(db, me, dmId, messageId) : null;
+    const ownCounterparty = me !== undefined && own ? counterpartyOf(db, me, dmId) : null;
     if (own && ownCounterparty !== null) {
       const existed = hasDmReaction(db, dmId, messageId, actor.actor, key);
       const reaction = addDmReaction(db, { dmId, messageId, author: actor.actor, key });
@@ -872,7 +899,7 @@ export function createDmsRouter() {
     }
 
     // (c) The counterparty is REMOTE → the message lives on their provider.
-    const counterparty = counterpartyOf(db, actor.handle, dmId);
+    const counterparty = me !== undefined ? counterpartyOf(db, me, dmId) : null;
     const cpDomain = counterparty !== null ? domainOf(counterparty) : "";
     if (cpDomain !== "" && cpDomain !== authority) {
       const res = await forwardDmReaction(db, config, federationFetch, {
@@ -894,6 +921,14 @@ export function createDmsRouter() {
   // Remove the caller's reaction → 204. Same storage-follows-message decision
   // table as PUT above, including the per-case fan-out participants; only the
   // stored effect (remove instead of add) differs.
+  //
+  // Cases (a) and (c) both key on the caller's OWN LOCAL INBOX (`dm_messages.
+  // owner` / `dm_conversations.owner`), so they apply ONLY to a caller that has a
+  // local handle. A REMOTE caller (§4.6) has no inbox here — their bare handle
+  // names a user of THEIR provider — so they skip straight to (b), which resolves
+  // the inbox from their FULL actor via the §8.3 dmId derivation. That keeps the
+  // only-sent remote author working exactly as before, while a remote handle can
+  // never select the like-named LOCAL user's inbox.
   router.delete("/:dmId/messages/:messageId/reactions/:key", signed, async (c) => {
     const { db, config, hub, federationFetch } = c.var;
     const actor = c.var.actor;
@@ -904,9 +939,10 @@ export function createDmsRouter() {
     assertValidReactionKey(key);
     const authority = canonicalAuthority(config.domain);
 
-    // (a) The target lives in the caller's own inbox.
-    const own = getDmMessageRow(db, actor.handle, dmId, messageId);
-    const ownCounterparty = own ? counterpartyOf(db, actor.handle, dmId) : null;
+    // (a) The target lives in the caller's own LOCAL inbox.
+    const me = actor.localHandle;
+    const own = me !== undefined ? getDmMessageRow(db, me, dmId, messageId) : null;
+    const ownCounterparty = me !== undefined && own ? counterpartyOf(db, me, dmId) : null;
     if (own && ownCounterparty !== null) {
       removeDmReaction(db, dmId, messageId, actor.actor, key);
       fanOutDmReaction(hub, {
@@ -936,7 +972,7 @@ export function createDmsRouter() {
     }
 
     // (c) The counterparty is REMOTE → the message lives on their provider.
-    const counterparty = counterpartyOf(db, actor.handle, dmId);
+    const counterparty = me !== undefined ? counterpartyOf(db, me, dmId) : null;
     const cpDomain = counterparty !== null ? domainOf(counterparty) : "";
     if (cpDomain !== "" && cpDomain !== authority) {
       const res = await forwardDmReaction(db, config, federationFetch, {
@@ -983,6 +1019,14 @@ export function createDmsRouter() {
   // the remote counterparty (the dmId is a one-way digest), so an only-sent
   // CROSS-provider author must address the recipient's provider directly (which
   // the client does — see `resolveDeliveryClient` / the §8.3 federation ingest).
+  //
+  // Cases (a) and (c) both key on the caller's OWN LOCAL INBOX (`dm_messages.
+  // owner` / `dm_conversations.owner`), so they apply ONLY to a caller that has a
+  // local handle. A REMOTE caller (§4.6) has no inbox here — their bare handle
+  // names a user of THEIR provider — so they skip straight to (b), which resolves
+  // the inbox from their FULL actor via the §8.3 dmId derivation. That keeps the
+  // only-sent remote author working exactly as before, while a remote handle can
+  // never select the like-named LOCAL user's inbox.
   router.patch("/:dmId/messages/:messageId", signed, async (c) => {
     const { db, config, hub, federationFetch } = c.var;
     const actor = c.var.actor;
@@ -994,11 +1038,12 @@ export function createDmsRouter() {
     const body = MessageUpdateRequestSchema.parse(await c.req.json());
     const content = body.content as Content;
 
-    // (a) The target lives in the caller's own inbox.
-    const own = getDmMessageRow(db, actor.handle, dmId, messageId);
-    if (own) {
+    // (a) The target lives in the caller's own LOCAL inbox.
+    const me = actor.localHandle;
+    const own = me !== undefined ? getDmMessageRow(db, me, dmId, messageId) : null;
+    if (me !== undefined && own) {
       const message = applyDmEdit(db, hub, {
-        owner: actor.handle,
+        owner: me,
         ownerActor: actor.actor,
         dmId,
         messageId,
@@ -1026,7 +1071,7 @@ export function createDmsRouter() {
     }
 
     // (c) The counterparty is REMOTE → the message lives on their provider.
-    const counterparty = counterpartyOf(db, actor.handle, dmId);
+    const counterparty = me !== undefined ? counterpartyOf(db, me, dmId) : null;
     const cpDomain = counterparty !== null ? domainOf(counterparty) : "";
     if (cpDomain !== "" && cpDomain !== authority) {
       const res = await forwardDmEdit(db, config, federationFetch, {
@@ -1049,6 +1094,14 @@ export function createDmsRouter() {
   // by its owner regardless of authorship (delete-from-my-inbox), while (b) a
   // copy sitting in the counterparty's inbox is author-only — mirroring the
   // federation ingest.
+  //
+  // Cases (a) and (c) both key on the caller's OWN LOCAL INBOX (`dm_messages.
+  // owner` / `dm_conversations.owner`), so they apply ONLY to a caller that has a
+  // local handle. A REMOTE caller (§4.6) has no inbox here — their bare handle
+  // names a user of THEIR provider — so they skip straight to (b), which resolves
+  // the inbox from their FULL actor via the §8.3 dmId derivation. That keeps the
+  // only-sent remote author working exactly as before, while a remote handle can
+  // never select the like-named LOCAL user's inbox.
   router.delete("/:dmId/messages/:messageId", signed, async (c) => {
     const { db, config, hub, federationFetch } = c.var;
     const actor = c.var.actor;
@@ -1057,11 +1110,12 @@ export function createDmsRouter() {
     const messageId = requireParam(c, "messageId");
     const authority = canonicalAuthority(config.domain);
 
-    // (a) The target lives in the caller's own inbox.
-    const own = getDmMessageRow(db, actor.handle, dmId, messageId);
-    if (own) {
+    // (a) The target lives in the caller's own LOCAL inbox.
+    const me = actor.localHandle;
+    const own = me !== undefined ? getDmMessageRow(db, me, dmId, messageId) : null;
+    if (me !== undefined && own) {
       applyDmDelete(db, hub, {
-        owner: actor.handle,
+        owner: me,
         ownerActor: actor.actor,
         dmId,
         messageId,
@@ -1089,7 +1143,7 @@ export function createDmsRouter() {
     }
 
     // (c) The counterparty is REMOTE → the message lives on their provider.
-    const counterparty = counterpartyOf(db, actor.handle, dmId);
+    const counterparty = me !== undefined ? counterpartyOf(db, me, dmId) : null;
     const cpDomain = counterparty !== null ? domainOf(counterparty) : "";
     if (cpDomain !== "" && cpDomain !== authority) {
       const res = await forwardDmDelete(db, config, federationFetch, {

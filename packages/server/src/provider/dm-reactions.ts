@@ -302,8 +302,8 @@ export function listDmReplies(
   // the viewer's sent ∪ (local ? received) union — matching listDmMessages.
   const scope = and(
     eq(dmMessages.dmId, dmId),
-    viewer.local
-      ? or(eq(dmMessages.author, viewer.actor), eq(dmMessages.owner, viewer.handle))
+    viewer.localHandle !== undefined
+      ? or(eq(dmMessages.author, viewer.actor), eq(dmMessages.owner, viewer.localHandle))
       : eq(dmMessages.author, viewer.actor),
     sql`json_valid(${dmMessages.reference}) AND json_extract(${dmMessages.reference}, '$.type') = 'reply' AND json_extract(${dmMessages.reference}, '$.id') = ${parentMessageId}`,
   );

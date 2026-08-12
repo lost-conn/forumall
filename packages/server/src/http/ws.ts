@@ -158,8 +158,17 @@ interface ConnState {
   challengeUsed: boolean;
   /** The authenticated identity, set on success (for diagnostics/logging). */
   actor?: string;
-  /** Handle of the authenticated actor. */
-  handle?: string;
+  /**
+   * The authenticated actor's handle **in this provider's namespace** — set ONLY
+   * when the actor's home domain is this provider (§8.5 allows a REMOTE actor to
+   * connect here directly, and its bare handle belongs to its own provider's
+   * namespace, where it may collide with a local user's). It is therefore the
+   * only value usable as a key into provider-local storage (`presence`,
+   * `dm_conversations.owner`, …); `undefined` for a remote actor, whose
+   * provider-local state lives at their home provider. Mirrors
+   * `AuthenticatedActor.localHandle` on the HTTP side — see its doc for the rule.
+   */
+  localHandle?: string;
   /** Key id that verified the handshake. */
   keyId?: string;
   /** The hub registration for this connection (after auth). */
@@ -368,9 +377,11 @@ export function createWsHandlers(deps: WsHandlerDeps) {
       // connection, stamp `lastSeen` and fan out an `offline` presence.update.
       // We check AFTER `hub.remove` so the live-connection count excludes this
       // connection (a remaining device keeps the actor online).
-      if (state.handle && hub.liveConnectionCount(hubConn.actor) === 0) {
-        markLastSeen(db, state.handle);
-        fanOutPresence(db, hub, config, presenceRegistry, state.handle);
+      // LOCAL actors only: `presence` rows are keyed on a local handle, and a
+      // remote actor's presence is owned by their home provider (§7.5/§8.5).
+      if (state.localHandle && hub.liveConnectionCount(hubConn.actor) === 0) {
+        markLastSeen(db, state.localHandle);
+        fanOutPresence(db, hub, config, presenceRegistry, state.localHandle);
       }
     }
   }
@@ -664,7 +675,9 @@ export function createWsHandlers(deps: WsHandlerDeps) {
     state.challengeUsed = true;
     state.authenticated = true;
     state.actor = actor;
-    state.handle = handle;
+    // Only a LOCAL actor gets a local handle; a remote actor's `handle` names a
+    // user of `actorDomain`, never of this provider (see ConnState.localHandle).
+    if (actorDomain === authority) state.localHandle = handle;
     state.keyId = keyId;
     if (state.authTimer) {
       clearTimeout(state.authTimer);
@@ -687,8 +700,9 @@ export function createWsHandlers(deps: WsHandlerDeps) {
     // `effectivePresence` reading the stored value) and fans out a
     // `presence.update` to subscribers. A second/third device does not re-fan
     // (they were already online).
-    if (wasOffline) {
-      fanOutPresence(db, hub, config, presenceRegistry, handle);
+    // Local actors only — see the note on ConnState.localHandle.
+    if (wasOffline && state.localHandle !== undefined) {
+      fanOutPresence(db, hub, config, presenceRegistry, state.localHandle);
     }
   }
 
@@ -750,7 +764,10 @@ export function createWsHandlers(deps: WsHandlerDeps) {
       // authorize it iff the caller is a participant (has a `dm_conversations`
       // row). No resume/replay path for DMs in v0.1.
       if (channelId.startsWith("dm_")) {
-        if (state.handle && isDmParticipant(db, state.handle, channelId)) {
+        // A DM subscription acks against the caller's LOCAL inbox rows, which only
+        // a local actor has; a remote participant's inbox lives at their own home
+        // provider (DM delivery itself is `publishToActor`, not subscription-based).
+        if (state.localHandle && isDmParticipant(db, state.localHandle, channelId)) {
           authorized.push(channelId);
         } else {
           forbidden.push(channelId);
@@ -1195,13 +1212,15 @@ export function createWsHandlers(deps: WsHandlerDeps) {
       return;
     }
     const actor = state.actor;
-    const handle = state.handle;
-    if (!actor || !handle) return; // unreachable: only authenticated connections reach here
+    if (!actor) return; // unreachable: only authenticated connections reach here
 
     const dmId = parsed.data.data.dmId;
     // --- DM-scoped typing (§7.4) ------------------------------------------
     if (dmId !== undefined) {
-      const conv = getDmConversationRow(db, handle, dmId);
+      // The conversation row is a LOCAL inbox row (see ConnState.localHandle); a
+      // remote actor has none here, so they cannot type into a local inbox.
+      const handle = state.localHandle;
+      const conv = handle !== undefined ? getDmConversationRow(db, handle, dmId) : null;
       if (!conv) {
         send(
           ws,
@@ -1266,16 +1285,18 @@ export function createWsHandlers(deps: WsHandlerDeps) {
       return;
     }
     const actor = state.actor;
-    const handle = state.handle;
-    if (!actor || !handle) return; // unreachable: only authenticated connections reach here
+    if (!actor) return; // unreachable: only authenticated connections reach here
 
     const dmId = parsed.data.data.dmId;
     if (dmId !== undefined) {
       // Resolve the counterparty (prefer the live timer's, fall back to the
-      // conversation row) so an explicit stop still reaches the other party.
+      // caller's own LOCAL conversation row) so an explicit stop still reaches the
+      // other party. A remote actor has no local row — see ConnState.localHandle.
       const entry = state.dmTypingTimers.get(dmId);
+      const handle = state.localHandle;
       const counterparty =
-        entry?.counterparty ?? getDmConversationRow(db, handle, dmId)?.counterparty;
+        entry?.counterparty ??
+        (handle !== undefined ? getDmConversationRow(db, handle, dmId)?.counterparty : undefined);
       clearDmTypingTimer(state, dmId);
       if (counterparty) hub.publishToActor(counterparty, dmTypingEvent(dmId, actor, "stop"));
       return;
@@ -1324,10 +1345,12 @@ export function createWsHandlers(deps: WsHandlerDeps) {
       data: WsPresenceSubscribedSchema.shape.data.parse({ users: subjects }),
     });
 
+    // `canView` matches SELF on the full actor; `handle` is the viewer's LOCAL
+    // handle (empty for a remote viewer), never a foreign handle passed off as one.
     const viewer = {
       actor: state.actor as string,
-      handle: state.handle as string,
-      domain: authority,
+      handle: state.localHandle ?? "",
+      domain: state.actor !== undefined ? domainOfActor(state.actor) : authority,
     };
     for (const subject of subjects) {
       const eff = filterPresenceFor(db, hub, config, subjectHandleOf(subject), viewer);
@@ -1383,8 +1406,14 @@ export function createWsHandlers(deps: WsHandlerDeps) {
       send(ws, errorEvent("bad_request", "malformed presence.set command", 400, frameId));
       return;
     }
-    const handle = state.handle;
-    if (!handle) return; // unreachable: only authenticated connections reach here
+    // Stored presence is keyed on a LOCAL handle and a remote actor's presence is
+    // owned by their home provider (§7.5/§8.5), so a remote connection may not set
+    // it here — it would otherwise write the like-named local user's row.
+    const handle = state.localHandle;
+    if (handle === undefined) {
+      send(ws, errorEvent("forbidden", "presence is managed by your home provider", 403, frameId));
+      return;
+    }
 
     const { availability, status } = parsed.data.data;
     setExplicitPresence(db, handle, availability, status ?? undefined);
@@ -1400,6 +1429,17 @@ export function createWsHandlers(deps: WsHandlerDeps) {
 function subjectHandleOf(subject: string): string {
   const at = subject.lastIndexOf("@");
   return at > 0 ? subject.slice(0, at) : subject;
+}
+
+/**
+ * The canonicalized domain of an actor (`handle@domain`), or `""` if malformed.
+ * Used to describe a viewer's own home domain — a WS connection may be from a
+ * REMOTE actor (§8.5), so the connection's identity domain is not necessarily
+ * this provider's authority.
+ */
+function domainOfActor(actor: string): string {
+  const at = actor.lastIndexOf("@");
+  return at > 0 && at < actor.length - 1 ? canonicalAuthority(actor.slice(at + 1)) : "";
 }
 
 /** Validates the optional `attachments` array on a `message.create` command. */

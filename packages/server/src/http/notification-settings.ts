@@ -28,7 +28,7 @@ import {
   setPref,
 } from "../provider/notification-prefs.ts";
 import { AppError } from "./errors.ts";
-import { requireSignature } from "./signature.ts";
+import { requireLocalActor, requireLocalHandle, requireSignature } from "./signature.ts";
 import type { AppBindings } from "./types.ts";
 
 /** Reject a scopeId that doesn't carry the prefix expected for its scopeType. */
@@ -47,21 +47,24 @@ function assertScopeIdShape(scopeType: NotificationScopeType, scopeId: string): 
 export function createMeNotificationSettingsRouter() {
   const router = new Hono<AppBindings>();
   const signed = requireSignature();
+  // Preferences are the caller's own provider-local rows.
+  const local = requireLocalActor();
 
   // -- GET /api/me/notification-settings (signed) -------------------------
-  router.get("/notification-settings", signed, (c) => {
+  router.get("/notification-settings", signed, local, (c) => {
     const { db } = c.var;
     const actor = c.var.actor;
     if (!actor) throw AppError.unauthorized();
-    return c.json({ prefs: listPrefs(db, actor.handle) }, 200);
+    return c.json({ prefs: listPrefs(db, requireLocalHandle(c)) }, 200);
   });
 
   // -- PUT /api/me/notification-settings (signed) -------------------------
-  router.put("/notification-settings", signed, async (c) => {
+  router.put("/notification-settings", signed, local, async (c) => {
     const { db } = c.var;
     const actor = c.var.actor;
     if (!actor) throw AppError.unauthorized();
-    if (!getUserRow(db, actor.handle)) throw AppError.notFound({ detail: "no such user" });
+    const handle = requireLocalHandle(c);
+    if (!getUserRow(db, handle)) throw AppError.notFound({ detail: "no such user" });
 
     let raw: unknown;
     try {
@@ -85,12 +88,12 @@ export function createMeNotificationSettingsRouter() {
     }
     assertScopeIdShape(scopeType, body.scopeId);
 
-    const pref = setPref(db, actor.handle, scopeType, body.scopeId.trim(), mode);
+    const pref = setPref(db, handle, scopeType, body.scopeId.trim(), mode);
     return c.json(pref, 200);
   });
 
   // -- DELETE /api/me/notification-settings (signed) ----------------------
-  router.delete("/notification-settings", signed, (c) => {
+  router.delete("/notification-settings", signed, local, (c) => {
     const { db } = c.var;
     const actor = c.var.actor;
     if (!actor) throw AppError.unauthorized();
@@ -102,7 +105,7 @@ export function createMeNotificationSettingsRouter() {
     const scopeId = c.req.query("scopeId") ?? "";
     assertScopeIdShape(scopeType, scopeId);
 
-    const cleared = clearPref(db, actor.handle, scopeType, scopeId.trim());
+    const cleared = clearPref(db, requireLocalHandle(c), scopeType, scopeId.trim());
     return c.json({ cleared }, 200);
   });
 

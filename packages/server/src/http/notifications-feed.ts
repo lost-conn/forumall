@@ -29,7 +29,7 @@ import {
   unreadCounts,
 } from "../provider/notifications-feed.ts";
 import { AppError } from "./errors.ts";
-import { requireSignature } from "./signature.ts";
+import { requireLocalActor, requireLocalHandle, requireSignature } from "./signature.ts";
 import type { AppBindings } from "./types.ts";
 
 /**
@@ -39,9 +39,11 @@ import type { AppBindings } from "./types.ts";
 export function createMeNotificationsRouter() {
   const router = new Hono<AppBindings>();
   const signed = requireSignature();
+  // The inbox is the caller's own provider-local feed.
+  const local = requireLocalActor();
 
   // -- GET /api/me/notifications (signed) ---------------------------------
-  router.get("/notifications", signed, (c) => {
+  router.get("/notifications", signed, local, (c) => {
     const { db } = c.var;
     const actor = c.var.actor;
     if (!actor) throw AppError.unauthorized();
@@ -53,12 +55,13 @@ export function createMeNotificationsRouter() {
     const rawLimit = Number.parseInt(c.req.query("limit") ?? "", 10);
     const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : undefined;
 
-    const page = listNotifications(db, actor.handle, {
+    const handle = requireLocalHandle(c);
+    const page = listNotifications(db, handle, {
       ...(type ? { type } : {}),
       cursor,
       ...(limit !== undefined ? { limit } : {}),
     });
-    const counts = unreadCounts(db, actor.handle);
+    const counts = unreadCounts(db, handle);
 
     return c.json(
       NotificationsResponseSchema.parse({
@@ -71,28 +74,30 @@ export function createMeNotificationsRouter() {
   });
 
   // -- POST /api/me/notifications/seen (signed) ---------------------------
-  router.post("/notifications/seen", signed, async (c) => {
+  router.post("/notifications/seen", signed, local, async (c) => {
     const { db } = c.var;
     const actor = c.var.actor;
     if (!actor) throw AppError.unauthorized();
-    if (!getUserRow(db, actor.handle)) throw AppError.notFound({ detail: "no such user" });
+    const handle = requireLocalHandle(c);
+    if (!getUserRow(db, handle)) throw AppError.notFound({ detail: "no such user" });
 
     const ids = await parseMarkIds(c);
-    const affected = markSeen(db, actor.handle, ids);
-    const counts = unreadCounts(db, actor.handle);
+    const affected = markSeen(db, handle, ids);
+    const counts = unreadCounts(db, handle);
     return c.json(NotificationsMarkResponseSchema.parse({ affected, counts }), 200);
   });
 
   // -- POST /api/me/notifications/read (signed) ---------------------------
-  router.post("/notifications/read", signed, async (c) => {
+  router.post("/notifications/read", signed, local, async (c) => {
     const { db } = c.var;
     const actor = c.var.actor;
     if (!actor) throw AppError.unauthorized();
-    if (!getUserRow(db, actor.handle)) throw AppError.notFound({ detail: "no such user" });
+    const handle = requireLocalHandle(c);
+    if (!getUserRow(db, handle)) throw AppError.notFound({ detail: "no such user" });
 
     const ids = await parseMarkIds(c);
-    const affected = markRead(db, actor.handle, ids);
-    const counts = unreadCounts(db, actor.handle);
+    const affected = markRead(db, handle, ids);
+    const counts = unreadCounts(db, handle);
     return c.json(NotificationsMarkResponseSchema.parse({ affected, counts }), 200);
   });
 

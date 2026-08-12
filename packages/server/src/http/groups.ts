@@ -49,8 +49,16 @@ export function createGroupsRouter() {
     // Group-creation policy (Forumall extension): `admin-only` restricts creation
     // to the provider admin; `open` (the default) preserves the historical
     // "any authenticated user" behavior. Checked before creating the group.
-    if (getGroupCreationPolicy(db) === "admin-only" && !isProviderAdmin(db, config, actor.handle)) {
-      throw AppError.forbidden({ detail: "group creation is restricted to the provider admin" });
+    //
+    // Admin is a LOCAL identity: only a caller with a local handle can be one, so
+    // a REMOTE actor (§4.6) never satisfies `admin-only` — its bare handle names a
+    // user of ITS provider, not ours. Under `open` a remote actor may still create
+    // a group (the owner is the full `actor.actor`), as before.
+    if (getGroupCreationPolicy(db) === "admin-only") {
+      const localHandle = actor.localHandle;
+      if (localHandle === undefined || !isProviderAdmin(db, config, localHandle)) {
+        throw AppError.forbidden({ detail: "group creation is restricted to the provider admin" });
+      }
     }
 
     const raw = await c.req.json().catch(() => {

@@ -12,26 +12,34 @@
  * router.get("/admin/thing", signed, requireAdmin(), (c) => { ... });
  * ```
  *
- * No routes consume it yet (later cards add the admin surface); it lives here so
- * branding / discover-curation / group-gate can mount it without further
- * plumbing.
+ * Consumed by the branding (`PUT /api/provider`), discover-curation
+ * (`/api/admin/discover`) and group-policy (`/api/admin/group-policy`) routers.
+ * Admin is a LOCAL identity — see the guard's own doc for why a remote actor is
+ * rejected outright.
  */
 import type { MiddlewareHandler } from "hono";
 
 import { isProviderAdmin } from "../provider/admin.ts";
 import { AppError } from "./errors.ts";
+import { requireLocalHandle } from "./signature.ts";
 import type { AppBindings } from "./types.ts";
 
-/** Build the provider-admin authorization middleware (run after `requireSignature`). */
+/**
+ * Build the provider-admin authorization middleware (run after `requireSignature`).
+ *
+ * Admin is a **local** identity: `users.is_admin` / `config.adminHandles` are
+ * handles in THIS provider's namespace. A remote actor (§4.6) authenticates just
+ * as successfully as a local one, so the caller is first narrowed to a local
+ * handle via {@link requireLocalHandle} (403 otherwise) — resolving admin from a
+ * remote signer's bare handle would grant provider admin to anyone who runs a
+ * provider and registers the admin's handle there.
+ */
 export function requireAdmin(): MiddlewareHandler<AppBindings> {
   return async (c, next) => {
     const { config, db } = c.var;
-    const actor = c.var.actor;
-    // Unreachable if mounted after requireSignature(), but fail closed.
-    if (!actor) {
-      throw AppError.unauthorized({ detail: "authentication required" });
-    }
-    if (!isProviderAdmin(db, config, actor.handle)) {
+    // Rejects an unauthenticated (401), remote, or provider-signed (403) caller.
+    const handle = requireLocalHandle(c);
+    if (!isProviderAdmin(db, config, handle)) {
       throw AppError.forbidden({ detail: "provider administrator privileges required" });
     }
     await next();

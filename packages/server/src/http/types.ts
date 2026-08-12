@@ -25,12 +25,50 @@ export type SignatureMode = "actor" | "provider";
  * The authenticated identity established by the signed-request middleware
  * (`requireSignature`, §4.5). Present on `c.var.actor` only on routes guarded by
  * that middleware; unauthenticated routes leave it `undefined`.
+ *
+ * ## The identity rule: a handle is only meaningful WITH its domain
+ * `requireSignature` authenticates **remote** actors too (§4.6): a signer whose
+ * home provider is not this one has their key resolved from that provider's keys
+ * endpoint and is just as authenticated as a local user. Their identity is
+ * `{ actor: "alice@remote.example", domain: "remote.example" }` — and the BARE
+ * handle `alice` in it belongs to *their* provider's namespace, NOT ours.
+ *
+ * Every provider-local table here (`users`, `presence`, `privacy_settings`,
+ * `contacts`, `read_markers`, `follows`, `notification_*`, `push_subscriptions`,
+ * `dm_conversations.owner`, `dm_messages.owner`, …) is keyed on a **local**
+ * handle. Keying any of those on a remote signer's bare handle silently treats
+ * them as the LOCAL user of the same name — an account takeover for anyone who
+ * runs their own provider and registers a colliding handle.
+ *
+ * So this type deliberately does NOT carry a plain `handle`. It carries:
+ *  - {@link actor} / {@link domain} — the full, always-safe identity. Use these
+ *    for anything that compares or stores an actor (message authorship, DM
+ *    participants, permissions, visibility, fan-out targets).
+ *  - {@link localHandle} — present **iff** the signer is a user of THIS provider,
+ *    and therefore the ONLY value that may be used as a local storage key. It is
+ *    `undefined` for a remote actor and for a provider identity (§8.1), so the
+ *    compiler forces every local-storage call site to decide what a remote caller
+ *    means there. The two correct answers are: reject the remote caller
+ *    (`requireLocalActor()` / `requireLocalHandle()` in `http/signature.ts` — the
+ *    right answer for every `/api/me` route and the admin guard, since a remote
+ *    actor has no account here at all), or handle them on a separate branch that
+ *    resolves storage through the full `actor` (see the DM edit/delete/reaction
+ *    routing tables in `http/dms.ts`, where an only-sent REMOTE author is a
+ *    legitimate caller resolved via `resolveLocalDmOwner`).
+ *
+ * Never re-derive a bare handle by splitting {@link actor} to get around this.
  */
 export interface AuthenticatedActor {
   /** Full actor/provider identifier as sent, e.g. `alice@providera.com`. */
   readonly actor: string;
-  /** Local handle for a user actor; empty string for a provider identity (§8.1). */
-  readonly handle: string;
+  /**
+   * The signer's handle **in this provider's namespace** — set only when the
+   * identity is a user actor whose domain is this provider's `config.domain`.
+   * `undefined` for a REMOTE actor (§4.6) and for a provider identity (§8.1).
+   * The only value safe to use as a key into provider-local storage; see the
+   * interface doc above.
+   */
+  readonly localHandle?: string;
   /** The `X-OFSCP-Key-ID` whose key verified the request. */
   readonly keyId: string;
   /** Canonicalized authority/domain the identity belongs to. */
