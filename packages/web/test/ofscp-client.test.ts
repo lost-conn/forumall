@@ -16,7 +16,7 @@ import {
   verify,
 } from "@forumall/shared";
 
-import { OfscpClient } from "../src/lib/ofscp-client.ts";
+import { OfscpClient, OfscpHttpError, isDefinitiveRejection } from "../src/lib/ofscp-client.ts";
 
 const HOST = "providera.com";
 const BASE = `https://${HOST}`;
@@ -159,5 +159,50 @@ describe("OfscpClient signed request (§4.4/§4.5 round-trip)", () => {
     );
     expect(headers.authorization).toBe("Bearer boot_token_123");
     expect(headers[HEADER.SIGNATURE]).toBeUndefined();
+  });
+});
+
+/**
+ * `isDefinitiveRejection` decides whether an optimistic mutation may be reverted:
+ * only a 4xx proves the provider refused. Everything else leaves the outcome
+ * unknown, and reverting on it can silently discard a change that landed.
+ */
+describe("isDefinitiveRejection", () => {
+  const httpError = (status: number): OfscpHttpError =>
+    new OfscpHttpError(status, { detail: "nope" }, new Response(null, { status }));
+
+  test("a 4xx OfscpHttpError is definitive (the server refused)", () => {
+    expect(isDefinitiveRejection(httpError(400))).toBe(true);
+    expect(isDefinitiveRejection(httpError(403))).toBe(true); // expired edit window
+    expect(isDefinitiveRejection(httpError(404))).toBe(true); // no such message
+    expect(isDefinitiveRejection(httpError(409))).toBe(true);
+    expect(isDefinitiveRejection(httpError(429))).toBe(true);
+    expect(isDefinitiveRejection(httpError(499))).toBe(true);
+  });
+
+  test("a 5xx is NOT definitive (the server may have committed before failing)", () => {
+    expect(isDefinitiveRejection(httpError(500))).toBe(false);
+    expect(isDefinitiveRejection(httpError(502))).toBe(false);
+    expect(isDefinitiveRejection(httpError(503))).toBe(false);
+  });
+
+  test("a network-level TypeError is NOT definitive (no response at all)", () => {
+    expect(isDefinitiveRejection(new TypeError("Failed to fetch"))).toBe(false);
+  });
+
+  test("an aborted fetch (DOMException / AbortError) is NOT definitive", () => {
+    expect(isDefinitiveRejection(new DOMException("aborted", "AbortError"))).toBe(false);
+    // Bun/browsers may surface an abort as a plain Error subclass too.
+    const abort = new Error("The operation was aborted.");
+    abort.name = "AbortError";
+    expect(isDefinitiveRejection(abort)).toBe(false);
+  });
+
+  test("non-Error values are NOT definitive (unclassifiable)", () => {
+    expect(isDefinitiveRejection("boom")).toBe(false);
+    expect(isDefinitiveRejection(undefined)).toBe(false);
+    expect(isDefinitiveRejection(null)).toBe(false);
+    // A look-alike carrying `.status` must not pass either — only the real type.
+    expect(isDefinitiveRejection({ status: 403 })).toBe(false);
   });
 });

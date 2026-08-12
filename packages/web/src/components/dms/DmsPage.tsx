@@ -79,6 +79,7 @@ import {
   type ConversationHandle,
   DM_TYPING_IDLE_MS,
   DM_TYPING_THROTTLE_MS,
+  DmUnconfirmedError,
   deleteDm,
   dmTypingStart,
   dmTypingStop,
@@ -768,6 +769,16 @@ const ThreadView: Component<{
   );
 };
 
+/**
+ * Inline notice for an edit/delete whose outcome the provider never confirmed
+ * (aborted fetch / network drop / 5xx). The optimistic change is deliberately
+ * KEPT in that case (see `DmUnconfirmedError`), so the message stays as the user
+ * left it and the server's copy reconciles on the next open — this text says so
+ * rather than claiming the action failed.
+ */
+const DM_UNCONFIRMED_NOTICE =
+  "Couldn't confirm — this will reconcile when you reopen the conversation.";
+
 const DmMessageRow: Component<{
   dmId: string;
   message: DmMessage;
@@ -880,9 +891,16 @@ const DmMessageRow: Component<{
         }),
       )
       .then(() => setEditing(false))
-      .catch((err) =>
-        setEditError(err instanceof Error ? err.message : "Could not edit this message."),
-      );
+      .catch((err) => {
+        // An unconfirmed outcome is NOT a failure: the optimistic edit is kept.
+        // Stay in the editor (that's where `editError` renders) so the distinct
+        // notice is visible and a re-submit is one click away.
+        if (err instanceof DmUnconfirmedError) {
+          setEditError(DM_UNCONFIRMED_NOTICE);
+          return;
+        }
+        setEditError(err instanceof Error ? err.message : "Could not edit this message.");
+      });
   };
   const doDelete = (): void => {
     const client = sessionClient();
@@ -904,9 +922,15 @@ const DmMessageRow: Component<{
           sentStore: store,
         }),
       )
-      .catch((err) =>
-        setActionError(err instanceof Error ? err.message : "Could not delete this message."),
-      );
+      .catch((err) => {
+        // As in `submitEdit`: an unconfirmed delete keeps its optimistic
+        // tombstone, so say "couldn't confirm", not "couldn't delete".
+        if (err instanceof DmUnconfirmedError) {
+          setActionError(DM_UNCONFIRMED_NOTICE);
+          return;
+        }
+        setActionError(err instanceof Error ? err.message : "Could not delete this message.");
+      });
   };
 
   const retry = (): void => {

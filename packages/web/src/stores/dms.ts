@@ -216,6 +216,62 @@ export function applyDmEdit(dmId: string, message: DmMessage): void {
   upsertDmMessage(dmId, message);
 }
 
+/** The pre-mutation snapshot {@link restoreDmMessage} rewinds a message to. */
+export interface DmMessageRestore {
+  id: string;
+  content: { mime?: string; text?: string };
+  attachments?: Attachment[];
+  reference?: { type: string; id: string };
+  /**
+   * The `editedAt` the message carried BEFORE the reverted mutation — omitted
+   * when it had never been edited, in which case the marker is REMOVED.
+   */
+  editedAt?: string;
+}
+
+/**
+ * Rewind a message to its pre-mutation snapshot — the un-do for an optimistic
+ * {@link applyDmEdit} / {@link tombstoneDmMessage} that the server rejected.
+ *
+ * This is NOT expressible as an upsert: {@link upsertDmMessage} MERGES
+ * (`{...existing, ...incoming}`), so a snapshot without `editedAt`/`deletedAt`
+ * leaves the old markers in place and the message renders "(edited)" (or stays a
+ * tombstone) while showing the pre-edit text. The row is therefore REBUILT from
+ * the snapshot: the mutation-owned fields (`content`, `attachments`, `reference`,
+ * `editedAt`, `deletedAt`) are re-derived and simply absent when the snapshot has
+ * none, while identity + placement (`author`, `createdAt`, `cursor`, `mine`, echo
+ * state) are carried over so the message keeps its position and echo linkage.
+ * A no-op when the message is not loaded in this thread.
+ */
+export function restoreDmMessage(dmId: string, prior: DmMessageRestore): void {
+  setDms(
+    produce((s) => {
+      const list = s.threads[dmId];
+      const idx = list?.findIndex((m) => m.id === prior.id) ?? -1;
+      if (!list || idx === -1) return;
+      const existing = list[idx] as DmMessage;
+      list[idx] = {
+        id: existing.id,
+        author: existing.author,
+        createdAt: existing.createdAt,
+        content: prior.content,
+        ...(prior.attachments && prior.attachments.length > 0
+          ? { attachments: prior.attachments }
+          : {}),
+        ...(prior.reference ? { reference: prior.reference } : {}),
+        ...(prior.editedAt !== undefined ? { editedAt: prior.editedAt } : {}),
+        ...(existing.clientMessageId !== undefined
+          ? { clientMessageId: existing.clientMessageId }
+          : {}),
+        ...(existing.cursor !== undefined ? { cursor: existing.cursor } : {}),
+        ...(existing.mine !== undefined ? { mine: existing.mine } : {}),
+        ...(existing.pending !== undefined ? { pending: existing.pending } : {}),
+        ...(existing.failed !== undefined ? { failed: existing.failed } : {}),
+      };
+    }),
+  );
+}
+
 /**
  * Mark a DM message tombstoned (clear content + attachments, set `deletedAt`),
  * preserving its position in the timeline — mirrors the chat store's

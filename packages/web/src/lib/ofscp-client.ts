@@ -94,6 +94,29 @@ export class OfscpHttpError extends Error {
   }
 }
 
+/**
+ * Whether `err` is a DEFINITIVE rejection — the provider answered and refused, so
+ * the request certainly did NOT take effect.
+ *
+ * Only a 4xx {@link OfscpHttpError} qualifies. Everything else is an UNKNOWN
+ * OUTCOME and must not be treated as "it didn't happen":
+ *   - `TypeError` — `fetch` never got a response (network drop, DNS, CORS
+ *     pre-flight); the request may still have reached the server.
+ *   - `DOMException` (`AbortError`) — the fetch was aborted (navigation, an
+ *     `AbortSignal`) AFTER the bytes may already have been written.
+ *   - a 5xx — the server took the request and blew up; it may have committed
+ *     before failing (or failed in a proxy after committing).
+ *   - anything non-`Error` (a thrown string, `undefined`) — unclassifiable.
+ *
+ * Callers that apply a mutation optimistically use this to decide whether a
+ * revert is SAFE: reverting on an unknown outcome can silently discard a change
+ * the server actually applied. See `editDm`/`deleteDm` in the DM controller,
+ * where §8.3 leaves the author no server copy to re-sync a bad revert from.
+ */
+export function isDefinitiveRejection(err: unknown): boolean {
+  return err instanceof OfscpHttpError && err.status >= 400 && err.status < 500;
+}
+
 /** The §4.4.2 signing authority for a URL: host plus any non-default port. */
 function authorityOf(url: URL): string {
   // `url.host` already omits the default port for the scheme; `canonicalAuthority`

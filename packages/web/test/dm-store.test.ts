@@ -9,8 +9,15 @@
  */
 import { beforeEach, describe, expect, test } from "bun:test";
 import type { Reaction } from "@forumall/shared";
-import { DM_HISTORY_PAGE_SIZE, sentWindow } from "../src/components/dms/dm-controller.ts";
+import {
+  DM_HISTORY_PAGE_SIZE,
+  DmUnconfirmedError,
+  deleteDm,
+  editDm,
+  sentWindow,
+} from "../src/components/dms/dm-controller.ts";
 import { DmSentStore, type SentDmMessage } from "../src/lib/dm-store.ts";
+import { OfscpClient } from "../src/lib/ofscp-client.ts";
 import {
   type DmMessage,
   addDmOptimistic,
@@ -24,6 +31,7 @@ import {
   dmThread,
   dmTypingFor,
   removeDmReactionAgg,
+  restoreDmMessage,
   setDmOlderCursor,
   setDmTyping,
   tombstoneDmMessage,
@@ -66,6 +74,8 @@ function sent(over: Partial<SentDmMessage>): SentDmMessage {
     author: over.author ?? "alice@h",
     content: over.content ?? { mime: "text/plain", text: "hi" },
     createdAt: over.createdAt ?? "2026-06-05T00:00:00.000Z",
+    ...(over.editedAt !== undefined ? { editedAt: over.editedAt } : {}),
+    ...(over.deletedAt !== undefined ? { deletedAt: over.deletedAt } : {}),
     ...(over.clientMessageId !== undefined ? { clientMessageId: over.clientMessageId } : {}),
   };
 }
@@ -270,6 +280,228 @@ describe("DM store: edit + tombstone in place", () => {
     expect(list[0]?.deletedAt).toBe("2026-06-05T00:02:00Z");
     expect(list[0]?.content.text).toBe("");
     expect(list[0]?.attachments).toEqual([]);
+  });
+});
+
+/**
+ * Reverting an optimistic edit/delete must genuinely UN-edit: both stores merge
+ * on their normal write path (`{...existing, ...incoming}`), so writing the old
+ * content back cannot clear `editedAt`/`deletedAt` — the message would render
+ * "(edited)" (or stay a tombstone) with its pre-edit text. The dedicated restore
+ * paths exist for exactly that.
+ */
+describe("un-edit: reverting an optimistic edit/delete clears its markers", () => {
+  beforeEach(() => clearDms());
+
+  const original: DmMessage = {
+    id: "m1",
+    author: "me@h",
+    content: { mime: "text/plain", text: "original" },
+    createdAt: "2026-06-05T00:00:00Z",
+    mine: true,
+  };
+
+  test("thread store: an edit then a restore leaves NO editedAt and the original content", () => {
+    upsertDmMessage(DM, original);
+    applyDmEdit(DM, {
+      ...original,
+      content: { mime: "text/plain", text: "edited" },
+      editedAt: "2026-06-05T00:01:00Z",
+    });
+    expect(dmThread(DM)[0]?.editedAt).toBe("2026-06-05T00:01:00Z");
+
+    restoreDmMessage(DM, { id: "m1", content: { mime: "text/plain", text: "original" } });
+    const m = dmThread(DM)[0];
+    expect(m?.content.text).toBe("original");
+    expect(m?.editedAt).toBeUndefined();
+    // Not merely `undefined`-valued: the key is gone, so nothing can re-surface it.
+    expect(Object.hasOwn(m as object, "editedAt")).toBe(false);
+    // Identity + placement survive the revert.
+    expect(m?.author).toBe("me@h");
+    expect(m?.mine).toBe(true);
+  });
+
+  test("thread store: a restore rewinds to a PRIOR editedAt when the message had one", () => {
+    upsertDmMessage(DM, { ...original, editedAt: "2026-06-05T00:00:30Z" });
+    applyDmEdit(DM, {
+      ...original,
+      content: { mime: "text/plain", text: "edited twice" },
+      editedAt: "2026-06-05T00:01:00Z",
+    });
+    restoreDmMessage(DM, {
+      id: "m1",
+      content: { mime: "text/plain", text: "original" },
+      editedAt: "2026-06-05T00:00:30Z",
+    });
+    expect(dmThread(DM)[0]?.editedAt).toBe("2026-06-05T00:00:30Z");
+  });
+
+  test("thread store: a restore un-tombstones (clears deletedAt + content)", () => {
+    upsertDmMessage(DM, original);
+    tombstoneDmMessage(DM, "m1", "2026-06-05T00:02:00Z");
+    expect(dmThread(DM)[0]?.deletedAt).toBe("2026-06-05T00:02:00Z");
+
+    restoreDmMessage(DM, { id: "m1", content: { mime: "text/plain", text: "original" } });
+    const m = dmThread(DM)[0];
+    expect(m?.deletedAt).toBeUndefined();
+    expect(Object.hasOwn(m as object, "deletedAt")).toBe(false);
+    expect(m?.content.text).toBe("original");
+  });
+
+  test("thread store: restoring an unloaded message is a no-op", () => {
+    restoreDmMessage(DM, { id: "nope", content: { text: "x" } });
+    expect(dmThread(DM)).toHaveLength(0);
+  });
+
+  test("sent-store: restore clears editedAt/deletedAt that append() would have kept", () => {
+    const store = new DmSentStore("me@h", memBackend());
+    store.append(DM, sent({ id: "m1", content: { text: "original" }, clientMessageId: "c1" }));
+    store.append(
+      DM,
+      sent({ id: "m1", content: { text: "edited" }, editedAt: "2026-06-05T00:01:00Z" }),
+    );
+    expect(store.list(DM)[0]?.editedAt).toBe("2026-06-05T00:01:00Z");
+
+    // The old (merging) revert: the content rewinds but the marker sticks.
+    store.append(DM, sent({ id: "m1", content: { text: "original" } }));
+    expect(store.list(DM)[0]?.editedAt).toBe("2026-06-05T00:01:00Z");
+
+    // The restore path replaces wholesale, so the marker is actually gone.
+    store.restore(DM, sent({ id: "m1", content: { text: "original" }, clientMessageId: "c1" }));
+    const m = store.list(DM)[0];
+    expect(m?.content.text).toBe("original");
+    expect(m?.editedAt).toBeUndefined();
+    expect(m?.deletedAt).toBeUndefined();
+    // Echo linkage the caller passed through is preserved.
+    expect(m?.clientMessageId).toBe("c1");
+    expect(store.list(DM)).toHaveLength(1);
+  });
+
+  test("sent-store: restore inserts when no entry exists (second device)", () => {
+    const store = new DmSentStore("me@h", memBackend());
+    store.restore(DM, sent({ id: "m1", content: { text: "original" } }));
+    expect(store.list(DM).map((m) => m.id)).toEqual(["m1"]);
+  });
+});
+
+/**
+ * Defect (A): the revert used to fire on ANY rejection. Only a DEFINITIVE 4xx
+ * proves the provider refused; an aborted fetch / network drop / 5xx leaves the
+ * outcome unknown, and since §8.3 keeps no sender copy to re-sync from, a wrong
+ * revert diverges the author's retained copy from the recipient's stored copy
+ * permanently. So the optimistic state is KEPT and a `DmUnconfirmedError` is
+ * raised for the UI to distinguish.
+ */
+describe("editDm / deleteDm: revert only on a definitive rejection", () => {
+  beforeEach(() => clearDms());
+
+  /** A client whose transport always fails the given way. */
+  const failingClient = (fail: () => Promise<Response>): OfscpClient =>
+    new OfscpClient({ baseUrl: "https://h", fetch: (() => fail()) as unknown as typeof fetch });
+
+  const rejects = (status: number) => () =>
+    Promise.resolve(
+      new Response(JSON.stringify({ detail: "no" }), {
+        status,
+        headers: { "content-type": "application/problem+json" },
+      }),
+    );
+  const drops = () => Promise.reject(new TypeError("Failed to fetch"));
+  const aborts = () => Promise.reject(new DOMException("aborted", "AbortError"));
+
+  /** Seed the thread + sent-store with one of the caller's own messages. */
+  const seed = (): DmSentStore => {
+    const store = new DmSentStore("me@h", memBackend());
+    upsertDmMessage(DM, {
+      id: "m1",
+      author: "me@h",
+      content: { mime: "text/plain", text: "original" },
+      createdAt: "2026-06-05T00:00:00Z",
+      mine: true,
+    });
+    store.append(
+      DM,
+      sent({ id: "m1", author: "me@h", content: { mime: "text/plain", text: "original" } }),
+    );
+    return store;
+  };
+  const message = {
+    id: "m1",
+    author: "me@h",
+    content: { mime: "text/plain", text: "original" },
+    createdAt: "2026-06-05T00:00:00Z",
+  };
+
+  test("a 403 edit reverts BOTH stores back to the original, un-edited", async () => {
+    const sentStore = seed();
+    await expect(
+      editDm({
+        client: failingClient(rejects(403)),
+        dmId: DM,
+        message,
+        me: "me@h",
+        text: "nope",
+        sentStore,
+      }),
+    ).rejects.toThrow(/403/);
+
+    const inThread = dmThread(DM)[0];
+    expect(inThread?.content.text).toBe("original");
+    expect(inThread?.editedAt).toBeUndefined();
+    const retained = sentStore.list(DM)[0];
+    expect(retained?.content.text).toBe("original");
+    expect(retained?.editedAt).toBeUndefined();
+  });
+
+  for (const [label, fail] of [
+    ["an aborted fetch", aborts],
+    ["a network drop", drops],
+    ["a 5xx", rejects(500)],
+  ] as const) {
+    test(`${label} KEEPS the optimistic edit and throws DmUnconfirmedError`, async () => {
+      const sentStore = seed();
+      const err = await editDm({
+        client: failingClient(fail),
+        dmId: DM,
+        message,
+        me: "me@h",
+        text: "kept",
+        sentStore,
+      }).catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(DmUnconfirmedError);
+      expect((err as DmUnconfirmedError).cause).toBeDefined();
+      expect(dmThread(DM)[0]?.content.text).toBe("kept");
+      expect(dmThread(DM)[0]?.editedAt).toBeDefined();
+      expect(sentStore.list(DM)[0]?.content.text).toBe("kept");
+    });
+
+    test(`${label} KEEPS the optimistic tombstone and throws DmUnconfirmedError`, async () => {
+      const sentStore = seed();
+      const err = await deleteDm({
+        client: failingClient(fail),
+        dmId: DM,
+        message,
+        me: "me@h",
+        sentStore,
+      }).catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(DmUnconfirmedError);
+      expect(dmThread(DM)[0]?.deletedAt).toBeDefined();
+      expect(sentStore.list(DM)[0]?.deletedAt).toBeDefined();
+    });
+  }
+
+  test("a 403 delete un-tombstones BOTH stores", async () => {
+    const sentStore = seed();
+    await expect(
+      deleteDm({ client: failingClient(rejects(403)), dmId: DM, message, me: "me@h", sentStore }),
+    ).rejects.toThrow(/403/);
+
+    expect(dmThread(DM)[0]?.deletedAt).toBeUndefined();
+    expect(dmThread(DM)[0]?.content.text).toBe("original");
+    expect(sentStore.list(DM)[0]?.deletedAt).toBeUndefined();
+    expect(sentStore.list(DM)[0]?.content.text).toBe("original");
   });
 });
 

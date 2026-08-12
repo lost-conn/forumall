@@ -133,6 +133,34 @@ export class DmSentStore {
     this.store.write(this.storageKey(dmId), JSON.stringify(list));
   }
 
+  /**
+   * Rewind a retained message to its pre-mutation snapshot — the un-do for an
+   * optimistic edit/delete the server rejected.
+   *
+   * Distinct from {@link append} on purpose: `append` MERGES onto the existing
+   * entry, so re-appending the original content leaves a stale `editedAt` /
+   * `deletedAt` behind and the message reloads as "(edited)" (or as a tombstone)
+   * showing its pre-edit text. This REPLACES the entry wholesale, so any field
+   * absent from `message` is genuinely cleared. Pass the complete prior snapshot
+   * (including `clientMessageId` when the entry had one).
+   *
+   * Matched by `id` — or, failing that, by `clientMessageId` — and inserted when
+   * no entry exists (the optimistic mutation may have created the only one, e.g.
+   * on a second device with no local sent copy of the message).
+   */
+  restore(dmId: string, message: SentDmMessage): void {
+    const list = this.list(dmId);
+    const idx = list.findIndex(
+      (m) =>
+        m.id === message.id ||
+        (message.clientMessageId !== undefined && m.clientMessageId === message.clientMessageId),
+    );
+    if (idx === -1) list.push(message);
+    else list[idx] = message;
+    list.sort(compareByCreatedAt);
+    this.store.write(this.storageKey(dmId), JSON.stringify(list));
+  }
+
   /** Every dmId this user has locally-retained sent messages for. */
   knownDmIds(): string[] {
     const prefix = `${STORAGE_PREFIX}${this.userKey}:`;
