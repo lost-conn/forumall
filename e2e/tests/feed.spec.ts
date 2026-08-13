@@ -264,7 +264,10 @@ test("discover (feature ON): lists a discoverable channel pointer; hides a non-d
 
     // A group with a discoverable channel (+ a message for the sample) and a
     // private channel that must NOT surface in discover.
-    await createGroup(page, { name: `Disc ${Date.now().toString(36)}`, tier: "public" });
+    const groupId = await createGroup(page, {
+      name: `Disc ${Date.now().toString(36)}`,
+      tier: "public",
+    });
     const discName = `disc-${Date.now().toString(36)}`;
     await createChannel(page, discName, "discoverable");
     // Resolve both channel ids up front (the discover pointer shows the channel
@@ -276,6 +279,20 @@ test("discover (feature ON): lists a discoverable channel pointer; hides a non-d
     const hiddenName = `hidden-${Date.now().toString(36)}`;
     await createChannel(page, hiddenName, "private");
     const privId = await openChat(page, hiddenName);
+
+    // The feed is admin-curated: a discoverable channel surfaces only once a
+    // provider admin has featured its OWNING GROUP (`/api/admin/discover`).
+    // This user registered first on a fresh instance, so it is the implicit
+    // provider admin and the settings section is available to it.
+    await page.goto("/settings");
+    await page.getByTestId("settings-nav-discover").click();
+    await page
+      .locator(`[data-testid="discover-group-row"][data-group="${groupId}"]`)
+      .getByTestId("discover-add")
+      .click();
+    await expect(
+      page.getByTestId("discover-featured-list").locator(`[data-group="${groupId}"]`),
+    ).toHaveCount(1, { timeout: 15_000 });
 
     // Discover lists the discoverable channel as a pointer; not the private one.
     await page.goto("/discover");
