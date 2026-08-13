@@ -94,7 +94,15 @@ jobs:
       # Install the bundled Chromium + its system libraries. ubuntu-latest
       # supports the bundled build (unlike the dev OS), so no system Chrome is
       # needed here.
+      #
+      # MUST run from `e2e/`: the playwright CLI is only on e2e's bin path
+      # (@playwright/test is an e2e devDependency, not a root one). From the
+      # repo root `bunx` finds no local binary and silently fetches the LATEST
+      # playwright from npm, which downloads a browser build the pinned version
+      # can't launch (e.g. chromium-1234 installed, chromium-1223 expected) and
+      # fails every test with "Executable doesn't exist".
       - name: Install Playwright Chromium
+        working-directory: e2e
         run: bunx playwright install --with-deps chromium
 
       # The harness builds packages/web/dist itself before the first test, but
