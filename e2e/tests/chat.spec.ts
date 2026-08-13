@@ -323,6 +323,40 @@ test("article renders as markdown; an unknown type falls back to text (no crash)
   );
 });
 
+test("message renders inline formatting (bold/italic/code/link) with clickable mentions", async ({
+  page,
+  browser,
+  appServer,
+}) => {
+  const { a, b, bUser } = await twoUsersInChannel(page, browser, appServer.baseUrl);
+
+  // A composes a real `message` mixing every supported inline mark plus a mention
+  // of B nested inside bold (the hardest case — the mention must stay clickable).
+  const tag = `fmt-${Date.now().toString(36)}`;
+  const bHandle = bUser.actor.split("@")[0] as string;
+  await compose(a, `${tag} **bold** _italic_ \`code\` [link](https://example.com) **@${bHandle}**`);
+
+  const row = a.locator('[data-testid="message-row"]').filter({ hasText: tag }).first();
+  await expect(row).toBeVisible({ timeout: 10_000 });
+  const body = row.getByTestId("message-text");
+
+  // Each mark renders as its real element (no raw `**`/`_`/backticks shown).
+  await expect(body.locator("strong").first()).toHaveText("bold");
+  await expect(body.locator("em")).toHaveText("italic");
+  await expect(body.locator("code")).toHaveText("code");
+  await expect(body.locator('a[href="https://example.com"]')).toHaveText("link");
+
+  // The mention nested in bold is a clickable token resolved to B's canonical actor.
+  const mention = body.locator('strong [data-testid="message-mention"]');
+  await expect(mention).toHaveAttribute("data-actor", bUser.actor);
+
+  // It is still live on the RECIPIENT's side too.
+  const bRow = b.locator('[data-testid="message-row"]').filter({ hasText: tag }).first();
+  await expect(bRow.getByTestId("message-text").locator("strong").first()).toHaveText("bold");
+
+  await b.context().close();
+});
+
 test("scroll: recent mode pins to bottom; oldest doesn't; jump-to-latest returns to newest", async ({
   page,
   browser,

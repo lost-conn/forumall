@@ -36,11 +36,7 @@ import {
 import { seqFromCursor } from "../../lib/cursor.ts";
 import { listMembers } from "../../lib/groups-api.ts";
 import { renderMarkdown } from "../../lib/markdown.ts";
-import {
-  detectActiveMentionQuery,
-  mentionRefFor,
-  parseMentionSegments,
-} from "../../lib/mentions.ts";
+import { detectActiveMentionQuery, mentionRefFor } from "../../lib/mentions.ts";
 import { formatTime } from "../../lib/time.ts";
 import { clearActiveThread, setActiveThread } from "../../stores/active-thread.ts";
 import {
@@ -70,6 +66,7 @@ import { MessageStatus } from "../shared/MessageStatus.tsx";
 import { ReactionBar, ReactionPicker } from "../shared/Reactions.tsx";
 import { ReplyContextPill } from "../shared/ReplyContextPill.tsx";
 import { ReplyQuote } from "../shared/ReplyQuote.tsx";
+import { RichText } from "../shared/RichText.tsx";
 import { useComposerTyping, useComposerUpload } from "../shared/composer.ts";
 import { Avatar } from "../social/Avatar.tsx";
 import { openUserProfile } from "../social/user-profile-store.ts";
@@ -1014,37 +1011,6 @@ const MessageRow: Component<{
   );
 };
 
-/**
- * Render freeform body text with `@mention` tokens styled + clickable. Mirrors
- * the server's mention parse (`parseMentionSegments`) so a highlighted token is
- * exactly one the provider turned into a notification. Mentioning yourself stands
- * out (`bg-accent-soft`); clicking any token opens that user's profile.
- */
-const MentionText: Component<{ text: string }> = (props) => {
-  const localDomain = () => session.actor?.split("@")[1] ?? "";
-  const segments = createMemo(() => parseMentionSegments(props.text, localDomain()));
-  return (
-    <For each={segments()}>
-      {(seg) =>
-        seg.type === "text" ? (
-          <>{seg.value}</>
-        ) : (
-          <button
-            type="button"
-            class="rounded px-0.5 font-medium text-accent hover:underline"
-            classList={{ "bg-accent-soft": seg.actor === session.actor }}
-            data-testid="message-mention"
-            data-actor={seg.actor}
-            onClick={() => openUserProfile(seg.actor)}
-          >
-            {seg.raw}
-          </button>
-        )
-      }
-    </For>
-  );
-};
-
 /** Render a message body by §5.3 type, with a safe fallback for unknown types. */
 export const MessageBody: Component<{ message: ChatMessage; onOpenArticle?: () => void }> = (
   props,
@@ -1056,7 +1022,7 @@ export const MessageBody: Component<{ message: ChatMessage; onOpenArticle?: () =
       fallback={
         // Unknown type (§2.3 forward-compat): best-effort plain text, never crash.
         <p class="text-sm text-ink whitespace-pre-wrap break-words" data-testid="message-text">
-          <MentionText text={text()} />
+          <RichText text={text()} />
         </p>
       }
     >
@@ -1120,13 +1086,13 @@ export const MessageBody: Component<{ message: ChatMessage; onOpenArticle?: () =
           onClick={() => props.onOpenArticle?.()}
         >
           <p class="text-sm text-ink whitespace-pre-wrap break-words" data-testid="message-text">
-            <MentionText text={text()} />
+            <RichText text={text()} />
           </p>
         </button>
       </Match>
       <Match when={type() === "message"}>
         <p class="text-sm text-ink whitespace-pre-wrap break-words" data-testid="message-text">
-          <MentionText text={text()} />
+          <RichText text={text()} />
         </p>
       </Match>
     </Switch>

@@ -72,6 +72,7 @@ import { Modal } from "../shared/Modal.tsx";
 import { ReactionBar, ReactionPicker } from "../shared/Reactions.tsx";
 import { ReplyContextPill } from "../shared/ReplyContextPill.tsx";
 import { ReplyQuote } from "../shared/ReplyQuote.tsx";
+import { RichText } from "../shared/RichText.tsx";
 import { UnreadBadge } from "../shared/UnreadBadge.tsx";
 import { useComposerTyping, useComposerUpload } from "../shared/composer.ts";
 import { Avatar } from "../social/Avatar.tsx";
@@ -1157,14 +1158,14 @@ const DmMessageRow: Component<{
 
 /**
  * Render a DM message body. DM messages are always `type: "message"` (the server
- * stores no other kind), so this renders content as plain text — the same way
- * channel chat renders a `message`/`memo`. (Markdown rendering is reserved for
- * `article`-type messages, which DMs never carry; kept as a single content
- * renderer so the surfaces stay consistent.)
+ * stores no other kind), so this renders content with the shared inline
+ * formatter (`RichText`) — the same bold/italic/code/link + clickable-mention
+ * rendering channel chat uses for `message`/`memo`. (Block markdown is reserved
+ * for `article`-type messages, which DMs never carry.)
  */
 const DmMessageBody: Component<{ message: DmMessage }> = (props) => (
   <p class="whitespace-pre-wrap break-words text-sm leading-[1.45]" data-testid="dm-message-text">
-    {props.message.content.text ?? ""}
+    <RichText text={props.message.content.text ?? ""} />
   </p>
 );
 

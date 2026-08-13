@@ -31,6 +31,10 @@ export function escapeHtml(text: string): string {
 /**
  * Allow only safe link schemes; everything else is rejected (→ plain text).
  *
+ * Exported because the inline formatter for chat/DM bodies (`lib/inline.ts`)
+ * runs its links through the SAME allowlist — there must be exactly one answer
+ * to "is this href safe", on every surface.
+ *
  * The destination is first stripped of ASCII whitespace and C0 controls (plus
  * DEL). That is not cosmetic — it closes a scheme-check BYPASS: a browser
  * removes those characters while parsing a URL, so a destination written as
@@ -40,10 +44,12 @@ export function escapeHtml(text: string): string {
  * check — and returning the sanitized string, so what we validated is exactly
  * what we emit — makes the check see what the browser will see.
  */
-function safeHref(rawHref: string): string | null {
+export function safeHref(rawHref: string): string | null {
   // Dropped by code point rather than by regex: a character class of literal
   // control characters is exactly what lint rules (rightly) flag, and this reads
-  // as what it is — "keep only printable characters".
+  // as what it is — "keep only printable characters". This also subsumes the
+  // trim this function used to do, since every character it would strip is
+  // below 0x21.
   const href = [...rawHref]
     .filter((ch) => {
       const code = ch.codePointAt(0) ?? 0;
