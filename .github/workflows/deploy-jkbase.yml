@@ -1,0 +1,88 @@
+name: Deploy to jkbase
+
+# Continuous deployment for Forumall. jkbase is a git-push-to-deploy PaaS: the
+# `jkbase` remote (api.jkbase.app/git/forumall) builds and releases whatever
+# lands on its `main` branch, per jkbase.toml. This workflow mirrors GitHub's
+# `main` onto that remote.
+#
+# It is gated on the CI workflow rather than firing directly on `push`, so a
+# commit that fails typecheck / lint / tests / e2e is never deployed. The
+# `workflow_run` event fires once the whole CI run finishes (both the `verify`
+# and `e2e` jobs), and we require `conclusion == success`.
+#
+# Setup (one time):
+#   gh secret set JKBASE_GIT_TOKEN --body '<jkbg_... token>'
+# The token is the password half of the remote URL currently stored in the
+# local .git/config; jkbase authenticates it as the fixed user `jkbase`.
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+  # Manual escape hatch: redeploy the current main without waiting for a new CI
+  # run (e.g. after a jkbase-side rollback or a transient deploy failure).
+  workflow_dispatch:
+
+# Never run two deploys at once, and don't cancel one midway — an interrupted
+# push can leave the remote on a partial ref. Later runs queue behind earlier
+# ones instead.
+concurrency:
+  group: deploy-jkbase
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Push main to jkbase
+    runs-on: ubuntu-latest
+    # For workflow_run, only deploy green CI. workflow_dispatch has no
+    # originating run, so `conclusion` is empty there and we let it through.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+
+    steps:
+      # Check out the exact commit CI verified, not whatever main points at now
+      # (main may have moved while CI was running; that newer commit gets its
+      # own CI run and its own deploy). Full history: jkbase's remote needs the
+      # ancestry to fast-forward, and a shallow clone can't be pushed.
+      - name: Check out the verified commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          fetch-depth: 0
+
+      - name: Push to jkbase
+        env:
+          # Referenced via env rather than inlined into the script, so the token
+          # is never interpolated into the shell command line. GitHub masks the
+          # secret's value in logs wherever it appears.
+          JKBASE_GIT_TOKEN: ${{ secrets.JKBASE_GIT_TOKEN }}
+          DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${JKBASE_GIT_TOKEN}" ]; then
+            echo "::error::JKBASE_GIT_TOKEN is not set. Add it with: gh secret set JKBASE_GIT_TOKEN"
+            exit 1
+          fi
+
+          echo "Deploying ${DEPLOY_SHA} to jkbase main"
+
+          # No --force: a non-fast-forward push fails loudly rather than
+          # clobbering a state on jkbase that GitHub doesn't know about.
+          git push \
+            "https://jkbase:${JKBASE_GIT_TOKEN}@api.jkbase.app/git/forumall" \
+            "${DEPLOY_SHA}:refs/heads/main"
+
+      - name: Summary
+        if: success()
+        env:
+          DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          {
+            echo "### Deployed to jkbase"
+            echo ""
+            echo "Commit: \`${DEPLOY_SHA}\`"
+            echo ""
+            echo "jkbase builds from \`jkbase.toml\`; check rollout with \`jkbase logs\`."
+          } >> "$GITHUB_STEP_SUMMARY"
