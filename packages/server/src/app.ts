@@ -44,6 +44,7 @@ import {
 } from "./provider/federation/http.ts";
 import { RemoteUserKeysCache } from "./provider/federation/user-keys-cache.ts";
 import { PresenceRegistry } from "./provider/presence.ts";
+import { type RateLimits, createRateLimits } from "./provider/ratelimit.ts";
 import { Hub } from "./provider/ws-hub.ts";
 
 export interface AppDeps {
@@ -65,6 +66,13 @@ export interface AppDeps {
   readonly discoveryCache?: RemoteDiscoveryCache;
   /** Shared remote user-keys cache (§4.6); one is created if not injected. */
   readonly userKeysCache?: RemoteUserKeysCache;
+  /**
+   * Auth rate limiters (§4.1.5, reconciliation #26); built from `config.rateLimit`
+   * if not injected. Tests that want to trip a limit deliberately (or bypass it
+   * without touching env/config) inject their own via `provider/ratelimit.ts`'s
+   * `createRateLimits`/`disabledRateLimits`.
+   */
+  readonly rateLimits?: RateLimits;
 }
 
 /** A Hono app augmented with the Bun `websocket` handler object it requires. */
@@ -79,6 +87,8 @@ export type AppWithWebSocket = Hono<AppBindings> & {
   readonly __discoveryCache: RemoteDiscoveryCache;
   /** The shared remote user-keys cache (for tests / later wiring). */
   readonly __userKeysCache: RemoteUserKeysCache;
+  /** The shared auth rate limiters (for tests / later wiring). */
+  readonly __rateLimits: RateLimits;
 };
 
 export function createApp(config: Config, deps: AppDeps): AppWithWebSocket {
@@ -98,6 +108,9 @@ export function createApp(config: Config, deps: AppDeps): AppWithWebSocket {
   // The user-keys cache likewise shares the injected federation fetch so remote
   // actor key resolution (§4.6) reaches the same transport (real TLS or peer).
   const userKeysCache = deps.userKeysCache ?? new RemoteUserKeysCache({ federationFetch });
+  // Auth rate limiters (§4.1.5, reconciliation #26): built from `config.rateLimit`
+  // unless a caller injects its own (tests that want a deliberate trip or bypass).
+  const rateLimits = deps.rateLimits ?? createRateLimits(config);
 
   const { upgradeWebSocket, websocket } = createBunWebSocket();
 
@@ -111,6 +124,7 @@ export function createApp(config: Config, deps: AppDeps): AppWithWebSocket {
     c.set("federationFetch", federationFetch);
     c.set("discoveryCache", discoveryCache);
     c.set("userKeysCache", userKeysCache);
+    c.set("rateLimits", rateLimits);
     await next();
   });
 
@@ -180,5 +194,6 @@ export function createApp(config: Config, deps: AppDeps): AppWithWebSocket {
     __presenceRegistry: presenceRegistry,
     __discoveryCache: discoveryCache,
     __userKeysCache: userKeysCache,
+    __rateLimits: rateLimits,
   });
 }

@@ -66,6 +66,16 @@ const config = loadConfig({
   ...(process.env.FEDERATION_INSECURE_LOCALHOST !== undefined
     ? { FEDERATION_INSECURE_LOCALHOST: process.env.FEDERATION_INSECURE_LOCALHOST }
     : {}),
+  // Auth rate limiting (§4.1.5) is OFF by default for the e2e harness: unlike
+  // the unit/integration suite (one fresh app per test, so per-app call counts
+  // stay low), some specs drive several `newUser`/`registerUser` calls against
+  // ONE real `Bun.serve` instance whose peer address is always 127.0.0.1 — a
+  // production-sane limit would throttle that traffic. `ratelimit.test.ts`
+  // (packages/server/test) already covers the limiter itself; a spec that
+  // specifically wants to exercise rate limiting can still opt back in by
+  // passing `RATE_LIMIT_ENABLED: "true"` (+ tight `RATE_LIMIT_*` overrides) as
+  // `extraEnv` to `bootServer`.
+  RATE_LIMIT_ENABLED: process.env.RATE_LIMIT_ENABLED ?? "false",
 });
 
 const db = openDb(config.dbPath);
