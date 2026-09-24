@@ -359,6 +359,29 @@ describe("GET .../messages (§7.2, authz)", () => {
     const noGroup = await app.request("/api/groups/grp_nope/channels/chn_x/messages");
     expect(noGroup.status).toBe(404);
   });
+
+  test("a public channel in a private group is not readable by a non-member or anonymously (#24)", async () => {
+    const { app, config, db } = freshApp("msg-authz-widen");
+    const alice = await registerUserWithKey(app, "alice");
+    const bob = await registerUserWithKey(app, "bob");
+    // The group is private; the channel inside it claims `public` — the tier
+    // can only narrow access within its group, never widen it (§11).
+    const group = await createGroup(app, alice, { name: "G", tier: "private" });
+    const channel = await createChannel(app, alice, group.id, { type: "text", tier: "public" });
+    seedMessages(db, config, group.id, channel.id, alice.actor, 2);
+    const path = `/api/groups/${group.id}/channels/${channel.id}/messages`;
+
+    const anon = await app.request(path);
+    expect(anon.status).toBe(403);
+
+    const nonMember = await signedRequest(app, bob, "GET", path);
+    expect(nonMember.status).toBe(403);
+
+    // A member of the (private) group can still read the (public) channel.
+    addMember(db, group.id, bob, "member");
+    const member = await signedRequest(app, bob, "GET", path);
+    expect(member.status).toBe(200);
+  });
 });
 
 // ---------------------------------------------------------------------------

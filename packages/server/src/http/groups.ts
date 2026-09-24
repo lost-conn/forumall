@@ -23,16 +23,14 @@ import {
   rowToGroup,
   updateGroup,
 } from "../provider/groups.ts";
-import { canActor, isMember } from "../provider/permissions.ts";
+import { canActor } from "../provider/permissions.ts";
+import { tierReadableBy } from "../provider/tiers.ts";
 import { createChannelsRouter } from "./channels.ts";
 import { AppError } from "./errors.ts";
 import { createGroupInvitesRouter } from "./invites.ts";
 import { createMembershipRouter } from "./membership.ts";
 import { optionalSignature, requireSignature } from "./signature.ts";
 import type { AppBindings } from "./types.ts";
-
-/** Tiers that are publicly readable without authentication (§5.5). */
-const PUBLIC_TIERS = new Set(["public", "discoverable"]);
 
 export function createGroupsRouter() {
   const router = new Hono<AppBindings>();
@@ -87,11 +85,9 @@ export function createGroupsRouter() {
     // Public/discoverable: anyone may read. Private/group: an authenticated
     // member only — else 403 (§5.5). Follow the spec: missing → 404 (above),
     // private + non-member → 403.
-    if (!PUBLIC_TIERS.has(row.tier)) {
-      const actor = c.var.actor;
-      if (!actor || !isMember(db, id, actor.actor)) {
-        throw AppError.forbidden({ detail: "this group is private" });
-      }
+    const actor = c.var.actor?.actor ?? null;
+    if (!tierReadableBy(db, id, row.tier, actor)) {
+      throw AppError.forbidden({ detail: "this group is private" });
     }
 
     return c.json(rowToGroup(row));

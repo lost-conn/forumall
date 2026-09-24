@@ -357,6 +357,36 @@ describe("GET /api/groups/{groupId}/channels/{channelId} (§5.5, tier)", () => {
     const res = await app.request(`/api/groups/${group.id}/channels/chn_nope`);
     expect(res.status).toBe(404);
   });
+
+  test("a public channel in a private group is not widened to anyone (#24)", async () => {
+    const { app, db } = freshApp("chan-get-widen");
+    const alice = await registerUserWithKey(app, "alice");
+    const bob = await registerUserWithKey(app, "bob");
+    // Effective read access is the more restrictive of group and channel (§11):
+    // a `public` channel inside a `private` group must NOT be readable by
+    // anyone outside the group, even though the channel's own tier is public.
+    const group = await createGroup(app, alice, { name: "G", tier: "private" });
+    const channel = await createChannel(app, alice, group.id, { type: "text", tier: "public" });
+    const path = `/api/groups/${group.id}/channels/${channel.id}`;
+
+    const anon = await app.request(path);
+    expect(anon.status).toBe(403);
+
+    const nonMember = await signedRequest(app, bob, "GET", path);
+    expect(nonMember.status).toBe(403);
+
+    // A member sees it (channel tier is at least as open as needed; group
+    // membership is what actually grants access here).
+    addMember(db, group.id, bob, "member");
+    const member = await signedRequest(app, bob, "GET", path);
+    expect(member.status).toBe(200);
+
+    // The channel list agrees: non-member sees nothing, member sees it.
+    const listNonMember = await app.request(`/api/groups/${group.id}/channels`);
+    // The group itself is private, so the list is 403 before any per-channel
+    // filtering even runs.
+    expect(listNonMember.status).toBe(403);
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -17,8 +17,9 @@
  * The provider SHOULD verify the caller currently has access before recording the
  * pointer:
  *  - **Local** channel → resolve the channel row, then gate via
- *    {@link channelVisibleTo} (tier + group membership). Not visible → **403**;
- *    no such local channel → **404**.
+ *    {@link canViewChannel} (tier + group tier + any per-channel `view`
+ *    override, §5.2.1/§11). Not visible → **403**; no such local channel →
+ *    **404**.
  *  - **Remote** channel → real access verification requires federation (P7), so
  *    the pointer is stored WITHOUT a remote access check for now. P7 can add a
  *    remote access check here (fetch the remote channel / attempt a read against
@@ -35,7 +36,7 @@ import {
 } from "@forumall/shared";
 import { type Context, Hono } from "hono";
 
-import { channelVisibleTo, getChannelRow } from "../provider/channels.ts";
+import { canViewChannel, getChannelRow } from "../provider/channels.ts";
 import { addFollow, listFollows, removeFollow } from "../provider/follows.ts";
 import { AppError } from "./errors.ts";
 import { requireLocalActor, requireLocalHandle, requireSignature } from "./signature.ts";
@@ -102,7 +103,7 @@ export function createMeFollowsRouter() {
 
   // -- POST /follows (§7.6 — signed) --------------------------------------
   // Start following a channel. Access check before storing the pointer:
-  // local channel → channelVisibleTo (403 if not visible, 404 if no such
+  // local channel → canViewChannel (403 if not visible, 404 if no such
   // channel); remote channel → stored without a remote access check (P7).
   // Idempotent: already-followed → existing Follow (200); new → 201.
   router.post("/", signed, local, async (c) => {
@@ -133,7 +134,7 @@ export function createMeFollowsRouter() {
       }
       const row = getChannelRow(db, classified.channelId);
       if (!row) throw AppError.notFound({ detail: "no such local channel" });
-      if (!channelVisibleTo(db, row.groupId, row.tier, actor.actor)) {
+      if (!canViewChannel(db, row, actor.actor)) {
         throw AppError.forbidden({ detail: "you do not have access to this channel" });
       }
     }

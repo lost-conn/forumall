@@ -305,4 +305,61 @@ describe("per-channel permissions (§5.2.1)", () => {
     );
     expect(adminRead.status).toBe(200);
   });
+
+  test("view override is honored by GET channel and the channel list (#19)", async () => {
+    const { app, db } = freshApp("viewoverride-list-get");
+    const owner = await registerUserWithKey(app, "owner5");
+    const member = await registerUserWithKey(app, "member5");
+    const admin = await registerUserWithKey(app, "admin5");
+    // public-tier group so tier alone would allow anyone.
+    const group = await createGroup(app, owner, { name: "G", tier: "public" });
+    addMember(db, group.id, member, "member");
+    addMember(db, group.id, admin, "admin");
+
+    const restricted = await createChannel(app, owner, group.id, {
+      type: "text",
+      tier: "public",
+      name: "admin-only",
+      permissions: { view: ["admin"] },
+    });
+    const open = await createChannel(app, owner, group.id, {
+      type: "text",
+      tier: "public",
+      name: "everyone",
+    });
+
+    // GET the restricted channel directly: excluded member → 403; included
+    // admin → 200 (its name/topic/tags/metadata are not leaked to the member).
+    const memberGet = await signedRequest(
+      app,
+      member,
+      "GET",
+      `/api/groups/${group.id}/channels/${restricted.id}`,
+    );
+    expect(memberGet.status).toBe(403);
+    const adminGet = await signedRequest(
+      app,
+      admin,
+      "GET",
+      `/api/groups/${group.id}/channels/${restricted.id}`,
+    );
+    expect(adminGet.status).toBe(200);
+    expect(((await adminGet.json()) as Channel).name).toBe("admin-only");
+
+    // Anonymous is excluded too (no `view` role).
+    const anonGet = await app.request(`/api/groups/${group.id}/channels/${restricted.id}`);
+    expect(anonGet.status).toBe(403);
+
+    // List: the member sees only the open channel; the admin sees both — the
+    // view-restricted channel's metadata is not listed to the excluded member.
+    const memberList = await signedRequest(app, member, "GET", `/api/groups/${group.id}/channels`);
+    expect(memberList.status).toBe(200);
+    const memberItems = ((await memberList.json()) as { items: Channel[] }).items;
+    expect(memberItems.map((c) => c.id).sort()).toEqual([open.id]);
+
+    const adminList = await signedRequest(app, admin, "GET", `/api/groups/${group.id}/channels`);
+    expect(adminList.status).toBe(200);
+    const adminItems = ((await adminList.json()) as { items: Channel[] }).items;
+    expect(adminItems.map((c) => c.id).sort()).toEqual([open.id, restricted.id].sort());
+  });
 });

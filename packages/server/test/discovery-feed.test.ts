@@ -310,6 +310,43 @@ describe("discovery feed enabled (§11.2)", () => {
     const seen = new Set([...page1.items, ...page2.items].map((i) => i.channel));
     expect(seen).toEqual(new Set([c1.id, c2.id]));
   });
+
+  test("a view-restricted discoverable channel's sample is excluded for the anonymous viewer (#30)", async () => {
+    const { app, db, config } = freshApp("discover-view-restricted", {
+      ENABLE_DISCOVER_FEED: "true",
+    });
+    const alice = await registerUserWithKey(app, "alice");
+    const group = await createGroup(app, alice, { name: "G", tier: "public" });
+
+    // A discoverable channel restricted to `admin` via the §5.2.1 `view`
+    // override — the tier alone would otherwise surface it to anyone.
+    const restricted = await createChannel(app, alice, group.id, {
+      type: "text",
+      tier: "discoverable",
+      name: "admin-only-discoverable",
+      permissions: { view: ["admin"] },
+    });
+    const open = await createChannel(app, alice, group.id, {
+      type: "text",
+      tier: "discoverable",
+      name: "open-discoverable",
+    });
+    seedMessage(db, config, group.id, restricted.id, alice.actor, "secret sample text");
+    seedMessage(db, config, group.id, open.id, alice.actor, "public sample text");
+
+    featureGroup(db, group.id, "alice");
+
+    const res = await app.request("/api/discover");
+    expect(res.status).toBe(200);
+    const body = DiscoverResponseSchema.parse(await res.json());
+
+    const channels = body.items.map((i) => i.channel);
+    expect(channels).toContain(open.id);
+    expect(channels).not.toContain(restricted.id);
+    // No sample text from the restricted channel leaked anywhere in the payload.
+    const samples = body.items.map((i) => i.sample?.content?.text);
+    expect(samples).not.toContain("secret sample text");
+  });
 });
 
 // ---------------------------------------------------------------------------

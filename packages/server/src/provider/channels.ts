@@ -8,9 +8,10 @@
  * permission resolver (`provider/permissions.ts`) is consulted by the HTTP layer
  * for authorization; this module owns the `channels` row lifecycle only.
  *
- * The {@link channelVisibleTo} helper is the single channel-visibility rule
- * (tier + membership), exported so messaging/subscription cards reuse one
- * decision rather than re-deriving it.
+ * {@link canViewChannel} is the single decision for "may this actor read this
+ * channel" (tier + group tier + the optional per-channel `view` override,
+ * §5.2.1) — messaging, WS subscribe, and read-markers all reuse it. It
+ * delegates the tier-only half of that question to {@link channelVisibleTo}.
  */
 import {
   type Channel,
@@ -26,15 +27,14 @@ import { eq } from "drizzle-orm";
 
 import type { Db } from "../db/index.ts";
 import { type ChannelRow, channels, messages, reactions } from "../db/schema.ts";
-import { getMembership, isMember, roleMeets } from "./permissions.ts";
+import { getGroupRow } from "./groups.ts";
+import { getMembership, roleMeets } from "./permissions.ts";
+import { tierReadableBy } from "./tiers.ts";
 
 /** `id` prefix per the §5.2 wire examples (`chn_…`). */
 const CHANNEL_ID_PREFIX = "chn_";
 /** Random bytes of entropy for a channel id (16 = 128 bits). */
 const CHANNEL_ID_BYTES = 16;
-
-/** Tiers that make a channel readable without group membership (§5.5). */
-const PUBLIC_TIERS = new Set(["public", "discoverable"]);
 
 /** RECOMMENDED defaults when create-request fields are omitted (§5.5). */
 const DEFAULT_TIER = "private";
@@ -105,13 +105,19 @@ export function listChannelRows(db: Db, groupId: string): ChannelRow[] {
 
 /**
  * Whether a channel of `tier` in group `groupId` is visible to `actor`
- * (`handle@domain`, or `null`/`undefined` for an anonymous caller).
+ * (`handle@domain`, or `null`/`undefined` for an anonymous caller), on tier +
+ * membership grounds alone — this does NOT consider a per-channel `view`
+ * override (§5.2.1); use {@link canViewChannel} for the real read decision.
  *
- * The single channel-visibility rule, consistent with group reads (§5.5):
- *  - a `public`/`discoverable` channel is visible to anyone (caller in a
- *    readable group is assumed — the caller already passed the group read gate);
- *  - a `private`/`group` channel is visible only to an authenticated group
- *    member.
+ * **Effective read access is the more restrictive of the group and the
+ * channel** (§11; the spec is silent on how the two combine today — see the
+ * Forumall/OFSCP spec-reconciliation report #24 and its proposed Spec PR 7,
+ * "a channel tier can restrict access within its group but MUST NOT widen
+ * it"). Concretely: a `public`/`discoverable` **channel** is visible to anyone
+ * only when its **group** is *also* tier-readable to them; a `private`/`group`
+ * channel is visible only to an authenticated member of the group either way.
+ * A group's own visibility is this same rule applied to itself (`tierReadableBy`
+ * with the group's own id/tier).
  *
  * Exported so messaging/subscription cards reuse one decision.
  */
@@ -121,8 +127,10 @@ export function channelVisibleTo(
   tier: string,
   actor: string | null | undefined,
 ): boolean {
-  if (PUBLIC_TIERS.has(tier)) return true;
-  return actor != null && isMember(db, groupId, actor);
+  const group = getGroupRow(db, groupId);
+  if (!group) return false;
+  if (!tierReadableBy(db, groupId, group.tier, actor)) return false;
+  return tierReadableBy(db, groupId, tier, actor);
 }
 
 /**
@@ -132,10 +140,11 @@ export function channelVisibleTo(
  *  - When the channel defines a `view` override, only a **member** whose role
  *    rank meets the bar may read — this *overrides* the tier (e.g. restricting a
  *    channel inside a `public` group to admins).
- *  - Otherwise it falls back to {@link channelVisibleTo} (tier + membership).
+ *  - Otherwise it falls back to {@link channelVisibleTo} (tier + membership,
+ *    already the more-restrictive-of-group-and-channel rule above).
  *
  * Use this (not the bare tier check) wherever channel read access is gated:
- * message history, reply listing, and WS subscribe.
+ * channel list/GET, message history, reply listing, WS subscribe, and follows.
  */
 export function canViewChannel(
   db: Db,

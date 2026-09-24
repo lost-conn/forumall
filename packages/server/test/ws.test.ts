@@ -407,6 +407,29 @@ describe("WS subscriptions (§7.1)", () => {
     expect(err.correlationId).toBe("cli_sub");
     client.close();
   });
+
+  test("subscribe to a public channel in a private group (non-member) → error forbidden (#24)", async () => {
+    const b = boot("sub-forbidden-widen");
+    const owner = await registerUserWithKey(b, "owner");
+    // makeChannel's group is always `private`; a `public` CHANNEL tier must not
+    // widen access to it — effective read access is the more restrictive of the
+    // two (§11).
+    const { channelId } = await makeChannel(b, owner, "public");
+    const bob = await registerUserWithKey(b, "bob"); // not a group member
+    const client = await connectAuthenticated(b, bob);
+
+    client.send({
+      id: "cli_sub_widen",
+      type: "subscribe",
+      ts: rfc3339Timestamp(),
+      data: { channels: [channelId] },
+    });
+    const err = await client.ofType("error");
+    expect((err.data as { code: string }).code).toBe("forbidden");
+    expect((err.data as { status: number }).status).toBe(403);
+    expect(err.correlationId).toBe("cli_sub_widen");
+    client.close();
+  });
 });
 
 describe("WS heartbeat (§7.1)", () => {
@@ -533,12 +556,17 @@ describe("WS message.create + fan-out + idempotency (§7.1 Sending messages)", (
     });
   }
 
-  /** Create a group owned by `owner` + a `public`-tier text channel in it. */
+  /**
+   * Create a group owned by `owner` + a `public`-tier text channel in it. The
+   * group is `public` too — a channel tier can only narrow access within its
+   * group, never widen it (§11) — so non-member subscribers can actually reach
+   * the public channel, which these tests rely on.
+   */
   async function makeGroupChannel(
     b: Booted,
     owner: Signer,
   ): Promise<{ groupId: string; channelId: string }> {
-    const gRes = await signedReq(b, owner, "POST", "/api/groups", { name: "g", tier: "private" });
+    const gRes = await signedReq(b, owner, "POST", "/api/groups", { name: "g", tier: "public" });
     expect(gRes.status).toBe(201);
     const groupId = ((await gRes.json()) as { id: string }).id;
     const cRes = await signedReq(b, owner, "POST", `/api/groups/${groupId}/channels`, {
@@ -743,12 +771,17 @@ describe("WS resume (§7.1 Resuming after a disconnect)", () => {
     });
   }
 
-  /** Create a group owned by `owner` + a `public`-tier text channel in it. */
+  /**
+   * Create a group owned by `owner` + a `public`-tier text channel in it. The
+   * group is `public` too — a channel tier can only narrow access within its
+   * group, never widen it (§11) — so non-member subscribers can actually reach
+   * the public channel, which these tests rely on.
+   */
   async function makeGroupChannel(
     b: Booted,
     owner: Signer,
   ): Promise<{ groupId: string; channelId: string }> {
-    const gRes = await signedReq(b, owner, "POST", "/api/groups", { name: "g", tier: "private" });
+    const gRes = await signedReq(b, owner, "POST", "/api/groups", { name: "g", tier: "public" });
     expect(gRes.status).toBe(201);
     const groupId = ((await gRes.json()) as { id: string }).id;
     const cRes = await signedReq(b, owner, "POST", `/api/groups/${groupId}/channels`, {

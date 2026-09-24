@@ -52,6 +52,7 @@ import {
   isMember,
   roleHoldsAll,
 } from "../provider/permissions.ts";
+import { tierReadableBy } from "../provider/tiers.ts";
 import type { Hub } from "../provider/ws-hub.ts";
 import { AppError } from "./errors.ts";
 import { optionalSignature, requireSignature } from "./signature.ts";
@@ -78,9 +79,6 @@ function fanOutMemberUpdated(
   }
   hub.publishToActor(member.user, event);
 }
-
-/** Tiers whose member list MAY be exposed publicly (§5.7). */
-const PUBLIC_TIERS = new Set(["public", "discoverable"]);
 
 /** Default + max page size for the member listing (§7.2). */
 const DEFAULT_PAGE_SIZE = 50;
@@ -183,7 +181,7 @@ export function createMembershipRouter() {
 
     // Visible to members; public/discoverable groups MAY expose it publicly.
     const viewer = c.var.actor?.actor ?? null;
-    if (!PUBLIC_TIERS.has(group.tier) && (viewer == null || !isMember(db, groupId, viewer))) {
+    if (!tierReadableBy(db, groupId, group.tier, viewer)) {
       throw AppError.forbidden({ detail: "the member list is visible to members only" });
     }
 

@@ -158,7 +158,10 @@ async function makeGroupChannel(
   owner: Signer,
   tier: string,
 ): Promise<{ groupId: string; channelId: string }> {
-  const gRes = await signedReq(b, owner, "POST", "/api/groups", { name: "g", tier: "private" });
+  // The group's tier must be at least as open as the channel's — a channel
+  // tier can only narrow access within its group, never widen it (§11) — so
+  // match it to the requested channel tier.
+  const gRes = await signedReq(b, owner, "POST", "/api/groups", { name: "g", tier });
   expect(gRes.status).toBe(201);
   const groupId = ((await gRes.json()) as { id: string }).id;
   const cRes = await signedReq(b, owner, "POST", `/api/groups/${groupId}/channels`, {

@@ -3,30 +3,32 @@
  * (spec §5.5) over the canonical `Channel` object (§5.2). Mounted under the
  * groups router so every route is group-scoped via the `:groupId` param.
  *
- *  - `GET /` (optional auth): list channels **visible to the caller** — a
- *    public/discoverable channel is visible to anyone able to read the group; a
- *    private/group channel only to a group member. → `{ items: [Channel] }`.
+ *  - `GET /` (optional auth): list channels **visible to the caller**, honoring
+ *    each channel's per-channel `view` override (§5.2.1) — not just tier +
+ *    membership. → `{ items: [Channel] }`.
  *  - `POST /` (signed): caller must satisfy the group's `manage` action; `type`
  *    is REQUIRED + immutable. → 201 the created `Channel`.
- *  - `GET /:channelId` (optional auth): tier rules mirror `GET /api/groups/{id}`
- *    — public/discoverable readable by anyone, private/group requires
- *    membership → 403; missing channel/group → 404.
+ *  - `GET /:channelId` (optional auth): read gate is {@link canViewChannel} —
+ *    tier + group tier (more restrictive of the two, §11) + any `view`
+ *    override; missing channel/group → 404, not visible → 403.
  *  - `PATCH /:channelId` (signed): group `manage`; partial update; `type` cannot
  *    change (attempts are rejected 400). → 200.
  *  - `DELETE /:channelId` (signed): group `manage` → 204.
  *
  * The parent group must be readable for any channel access: the group-level tier
  * gate (public/discoverable → anyone; private/group → member) is applied first,
- * mirroring `GET /api/groups/{id}`, then the channel's own tier is checked.
- * Authorization (group `manage`) delegates to `provider/permissions.ts`;
- * channel-visibility delegates to {@link channelVisibleTo} so messaging /
- * subscription cards share one rule.
+ * mirroring `GET /api/groups/{id}`. The channel's own read gate — tier, the
+ * group/channel "more restrictive of the two" combination (§11), and any
+ * per-channel `view` override (§5.2.1) — is then applied via
+ * {@link canViewChannel}, the single decision messaging/WS subscription also
+ * use, so this router cannot drift from them. Authorization (group `manage`)
+ * delegates to `provider/permissions.ts`.
  */
 import { ChannelCreateRequestSchema, ChannelUpdateRequestSchema } from "@forumall/shared";
 import { type Context, Hono } from "hono";
 
 import {
-  channelVisibleTo,
+  canViewChannel,
   createChannel,
   deleteChannel,
   getChannelRow,
@@ -36,14 +38,12 @@ import {
 } from "../provider/channels.ts";
 import { getGroupRow } from "../provider/groups.ts";
 import { addMember, getMemberRow, requestToJoin, rowToMember } from "../provider/membership.ts";
-import { canActor, isMember } from "../provider/permissions.ts";
+import { canActor } from "../provider/permissions.ts";
+import { tierReadableBy } from "../provider/tiers.ts";
 import { AppError } from "./errors.ts";
 import { createMessagesRouter } from "./messages.ts";
 import { optionalSignature, requireSignature } from "./signature.ts";
 import type { AppBindings } from "./types.ts";
-
-/** Tiers that are publicly readable without authentication (§5.5). */
-const PUBLIC_TIERS = new Set(["public", "discoverable"]);
 
 /**
  * Read a path param that is guaranteed present by the mounted route (e.g.
@@ -73,12 +73,14 @@ export function createChannelsRouter() {
     // The group must be readable first: a private/group group is only readable
     // by a member (mirrors GET /api/groups/{id}). 403 there means no channels.
     const actor = c.var.actor?.actor ?? null;
-    if (!PUBLIC_TIERS.has(group.tier) && (actor == null || !isMember(db, groupId, actor))) {
+    if (!tierReadableBy(db, groupId, group.tier, actor)) {
       throw AppError.forbidden({ detail: "this group is private" });
     }
 
+    // Per-channel read gate (§5.2.1 `view`, §11 group/channel tier), not just
+    // tier + membership — see canViewChannel's doc comment.
     const items = listChannelRows(db, groupId)
-      .filter((row) => channelVisibleTo(db, groupId, row.tier, actor))
+      .filter((row) => canViewChannel(db, row, actor))
       .map(rowToChannel);
     return c.json({ items });
   });
@@ -123,10 +125,11 @@ export function createChannelsRouter() {
       throw AppError.notFound({ detail: "no such channel" });
     }
 
-    // Tier rules mirror GET /api/groups/{id}: missing → 404 (above), private +
-    // non-member → 403.
+    // Read gate (§5.2.1, §11): tier + group tier + any per-channel `view`
+    // override, via the same decision messaging/WS subscription use. Missing →
+    // 404 (above), not visible → 403.
     const actor = c.var.actor?.actor ?? null;
-    if (!channelVisibleTo(db, groupId, row.tier, actor)) {
+    if (!canViewChannel(db, row, actor)) {
       throw AppError.forbidden({ detail: "this channel is private" });
     }
 
