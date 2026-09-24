@@ -203,6 +203,35 @@ export function filterPresenceFor(
   return effectivePresence(db, hub, subjectHandle, subjectActor);
 }
 
+/**
+ * Resolve presence for `subjectActor` — a full `handle@domain` ref, as taken
+ * directly off `presence.subscribe`/`presence.unsubscribe` (§7.5) — as seen by
+ * `viewerActor`, enforcing §4.5.1 / §7.5 Federation ("a provider answers
+ * `presence.subscribe` for the users it **hosts**"): a provider MUST NOT use a
+ * subject's bare handle as a key into provider-local storage once the ref's
+ * domain is not this provider's own. For a subject whose domain isn't `host`,
+ * this returns the SAME uniform `offline` a hidden or nonexistent LOCAL user
+ * would get (never a real presence, and never provider-local storage lookup by
+ * the bare handle) — so `bob@remote.example` can never resolve to local
+ * `bob`'s presence. Local refs (matching domain, or a bare handle) fall
+ * through to {@link filterPresenceFor} exactly as before.
+ */
+export function presenceForSubject(
+  db: Db,
+  hub: Hub,
+  config: Config,
+  subjectActor: string,
+  viewerActor: { actor: string; handle: string; domain: string } | null,
+): EffectivePresence {
+  const host = canonicalAuthority(config.domain);
+  const at = subjectActor.lastIndexOf("@");
+  const domain = at > 0 ? canonicalAuthority(subjectActor.slice(at + 1)) : host;
+  if (domain !== host) return uniformOffline();
+
+  const subjectHandle = at > 0 ? subjectActor.slice(0, at) : subjectActor;
+  return filterPresenceFor(db, hub, config, subjectHandle, viewerActor);
+}
+
 /** Render an {@link EffectivePresence} as a schema-valid `Presence` object (§6.4). */
 export function toPresence(eff: EffectivePresence) {
   return PresenceSchema.parse({
