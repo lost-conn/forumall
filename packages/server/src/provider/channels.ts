@@ -151,14 +151,34 @@ export function canViewChannel(
   channel: ChannelRow,
   actor: string | null | undefined,
 ): boolean {
+  return canViewChannelWith(
+    channel,
+    actor,
+    (groupId, member) => getMembership(db, groupId, member)?.role ?? null,
+  );
+}
+
+/**
+ * {@link canViewChannel} with the membership lookup injected (`roleOf` returns
+ * the actor's role in the group, or `null` if not a member). The single rule
+ * body, so a hot path (the WS delivery-time gate) can supply a faster lookup
+ * without re-deriving the decision.
+ */
+export function canViewChannelWith(
+  channel: ChannelRow,
+  actor: string | null | undefined,
+  roleOf: (groupId: string, actor: string) => string | null,
+): boolean {
   const perms = parseChannelPermissions(channel.permissions);
   const viewRoles = perms?.view;
   if (viewRoles && viewRoles.length > 0) {
     if (actor == null) return false;
-    const membership = getMembership(db, channel.groupId, actor);
-    return membership != null && roleMeets(membership.role, viewRoles);
+    const role = roleOf(channel.groupId, actor);
+    return role != null && roleMeets(role, viewRoles);
   }
-  return channelVisibleTo(db, channel.groupId, channel.tier, actor);
+  // Tier rule, as in {@link channelVisibleTo}.
+  if (PUBLIC_TIERS.has(channel.tier)) return true;
+  return actor != null && roleOf(channel.groupId, actor) != null;
 }
 
 /**

@@ -63,6 +63,7 @@ import {
 import { z } from "zod";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/index.ts";
+import { WS_CLOSE_CREDENTIALS_REVOKED } from "../provider/access-revocation.ts";
 import { canViewChannel, getChannelRow } from "../provider/channels.ts";
 import { resolveActorKeys } from "../provider/device-keys.ts";
 import { getDmConversationRow, isDmParticipant } from "../provider/dms.ts";
@@ -117,6 +118,13 @@ export interface WsTimings {
   pingIntervalMs: number;
   /** Idle window with no inbound traffic before close, ms (§7.1: ~60s). */
   idleTimeoutMs: number;
+  /**
+   * How often a REMOTE actor's authenticating device key is re-resolved from
+   * its home provider (§4.6, through the user-keys cache, so a revocation is seen
+   * once the cached `cache_until` lapses, §4.7.1). A key that is gone or replaced
+   * closes the socket with `4003`. Checked on the heartbeat tick. ms.
+   */
+  remoteKeyRevalidateMs: number;
 }
 
 /** §7.1 RECOMMENDED defaults. */
@@ -125,6 +133,7 @@ export const DEFAULT_WS_TIMINGS: WsTimings = {
   challengeTtlMs: 30_000,
   pingIntervalMs: 30_000,
   idleTimeoutMs: 60_000,
+  remoteKeyRevalidateMs: 300_000,
 };
 
 /** Random bytes for a challenge nonce (16 = 128 bits, §7.1 "≥128-bit"). */
@@ -171,6 +180,21 @@ interface ConnState {
   localHandle?: string;
   /** Key id that verified the handshake. */
   keyId?: string;
+  /**
+   * For a REMOTE actor: the public key that verified the handshake, so the
+   * periodic re-validation can tell a revoked key from one replaced under the
+   * same id (both end the session).
+   */
+  remotePublicKey?: string;
+  /** Last remote-key re-validation (epoch ms); see {@link WsTimings.remoteKeyRevalidateMs}. */
+  lastKeyCheck: number;
+  /** A remote-key re-validation is in flight (don't start another). */
+  keyCheckInFlight: boolean;
+  /**
+   * The server is closing this connection (credentials revoked, §4.7 / #15).
+   * Set before the close so no further command from it is processed.
+   */
+  terminated: boolean;
   /** The hub registration for this connection (after auth). */
   hubConn?: HubConnection;
   /** Last time we saw inbound traffic (any frame), epoch ms — liveness basis. */
@@ -400,6 +424,9 @@ export function createWsHandlers(deps: WsHandlerDeps) {
         challengeExpiresAt: now + timings.challengeTtlMs,
         challengeUsed: false,
         lastSeen: now,
+        lastKeyCheck: now,
+        keyCheckInFlight: false,
+        terminated: false,
         typingTimers: new Map(),
         dmTypingTimers: new Map(),
       };
@@ -425,13 +452,15 @@ export function createWsHandlers(deps: WsHandlerDeps) {
         // Only ping authenticated connections; pre-auth liveness is the
         // auth-timeout's job.
         if (state.authenticated) send(ws, { type: "ping", data: {} });
+        maybeRevalidateRemoteKey(ws, state);
       }, timings.pingIntervalMs);
     },
 
     /** On every inbound frame: parse the envelope and dispatch by phase. */
     onMessage(evt: { data: unknown }, ws: WsContext): void {
       const state = stateBySocket.get(keyOf(ws));
-      if (!state) return;
+      // A connection being closed for revoked credentials processes nothing more.
+      if (!state || state.terminated) return;
       state.lastSeen = Date.now();
 
       // --- Parse the envelope (open-world) -----------------------------------
@@ -538,6 +567,61 @@ export function createWsHandlers(deps: WsHandlerDeps) {
       stateBySocket.delete(key);
     },
   };
+
+  // -------------------------------------------------------------------------
+  // Credential revocation (#15; close code pending OFSCP Spec PR 2)
+  // -------------------------------------------------------------------------
+
+  /**
+   * End an authenticated session because its credentials were revoked: stop
+   * processing its commands, drop it from the hub and presence fan-out at once,
+   * send an `error` (`unauthorized`, uncorrelated) and close with `code`
+   * (`4003`, see `provider/access-revocation.ts`). The regular `onClose`
+   * teardown still runs afterwards. Idempotent.
+   */
+  function terminate(ws: WsContext, state: ConnState, code: number, reason: string): void {
+    if (state.terminated) return;
+    state.terminated = true;
+    const hubConn = state.hubConn;
+    if (hubConn) {
+      presenceRegistry.removeConnection(hubConn);
+      hub.remove(hubConn);
+    }
+    send(ws, errorEvent("unauthorized", reason, 401));
+    ws.close(code, reason);
+  }
+
+  /**
+   * §4.6/§4.7.1 for direct-WS (§8.5): a REMOTE actor's key is revoked at their
+   * home provider, which cannot tell us. Every
+   * {@link WsTimings.remoteKeyRevalidateMs} re-resolve it through the user-keys
+   * cache — honouring `cache_until`, so the revocation is seen within the
+   * cache window — and end the session (`4003`) if the key is gone or now has a
+   * different public key. An unreachable home provider does not end it: the
+   * cache falls back to the last good document.
+   */
+  function maybeRevalidateRemoteKey(ws: WsContext, state: ConnState): void {
+    const { actor, keyId, remotePublicKey } = state;
+    if (!state.authenticated || state.terminated || state.keyCheckInFlight) return;
+    if (actor === undefined || keyId === undefined || remotePublicKey === undefined) return;
+    if (Date.now() - state.lastKeyCheck < timings.remoteKeyRevalidateMs) return;
+    state.keyCheckInFlight = true;
+    void userKeysCache
+      .getActorKey(actor, keyId)
+      .then((key) => {
+        state.lastKeyCheck = Date.now();
+        if (key == null || key.publicKey !== remotePublicKey) {
+          terminate(ws, state, WS_CLOSE_CREDENTIALS_REVOKED, "device key revoked");
+        }
+      })
+      .catch(() => {
+        // Transient failure: keep the session, try again next interval.
+        state.lastKeyCheck = Date.now();
+      })
+      .finally(() => {
+        state.keyCheckInFlight = false;
+      });
+  }
 
   // -------------------------------------------------------------------------
   // Command handlers
@@ -654,15 +738,16 @@ export function createWsHandlers(deps: WsHandlerDeps) {
       // verify) force one keys-endpoint re-fetch and retry, mirroring the HTTP
       // signature path so rotation/revocation is picked up promptly.
       const cached = await userKeysCache.getActorKey(actor, keyId);
-      let resolved = cached != null && verifyWith(cached.publicKey);
+      let resolved = cached != null && verifyWith(cached.publicKey) ? cached : null;
       if (!resolved) {
         const fresh = await userKeysCache.getActorKey(actor, keyId, { forceRefresh: true });
-        resolved = fresh != null && verifyWith(fresh.publicKey);
+        resolved = fresh != null && verifyWith(fresh.publicKey) ? fresh : null;
       }
       if (!resolved) {
         fail("no active remote device key matches actor/keyId, or invalid signature");
         return;
       }
+      state.remotePublicKey = resolved.publicKey;
     }
 
     // A late frame may have raced the async key resolution and already closed /
@@ -679,6 +764,7 @@ export function createWsHandlers(deps: WsHandlerDeps) {
     // user of `actorDomain`, never of this provider (see ConnState.localHandle).
     if (actorDomain === authority) state.localHandle = handle;
     state.keyId = keyId;
+    state.lastKeyCheck = Date.now();
     if (state.authTimer) {
       clearTimeout(state.authTimer);
       state.authTimer = undefined;
@@ -686,7 +772,15 @@ export function createWsHandlers(deps: WsHandlerDeps) {
     // Store the STABLE socket (`ws.raw`) for cross-event fan-out, not the
     // per-event WSContext.
     const socket: HubSocket = rawSocket(ws) ?? ws;
-    const hubConn: HubConnection = { socket, actor, subscriptions: new Set() };
+    const hubConn: HubConnection = {
+      socket,
+      actor,
+      subscriptions: new Set(),
+      keyId,
+      ...(state.localHandle !== undefined ? { localHandle: state.localHandle } : {}),
+      // Lets the hub end this session when its credentials are revoked (#15).
+      terminate: (code, reason) => terminate(ws, state, code, reason),
+    };
     state.hubConn = hubConn;
     // Whether the actor had NO live connection before this one (→ this auth flips
     // them online). Checked BEFORE `hub.add` so the prior count excludes us.

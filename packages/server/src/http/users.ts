@@ -36,6 +36,7 @@ import {
 import { type Context, Hono } from "hono";
 import { z } from "zod";
 
+import { terminateHandleSessions } from "../provider/access-revocation.ts";
 import { isProviderAdmin } from "../provider/admin.ts";
 import { claimGuestAccount } from "../provider/claim.ts";
 import { buildUserProfile, getUserRow, updateUserProfile } from "../provider/guests.ts";
@@ -186,11 +187,17 @@ export function createMeUserRouter() {
       });
     }
 
-    const result = claimGuestAccount(db, config, requireLocalHandle(c), {
+    const guestHandle = requireLocalHandle(c);
+    const result = claimGuestAccount(db, config, guestHandle, {
       newHandle: parsed.data.handle,
       password: parsed.data.password,
       ...(parsed.data.displayName !== undefined ? { displayName: parsed.data.displayName } : {}),
     });
+
+    // Sockets authenticated as the guest actor now name an identity that no
+    // longer exists; close them (4003) so the client re-authenticates as the
+    // new actor (the web client reloads after a claim anyway).
+    terminateHandleSessions(c.var.hub, guestHandle, "account claimed");
 
     const profile = buildUserProfile(db, canonicalAuthority(config.domain), result.handle);
     if (!profile) throw AppError.notFound({ detail: "no such user" });
@@ -223,10 +230,13 @@ export function createMeUserRouter() {
       });
     }
 
-    const result = mergeGuestIntoAccount(db, config, requireLocalHandle(c), {
+    const guestHandle = requireLocalHandle(c);
+    const result = mergeGuestIntoAccount(db, config, guestHandle, {
       targetHandle: parsed.data.handle,
       password: parsed.data.password,
     });
+    // The guest account is deleted: end its sockets (4003), as for a claim.
+    terminateHandleSessions(c.var.hub, guestHandle, "account merged");
 
     const profile = buildUserProfile(db, canonicalAuthority(config.domain), result.handle);
     if (!profile) throw AppError.notFound({ detail: "no such user" });

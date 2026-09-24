@@ -216,6 +216,52 @@ describe("OfscpWsClient subscriptions + dispatch (§7.1)", () => {
   });
 });
 
+describe("OfscpWsClient loss of access (#15)", () => {
+  test("an unprompted `unsubscribed` (access_revoked) forgets the channel; an ack does not", async () => {
+    const b = boot("ws-revoked");
+    const alice = await registerUser(b, "alice");
+    const channelId = await makePublicChannel(b, alice);
+    const client = wsClientFor(b, alice);
+    await client.connect();
+    const subscribed = new Promise<void>((resolve) => client.on("subscribed", () => resolve()));
+    client.subscribe([channelId]);
+    await subscribed;
+
+    const notice = new Promise<unknown>((resolve) =>
+      client.on("unsubscribed", (e) => resolve(e.data)),
+    );
+    const conn = b.hub.subscribersOf(channelId)[0];
+    if (!conn) throw new Error("expected a live subscriber");
+    b.hub.revoke(conn, [channelId]);
+    expect(await notice).toEqual({ channels: [channelId], reason: "access_revoked" });
+    expect(client.hasSubscription(channelId)).toBe(false);
+    client.close();
+  });
+
+  test("close 4003 (credentials revoked) stops auto-reconnect", async () => {
+    const b = boot("ws-4003");
+    const alice = await registerUser(b, "alice");
+    const client = new OfscpWsClient({
+      host: DOMAIN,
+      url: b.wsUrl,
+      autoReconnect: true,
+      backoff: { initial: 10, max: 10 },
+      ...alice,
+    });
+    await client.connect();
+    const closed = new Promise<void>((resolve) =>
+      client.onState((s) => {
+        if (s === "closed") resolve();
+      }),
+    );
+    b.hub.terminateSessions({ localHandle: "alice", keyId: alice.keyId }, 4003, "revoked");
+    await closed;
+    await Bun.sleep(50);
+    expect(client.state).toBe("closed");
+    client.close();
+  });
+});
+
 describe("OfscpWsRegistry (one client per host)", () => {
   test("returns the same client for a host and a fresh one per host", async () => {
     const b = boot("ws-registry");

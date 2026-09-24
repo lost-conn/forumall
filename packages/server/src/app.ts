@@ -36,6 +36,7 @@ import { createStaticHandler } from "./http/static.ts";
 import type { AppBindings } from "./http/types.ts";
 import { createUserKeysRouter } from "./http/user-keys.ts";
 import { type WsTimings, createWsHandlers } from "./http/ws.ts";
+import { channelDeliveryGate } from "./provider/access-revocation.ts";
 import { RemoteDiscoveryCache } from "./provider/federation/discovery-cache.ts";
 import {
   type FederationFetch,
@@ -84,6 +85,9 @@ export type AppWithWebSocket = Hono<AppBindings> & {
 export function createApp(config: Config, deps: AppDeps): AppWithWebSocket {
   const app = new Hono<AppBindings>();
   const hub = deps.hub ?? new Hub();
+  // Defence in depth for loss of access (#15): re-check non-public channel
+  // readability at delivery time with the same rule `subscribe` uses.
+  hub.setDeliveryGate(channelDeliveryGate(deps.db));
   const presenceRegistry = deps.presenceRegistry ?? new PresenceRegistry();
   // Default federation transport: production-https unless the operator opted into
   // the insecure-localhost rewrite (§ dev/self-host/testing). An explicitly

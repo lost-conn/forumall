@@ -51,6 +51,9 @@ export interface OfscpWsConfig {
   autoReconnect?: boolean;
 }
 
+/** Server close code: this connection's credentials were revoked (pending OFSCP Spec PR 2). */
+export const WS_CLOSE_CREDENTIALS_REVOKED = 4003;
+
 /** A subscription as the client remembers it (so it survives reconnects). */
 interface SubscriptionEntry {
   /** Last cursor seen on this channel; replayed as `since` on (re)subscribe. */
@@ -180,7 +183,7 @@ export class OfscpWsClient {
       // The server sends `auth.challenge` first; we reply in onMessage.
     });
     ws.addEventListener("message", (e: MessageEvent) => this.onMessage(e));
-    ws.addEventListener("close", () => this.onClose());
+    ws.addEventListener("close", (e: CloseEvent) => this.onClose(e.code));
     ws.addEventListener("error", () => {
       // Surface as a close; the close handler drives reconnect.
     });
@@ -208,6 +211,18 @@ export class OfscpWsClient {
         this.sendRaw({ id: nextFrameId("pong"), type: "pong", correlationId: frame.id, data: {} });
         return;
       case "pong":
+        return;
+      case "unsubscribed":
+        // An UNPROMPTED `unsubscribed` (no correlationId) is the server ending
+        // subscriptions we lost access to (`reason: "access_revoked"`, pending
+        // OFSCP Spec PR 2). Forget them so a reconnect doesn't re-subscribe.
+        if (frame.correlationId === undefined) {
+          const channels = (frame.data as { channels?: unknown } | undefined)?.channels;
+          if (Array.isArray(channels)) {
+            for (const c of channels) if (typeof c === "string") this.subscriptions.delete(c);
+          }
+        }
+        this.dispatch(frame);
         return;
       default:
         this.advanceCursor(frame);
@@ -240,13 +255,15 @@ export class OfscpWsClient {
     for (const w of this.authWaiters.splice(0)) w.resolve();
   }
 
-  private onClose(): void {
+  private onClose(code?: number): void {
     this.ws = null;
     // Reject any pending auth waiters for this connection.
     for (const w of this.authWaiters.splice(0)) {
       w.reject(new Error("connection closed before authenticated"));
     }
-    if (this.intentionalClose || !this.autoReconnect) {
+    // 4003: the device key this connection authenticated with was revoked.
+    // Retrying with the same credentials cannot succeed, so stop here.
+    if (this.intentionalClose || !this.autoReconnect || code === WS_CLOSE_CREDENTIALS_REVOKED) {
       this.setState("closed");
       return;
     }
@@ -335,6 +352,11 @@ export class OfscpWsClient {
   /** Client-initiated ping (the server replies `pong`). */
   ping(): void {
     this.sendRaw({ id: nextFrameId("ping"), type: "ping", ts: rfc3339Timestamp(), data: {} });
+  }
+
+  /** Whether `channelId` is in the remembered subscription set (re-issued on reconnect). */
+  hasSubscription(channelId: string): boolean {
+    return this.subscriptions.has(channelId);
   }
 
   /** The current resume cursor for a channel, if any. */

@@ -22,11 +22,26 @@
  * {@link send} is the one place that stamps the envelope `ts` (RFC 3339) and
  * serializes to JSON, so publishers pass a partial event (`type`/`data`/…) and
  * never worry about wire framing. Publishers only fan out — they do NOT
- * re-check authorization; that was enforced at subscribe-time (§7.1).
+ * re-check authorization themselves.
  *
- * The hub is transport-only: it holds no DB handle and makes no authz
- * decisions. It is created once in `app.ts` and handed to the WS handler (and,
- * later, to message/reaction/etc. handlers via the app context).
+ * ## Loss of access (reconciliation #15; pending OFSCP Spec PR 2)
+ * Authorization is enforced at subscribe-time (§7.1), but access can be lost
+ * afterwards (kick/leave, role or `view` change, tier change, channel/group
+ * deletion, device-key revocation). The hub supplies the mechanics to end
+ * delivery; the *decisions* live in `provider/access-revocation.ts`:
+ *  - {@link Hub.revoke} drops subscriptions and sends the connection an
+ *    **unprompted** `unsubscribed { channels, reason: "access_revoked" }` (no
+ *    `correlationId`) — the event Spec PR 2 proposes to standardise;
+ *  - {@link Hub.terminateSessions} force-closes every connection authenticated
+ *    with a given local device key / handle (close `4003`);
+ *  - an optional {@link ChannelDeliveryGate} (installed by `app.ts`) re-checks
+ *    readability of non-public channels at delivery time, as defence in depth
+ *    for any mutation path that forgot to revalidate. A subscriber that fails the
+ *    gate gets no frame and has the subscription revoked (with the notice).
+ *
+ * The hub itself holds no DB handle: the gate is an injected function. It is
+ * created once in `app.ts` and handed to the WS handler (and, later, to
+ * message/reaction/etc. handlers via the app context).
  */
 import { rfc3339Timestamp } from "@forumall/shared";
 
@@ -57,6 +72,23 @@ export interface OutboundEvent {
   data?: unknown;
 }
 
+/**
+ * `reason` carried by an unprompted `unsubscribed` when the server ends a
+ * subscription because the actor can no longer read the channel. Not yet in
+ * OFSCP v0.1 — proposed by the Forumall/spec reconciliation's Spec PR 2 (#15).
+ * The v0.1 `unsubscribed` schema is open (`additionalProperties: true`), so the
+ * extra field is wire-compatible today.
+ */
+export const ACCESS_REVOKED_REASON = "access_revoked";
+
+/**
+ * Delivery-time readability check for one channel (see {@link Hub.setDeliveryGate}).
+ * Called once per `publishToChannel`; returns `null` when every subscriber may
+ * receive the channel's events (e.g. a public channel — nothing to check), or a
+ * per-actor predicate that answers "may `actor` still read this channel?".
+ */
+export type ChannelDeliveryGate = (channelId: string) => ((actor: string) => boolean) | null;
+
 /** `evt_` id prefix for server-originated frames (§7.1 examples). */
 const EVENT_ID_PREFIX = "evt_";
 
@@ -77,6 +109,28 @@ export interface HubConnection {
   readonly actor: string;
   /** Channel ids this connection is currently subscribed to. */
   readonly subscriptions: Set<string>;
+  /** Device key id that authenticated this connection (§7.1). */
+  readonly keyId?: string;
+  /**
+   * The actor's handle in THIS provider's namespace — set only for a local
+   * actor (a remote actor's bare handle belongs to its home provider). Used to
+   * match connections when a local device key is revoked.
+   */
+  readonly localHandle?: string;
+  /**
+   * Force-close this connection with an application close code (e.g. `4003`
+   * when its credentials are revoked). Supplied by the WS handler, which also
+   * stops processing the connection's further commands. Absent on test fakes.
+   */
+  readonly terminate?: (code: number, reason: string) => void;
+}
+
+/** Selects the connections {@link Hub.terminateSessions} closes. */
+export interface SessionMatch {
+  /** Local handle the connection authenticated as. */
+  readonly localHandle: string;
+  /** If set, only connections authenticated with this device key id. */
+  readonly keyId?: string;
 }
 
 /**
@@ -94,6 +148,17 @@ export class Hub {
   private readonly byChannel = new Map<string, Set<HubConnection>>();
   /** Reverse index: actor → that actor's connections (multiple devices). */
   private readonly byActor = new Map<string, Set<HubConnection>>();
+  /** Optional delivery-time readability check (see {@link setDeliveryGate}). */
+  private gate: ChannelDeliveryGate | null = null;
+
+  /**
+   * Install the delivery-time readability check applied by
+   * {@link publishToChannel}. `app.ts` wires one backed by the same
+   * `canViewChannel` rule used at subscribe time.
+   */
+  setDeliveryGate(gate: ChannelDeliveryGate | null): void {
+    this.gate = gate;
+  }
 
   /**
    * Register an authenticated connection. Call once, right after `authenticate`
@@ -152,7 +217,63 @@ export class Hub {
     const subs = this.byChannel.get(channelId);
     if (!subs) return;
     const frame = this.frame(event);
-    for (const conn of subs) this.write(conn.socket, frame);
+    const mayRead = this.gate?.(channelId) ?? null;
+    if (!mayRead) {
+      for (const conn of subs) this.write(conn.socket, frame);
+      return;
+    }
+    // Defence in depth: re-check readability per subscriber (memoised per actor
+    // for this one event). A subscriber that lost access gets no frame and its
+    // subscription is revoked — after the loop, since revoking mutates `subs`.
+    const verdicts = new Map<string, boolean>();
+    const denied: HubConnection[] = [];
+    for (const conn of subs) {
+      let ok = verdicts.get(conn.actor);
+      if (ok === undefined) {
+        ok = mayRead(conn.actor);
+        verdicts.set(conn.actor, ok);
+      }
+      if (ok) this.write(conn.socket, frame);
+      else denied.push(conn);
+    }
+    for (const conn of denied) this.revoke(conn, [channelId]);
+  }
+
+  /** Snapshot of the connections currently subscribed to `channelId`. */
+  subscribersOf(channelId: string): HubConnection[] {
+    return [...(this.byChannel.get(channelId) ?? [])];
+  }
+
+  /**
+   * Server-initiated end of `channelIds` for one connection because its actor
+   * lost read access: drop the subscriptions and send an **unprompted**
+   * `unsubscribed { channels, reason }` (no `correlationId`) listing exactly the
+   * channels that were actually subscribed. No-op if none were.
+   */
+  revoke(conn: HubConnection, channelIds: readonly string[], reason = ACCESS_REVOKED_REASON): void {
+    const dropped = channelIds.filter((id) => conn.subscriptions.has(id));
+    if (dropped.length === 0) return;
+    this.unsubscribe(conn, dropped);
+    this.send(conn.socket, { type: "unsubscribed", data: { channels: dropped, reason } });
+  }
+
+  /**
+   * Force-close every connection authenticated as the local `match.localHandle`
+   * (optionally only with device key `match.keyId`): each is removed from the
+   * hub first — so no further fan-out reaches it — and then closed via its
+   * {@link HubConnection.terminate} with `code`. Returns how many were closed.
+   */
+  terminateSessions(match: SessionMatch, code: number, reason: string): number {
+    const victims = [...this.connections].filter(
+      (conn) =>
+        conn.localHandle === match.localHandle &&
+        (match.keyId === undefined || conn.keyId === match.keyId),
+    );
+    for (const conn of victims) {
+      this.remove(conn);
+      conn.terminate?.(code, reason);
+    }
+    return victims.length;
   }
 
   /**

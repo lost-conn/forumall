@@ -28,6 +28,7 @@
 import { type Context, Hono } from "hono";
 
 import type { Member } from "@forumall/shared";
+import { revalidateGroupSubscriptions } from "../provider/access-revocation.ts";
 import { listChannelRows } from "../provider/channels.ts";
 import { getGroupRow, rowToGroup } from "../provider/groups.ts";
 import {
@@ -150,7 +151,7 @@ export function createMembershipRouter() {
 
   // -- POST /api/groups/{groupId}/leave (§5.7, signed) ---------------------
   router.post("/leave", signed, (c) => {
-    const { db } = c.var;
+    const { db, hub } = c.var;
     const actor = c.var.actor;
     if (!actor) throw AppError.unauthorized(); // unreachable
     const groupId = requireParam(c, "groupId");
@@ -168,6 +169,8 @@ export function createMembershipRouter() {
     }
 
     removeMember(db, groupId, actor.actor);
+    // End the leaver's live subscriptions to channels they can no longer read.
+    revalidateGroupSubscriptions(db, hub, groupId);
     return c.body(null, 204);
   });
 
@@ -201,7 +204,7 @@ export function createMembershipRouter() {
 
   // -- PATCH /api/groups/{groupId}/members/{userRef} (§5.7, signed) ---------
   router.patch("/members/:userRef", signed, async (c) => {
-    const { db } = c.var;
+    const { db, hub } = c.var;
     const actor = c.var.actor;
     if (!actor) throw AppError.unauthorized(); // unreachable
     const groupId = requireParam(c, "groupId");
@@ -238,7 +241,10 @@ export function createMembershipRouter() {
         // Target is already the owner — nothing to transfer.
         return c.json(rowToMember(targetRow), 200);
       }
-      return c.json(transferOwnership(db, groupId, target), 200);
+      const newOwner = transferOwnership(db, groupId, target);
+      // The previous owner is demoted to admin: re-check `view`-restricted channels.
+      revalidateGroupSubscriptions(db, hub, groupId);
+      return c.json(newOwner, 200);
     }
 
     // Demoting the current owner via a non-`owner` role change would leave the
@@ -274,6 +280,8 @@ export function createMembershipRouter() {
     }
 
     const updated = setMemberRole(db, groupId, target, role);
+    // A role change can lose a channel's `permissions.view`: end those live subscriptions.
+    revalidateGroupSubscriptions(db, hub, groupId);
     return c.json(updated, 200);
   });
 
@@ -350,7 +358,7 @@ export function createMembershipRouter() {
 
   // -- DELETE /api/groups/{groupId}/members/{userRef} (§5.7, signed) --------
   router.delete("/members/:userRef", signed, (c) => {
-    const { db } = c.var;
+    const { db, hub } = c.var;
     const actor = c.var.actor;
     if (!actor) throw AppError.unauthorized(); // unreachable
     const groupId = requireParam(c, "groupId");
@@ -382,6 +390,8 @@ export function createMembershipRouter() {
     }
 
     removeMember(db, groupId, target);
+    // End the removed member's live subscriptions (local or remote, §8.5).
+    revalidateGroupSubscriptions(db, hub, groupId);
     return c.body(null, 204);
   });
 
