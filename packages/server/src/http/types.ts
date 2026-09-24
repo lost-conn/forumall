@@ -10,6 +10,7 @@ import type { Db } from "../db/index.ts";
 import type { RemoteDiscoveryCache } from "../provider/federation/discovery-cache.ts";
 import type { FederationFetch } from "../provider/federation/http.ts";
 import type { RemoteUserKeysCache } from "../provider/federation/user-keys-cache.ts";
+import type { NonceStore } from "../provider/nonce-store.ts";
 import type { PresenceRegistry } from "../provider/presence.ts";
 import type { Hub } from "../provider/ws-hub.ts";
 
@@ -111,6 +112,14 @@ export interface AppVariables {
    * verify miss for key rotation/revocation).
    */
   readonly userKeysCache: RemoteUserKeysCache;
+  /**
+   * Provider-wide replay/nonce store (§4.5 step 4, §8 replay prevention; #21).
+   * ONE instance for the whole app, created once in `createApp` and shared by
+   * every signature middleware instance AND the WS handshake, so a `(key_id,
+   * nonce)` pair burned on one route/protocol is known to all of them. See the
+   * module doc on `provider/nonce-store.ts`.
+   */
+  readonly nonceStore: NonceStore;
   /** Set by `requireSignature` on success; undefined on unauthenticated routes. */
   actor?: AuthenticatedActor;
   /**

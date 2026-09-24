@@ -479,3 +479,127 @@ describe("requireProviderSignature (§8.1)", () => {
     expect(res.status).toBe(401);
   });
 });
+
+describe("requireSignature — provider-wide nonce store (#21)", () => {
+  // Before #21, `requireSignature()` minted its OWN `InMemoryNonceStore` at
+  // construction time, so each of the ~30 call sites across the router files
+  // (e.g. `auth.ts`'s device-keys router and `notification-settings.ts`'s own
+  // router) had an independent replay store. A `(key_id, nonce)` pair accepted
+  // on one route was therefore unknown to another — a captured signed request
+  // could be replayed against a different route. This exercises TWO genuinely
+  // separate `requireSignature()` instances, from two different router
+  // modules, each independently signed (and individually valid) for its own
+  // path: the second must now be rejected because both resolve the SAME
+  // `c.var.nonceStore`.
+  test("a (keyId, nonce) accepted on one route is rejected on a completely different route", async () => {
+    const { app } = freshApp("shared-nonce-cross-route");
+    const signer = await registerUserWithKey(app, "alice");
+    const nonce = "cross-route-nonce-AAAAAAAAAAAAAA";
+
+    // Route A: GET /api/auth/device-keys — guarded by auth.ts's own
+    // `requireSignature()` instance.
+    const routeA = "/api/auth/device-keys";
+    const signedA = sign({
+      actor: signer.actor,
+      keyId: signer.keyId,
+      privateKey: signer.privateKey,
+      authority: DOMAIN,
+      method: "GET",
+      path: routeA,
+      nonce,
+    });
+    const resA = await app.request(routeA, { method: "GET", headers: signedA.headers });
+    expect(resA.status).toBe(200);
+
+    // Route B: GET /api/me/notification-settings — guarded by
+    // notification-settings.ts's OWN, entirely independent `requireSignature()`
+    // instance. This request is signed fresh for THIS route/path and would
+    // verify perfectly on its own; only the shared replay store can catch it.
+    const routeB = "/api/me/notification-settings";
+    const signedB = sign({
+      actor: signer.actor,
+      keyId: signer.keyId,
+      privateKey: signer.privateKey,
+      authority: DOMAIN,
+      method: "GET",
+      path: routeB,
+      nonce,
+    });
+    const resB = await app.request(routeB, { method: "GET", headers: signedB.headers });
+    expect(resB.status).toBe(401);
+    const body = (await resB.json()) as { detail?: string };
+    expect(body.detail).toContain("replayed");
+  });
+
+  // Debug-accessor proof (per the card's fallback ask): the store a fresh
+  // `requireSignature()` instance resolves at request time is the exact same
+  // object `app.__nonceStore` exposes, for ANY route — not a per-instance copy.
+  test("every requireSignature() instance resolves the SAME store object (app.__nonceStore)", async () => {
+    const { app } = freshApp("shared-nonce-debug-accessor");
+    const signer = await registerUserWithKey(app, "alice");
+    const nonce = "debug-accessor-nonce-AAAAAAAAAA";
+    const path = "/api/auth/device-keys";
+    const { headers } = sign({
+      actor: signer.actor,
+      keyId: signer.keyId,
+      privateKey: signer.privateKey,
+      authority: DOMAIN,
+      method: "GET",
+      path,
+      nonce,
+    });
+    const res = await app.request(path, { method: "GET", headers });
+    expect(res.status).toBe(200);
+
+    const { nonceKeyId } = await import("../src/provider/nonce-store.ts");
+    // auth.ts's `requireSignature()` burned the pair into `c.var.nonceStore`;
+    // if that were a private per-instance store (the pre-#21 bug), the app's
+    // single exposed `__nonceStore` would NOT know about it.
+    expect(app.__nonceStore.has(nonceKeyId("actor", signer.keyId), nonce)).toBe(true);
+  });
+
+  // A brand-new `requireSignature()` instance mounted AFTER `createApp` (as a
+  // test/extension route would) still resolves `c.var.nonceStore` — proving the
+  // sharing is structural (read from context per request), not something that
+  // depends on when/where the middleware factory happens to be called.
+  test("a requireSignature() instance created fresh, after createApp, still shares the store", async () => {
+    const { app } = freshApp("shared-nonce-fresh-instance");
+    // Mount the fresh instance BEFORE any request is dispatched: Hono compiles
+    // its router matcher lazily on first dispatch and refuses new routes after.
+    const { requireSignature } = await import("../src/http/signature.ts");
+    app.get("/api/__probe", requireSignature(), (c) => c.json({ ok: true }));
+
+    const signer = await registerUserWithKey(app, "alice");
+    const nonce = "fresh-instance-nonce-AAAAAAAAAA";
+
+    const probe = sign({
+      actor: signer.actor,
+      keyId: signer.keyId,
+      privateKey: signer.privateKey,
+      authority: DOMAIN,
+      method: "GET",
+      path: "/api/__probe",
+      nonce,
+    });
+    const resProbe = await app.request("/api/__probe", { method: "GET", headers: probe.headers });
+    expect(resProbe.status).toBe(200);
+
+    // Replaying the same (keyId, nonce) against the pre-existing device-keys
+    // route (a DIFFERENT `requireSignature()` instance, created inside
+    // `createApp` well before this test's `/api/__probe`) is still rejected.
+    const listReq = sign({
+      actor: signer.actor,
+      keyId: signer.keyId,
+      privateKey: signer.privateKey,
+      authority: DOMAIN,
+      method: "GET",
+      path: "/api/auth/device-keys",
+      nonce,
+    });
+    const resList = await app.request("/api/auth/device-keys", {
+      method: "GET",
+      headers: listReq.headers,
+    });
+    expect(resList.status).toBe(401);
+  });
+});

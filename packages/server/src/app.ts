@@ -43,6 +43,7 @@ import {
   insecureLocalhostFederationFetch,
 } from "./provider/federation/http.ts";
 import { RemoteUserKeysCache } from "./provider/federation/user-keys-cache.ts";
+import { InMemoryNonceStore, type NonceStore } from "./provider/nonce-store.ts";
 import { PresenceRegistry } from "./provider/presence.ts";
 import { Hub } from "./provider/ws-hub.ts";
 
@@ -55,6 +56,12 @@ export interface AppDeps {
   /** Heartbeat / handshake timings (§7.1); tests pass short values. */
   readonly wsTimings?: Partial<WsTimings>;
   /**
+   * Override the WS challenge-nonce generator (test-only; see
+   * {@link WsHandlerDeps.mintChallengeNonce}) — lets a test force a nonce
+   * collision to exercise the provider-wide replay guard (#21) deterministically.
+   */
+  readonly mintChallengeNonce?: () => string;
+  /**
    * Injectable outbound federation fetch (§8). Defaults to the global-`fetch`
    * transport (`https://{domain}/...`). The two-provider test harness injects a
    * fetcher mapping `*.test` domains to localhost ports while preserving the
@@ -65,6 +72,12 @@ export interface AppDeps {
   readonly discoveryCache?: RemoteDiscoveryCache;
   /** Shared remote user-keys cache (§4.6); one is created if not injected. */
   readonly userKeysCache?: RemoteUserKeysCache;
+  /**
+   * Provider-wide replay/nonce store (§4.5 step 4, §8; #21). One is created if
+   * not injected, and shared by EVERY signature middleware instance and the WS
+   * handshake — see the module doc on `provider/nonce-store.ts`.
+   */
+  readonly nonceStore?: NonceStore;
 }
 
 /** A Hono app augmented with the Bun `websocket` handler object it requires. */
@@ -79,6 +92,8 @@ export type AppWithWebSocket = Hono<AppBindings> & {
   readonly __discoveryCache: RemoteDiscoveryCache;
   /** The shared remote user-keys cache (for tests / later wiring). */
   readonly __userKeysCache: RemoteUserKeysCache;
+  /** The shared provider-wide nonce/replay store (for tests / DI; #21). */
+  readonly __nonceStore: NonceStore;
 };
 
 export function createApp(config: Config, deps: AppDeps): AppWithWebSocket {
@@ -98,6 +113,12 @@ export function createApp(config: Config, deps: AppDeps): AppWithWebSocket {
   // The user-keys cache likewise shares the injected federation fetch so remote
   // actor key resolution (§4.6) reaches the same transport (real TLS or peer).
   const userKeysCache = deps.userKeysCache ?? new RemoteUserKeysCache({ federationFetch });
+  // Provider-wide replay/nonce store (§4.5 step 4, §8; #21): ONE instance,
+  // shared by every signature middleware instance (built per-route below via
+  // `requireSignature()`/`optionalSignature()`/`requireProviderSignature()`,
+  // which now default to `c.var.nonceStore` instead of minting their own) and
+  // the WS handshake. See the module doc on `provider/nonce-store.ts`.
+  const nonceStore = deps.nonceStore ?? new InMemoryNonceStore();
 
   const { upgradeWebSocket, websocket } = createBunWebSocket();
 
@@ -111,6 +132,7 @@ export function createApp(config: Config, deps: AppDeps): AppWithWebSocket {
     c.set("federationFetch", federationFetch);
     c.set("discoveryCache", discoveryCache);
     c.set("userKeysCache", userKeysCache);
+    c.set("nonceStore", nonceStore);
     await next();
   });
 
@@ -144,7 +166,14 @@ export function createApp(config: Config, deps: AppDeps): AppWithWebSocket {
     // §10: the `message.create` fan-out fires notification webhook delivery
     // through the same injected federation transport.
     federationFetch,
+    // #21: the same provider-wide replay store the REST signature middleware
+    // uses, so a `(key_id, nonce)` pair burned on a REST request can't be
+    // replayed into a WS handshake and vice versa.
+    nonceStore,
     ...(deps.wsTimings !== undefined ? { timings: deps.wsTimings } : {}),
+    ...(deps.mintChallengeNonce !== undefined
+      ? { mintChallengeNonce: deps.mintChallengeNonce }
+      : {}),
   });
   app.get(
     "/api/ws",
@@ -180,5 +209,6 @@ export function createApp(config: Config, deps: AppDeps): AppWithWebSocket {
     __presenceRegistry: presenceRegistry,
     __discoveryCache: discoveryCache,
     __userKeysCache: userKeysCache,
+    __nonceStore: nonceStore,
   });
 }
