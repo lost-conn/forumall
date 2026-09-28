@@ -5,7 +5,11 @@
  */
 import { describe, expect, test } from "bun:test";
 
-import { DEFAULT_NONCE_RETENTION_MS, InMemoryNonceStore } from "../src/provider/nonce-store.ts";
+import {
+  DEFAULT_NONCE_RETENTION_MS,
+  InMemoryNonceStore,
+  nonceKeyId,
+} from "../src/provider/nonce-store.ts";
 
 describe("InMemoryNonceStore", () => {
   test("remember then has → true; unseen pair → false", () => {
@@ -46,5 +50,22 @@ describe("InMemoryNonceStore", () => {
 
   test("default retention is at least 600s", () => {
     expect(DEFAULT_NONCE_RETENTION_MS).toBeGreaterThanOrEqual(600_000);
+  });
+});
+
+describe("nonceKeyId — actor/provider namespace disambiguation (#21)", () => {
+  test("the same raw key_id string in different namespaces does not collide", () => {
+    const s = new InMemoryNonceStore();
+    s.remember(nonceKeyId("actor", "shared-id"), "n1", DEFAULT_NONCE_RETENTION_MS);
+    expect(s.has(nonceKeyId("actor", "shared-id"), "n1")).toBe(true);
+    // A provider key_id that happens to equal the actor's key_id string is a
+    // DIFFERENT entry — the two namespaces sharing one store (since #21) must
+    // not let one signer kind's burned nonce mask another's.
+    expect(s.has(nonceKeyId("provider", "shared-id"), "n1")).toBe(false);
+  });
+
+  test("is a pure, stable mapping (same inputs → same key)", () => {
+    expect(nonceKeyId("actor", "dk_abc")).toBe(nonceKeyId("actor", "dk_abc"));
+    expect(nonceKeyId("actor", "dk_abc")).not.toBe(nonceKeyId("provider", "dk_abc"));
   });
 });

@@ -17,7 +17,15 @@
  *     before auth closes the connection. No valid `authenticate` within ~10s
  *     closes the connection.
  *  3. `authenticate` is verified with the shared {@link verifyWsAuthenticate}
- *     over the challenge nonce we issued (timestamp skew ±300s). Key resolution
+ *     over the challenge nonce we issued (timestamp skew ±300s). The
+ *     `(key_id, challenge nonce)` pair is checked against — and, once accepted,
+ *     recorded in — the SAME provider-wide replay store the REST signature
+ *     middleware uses (`c.var.nonceStore` / {@link WsHandlerDeps.nonceStore},
+ *     #21), namespaced `"actor"` (see {@link nonceKeyId}: WS only ever
+ *     authenticates a user device key, never a provider identity). This is on
+ *     top of, not instead of, the per-connection `challengeUsed` one-shot check
+ *     below — the shared store additionally catches a `(key_id, nonce)` pair
+ *     already burned by ANOTHER connection or by a REST request. Key resolution
  *     splits on the actor's home domain: a LOCAL actor resolves a device key
  *     locally; a REMOTE actor (§8.5 step 3) resolves its key from its home
  *     provider via the §4.6 user-keys cache (with the §8 connect-time federation
@@ -80,6 +88,11 @@ import {
   tombstoneMessage,
   updateMessageContent,
 } from "../provider/messages.ts";
+import {
+  DEFAULT_NONCE_RETENTION_MS,
+  type NonceStore,
+  nonceKeyId,
+} from "../provider/nonce-store.ts";
 import { deliverNotification, groupMemberActors } from "../provider/notifications.ts";
 import {
   type PresenceRegistry,
@@ -278,8 +291,24 @@ export interface WsHandlerDeps {
    * in-process receiver). Defaults via `app.ts` to the global-`fetch` transport.
    */
   readonly federationFetch: FederationFetch;
+  /**
+   * Provider-wide replay/nonce store (§4.5 step 4, §8; #21) — the SAME instance
+   * `app.ts` hands to every REST `requireSignature()`/`optionalSignature()`
+   * middleware, so a `(key_id, nonce)` pair burned by a REST request or by
+   * another WS connection is rejected here too. See the module header and the
+   * module doc on `provider/nonce-store.ts`.
+   */
+  readonly nonceStore: NonceStore;
   /** Heartbeat/handshake timings; defaults to {@link DEFAULT_WS_TIMINGS}. */
   readonly timings?: Partial<WsTimings>;
+  /**
+   * Override the challenge-nonce generator. Test-only: lets a test force two
+   * connections to receive the SAME challenge nonce, to exercise the
+   * provider-wide replay guard above deterministically (a real ≥128-bit random
+   * collision is not something a test can wait for). Defaults to
+   * {@link mintChallengeNonce}.
+   */
+  readonly mintChallengeNonce?: () => string;
 }
 
 /**
@@ -288,7 +317,8 @@ export interface WsHandlerDeps {
  * straight to the route, while the closure captures `deps` + per-socket state.
  */
 export function createWsHandlers(deps: WsHandlerDeps) {
-  const { config, db, hub, presenceRegistry, userKeysCache, federationFetch } = deps;
+  const { config, db, hub, presenceRegistry, userKeysCache, federationFetch, nonceStore } = deps;
+  const issueChallengeNonce = deps.mintChallengeNonce ?? mintChallengeNonce;
   const timings: WsTimings = { ...DEFAULT_WS_TIMINGS, ...deps.timings };
   const authority = canonicalAuthority(config.domain);
 
@@ -416,7 +446,7 @@ export function createWsHandlers(deps: WsHandlerDeps) {
      * auth-timeout, and start the heartbeat sweep.
      */
     onOpen(_evt: unknown, ws: WsContext): void {
-      const nonce = mintChallengeNonce();
+      const nonce = issueChallengeNonce();
       const now = Date.now();
       const state: ConnState = {
         authenticated: false,
@@ -692,6 +722,22 @@ export function createWsHandlers(deps: WsHandlerDeps) {
       fail("challenge nonce expired");
       return;
     }
+
+    // Provider-wide replay guard (#21): the SAME store the REST signature
+    // middleware uses. `state.challengeUsed` above only catches reuse on THIS
+    // connection object; this additionally catches a `(key_id, nonce)` pair
+    // already burned by another connection (e.g. a colliding/replayed
+    // challenge nonce) or by a REST request. Namespaced "actor" — WS only ever
+    // authenticates a user device key (§4.4), never a provider identity
+    // (§8.1). Burned as soon as we accept the pair for verification, mirroring
+    // the REST §4.5-step-4 "burn before crypto verify" ordering, so a failed
+    // signature still consumes it.
+    const nsKeyId = nonceKeyId("actor", keyId);
+    if (nonceStore.has(nsKeyId, state.challengeNonce)) {
+      fail("challenge nonce already used");
+      return;
+    }
+    nonceStore.remember(nsKeyId, state.challengeNonce, DEFAULT_NONCE_RETENTION_MS);
 
     // Parse the actor identity (§4.5 step 6 split).
     const at = actor.lastIndexOf("@");

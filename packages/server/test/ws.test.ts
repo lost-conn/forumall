@@ -64,7 +64,12 @@ interface Booted {
 const booted: Booted[] = [];
 
 /** Boot the app on an ephemeral port with a real WS server. */
-function boot(name: string, timings = FAST_TIMINGS, env: Record<string, string> = {}): Booted {
+function boot(
+  name: string,
+  timings = FAST_TIMINGS,
+  env: Record<string, string> = {},
+  mintChallengeNonce?: () => string,
+): Booted {
   const base = loadConfig({
     DATA_DIR: tmp,
     DB_PATH: join(tmp, `${name}.sqlite`),
@@ -75,7 +80,11 @@ function boot(name: string, timings = FAST_TIMINGS, env: Record<string, string> 
   const config: Config = Object.freeze({ ...base, argon2: FAST_ARGON2 });
   const db = openDb(config.dbPath);
   migrate(db);
-  const app = createApp(config, { db, wsTimings: timings });
+  const app = createApp(config, {
+    db,
+    wsTimings: timings,
+    ...(mintChallengeNonce !== undefined ? { mintChallengeNonce } : {}),
+  });
   const server = Bun.serve({
     port: 0,
     fetch: app.fetch,
@@ -317,6 +326,43 @@ describe("WS handshake (§7.1 Authentication)", () => {
     // Send nothing; the auth-timeout must close us.
     await client.waitClosed();
     expect(client.closed).toBe(true);
+  });
+
+  // #21: the WS handshake now checks/burns the (key_id, challenge nonce) pair
+  // against the SAME provider-wide replay store the REST signature middleware
+  // uses (`c.var.nonceStore`), in addition to the existing per-connection
+  // `challengeUsed` one-shot flag. A real ≥128-bit random challenge nonce never
+  // collides across connections in practice, so this forces the collision with
+  // an injected deterministic nonce generator (`mintChallengeNonce` override,
+  // test-only) to exercise the shared-store guard specifically — as opposed to
+  // the per-connection check, which a SECOND, distinct connection object does
+  // not share.
+  test("a challenge nonce reused on a different connection is rejected (shared store, not just per-connection)", async () => {
+    const FIXED_NONCE = "fixed-ws-challenge-nonce-AAAAAAAA";
+    const b = boot("ws-nonce-shared", FAST_TIMINGS, {}, () => FIXED_NONCE);
+    const signer = await registerUserWithKey(b, "alice");
+
+    // Connection 1: authenticate over the (fixed) challenge nonce → succeeds
+    // and burns (keyId, FIXED_NONCE) into the shared store.
+    const conn1 = await connectAndChallenge(b);
+    expect(conn1.nonce).toBe(FIXED_NONCE);
+    sendAuthenticate(conn1.client, signer, conn1.nonce);
+    await conn1.client.ofType("authenticated");
+
+    // Connection 2: a BRAND NEW connection (its own `challengeUsed = false`),
+    // issued the SAME challenge nonce by the (mocked) generator. Authenticating
+    // with it must be rejected by the shared store even though this specific
+    // connection never used it before.
+    const conn2 = await connectAndChallenge(b);
+    expect(conn2.nonce).toBe(FIXED_NONCE);
+    sendAuthenticate(conn2.client, signer, conn2.nonce, { id: "cli_auth_reuse" });
+    const err = await conn2.client.ofType("error");
+    expect((err.data as { status: number; message: string }).status).toBe(401);
+    expect((err.data as { message: string }).message).toContain("already used");
+    await conn2.client.waitClosed();
+    expect(conn2.client.closeCode).toBe(4001);
+
+    conn1.client.close();
   });
 });
 

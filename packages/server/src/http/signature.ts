@@ -62,8 +62,8 @@ import { isProviderAllowed } from "../provider/federation/policy.ts";
 import type { RemoteUserKeysCache } from "../provider/federation/user-keys-cache.ts";
 import {
   DEFAULT_NONCE_RETENTION_MS,
-  InMemoryNonceStore,
   type NonceStore,
+  nonceKeyId,
 } from "../provider/nonce-store.ts";
 import { getProviderSigningKeyById } from "../provider/signing-key.ts";
 import { AppError } from "./errors.ts";
@@ -78,7 +78,11 @@ export type { SignatureMode } from "./types.ts";
 export interface RequireSignatureOptions {
   /** `"actor"` (user device key, default) or `"provider"` (provider key). */
   mode?: SignatureMode;
-  /** Replay store; defaults to a shared per-app in-memory store. */
+  /**
+   * Replay store override (tests only). Defaults to the single provider-wide
+   * store on `c.var.nonceStore` (#21) — do not pass this in application code,
+   * or the route silently opts back out of the shared replay protection.
+   */
   nonceStore?: NonceStore;
   /** Allowed ±skew for `X-OFSCP-Timestamp`, seconds. Default 300 (§4.5 step 3). */
   skewSeconds?: number;
@@ -302,7 +306,11 @@ function rawTarget(c: Context): { path: string; query: string } {
  * router.get("/device-keys", sig, (c) => { const { actor } = c.var; ... });
  * router.delete("/device-keys/:keyId", sig, (c) => { ... });
  * ```
- * Reusing a single instance shares the nonce store across the routes it guards.
+ * Every instance — across every router — shares the ONE provider-wide replay
+ * store on `c.var.nonceStore` (#21), resolved per-request rather than captured
+ * at construction time, so a `(key_id, nonce)` pair burned on any route (or the
+ * WS handshake) is rejected on all of them. Pass `nonceStore` in
+ * {@link RequireSignatureOptions} only to override it for a test.
  */
 export function requireSignature(
   opts: RequireSignatureOptions = {},
@@ -310,8 +318,6 @@ export function requireSignature(
   const mode: SignatureMode = opts.mode ?? "actor";
   const skewSeconds = opts.skewSeconds ?? DEFAULT_TIMESTAMP_SKEW_SECONDS;
   const nonceRetentionMs = opts.nonceRetentionMs ?? DEFAULT_NONCE_RETENTION_MS;
-  // One store per middleware instance unless the caller injects a shared one.
-  const nonceStore = opts.nonceStore ?? new InMemoryNonceStore();
   const identityHeader = mode === "provider" ? HEADER.PROVIDER : HEADER.ACTOR;
 
   return async (c, next) => {
@@ -319,7 +325,9 @@ export function requireSignature(
       mode,
       skewSeconds,
       nonceRetentionMs,
-      nonceStore,
+      // Resolved per-request (not captured at construction time) so every
+      // instance of this middleware, app-wide, shares one store (#21).
+      nonceStore: opts.nonceStore ?? c.var.nonceStore,
       identityHeader,
     });
     await next();
@@ -380,10 +388,14 @@ async function verifyAndSetActor(c: Context, vctx: VerifyContext): Promise<void>
     }
 
     // --- §4.5 step 4: (Key-ID, Nonce) not already seen → 401; remember it ----
-    if (nonceStore.has(keyId, nonce)) {
+    // Namespaced by signer kind (#21): the store is now shared provider-wide
+    // across actor- and provider-mode requests (and the WS handshake), so the
+    // two independently-chosen key_id spaces must not be able to collide.
+    const nsKeyId = nonceKeyId(mode, keyId);
+    if (nonceStore.has(nsKeyId, nonce)) {
       throw AppError.unauthorized({ detail: "replayed (key id, nonce): nonce already used" });
     }
-    nonceStore.remember(keyId, nonce, nonceRetentionMs);
+    nonceStore.remember(nsKeyId, nonce, nonceRetentionMs);
 
     // --- §4.5 step 5: recompute SHA-256 of the raw body → 400 ---------------
     // Read the body once as bytes; Hono caches it, so a downstream c.req.json()
@@ -470,8 +482,8 @@ async function verifyAndSetActor(c: Context, vctx: VerifyContext): Promise<void>
  *    present-but-invalid signature still fails (401/400), so a forged identity
  *    can never slip through.
  *
- * Shares the verification core and (per-instance) nonce store with
- * {@link requireSignature}.
+ * Shares the verification core with {@link requireSignature}, including the
+ * ONE provider-wide nonce store on `c.var.nonceStore` (#21).
  */
 export function optionalSignature(
   opts: RequireSignatureOptions = {},
@@ -479,7 +491,6 @@ export function optionalSignature(
   const mode: SignatureMode = opts.mode ?? "actor";
   const skewSeconds = opts.skewSeconds ?? DEFAULT_TIMESTAMP_SKEW_SECONDS;
   const nonceRetentionMs = opts.nonceRetentionMs ?? DEFAULT_NONCE_RETENTION_MS;
-  const nonceStore = opts.nonceStore ?? new InMemoryNonceStore();
   const identityHeader = mode === "provider" ? HEADER.PROVIDER : HEADER.ACTOR;
 
   // A request is "signing" if it carries ANY of the X-OFSCP signing headers; if
@@ -501,7 +512,7 @@ export function optionalSignature(
         mode,
         skewSeconds,
         nonceRetentionMs,
-        nonceStore,
+        nonceStore: opts.nonceStore ?? c.var.nonceStore,
         identityHeader,
       });
     }
@@ -521,18 +532,20 @@ export function optionalSignature(
  * `X-OFSCP-Provider` present → provider (§8.1); otherwise the user path (§4.4) —
  * including when NO identity header is present, so a headerless request still
  * fails with the exact §4.5 step-1 401. The full ordered §4.5 pipeline runs
- * either way (one shared nonce store), and the chosen mode is exposed on
- * `c.var.signatureMode` so the handler can tell whose authority it is acting on:
- * a user-signed request may only act as ITSELF, while a provider-signed one
- * names its user out-of-band (a provider-signed request has no `X-OFSCP-Actor`)
- * and must be trusted only for that provider's own users.
+ * either way, sharing the ONE provider-wide nonce store (#21) via
+ * `c.var.nonceStore` — namespaced per mode (see {@link nonceKeyId}) so an
+ * actor-mode and a provider-mode request on this same route still can't
+ * collide with each other. The chosen mode is exposed on `c.var.signatureMode`
+ * so the handler can tell whose authority it is acting on: a user-signed
+ * request may only act as ITSELF, while a provider-signed one names its user
+ * out-of-band (a provider-signed request has no `X-OFSCP-Actor`) and must be
+ * trusted only for that provider's own users.
  */
 export function requireActorOrProviderSignature(
   opts: Omit<RequireSignatureOptions, "mode"> = {},
 ): MiddlewareHandler<AppBindings> {
   const skewSeconds = opts.skewSeconds ?? DEFAULT_TIMESTAMP_SKEW_SECONDS;
   const nonceRetentionMs = opts.nonceRetentionMs ?? DEFAULT_NONCE_RETENTION_MS;
-  const nonceStore = opts.nonceStore ?? new InMemoryNonceStore();
 
   return async (c, next) => {
     const mode: SignatureMode = c.req.header(HEADER.PROVIDER) !== undefined ? "provider" : "actor";
@@ -540,7 +553,7 @@ export function requireActorOrProviderSignature(
       mode,
       skewSeconds,
       nonceRetentionMs,
-      nonceStore,
+      nonceStore: opts.nonceStore ?? c.var.nonceStore,
       identityHeader: mode === "provider" ? HEADER.PROVIDER : HEADER.ACTOR,
     });
     await next();
