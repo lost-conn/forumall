@@ -19,6 +19,7 @@ import { type AppWithWebSocket, createApp } from "../../src/app.ts";
 import { type Argon2Params, type Config, loadConfig } from "../../src/config.ts";
 import { openDb } from "../../src/db/index.ts";
 import { migrate } from "../../src/db/migrate.ts";
+import type { WsTimings } from "../../src/http/ws.ts";
 import type { RemoteDiscoveryCache } from "../../src/provider/federation/discovery-cache.ts";
 import type { FederationFetch } from "../../src/provider/federation/http.ts";
 import type { RemoteUserKeysCache } from "../../src/provider/federation/user-keys-cache.ts";
@@ -83,6 +84,8 @@ export interface StartFederationOptions {
   readonly envA?: Record<string, string>;
   /** Extra env vars merged into provider B's config. */
   readonly envB?: Record<string, string>;
+  /** WS heartbeat/handshake timing overrides applied to both providers. */
+  readonly wsTimings?: Partial<WsTimings>;
 }
 
 /**
@@ -108,7 +111,11 @@ export function startFederation(dir: string, opts: StartFederationOptions = {}):
     const config: Config = Object.freeze({ ...base, argon2: FAST_ARGON2 });
     const db = openDb(config.dbPath);
     migrate(db);
-    const app = createApp(config, { db, federationFetch });
+    const app = createApp(config, {
+      db,
+      federationFetch,
+      ...(opts.wsTimings !== undefined ? { wsTimings: opts.wsTimings } : {}),
+    });
     const server = Bun.serve({ port: 0, fetch: app.fetch, websocket: app.__websocket });
     ports.set(domain, server.port);
     return {

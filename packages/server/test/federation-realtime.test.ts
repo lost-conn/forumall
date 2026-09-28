@@ -19,6 +19,10 @@
  * (`error` forbidden); a denied peer's handshake is rejected (error + close
  * 4001); a forged WS-auth signature closes 4001.
  *
+ * Loss of access (#15): kicking the remote member on B ends their direct-WS
+ * subscription with an unprompted `unsubscribed {reason: "access_revoked"}`, and
+ * revoking their key at A closes the socket to B with 4003 once B re-validates.
+ *
  * The `authenticate` canonical string binds **B's** authority (the home provider
  * being connected to, §8.5), not alice's own domain.
  */
@@ -442,6 +446,117 @@ describe("cross-provider direct-WS channel delivery (§8.2, §8.5)", () => {
     expect(client.closeCode).toBe(4001);
     // Policy short-circuited BEFORE any key fetch.
     expect(fed.b.userKeysCache.fetchCount).toBe(0);
+  });
+
+  /**
+   * alice (remote, from A) joins B's group-tier channel, opens a direct WS to B
+   * and subscribes; bob (local to B) is connected + subscribed too. Returns the
+   * live sockets and ids for the loss-of-access tests below.
+   */
+  async function remoteSubscriber(fed: Federation) {
+    const { keyId, keypair } = await registerAlice(fed);
+    const alice = `alice@${fed.a.domain}`;
+    const bob = await registerBob(fed);
+    const { groupId, channelId } = makeGroupChannelOnB(fed);
+    const { addMember } = await import("../src/provider/membership.ts");
+    addMember(fed.b.db, groupId, bob.actor, "admin"); // may moderate (kick)
+
+    const joinRes = await signedPostToB(fed, {
+      actor: alice,
+      keyId,
+      privateKey: keypair.privateKey,
+      path: `/api/groups/${groupId}/channels/${channelId}/join`,
+    });
+    expect(joinRes.status).toBe(201);
+
+    const connectAs = async (signer: Signer): Promise<WsClient> => {
+      const { client, nonce } = await connectAndChallenge(fed.b);
+      nonces.set(client, nonce);
+      sendAuthenticate(client, { ...signer, authority: fed.b.domain });
+      await client.ofType("authenticated");
+      client.send({
+        id: "cli_sub",
+        type: "subscribe",
+        ts: rfc3339Timestamp(),
+        data: { channels: [channelId] },
+      });
+      await client.ofType("subscribed");
+      return client;
+    };
+    const aliceSigner: Signer = { actor: alice, keyId, privateKey: keypair.privateKey };
+    const aliceWs = await connectAs(aliceSigner);
+    const bobWs = await connectAs(bob);
+    return { alice: aliceSigner, bob, groupId, channelId, aliceWs, bobWs };
+  }
+
+  test("#15: kicking a remote member ends their direct-WS subscription (unsubscribed access_revoked)", async () => {
+    const fed = boot();
+    const { alice, bob, groupId, channelId, aliceWs, bobWs } = await remoteSubscriber(fed);
+
+    // bob (admin on B) removes alice from B's group.
+    const path = `/api/groups/${groupId}/members/${encodeURIComponent(alice.actor)}`;
+    const { headers } = sign({
+      actor: bob.actor,
+      keyId: bob.keyId,
+      privateKey: bob.privateKey,
+      authority: fed.b.domain,
+      method: "DELETE",
+      path,
+    });
+    const kick = await fetch(`${fed.b.base}${path}`, {
+      method: "DELETE",
+      headers: { ...headers, host: fed.b.domain },
+    });
+    expect(kick.status).toBe(204);
+
+    const notice = await aliceWs.ofType("unsubscribed");
+    expect(notice.correlationId).toBeUndefined();
+    expect(notice.data).toEqual({ channels: [channelId], reason: "access_revoked" });
+
+    // bob keeps receiving; alice gets nothing more from the channel.
+    bobWs.send({
+      id: "cli_post",
+      type: "message.create",
+      ts: rfc3339Timestamp(),
+      data: { groupId, channelId, content: { mime: "text/plain", text: "after kick" } },
+    });
+    await bobWs.ofType("message.created");
+    await expect(aliceWs.ofType("message.created", 250)).rejects.toThrow("timeout");
+    expect(aliceWs.closed).toBe(false);
+  });
+
+  test("#15: a remote key revoked at its home provider closes the direct WS with 4003", async () => {
+    // B re-validates remote keys on every heartbeat tick for this test.
+    const fed = boot({
+      wsTimings: { pingIntervalMs: 50, idleTimeoutMs: 100_000, remoteKeyRevalidateMs: 0 },
+    });
+    const { alice, aliceWs, bobWs } = await remoteSubscriber(fed);
+
+    // A few re-validations pass while the key is still valid.
+    await Bun.sleep(200);
+    expect(aliceWs.closed).toBe(false);
+
+    // alice revokes her key at home (A)...
+    const path = `/api/auth/device-keys/${alice.keyId}`;
+    const { headers } = sign({
+      actor: alice.actor,
+      keyId: alice.keyId,
+      privateKey: alice.privateKey,
+      authority: fed.a.domain,
+      method: "DELETE",
+      path,
+    });
+    const revoke = await fetch(`${fed.a.base}${path}`, {
+      method: "DELETE",
+      headers: { ...headers, host: fed.a.domain },
+    });
+    expect(revoke.status).toBe(204);
+    // ...and B's cached copy of her keys lapses (stands in for `cache_until`, §4.7.1).
+    fed.b.userKeysCache.invalidate(alice.actor);
+
+    await aliceWs.waitClosed();
+    expect(aliceWs.closeCode).toBe(4003);
+    expect(bobWs.closed).toBe(false);
   });
 
   test("forged remote WS-auth signature → error then close 4001", async () => {

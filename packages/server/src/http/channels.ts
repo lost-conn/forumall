@@ -27,6 +27,7 @@
 import { ChannelCreateRequestSchema, ChannelUpdateRequestSchema } from "@forumall/shared";
 import { type Context, Hono } from "hono";
 
+import { revalidateChannelSubscriptions } from "../provider/access-revocation.ts";
 import {
   canViewChannel,
   createChannel,
@@ -138,7 +139,7 @@ export function createChannelsRouter() {
 
   // -- PATCH /api/groups/{groupId}/channels/{channelId} (§5.5, signed) -----
   router.patch("/:channelId", signed, async (c) => {
-    const { db } = c.var;
+    const { db, hub } = c.var;
     const actor = c.var.actor;
     if (!actor) throw AppError.unauthorized(); // unreachable
     const groupId = requireParam(c, "groupId");
@@ -173,12 +174,14 @@ export function createChannelsRouter() {
 
     const updated = updateChannel(db, channelId, parsed.data);
     if (!updated) throw AppError.notFound({ detail: "no such channel" }); // raced delete
+    // A tier or `permissions.view` change can revoke read access for live subscribers.
+    revalidateChannelSubscriptions(db, hub, [channelId]);
     return c.json(updated);
   });
 
   // -- DELETE /api/groups/{groupId}/channels/{channelId} (§5.5, signed) ----
   router.delete("/:channelId", signed, (c) => {
-    const { db } = c.var;
+    const { db, hub } = c.var;
     const actor = c.var.actor;
     if (!actor) throw AppError.unauthorized(); // unreachable
     const groupId = requireParam(c, "groupId");
@@ -194,6 +197,8 @@ export function createChannelsRouter() {
     }
 
     deleteChannel(db, channelId);
+    // Every live subscription to the deleted channel ends (with the notice).
+    revalidateChannelSubscriptions(db, hub, [channelId]);
     return c.body(null, 204);
   });
 

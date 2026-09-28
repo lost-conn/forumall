@@ -14,7 +14,9 @@
 import { type Group, GroupCreateRequestSchema, GroupUpdateRequestSchema } from "@forumall/shared";
 import { Hono } from "hono";
 
+import { revalidateGroupSubscriptions } from "../provider/access-revocation.ts";
 import { isProviderAdmin } from "../provider/admin.ts";
+import { listChannelRows } from "../provider/channels.ts";
 import { getGroupCreationPolicy } from "../provider/group-policy.ts";
 import {
   createGroup,
@@ -95,7 +97,7 @@ export function createGroupsRouter() {
 
   // -- PATCH /api/groups/{id} (§5.5, signed; requires `manage`) -------------
   router.patch("/:id", signed, async (c) => {
-    const { db } = c.var;
+    const { db, hub } = c.var;
     const actor = c.var.actor;
     if (!actor) throw AppError.unauthorized(); // unreachable
     const id = c.req.param("id");
@@ -119,12 +121,15 @@ export function createGroupsRouter() {
 
     const updated = updateGroup(db, id, parsed.data);
     if (!updated) throw AppError.notFound({ detail: "no such group" }); // raced delete
+    // Channel readability is derived from group state too (membership + roles);
+    // re-check so a group change can never leave a stale live subscription.
+    revalidateGroupSubscriptions(db, hub, id);
     return c.json(updated);
   });
 
   // -- DELETE /api/groups/{id} (§5.5, signed; owner only) ------------------
   router.delete("/:id", signed, (c) => {
-    const { db } = c.var;
+    const { db, hub } = c.var;
     const actor = c.var.actor;
     if (!actor) throw AppError.unauthorized(); // unreachable
     const id = c.req.param("id");
@@ -135,7 +140,10 @@ export function createGroupsRouter() {
       throw AppError.forbidden({ detail: "only the group owner may delete it" });
     }
 
+    // Capture the channel ids first: they are deleted along with the group.
+    const channelIds = listChannelRows(db, id).map((ch) => ch.id);
     deleteGroup(db, id);
+    revalidateGroupSubscriptions(db, hub, id, channelIds);
     return c.body(null, 204);
   });
 
