@@ -42,6 +42,8 @@ import {
   listChannelRows,
   parseChannelPermissions,
 } from "./channels.ts";
+import { getGroupRow } from "./groups.ts";
+import { isPublicTier } from "./tiers.ts";
 import type { ChannelDeliveryGate, Hub, HubConnection } from "./ws-hub.ts";
 
 /**
@@ -53,13 +55,19 @@ import type { ChannelDeliveryGate, Hub, HubConnection } from "./ws-hub.ts";
  */
 export const WS_CLOSE_CREDENTIALS_REVOKED = 4003;
 
-/** Tiers readable without group membership (mirrors `provider/channels.ts`). */
-const PUBLIC_TIERS = new Set(["public", "discoverable"]);
-
-/** Whether a channel is readable by anyone, so delivery needs no per-actor check. */
-function isOpenChannel(row: ChannelRow): boolean {
+/**
+ * Whether a channel is readable by anyone, so delivery needs no per-actor
+ * check: both it and its group are public-tier (#24) and it has no `view`
+ * override.
+ */
+function isOpenChannel(row: ChannelRow, groupTier: string | null): boolean {
   const viewRoles = parseChannelPermissions(row.permissions)?.view;
-  return PUBLIC_TIERS.has(row.tier) && !(viewRoles && viewRoles.length > 0);
+  return (
+    groupTier != null &&
+    isPublicTier(groupTier) &&
+    isPublicTier(row.tier) &&
+    !(viewRoles && viewRoles.length > 0)
+  );
 }
 
 /**
@@ -127,8 +135,9 @@ export function channelDeliveryGate(db: Db): ChannelDeliveryGate {
     if (channelId.startsWith("dm_")) return null;
     const row = getChannelRow(db, channelId); // one read per event
     if (row == null) return () => false; // deleted: nobody may keep receiving it
-    if (isOpenChannel(row)) return null;
-    return (actor) => canViewChannelWith(row, actor, roleOf);
+    const groupTier = getGroupRow(db, row.groupId)?.tier ?? null;
+    if (isOpenChannel(row, groupTier)) return null;
+    return (actor) => canViewChannelWith(row, groupTier, actor, roleOf);
   };
 }
 

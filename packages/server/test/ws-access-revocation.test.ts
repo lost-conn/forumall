@@ -174,8 +174,8 @@ function signedReq(
   });
 }
 
-async function createGroup(b: Booted, owner: Signer): Promise<string> {
-  const res = await signedReq(b, owner, "POST", "/api/groups", { name: "g", tier: "private" });
+async function createGroup(b: Booted, owner: Signer, tier = "private"): Promise<string> {
+  const res = await signedReq(b, owner, "POST", "/api/groups", { name: "g", tier });
   expect(res.status).toBe(201);
   return ((await res.json()) as { id: string }).id;
 }
@@ -355,7 +355,9 @@ describe("loss of access ends live subscriptions (#15)", () => {
     const owner = await registerUser(b, "owner");
     const bob = await registerUser(b, "bob");
     const carol = await registerUser(b, "carol");
-    const groupId = await createGroup(b, owner);
+    // A public group, so its public channel stays readable after the kick (#24:
+    // in a private group, a "public" channel is members-only too).
+    const groupId = await createGroup(b, owner, "public");
     const privateChannel = await createChannel(b, owner, groupId);
     const publicChannel = await createChannel(b, owner, groupId, { tier: "public" });
     addMember(b.db, groupId, bob.actor);
@@ -463,7 +465,7 @@ describe("loss of access ends live subscriptions (#15)", () => {
     const owner = await registerUser(b, "owner");
     const member = await registerUser(b, "member");
     const outsider = await registerUser(b, "outsider");
-    const groupId = await createGroup(b, owner);
+    const groupId = await createGroup(b, owner, "public");
     const channelId = await createChannel(b, owner, groupId, { tier: "public" });
     addMember(b.db, groupId, member.actor);
 
@@ -480,6 +482,48 @@ describe("loss of access ends live subscriptions (#15)", () => {
     await expectRevoked(outsiderWs, [channelId]);
     expect(await memberWs.sawWithin(noticeFor)).toBe(false);
     expect(b.hub.subscriberCount(channelId)).toBe(1);
+  });
+
+  test("a group tier change (public → private) revokes non-members from its public channels (#24)", async () => {
+    const b = boot();
+    const owner = await registerUser(b, "owner");
+    const member = await registerUser(b, "member");
+    const outsider = await registerUser(b, "outsider");
+    const groupId = await createGroup(b, owner, "public");
+    const channelId = await createChannel(b, owner, groupId, { tier: "public" });
+    addMember(b.db, groupId, member.actor);
+
+    const memberWs = await connect(b, member);
+    const outsiderWs = await connect(b, outsider);
+    await subscribe(memberWs, [channelId]);
+    await subscribe(outsiderWs, [channelId]);
+
+    const res = await signedReq(b, owner, "PATCH", `/api/groups/${groupId}`, { tier: "private" });
+    expect(res.status).toBe(200);
+
+    await expectRevoked(outsiderWs, [channelId]);
+    expect(await memberWs.sawWithin(noticeFor)).toBe(false);
+    expect(b.hub.subscriberCount(channelId)).toBe(1);
+  });
+
+  test("delivery gate: a public channel in a group made private out-of-band is not delivered to non-members (#24)", async () => {
+    const b = boot();
+    const owner = await registerUser(b, "owner");
+    const outsider = await registerUser(b, "outsider");
+    const groupId = await createGroup(b, owner, "public");
+    const channelId = await createChannel(b, owner, groupId, { tier: "public" });
+
+    const ownerWs = await connect(b, owner);
+    const outsiderWs = await connect(b, outsider);
+    await subscribe(ownerWs, [channelId]);
+    await subscribe(outsiderWs, [channelId]);
+
+    // Straight to storage: no REST route, so no revalidation hook ran.
+    b.db.sqlite.query("UPDATE groups SET tier = 'private' WHERE id = ?").run(groupId);
+
+    await post(ownerWs, groupId, channelId, "now-private");
+    await expectRevoked(outsiderWs, [channelId]);
+    expect(outsiderWs.frames.some(isCreated("now-private"))).toBe(false);
   });
 
   test("deleting a channel ends every subscription to it", async () => {

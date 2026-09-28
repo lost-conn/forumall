@@ -29,7 +29,7 @@ import type { Db } from "../db/index.ts";
 import { type ChannelRow, channels, messages, reactions } from "../db/schema.ts";
 import { getGroupRow } from "./groups.ts";
 import { getMembership, roleMeets } from "./permissions.ts";
-import { tierReadableBy } from "./tiers.ts";
+import { isPublicTier, tierReadableBy } from "./tiers.ts";
 
 /** `id` prefix per the §5.2 wire examples (`chn_…`). */
 const CHANNEL_ID_PREFIX = "chn_";
@@ -153,19 +153,22 @@ export function canViewChannel(
 ): boolean {
   return canViewChannelWith(
     channel,
+    getGroupRow(db, channel.groupId)?.tier ?? null,
     actor,
     (groupId, member) => getMembership(db, groupId, member)?.role ?? null,
   );
 }
 
 /**
- * {@link canViewChannel} with the membership lookup injected (`roleOf` returns
- * the actor's role in the group, or `null` if not a member). The single rule
- * body, so a hot path (the WS delivery-time gate) can supply a faster lookup
- * without re-deriving the decision.
+ * {@link canViewChannel} with the group tier and membership lookup injected
+ * (`groupTier` is `null` when the group no longer exists; `roleOf` returns the
+ * actor's role in the group, or `null` if not a member). The single rule body,
+ * so a hot path (the WS delivery-time gate) can supply faster lookups without
+ * re-deriving the decision.
  */
 export function canViewChannelWith(
   channel: ChannelRow,
+  groupTier: string | null,
   actor: string | null | undefined,
   roleOf: (groupId: string, actor: string) => string | null,
 ): boolean {
@@ -176,9 +179,12 @@ export function canViewChannelWith(
     const role = roleOf(channel.groupId, actor);
     return role != null && roleMeets(role, viewRoles);
   }
-  // Tier rule, as in {@link channelVisibleTo}.
-  if (PUBLIC_TIERS.has(channel.tier)) return true;
-  return actor != null && roleOf(channel.groupId, actor) != null;
+  // Tier rule, as in {@link channelVisibleTo}: effective read access is the
+  // more restrictive of the group's tier and the channel's (#24).
+  if (groupTier == null) return false;
+  const member = () => actor != null && roleOf(channel.groupId, actor) != null;
+  if (!isPublicTier(groupTier) && !member()) return false;
+  return isPublicTier(channel.tier) || member();
 }
 
 /**
