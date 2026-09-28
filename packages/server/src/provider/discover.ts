@@ -17,6 +17,14 @@
  * `{ channel, groupId?, provider }` and MAY carry a non-authoritative `sample`
  * preview of the channel's most recent (non-tombstoned) message.
  *
+ * §11.2 also requires recommendations to "respect each item's tier **and the
+ * viewer's access**": a `discoverable`-tier channel can still carry a
+ * per-channel `view` override (§5.2.1), or sit in a group whose own tier makes
+ * it unreadable (§11, "more restrictive of group and channel", see
+ * `channelVisibleTo`) — `GET /api/discover` is always anonymous, so every
+ * candidate (and its `sample`) is gated through {@link canViewChannel} for a
+ * `null` (anonymous) viewer, exactly like messaging/WS.
+ *
  * ## Local-only, with a documented peer-aggregation hook
  * v0.1 compiles from local channels only. §11.2 also permits aggregating
  * `discoverable` channels from this provider's known peers (§8.6) by querying
@@ -36,6 +44,7 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/index.ts";
 import { type ChannelRow, channels, messages } from "../db/schema.ts";
+import { canViewChannel } from "./channels.ts";
 import { listFeaturedGroupIds } from "./discover-features.ts";
 import { decodeCursor, encodeCursor } from "./membership.ts";
 
@@ -151,6 +160,7 @@ export function compileDiscoverPage(
       tier: channels.tier,
       topic: channels.topic,
       tags: channels.tags,
+      permissions: channels.permissions,
       metadata: channels.metadata,
       createdAt: channels.createdAt,
       updatedAt: channels.updatedAt,
@@ -164,7 +174,17 @@ export function compileDiscoverPage(
   const hasMore = rows.length > limit;
   const pageRows = hasMore ? rows.slice(0, limit) : rows;
 
-  const items: DiscoverItem[] = pageRows.map((row) => {
+  // §11.2: "MUST respect each item's tier and the viewer's access." The query
+  // above already filters by tier=discoverable and the admin allowlist, but a
+  // channel may additionally be `view`-restricted (§5.2.1) or sit in a group
+  // whose own tier it cannot widen (§11). The feed is always anonymous, so gate
+  // every candidate through the same canViewChannel(..., null) rule
+  // messaging/WS subscribe already use. `nextCursor`/`prevCursor` stay keyed on
+  // the unfiltered page (below) so paging position isn't disturbed by hidden
+  // items.
+  const visibleRows = pageRows.filter((row) => canViewChannel(db, row, null));
+
+  const items: DiscoverItem[] = visibleRows.map((row) => {
     const sample = withSample ? recentSample(db, row.id) : null;
     return {
       channel: row.id,

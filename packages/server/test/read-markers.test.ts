@@ -34,6 +34,7 @@ import { type Db, openDb } from "../src/db/index.ts";
 import { migrate } from "../src/db/migrate.ts";
 import { createChannel } from "../src/provider/channels.ts";
 import { storeDmMessage } from "../src/provider/dms.ts";
+import { createGroup } from "../src/provider/groups.ts";
 import { addMember } from "../src/provider/membership.ts";
 import { createMessage } from "../src/provider/messages.ts";
 import { getReadMarkers, getUnreadSummary, setReadMarkers } from "../src/provider/read-markers.ts";
@@ -149,11 +150,13 @@ function signedReq(
   });
 }
 
-/** Seed a private group owned by `owner`, return its id. */
+/**
+ * Seed a real private group owned by `owner` (a genuine `groups` row, not just
+ * a membership row — channel visibility now looks up the group's own tier,
+ * §11), return its id.
+ */
 function seedGroup(b: Booted, owner: Signer): string {
-  const groupId = `grp_${owner.handle}`;
-  addMember(b.db, groupId, owner.actor, "owner");
-  return groupId;
+  return createGroup(b.db, owner.actor, { name: "g", tier: "private" }).id;
 }
 
 /** Post `text` from `author` in `(groupId, channelId)`; return its seq. */
