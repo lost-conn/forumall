@@ -105,6 +105,10 @@ beforeAll(() => {
     // Light up the OPTIONAL discovery surfaces so we can validate them too.
     ENABLE_KNOWN_PROVIDERS: "true",
     ENABLE_DISCOVER_FEED: "true",
+    // This suite registers several users (§4.1.5 rate limiting is exercised in
+    // its own dedicated test, ratelimit.test.ts) against ONE shared app/server
+    // for the whole file — a real per-IP limit would trip partway through.
+    RATE_LIMIT_ENABLED: "false",
   });
   const config: Config = Object.freeze({ ...base, argon2: FAST_ARGON2 });
   const db = openDb(config.dbPath);

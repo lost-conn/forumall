@@ -12,6 +12,7 @@ import type { FederationFetch } from "../provider/federation/http.ts";
 import type { RemoteUserKeysCache } from "../provider/federation/user-keys-cache.ts";
 import type { NonceStore } from "../provider/nonce-store.ts";
 import type { PresenceRegistry } from "../provider/presence.ts";
+import type { RateLimits } from "../provider/ratelimit.ts";
 import type { Hub } from "../provider/ws-hub.ts";
 
 /**
@@ -120,6 +121,13 @@ export interface AppVariables {
    * module doc on `provider/nonce-store.ts`.
    */
   readonly nonceStore: NonceStore;
+  /**
+   * Auth rate limiters (§4.1.5, reconciliation #26): one `WindowLimiter` per
+   * rate-limited endpoint plus the per-handle login backoff. Shared across
+   * the app (one instance per `createApp` call) so state accumulates across
+   * requests. See `provider/ratelimit.ts` and `http/auth.ts`.
+   */
+  readonly rateLimits: RateLimits;
   /** Set by `requireSignature` on success; undefined on unauthenticated routes. */
   actor?: AuthenticatedActor;
   /**

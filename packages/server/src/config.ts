@@ -64,6 +64,50 @@ const RawEnvSchema = z.object({
    */
   ADMIN_HANDLES: z.string().default(""),
 
+  // --- Abuse resistance (§4.1.5, reconciliation #26) -----------------------
+  /**
+   * Trust the `X-Forwarded-For` header (its RIGHTMOST hop) for client-IP
+   * resolution used by rate limiting. Default `false`: always use the raw TCP
+   * peer address, which a caller cannot spoof. Only set `true` when this
+   * process is reachable ONLY through a reverse proxy you control that
+   * appends to (never blindly forwards) the header — e.g. the bundled
+   * Caddy in front of the self-host Docker Compose, or jkbase if it also
+   * proxies in front of Caddy for a given deployment. See `http/client-ip.ts`
+   * for the full reasoning; getting this wrong in the "trust" direction with
+   * no such proxy in front makes the limiter trivially bypassable.
+   */
+  TRUST_PROXY: BoolEnvSchema.default(false),
+  /**
+   * Master switch for auth rate limiting (§4.1.5 SHOULD). Default `true`. Set
+   * `false` to disable entirely — e.g. a test harness that isn't itself
+   * exercising rate limiting, or a self-host operator who has their own
+   * limiting in front and doesn't want a second layer.
+   */
+  RATE_LIMIT_ENABLED: BoolEnvSchema.default(true),
+  /** Max `/api/auth/register` hits per key (IP or handle) per window. Default 5. */
+  RATE_LIMIT_REGISTER_MAX: z.coerce.number().int().min(1).default(5),
+  /** `/api/auth/register` window length in seconds. Default 60. */
+  RATE_LIMIT_REGISTER_WINDOW_SECONDS: z.coerce.number().int().min(1).default(60),
+  /** Max `/api/auth/login` hits per key (IP or handle) per window. Default 10. */
+  RATE_LIMIT_LOGIN_MAX: z.coerce.number().int().min(1).default(10),
+  /** `/api/auth/login` window length in seconds. Default 60. */
+  RATE_LIMIT_LOGIN_WINDOW_SECONDS: z.coerce.number().int().min(1).default(60),
+  /**
+   * Max `/api/auth/device-keys` (registration) hits per key (IP, or handle
+   * once resolved from the bootstrap token) per window. Default 10.
+   */
+  RATE_LIMIT_DEVICE_KEYS_MAX: z.coerce.number().int().min(1).default(10),
+  /** `/api/auth/device-keys` window length in seconds. Default 60. */
+  RATE_LIMIT_DEVICE_KEYS_WINDOW_SECONDS: z.coerce.number().int().min(1).default(60),
+  /**
+   * Max `/api/auth/recover` hits per key (IP or handle) per window. Default 5.
+   * Not wired to a route yet (reconciliation #27 — no recovery endpoint), but
+   * configured ready for it.
+   */
+  RATE_LIMIT_RECOVER_MAX: z.coerce.number().int().min(1).default(5),
+  /** `/api/auth/recover` window length in seconds. Default 60. */
+  RATE_LIMIT_RECOVER_WINDOW_SECONDS: z.coerce.number().int().min(1).default(60),
+
   // --- Argon2id password-hashing cost (§4.1.4) ----------------------------
   // Secure-by-default: the defaults equal the spec MINIMUMS, and the schema
   // refuses to go below them. Operators may raise (never lower) the cost.
@@ -242,6 +286,25 @@ export interface Argon2Params {
   readonly parallelism: number;
 }
 
+/** Fixed-window limit for one auth endpoint (§4.1.5). */
+export interface RateLimitWindow {
+  /** Max hits per key (IP or handle) within the window. */
+  readonly max: number;
+  /** Window length in seconds. */
+  readonly windowSeconds: number;
+}
+
+/** Auth rate-limit configuration (§4.1.5, reconciliation #26). See `provider/ratelimit.ts`. */
+export interface RateLimitConfig {
+  /** Master switch; `false` disables all auth rate limiting. */
+  readonly enabled: boolean;
+  readonly register: RateLimitWindow;
+  readonly login: RateLimitWindow;
+  readonly deviceKeys: RateLimitWindow;
+  /** Not wired to a route yet (reconciliation #27), configured ready for it. */
+  readonly recover: RateLimitWindow;
+}
+
 /** Fully-resolved, validated server configuration. */
 export interface Config {
   readonly port: number;
@@ -276,6 +339,13 @@ export interface Config {
    * first registrant becomes admin. See {@link isProviderAdmin}.
    */
   readonly adminHandles: readonly string[];
+  /**
+   * Trust `X-Forwarded-For` (rightmost hop) for rate-limit client-IP
+   * resolution. Default `false` — see the `TRUST_PROXY` env doc.
+   */
+  readonly trustProxy: boolean;
+  /** Auth rate limiting (§4.1.5, reconciliation #26). See `provider/ratelimit.ts`. */
+  readonly rateLimit: RateLimitConfig;
   /** Argon2id password-hashing cost (§4.1.4); env-validated to spec minimums. */
   readonly argon2: Argon2Params;
   /** Bootstrap-token TTL in seconds (§4.2). */
@@ -378,6 +448,26 @@ export function loadConfig(env: Env = process.env): Config {
     maxResumeReplay: raw.MAX_RESUME_REPLAY,
     typingTimeoutMs: raw.TYPING_TIMEOUT_MS,
     adminHandles: parseHandleList(raw.ADMIN_HANDLES),
+    trustProxy: raw.TRUST_PROXY,
+    rateLimit: Object.freeze({
+      enabled: raw.RATE_LIMIT_ENABLED,
+      register: Object.freeze({
+        max: raw.RATE_LIMIT_REGISTER_MAX,
+        windowSeconds: raw.RATE_LIMIT_REGISTER_WINDOW_SECONDS,
+      }),
+      login: Object.freeze({
+        max: raw.RATE_LIMIT_LOGIN_MAX,
+        windowSeconds: raw.RATE_LIMIT_LOGIN_WINDOW_SECONDS,
+      }),
+      deviceKeys: Object.freeze({
+        max: raw.RATE_LIMIT_DEVICE_KEYS_MAX,
+        windowSeconds: raw.RATE_LIMIT_DEVICE_KEYS_WINDOW_SECONDS,
+      }),
+      recover: Object.freeze({
+        max: raw.RATE_LIMIT_RECOVER_MAX,
+        windowSeconds: raw.RATE_LIMIT_RECOVER_WINDOW_SECONDS,
+      }),
+    }),
     federationAllow: parseDomainList(raw.FEDERATION_ALLOW),
     federationDeny: parseDomainList(raw.FEDERATION_DENY),
     enableKnownProviders: raw.ENABLE_KNOWN_PROVIDERS,

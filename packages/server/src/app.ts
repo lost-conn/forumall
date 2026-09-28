@@ -46,6 +46,7 @@ import {
 import { RemoteUserKeysCache } from "./provider/federation/user-keys-cache.ts";
 import { InMemoryNonceStore, type NonceStore } from "./provider/nonce-store.ts";
 import { PresenceRegistry } from "./provider/presence.ts";
+import { type RateLimits, createRateLimits } from "./provider/ratelimit.ts";
 import { Hub } from "./provider/ws-hub.ts";
 
 export interface AppDeps {
@@ -79,6 +80,13 @@ export interface AppDeps {
    * handshake — see the module doc on `provider/nonce-store.ts`.
    */
   readonly nonceStore?: NonceStore;
+  /**
+   * Auth rate limiters (§4.1.5, reconciliation #26); built from `config.rateLimit`
+   * if not injected. Tests that want to trip a limit deliberately (or bypass it
+   * without touching env/config) inject their own via `provider/ratelimit.ts`'s
+   * `createRateLimits`/`disabledRateLimits`.
+   */
+  readonly rateLimits?: RateLimits;
 }
 
 /** A Hono app augmented with the Bun `websocket` handler object it requires. */
@@ -95,6 +103,8 @@ export type AppWithWebSocket = Hono<AppBindings> & {
   readonly __userKeysCache: RemoteUserKeysCache;
   /** The shared provider-wide nonce/replay store (for tests / DI; #21). */
   readonly __nonceStore: NonceStore;
+  /** The shared auth rate limiters (for tests / later wiring). */
+  readonly __rateLimits: RateLimits;
 };
 
 export function createApp(config: Config, deps: AppDeps): AppWithWebSocket {
@@ -123,6 +133,9 @@ export function createApp(config: Config, deps: AppDeps): AppWithWebSocket {
   // which now default to `c.var.nonceStore` instead of minting their own) and
   // the WS handshake. See the module doc on `provider/nonce-store.ts`.
   const nonceStore = deps.nonceStore ?? new InMemoryNonceStore();
+  // Auth rate limiters (§4.1.5, reconciliation #26): built from `config.rateLimit`
+  // unless a caller injects its own (tests that want a deliberate trip or bypass).
+  const rateLimits = deps.rateLimits ?? createRateLimits(config);
 
   const { upgradeWebSocket, websocket } = createBunWebSocket();
 
@@ -137,6 +150,7 @@ export function createApp(config: Config, deps: AppDeps): AppWithWebSocket {
     c.set("discoveryCache", discoveryCache);
     c.set("userKeysCache", userKeysCache);
     c.set("nonceStore", nonceStore);
+    c.set("rateLimits", rateLimits);
     await next();
   });
 
@@ -214,5 +228,6 @@ export function createApp(config: Config, deps: AppDeps): AppWithWebSocket {
     __discoveryCache: discoveryCache,
     __userKeysCache: userKeysCache,
     __nonceStore: nonceStore,
+    __rateLimits: rateLimits,
   });
 }

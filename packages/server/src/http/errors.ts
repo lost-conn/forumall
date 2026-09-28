@@ -73,6 +73,11 @@ export interface AppErrorOptions {
   extensions?: Record<string, unknown>;
   /** Underlying cause (logged, never serialized). */
   cause?: unknown;
+  /**
+   * Extra HTTP response headers (e.g. `Retry-After` on a 429, §7.3/§4.1.5).
+   * Never serialized into the problem document itself.
+   */
+  headers?: Record<string, string>;
 }
 
 /**
@@ -87,6 +92,7 @@ export class AppError extends Error {
   readonly detail?: string;
   readonly instance?: string;
   readonly extensions?: Record<string, unknown>;
+  readonly headers?: Record<string, string>;
 
   constructor(slug: ProblemSlug, opts: AppErrorOptions = {}) {
     const entry = PROBLEM_STATUS[slug];
@@ -99,6 +105,7 @@ export class AppError extends Error {
     this.detail = opts.detail;
     this.instance = opts.instance;
     this.extensions = opts.extensions;
+    this.headers = opts.headers;
   }
 
   /** Render this error as a validated {@link ProblemDetails} document. */
@@ -125,10 +132,15 @@ export class AppError extends Error {
   static serviceUnavailable = (o?: AppErrorOptions) => new AppError("serviceUnavailable", o);
 }
 
-/** Build a Hono `Response` carrying a problem+json body. */
-export function problemResponse(c: Context, problem: ProblemDetails): Response {
+/** Build a Hono `Response` carrying a problem+json body, with optional extra headers. */
+export function problemResponse(
+  c: Context,
+  problem: ProblemDetails,
+  headers?: Record<string, string>,
+): Response {
   return c.json(problem, problem.status as ContentfulStatusCode, {
     "content-type": PROBLEM_CONTENT_TYPE,
+    ...headers,
   });
 }
 
@@ -140,7 +152,7 @@ export function problemResponse(c: Context, problem: ProblemDetails): Response {
 export function onError(err: Error, c: Context): Response {
   if (err instanceof AppError) {
     if (err.status >= 500) console.error("[server] AppError:", err);
-    return problemResponse(c, err.toProblem());
+    return problemResponse(c, err.toProblem(), err.headers);
   }
 
   // Unknown/unexpected error: log everything, expose nothing.
