@@ -84,8 +84,8 @@ import { deliverNotification, groupMemberActors } from "../provider/notification
 import {
   type PresenceRegistry,
   fanOutPresence,
-  filterPresenceFor,
   markLastSeen,
+  presenceForSubject,
   presenceUpdateEvent,
   setExplicitPresence,
   toPresence,
@@ -1409,8 +1409,12 @@ export function createWsHandlers(deps: WsHandlerDeps) {
    * with `presence.subscribed`, then IMMEDIATELY send an initial `presence.update`
    * snapshot for each subscribed user — filtered for THIS viewer exactly as
    * `GET /api/users/{ref}/presence` would be (so the two surfaces agree). Subjects
-   * are subscribed by canonical actor; a snapshot for a non-local subject simply
-   * reflects whatever state we hold (none → effectively offline).
+   * are subscribed by canonical actor, keeping each ref's OWN domain (§4.5.1): a
+   * bare handle defaults to this provider's authority, but `handle@domain` is
+   * NEVER rewritten onto the local authority. A provider only hosts presence for
+   * its own users (§7.5 Federation), so a subject whose domain isn't ours gets
+   * the same uniform `offline` a hidden/nonexistent local user would — never a
+   * local namesake's real presence. See {@link presenceForSubject}.
    */
   function handlePresenceSubscribe(
     ws: WsContext,
@@ -1426,10 +1430,13 @@ export function createWsHandlers(deps: WsHandlerDeps) {
     const hubConn = state.hubConn;
     if (!hubConn) return; // unreachable: only authenticated connections reach here
 
-    // Normalize each subject to its canonical actor key so the registry key
-    // matches the fan-out key (`${handle}@${host}`); the snapshot `user` field
-    // uses the same canonical actor the fan-out emits, keeping them consistent.
-    const subjects = parsed.data.data.users.map((u) => `${subjectHandleOf(u)}@${authority}`);
+    // Normalize each subject to its canonical actor key — a bare handle defaults
+    // to OUR authority, but a `handle@domain` ref keeps its own domain (§4.5.1:
+    // never key provider-local storage on a bare handle stripped of a foreign
+    // domain). The registry key matches the fan-out key for LOCAL subjects
+    // (`${handle}@${host}`); a remote subject's key simply never gets fanned
+    // into (§7.5: no provider-to-provider presence relay in v0.1).
+    const subjects = parsed.data.data.users.map((u) => canonicalSubjectActor(u, authority));
     presenceRegistry.subscribe(hubConn, subjects);
 
     // Ack first, then the per-user snapshot (§7.5).
@@ -1447,7 +1454,7 @@ export function createWsHandlers(deps: WsHandlerDeps) {
       domain: state.actor !== undefined ? domainOfActor(state.actor) : authority,
     };
     for (const subject of subjects) {
-      const eff = filterPresenceFor(db, hub, config, subjectHandleOf(subject), viewer);
+      const eff = presenceForSubject(db, hub, config, subject, viewer);
       send(ws, presenceUpdateEvent(subject, toPresence(eff)));
     }
   }
@@ -1471,8 +1478,9 @@ export function createWsHandlers(deps: WsHandlerDeps) {
     const hubConn = state.hubConn;
     if (!hubConn) return;
 
-    // Normalize to the same canonical actor key used at subscribe time.
-    const subjects = parsed.data.data.users.map((u) => `${subjectHandleOf(u)}@${authority}`);
+    // Normalize to the same canonical actor key used at subscribe time (§4.5.1:
+    // preserves each ref's own domain, never rewritten onto ours).
+    const subjects = parsed.data.data.users.map((u) => canonicalSubjectActor(u, authority));
     presenceRegistry.unsubscribe(hubConn, subjects);
     send(ws, {
       type: "presence.unsubscribed",
@@ -1516,13 +1524,21 @@ export function createWsHandlers(deps: WsHandlerDeps) {
 }
 
 /**
- * Resolve a canonical subject actor (`handle@domain`) to its local handle. A
- * bare handle (no `@`) is treated as local; the local/remote split only matters
- * for the visibility resolver, which keys on the handle.
+ * Canonicalize a `presence.subscribe`/`presence.unsubscribe` user ref to a full
+ * `handle@domain` actor (§7.5). A bare handle (no `@`) is LOCAL to this
+ * provider's namespace and defaults to `localAuthority`; a `handle@domain` ref
+ * keeps its OWN domain (canonicalized) — it is NEVER rewritten onto
+ * `localAuthority`. This is the only place a subject's domain is decided;
+ * presence resolution downstream ({@link presenceForSubject}) refuses to treat
+ * a non-local domain as ours, per §4.5.1 ("MUST NOT use the actor's bare handle
+ * as a key into provider-local storage").
  */
-function subjectHandleOf(subject: string): string {
-  const at = subject.lastIndexOf("@");
-  return at > 0 ? subject.slice(0, at) : subject;
+function canonicalSubjectActor(ref: string, localAuthority: string): string {
+  const at = ref.lastIndexOf("@");
+  if (at > 0 && at < ref.length - 1) {
+    return `${ref.slice(0, at)}@${canonicalAuthority(ref.slice(at + 1))}`;
+  }
+  return `${ref}@${localAuthority}`;
 }
 
 /**
