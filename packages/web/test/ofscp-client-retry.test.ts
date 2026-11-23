@@ -9,7 +9,7 @@ import { HEADER, generateKeyPair } from "@forumall/shared";
 
 import { OfscpClient, OfscpHttpError } from "../src/lib/ofscp-client.ts";
 
-const warmup = (seconds: number) =>
+const warmup = (seconds: number | string) =>
   new Response(JSON.stringify({ errorCode: "service_unavailable", detail: "warming up" }), {
     status: 503,
     headers: { "content-type": "application/problem+json", "retry-after": String(seconds) },
@@ -31,7 +31,10 @@ function harness(script: (() => Response)[], retryMaxWaitMs?: number) {
     keyId: "key_1",
     privateKey: generateKeyPair().privateKey,
     fetch: fakeFetch,
-    sleep: async (ms) => void waits.push(ms),
+    sleep: async (ms, signal) => {
+      waits.push(ms);
+      if (signal?.aborted) throw signal.reason;
+    },
     ...(retryMaxWaitMs !== undefined ? { retryMaxWaitMs } : {}),
   });
   return { client, calls, waits };
@@ -94,5 +97,46 @@ describe("OfscpClient: 503 + Retry-After", () => {
     expect((err as OfscpHttpError).status).toBe(503);
     expect((err as OfscpHttpError).retryAfterSeconds).toBeUndefined();
     expect(h.calls.length).toBe(1);
+  });
+
+  test("Retry-After 0 / garbage is not retried", async () => {
+    for (const bad of ["0", "-5", "1.5", "later"]) {
+      const h = harness([() => warmup(bad), ok]);
+      const err = await h.client.get("/api/x").catch((e: unknown) => e);
+      expect((err as OfscpHttpError).status).toBe(503);
+      expect(h.calls.length).toBe(1);
+      expect(h.waits).toEqual([]);
+    }
+  });
+
+  test("the 503 message is neutral", async () => {
+    const h = harness([() => warmup(5)], 1_000);
+    const err = (await h.client.get("/api/x").catch((e: unknown) => e)) as OfscpHttpError;
+    expect(err.message).toBe(
+      "The provider is temporarily unavailable. Please try again in about 5 seconds.",
+    );
+  });
+
+  test("aborting the request stops the retry wait (real timer)", async () => {
+    const calls: number[] = [];
+    const fakeFetch = (async () => {
+      calls.push(1);
+      return warmup(10);
+    }) as unknown as typeof fetch;
+    const client = new OfscpClient({
+      baseUrl: "https://providera.com",
+      actor: "alice@providera.com",
+      keyId: "key_1",
+      privateKey: generateKeyPair().privateKey,
+      fetch: fakeFetch,
+    });
+    const ac = new AbortController();
+    const started = Date.now();
+    const pending = client.get("/api/x", { signal: ac.signal }).catch((e: unknown) => e);
+    setTimeout(() => ac.abort(new Error("cancelled")), 20);
+    const err = await pending;
+    expect((err as Error).message).toBe("cancelled");
+    expect(Date.now() - started).toBeLessThan(2_000); // did not wait the 10s
+    expect(calls.length).toBe(1);
   });
 });

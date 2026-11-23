@@ -25,6 +25,7 @@ import {
   type DeviceKeyResponse,
   contentDigest,
   generateNonce,
+  parseRetryAfterMs,
   rfc3339Timestamp,
   sign,
 } from "@forumall/shared";
@@ -58,28 +59,44 @@ export interface OfscpClientConfig {
    * {@link OfscpClient.request} for the retry policy.
    */
   retryMaxWaitMs?: number;
-  /** Injectable sleep (tests). Defaults to a real timer. */
-  sleep?: (ms: number) => Promise<void>;
+  /**
+   * Injectable sleep (tests). Defaults to a real timer. Receives the request's
+   * `AbortSignal`, and must reject when it aborts.
+   */
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
 }
 
 /**
  * Default cap on 503/`Retry-After` waits. Short on purpose: a person is waiting.
- * A provider in its §4.5 replay-store warm-up (up to 300s after a restart) that
- * asks for longer gets surfaced as a clear {@link OfscpHttpError} instead.
+ * A provider in its §4.5 replay-store warm-up after a restart (300s on its
+ * clock, longer if ours lags) that asks for longer gets surfaced as a clear
+ * {@link OfscpHttpError} instead.
  */
 export const DEFAULT_RETRY_MAX_WAIT_MS = 15_000;
 
 /** Methods that are safe to resend (RFC 9110 idempotent methods). */
 const IDEMPOTENT_METHODS = new Set(["GET", "HEAD", "PUT", "DELETE", "OPTIONS"]);
 
-/** Parse `Retry-After` (delta-seconds or HTTP-date) → ms from now, or null. */
-export function parseRetryAfterMs(value: string | null, now: number = Date.now()): number | null {
-  if (value === null) return null;
-  const v = value.trim();
-  if (/^\d+$/.test(v)) return Number(v) * 1000;
-  const at = Date.parse(v);
-  if (Number.isNaN(at)) return null;
-  return Math.max(0, at - now);
+/** Re-exported: the strict shared parser (positive delta-seconds or future IMF-fixdate, ≥1s). */
+export { parseRetryAfterMs };
+
+/** A real timer that rejects with the signal's reason if it aborts first. */
+function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal?.reason);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 /** Per-request options. */
@@ -126,9 +143,9 @@ export class OfscpHttpError extends Error {
     const retryAfterSeconds = retryMs === null ? undefined : Math.ceil(retryMs / 1000);
     super(
       status === 503
-        ? // A user-facing message: typically the provider just restarted and is in
-          // its §4.5 replay-store warm-up (up to ~5 minutes).
-          `The provider is temporarily unavailable (it may be restarting). Please try again${
+        ? // A neutral user-facing message for any 503 (a §4.5 warm-up after a
+          // restart, a full replay store, or an upstream outage).
+          `The provider is temporarily unavailable. Please try again${
             retryAfterSeconds !== undefined
               ? ` in about ${formatWait(retryAfterSeconds)}`
               : " shortly"
@@ -322,8 +339,7 @@ export class OfscpClient {
     // `retryAfterSeconds`.
     const retryable = IDEMPOTENT_METHODS.has(method.toUpperCase()) || opts.idempotent === true;
     const maxWait = this.config.retryMaxWaitMs ?? DEFAULT_RETRY_MAX_WAIT_MS;
-    const sleep =
-      this.config.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+    const sleep = this.config.sleep ?? abortableSleep;
     let waited = 0;
     for (let attempt = 1; ; attempt++) {
       const res = await send();
@@ -331,7 +347,8 @@ export class OfscpClient {
       const waitMs = parseRetryAfterMs(res.headers.get("retry-after"));
       if (waitMs === null || waited + waitMs > maxWait) return parseResponse<T>(res);
       await res.body?.cancel();
-      await sleep(waitMs);
+      // Abort-aware: an aborted request stops waiting and rejects at once.
+      await sleep(waitMs, opts.signal);
       waited += waitMs;
     }
   }

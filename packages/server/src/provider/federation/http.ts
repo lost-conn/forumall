@@ -24,7 +24,14 @@
  * there (or accepts it as an argument). Production passes nothing → the global-
  * `fetch` default; the two-provider test harness passes a domain→port router.
  */
-import { HEADER, type ProviderSignInput, contentDigest, signProvider } from "@forumall/shared";
+import {
+  HEADER,
+  OFSCP_TIMESTAMP_SKEW_SECONDS,
+  type ProviderSignInput,
+  contentDigest,
+  parseRetryAfterMs,
+  signProvider,
+} from "@forumall/shared";
 
 import type { Config } from "../../config.ts";
 import type { Db } from "../../db/index.ts";
@@ -174,9 +181,11 @@ export interface SignedProviderFetchInit {
  * sent before the peer processes anything, but a 503 from some other component
  * might not be, so non-idempotent requests MUST NOT opt in.
  *
- * **Behaviour.** Only a `503` with a parseable `Retry-After` (delta-seconds or
- * HTTP-date) is retried, after waiting exactly that long; the request is
- * re-signed each time. It gives up — returning the last `503` to the caller —
+ * **Behaviour.** Only a `503` with a usable `Retry-After` is retried, after
+ * waiting exactly that long — per the strict shared `parseRetryAfterMs`: a
+ * positive integer delta-seconds or a future IMF-fixdate, never less than 1s.
+ * `0`, past dates and malformed values mean "no usable Retry-After" → no retry.
+ * The request is re-signed each time. It gives up — returning the last `503` to the caller —
  * once the next wait would push the total past `maxTotalWaitMs`, or after
  * `maxAttempts` attempts. Requests with a caller-pinned `timestamp`/`nonce` are
  * never retried (they could not be re-signed fresh).
@@ -194,9 +203,16 @@ export interface Retry503Policy {
 
 /**
  * Background sends nobody is waiting on (§10 notification delivery): long
- * enough to ride out a peer's full §4.5 warm-up (300s) plus slack.
+ * enough to ride out a peer's whole §4.5 warm-up. The peer asks us to wait
+ * until T₀ + skew on ITS clock *and* on ours (`max(T₀+skew − now, T₀+skew −
+ * timestamp)`), so if our clock lags the peer's by up to the skew window the
+ * first `Retry-After` can approach **2 × skew** (600s). Cap = 2 × skew + 60s
+ * slack; 6 attempts leave room for a couple of shorter follow-up waits.
  */
-export const BACKGROUND_RETRY: Retry503Policy = { maxTotalWaitMs: 360_000 };
+export const BACKGROUND_RETRY: Retry503Policy = {
+  maxTotalWaitMs: (2 * OFSCP_TIMESTAMP_SKEW_SECONDS + 60) * 1000,
+  maxAttempts: 6,
+};
 
 /**
  * Sends made inline while a user's own request waits (DM edit/delete/reaction
@@ -206,18 +222,8 @@ export const BACKGROUND_RETRY: Retry503Policy = { maxTotalWaitMs: 360_000 };
  */
 export const INLINE_RETRY: Retry503Policy = { maxTotalWaitMs: 10_000 };
 
-/**
- * Parse a `Retry-After` value (RFC 9110 §10.2.3: delta-seconds or HTTP-date)
- * into milliseconds from `now`, or `null` when absent/unparseable.
- */
-export function parseRetryAfterMs(value: string | null, now: number = Date.now()): number | null {
-  if (value === null) return null;
-  const v = value.trim();
-  if (/^\d+$/.test(v)) return Number(v) * 1000;
-  const at = Date.parse(v);
-  if (Number.isNaN(at)) return null;
-  return Math.max(0, at - now);
-}
+/** Re-exported: the strict shared parser (see `@forumall/shared` retry-after.ts). */
+export { parseRetryAfterMs };
 
 const realSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 

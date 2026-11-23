@@ -96,9 +96,45 @@ describe("signedProviderFetch retry on 503 + Retry-After", () => {
       peer.fetch,
     );
     expect(res.status).toBe(503);
-    // 300s fits the 360s background cap once; a second 300s would not.
-    expect(waits).toEqual([300_000]);
-    expect(peer.seen.length).toBe(2);
+    // 300s + 300s fit the 660s (2×skew + 60s) background cap; a third would not.
+    expect(waits).toEqual([300_000, 300_000]);
+    expect(peer.seen.length).toBe(3);
+  });
+
+  test("background cap rides out a lagging sender's ~2×skew warm-up wait", async () => {
+    const { config, db } = setup("lagging");
+    // Our clock lags the restarting peer's by ~300s, so it asks for ~600s.
+    const peer = scriptedPeer([warmup(600), ok]);
+    const { waits, sleep } = recordingSleep();
+    const res = await signedProviderFetch(
+      db,
+      config,
+      { method: "POST", url: URL_B, retry: { ...BACKGROUND_RETRY, sleep } },
+      peer.fetch,
+    );
+    expect(res.status).toBe(200);
+    expect(waits).toEqual([600_000]);
+    expect(BACKGROUND_RETRY.maxTotalWaitMs).toBe(660_000);
+  });
+
+  test("zero / negative / fractional / garbage / past-date Retry-After → no retry", async () => {
+    const { config, db } = setup("garbage");
+    for (const bad of ["0", "-5", "1.5", "soon", "Mon, 01 Jun 2020 12:00:00 GMT"]) {
+      const peer = scriptedPeer([warmup(bad), ok]);
+      const { waits, sleep } = recordingSleep();
+      const res = await signedProviderFetch(
+        db,
+        config,
+        { method: "PUT", url: URL_B, retry: { ...BACKGROUND_RETRY, sleep } },
+        peer.fetch,
+      );
+      expect({ bad, status: res.status, calls: peer.seen.length, waits }).toEqual({
+        bad,
+        status: 503,
+        calls: 1,
+        waits: [],
+      });
+    }
   });
 
   test("the inline (user-waiting) cap does not wait out a long warm-up", async () => {
@@ -164,11 +200,10 @@ describe("signedProviderFetch retry on 503 + Retry-After", () => {
     expect(waits).toEqual([]);
   });
 
-  test("parseRetryAfterMs: delta-seconds and HTTP-date", () => {
+  test("parseRetryAfterMs is the shared strict parser", () => {
     const now = Date.parse("2026-06-01T12:00:00Z");
     expect(parseRetryAfterMs("120", now)).toBe(120_000);
     expect(parseRetryAfterMs("Mon, 01 Jun 2026 12:00:30 GMT", now)).toBe(30_000);
-    expect(parseRetryAfterMs("soon", now)).toBeNull();
-    expect(parseRetryAfterMs(null, now)).toBeNull();
+    expect(parseRetryAfterMs("0", now)).toBeNull();
   });
 });
