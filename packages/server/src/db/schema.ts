@@ -645,8 +645,14 @@ export const dmConversations = sqliteTable(
     counterparty: text("counterparty").notNull(),
     /** Last-activity time (epoch millis); rendered as RFC 3339 `updatedAt`. */
     updatedAt: integer("updated_at", { mode: "number" }).notNull(),
-    /** `seq` of the newest message in this inbox conversation. */
+    /** `seq` of the newest message in this inbox conversation (0 = none yet). */
     lastMessageSeq: integer("last_message_seq", { mode: "number" }).notNull(),
+    /**
+     * Non-authoritative cached copy (JSON `Message`) of the newest message the
+     * owner SENT in this conversation, from a conversation pointer (OFSCP §7.4).
+     * The authoritative copy lives in the counterparty's inbox.
+     */
+    lastSentMessage: text("last_sent_message"),
   },
   (t) => ({
     pk: primaryKey({ columns: [t.owner, t.dmId] }),

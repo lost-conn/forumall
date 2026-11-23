@@ -27,7 +27,7 @@ import type { KeyStore } from "../lib/key-store.ts";
 import { keyStore as defaultKeyStore } from "../lib/key-store.ts";
 import { OfscpWsClient } from "../lib/ofscp-ws.ts";
 import { baseUrlForHost } from "../lib/provider.ts";
-import { clearDms } from "./dms.ts";
+import { clearDms, installDmConversationSync } from "./dms.ts";
 import { clearFeed } from "./feed.ts";
 import { clearNotificationPrefs, hydrateNotificationPrefs } from "./notification-prefs.ts";
 import {
@@ -106,6 +106,8 @@ async function adopt(result: AuthResult, store: KeyStore): Promise<void> {
   // connecting, same race-free rationale: it reacts to dm.message /
   // notification.created / message.created and drives the title/favicon/app-badge.
   installNotifyFx(ws);
+  // Wire `dm.conversation` (§7.4): conversations started on another device.
+  installDmConversationSync(ws, () => session.actor);
   // Fire-and-forget connect; the status dot reflects progress / retries.
   void ws.connect().catch(() => undefined);
 

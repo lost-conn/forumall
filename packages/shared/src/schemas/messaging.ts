@@ -163,9 +163,28 @@ export type DmConversationsResponse = z.infer<typeof DmConversationsResponseSche
 export const DmMessageCreateRequestSchema = z
   .object({
     clientMessageId: z.string().min(1),
+    /**
+     * The recipient actor (OFSCP §7.4). When present the provider verifies it is
+     * local and that `{dmId}` derives from (author, to); when absent it falls
+     * back to searching its local users.
+     */
+    to: UserRefSchema.optional(),
     content: ContentSchema,
     attachments: z.array(AttachmentSchema).optional(),
     reference: MessageReferenceSchema.optional(),
   })
   .passthrough();
 export type DmMessageCreateRequest = z.infer<typeof DmMessageCreateRequestSchema>;
+
+/**
+ * PUT /api/me/dms/{dmId} body (OFSCP §7.4 conversation pointers): record on the
+ * caller's HOME provider that they have a conversation with `with`, plus an
+ * optional non-authoritative preview of the message they just sent.
+ */
+export const DmConversationPointerRequestSchema = z
+  .object({
+    with: UserRefSchema,
+    lastMessage: MessageSchema.optional(),
+  })
+  .passthrough();
+export type DmConversationPointerRequest = z.infer<typeof DmConversationPointerRequestSchema>;

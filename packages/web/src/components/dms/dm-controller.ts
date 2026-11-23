@@ -40,6 +40,7 @@ import {
   deleteDmMessage,
   editDmMessage,
   fetchDmMessages,
+  putDmConversation,
   sendDmMessage,
 } from "../../lib/dm-api.ts";
 import type { DmSentStore, SentDmMessage } from "../../lib/dm-store.ts";
@@ -471,6 +472,7 @@ export async function sendDm(args: SendDmArgs): Promise<string> {
 
   try {
     const { message } = await sendDmMessage(sendClient, dmId, content, {
+      to: counterparty,
       ...(attachments.length > 0 ? { attachments } : {}),
       ...(reference ? { reference } : {}),
       clientMessageId,
@@ -501,6 +503,12 @@ export async function sendDm(args: SendDmArgs): Promise<string> {
       createdAt: message.createdAt,
       clientMessageId,
     });
+    // Record the conversation pointer on our HOME provider (§7.4) so the
+    // conversation lists on our other devices too. For a same-provider DM the
+    // provider already did this on delivery; repeating it is idempotent.
+    if (sendClient !== client) {
+      void putDmConversation(client, dmId, counterparty, message).catch(() => undefined);
+    }
     // Refresh the sidebar preview from this just-sent message.
     upsertConversation({
       dmId,

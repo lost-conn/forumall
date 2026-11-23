@@ -69,6 +69,8 @@ export interface SendDmResult {
 
 /** Options for {@link sendDmMessage}. */
 export interface SendDmMessageOptions {
+  /** The recipient actor (OFSCP §7.4 `to`), so the provider need not search. */
+  to?: string;
   attachments?: Attachment[];
   reference?: { type: string; id: string };
   /**
@@ -99,6 +101,7 @@ export async function sendDmMessage(
   const clientMessageId = opts.clientMessageId ?? newClientMessageId();
   const res = await client.post<Message>(`/api/federation/dms/${dmId}/messages`, {
     clientMessageId,
+    ...(opts.to ? { to: opts.to } : {}),
     content,
     ...(opts.attachments && opts.attachments.length > 0 ? { attachments: opts.attachments } : {}),
     ...(opts.reference ? { reference: opts.reference } : {}),
@@ -179,3 +182,22 @@ export async function deleteDmMessage(
 
 // Re-export the reaction type so callers can fold the embedded history aggregate.
 export type { Reaction };
+
+/**
+ * Record a conversation POINTER on the caller's HOME provider (OFSCP §7.4
+ * `PUT /api/me/dms/{dmId}`): "I have a conversation with `counterparty`", with
+ * the message just sent as a non-authoritative preview. Makes conversations the
+ * user started list on every device and fans `dm.conversation` to their other
+ * connections. Best-effort: a failure only costs that convenience.
+ */
+export async function putDmConversation(
+  client: OfscpClient,
+  dmId: string,
+  counterparty: string,
+  lastMessage?: Message,
+): Promise<void> {
+  await client.put(`/api/me/dms/${dmId}`, {
+    with: counterparty,
+    ...(lastMessage ? { lastMessage } : {}),
+  });
+}
