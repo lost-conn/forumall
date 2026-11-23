@@ -782,6 +782,23 @@ const migrations: readonly Migration[] = [
       );
     },
   },
+  {
+    // DM conversation pointers (OFSCP §7.4): a nullable cached copy of the
+    // newest message the owner SENT, so a conversation the owner started (no
+    // inbox message yet) lists with a preview and syncs to their other
+    // devices. ADD COLUMN is safe on a STRICT table (nullable, no default).
+    // Guarded so a re-run is a no-op.
+    id: "0034_dm_conversations_last_sent",
+    up: (sqlite) => {
+      const cols = sqlite
+        .query<{ name: string }, []>("PRAGMA table_info(dm_conversations)")
+        .all()
+        .map((c) => c.name);
+      if (!cols.includes("last_sent_message")) {
+        sqlite.exec("ALTER TABLE dm_conversations ADD COLUMN last_sent_message TEXT;");
+      }
+    },
+  },
 ];
 
 const LEDGER_DDL = `

@@ -18,9 +18,10 @@
  * The store is transport-agnostic: the DM controller feeds received messages
  * (REST history + WS) and the sent-store hydrate/echo here.
  */
-import type { Attachment, Reaction } from "@forumall/shared";
+import type { Attachment, Reaction, WsDmConversation, WsEnvelope } from "@forumall/shared";
 import { createStore, produce } from "solid-js/store";
 import { compareByCursorThenId } from "../lib/cursor.ts";
+import type { OfscpWsClient } from "../lib/ofscp-ws.ts";
 
 /** A DM message as the thread renders it (received OR locally-retained sent). */
 export interface DmMessage {
@@ -434,5 +435,47 @@ export function clearDms(): void {
     typing: {},
     olderCursors: {},
     hasOlder: {},
+  });
+}
+
+const dmConversationSyncInstalled = new WeakSet<OfscpWsClient>();
+
+/**
+ * Wire the `dm.conversation` listener (OFSCP §7.4): another of this user's
+ * devices sent a DM, so the conversation list updates and — since the preview
+ * is our own sent message — it also lands in the thread, even for a
+ * conversation this device has never seen. The authoritative copy stays in the
+ * counterparty's inbox; this is the non-authoritative pointer preview.
+ */
+export function installDmConversationSync(ws: OfscpWsClient, me: () => string | undefined): void {
+  if (dmConversationSyncInstalled.has(ws)) return;
+  dmConversationSyncInstalled.add(ws);
+  ws.on("dm.conversation", (e: WsEnvelope) => {
+    const conv = (e as WsDmConversation).data?.conversation;
+    if (!conv) return;
+    const self = me();
+    const counterparty = conv.participants.find((p) => p !== self) ?? conv.participants[0] ?? "";
+    const last = conv.lastMessage;
+    upsertConversation({
+      dmId: conv.id,
+      counterparty,
+      ...(last ? { lastMessageText: last.content.text ?? "" } : {}),
+      updatedAt: conv.updatedAt,
+    });
+    if (last && last.author === self) {
+      upsertDmMessage(conv.id, {
+        id: last.id,
+        author: last.author,
+        content: last.content,
+        ...(last.attachments && last.attachments.length > 0
+          ? { attachments: last.attachments }
+          : {}),
+        ...(last.reference ? { reference: last.reference } : {}),
+        createdAt: last.createdAt,
+        ...(last.editedAt ? { editedAt: last.editedAt } : {}),
+        ...(last.clientMessageId ? { clientMessageId: last.clientMessageId as string } : {}),
+        mine: true,
+      });
+    }
   });
 }

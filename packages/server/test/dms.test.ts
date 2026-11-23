@@ -439,6 +439,74 @@ describe("DM real-time delivery (§7.4)", () => {
   });
 });
 
+describe("DM delivery `to` + conversation pointers (§7.4)", () => {
+  test("delivery naming `to` is accepted; a `to` that does not match {dmId} → 400", async () => {
+    const b = boot("dm-to");
+    const alice = await registerUserWithKey(b, "alice");
+    const bob = await registerUserWithKey(b, "bob");
+    await registerUserWithKey(b, "carol");
+    const dmId = deriveDmId(alice.actor, bob.actor);
+
+    const ok = await signedReq(b, alice, "POST", `/api/federation/dms/${dmId}/messages`, {
+      clientMessageId: "to-1",
+      to: bob.actor,
+      content: { mime: "text/plain", text: "hi bob" },
+    });
+    expect(ok.status).toBe(201);
+
+    // carol is a real local user, but {dmId} is alice↔bob → refused.
+    const bad = await signedReq(b, alice, "POST", `/api/federation/dms/${dmId}/messages`, {
+      clientMessageId: "to-2",
+      to: `carol@${DOMAIN}`,
+      content: { mime: "text/plain", text: "misaddressed" },
+    });
+    expect(bad.status).toBe(400);
+  });
+
+  test("PUT /api/me/dms/{dmId} records a pointer to a remote conversation", async () => {
+    const b = boot("dm-pointer");
+    const alice = await registerUserWithKey(b, "alice");
+    const remote = "dave@remote.example";
+    const dmId = deriveDmId(alice.actor, remote);
+    const sent = {
+      id: "msg_remote1",
+      author: alice.actor,
+      type: "message",
+      content: { mime: "text/plain", text: "hello over there" },
+      attachments: [],
+      createdAt: "2026-02-01T10:00:00Z",
+      metadata: [],
+    };
+
+    const put = await signedReq(b, alice, "PUT", `/api/me/dms/${dmId}`, {
+      with: remote,
+      lastMessage: sent,
+    });
+    expect(put.status).toBe(200);
+    const conv = (await put.json()) as { id: string; participants: string[] };
+    expect(conv.id).toBe(dmId);
+    expect(conv.participants).toEqual([alice.actor, remote]);
+
+    const list = await signedReq(b, alice, "GET", "/api/me/dms");
+    const items = ((await list.json()) as { items: { id: string; lastMessage?: { id: string } }[] })
+      .items;
+    expect(items.map((i) => i.id)).toEqual([dmId]);
+    expect(items[0]?.lastMessage?.id).toBe("msg_remote1");
+
+    // {dmId} not derived from (caller, with) → 400.
+    const mismatch = await signedReq(b, alice, "PUT", `/api/me/dms/${dmId}`, {
+      with: "erin@remote.example",
+    });
+    expect(mismatch.status).toBe(400);
+    // A preview authored by someone else → 400.
+    const forged = await signedReq(b, alice, "PUT", `/api/me/dms/${dmId}`, {
+      with: remote,
+      lastMessage: { ...sent, author: remote },
+    });
+    expect(forged.status).toBe(400);
+  });
+});
+
 describe("DM listing + participation (§7.4)", () => {
   test("GET /api/me/dms lists bob's conversation with alice (participants + lastMessage)", async () => {
     const b = boot("dm-list");
@@ -465,10 +533,18 @@ describe("DM listing + participation (§7.4)", () => {
     expect(conv?.participants).toContain(alice.actor);
     expect(conv?.lastMessage?.content.text).toBe("last words");
 
-    // alice keeps no sender copy → her conversation list is empty.
+    // alice keeps no sender COPY, but her home provider (this one) records a
+    // conversation POINTER (§7.4) so the conversation she started lists for her,
+    // previewing her own last sent message.
     const aliceList = await signedReq(b, alice, "GET", "/api/me/dms");
-    const aliceItems = ((await aliceList.json()) as { items: unknown[] }).items;
-    expect(aliceItems.length).toBe(0);
+    const aliceItems = (
+      (await aliceList.json()) as {
+        items: { id: string; lastMessage?: { author: string; content: { text: string } } }[];
+      }
+    ).items;
+    expect(aliceItems.length).toBe(1);
+    expect(aliceItems[0]?.id).toBe(dmId);
+    expect(aliceItems[0]?.lastMessage?.author).toBe(alice.actor);
   });
 
   test("non-participant carol reading /api/dms/{dmId}/messages → 404", async () => {

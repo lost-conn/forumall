@@ -363,16 +363,7 @@ export function listDmConversations(
   const hasMore = rows.length > limit;
   const pageRows = hasMore ? rows.slice(0, limit) : rows;
 
-  const items = pageRows.map((row) => {
-    const last = lastInboxMessage(db, owner, row.dmId);
-    return {
-      owner: row.owner,
-      dmId: row.dmId,
-      counterparty: row.counterparty,
-      updatedAt: row.updatedAt,
-      ...(last ? { lastMessage: last } : {}),
-    };
-  });
+  const items = pageRows.map((row) => conversationItem(db, row));
 
   const last = pageRows[pageRows.length - 1];
   const nextCursor =
@@ -394,6 +385,79 @@ function decodeConversationCursor(cursor: string): ConversationCursor | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * One conversation-list item for a `dm_conversations` row: its newest message
+ * is the later of the newest RECEIVED message (authoritative, in this inbox)
+ * and the cached newest SENT message from a conversation pointer (§7.4).
+ */
+function conversationItem(db: Db, row: DmConversationRow) {
+  const received = lastInboxMessage(db, row.owner, row.dmId);
+  const sent = parseCachedMessage(row.lastSentMessage);
+  const last =
+    received && sent ? (sent.createdAt > received.createdAt ? sent : received) : (received ?? sent);
+  return {
+    owner: row.owner,
+    dmId: row.dmId,
+    counterparty: row.counterparty,
+    updatedAt: row.updatedAt,
+    ...(last ? { lastMessage: last } : {}),
+  };
+}
+
+function parseCachedMessage(json: string | null | undefined): Message | undefined {
+  if (!json) return undefined;
+  try {
+    return JSON.parse(json) as Message;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The conversation-list item for (owner, dmId), or `null` if there is none. */
+export function getDmConversationItem(db: Db, owner: string, dmId: string) {
+  const row = getDmConversationRow(db, owner, dmId);
+  return row ? conversationItem(db, row) : null;
+}
+
+/**
+ * Record a conversation POINTER for `owner` (OFSCP §7.4): the owner has a
+ * conversation `dmId` with `counterparty`, optionally caching the message they
+ * just sent (non-authoritative; the real copy is in the counterparty's inbox).
+ * Creates the row if absent (with no inbox message, `lastMessageSeq` 0) and
+ * bumps `updatedAt` so the conversation sorts by latest activity. Never touches
+ * `lastMessageSeq`, which tracks this inbox only. The caller has already
+ * verified `dmId` = deriveDmId(owner actor, counterparty).
+ */
+export function upsertDmPointer(
+  db: Db,
+  owner: string,
+  dmId: string,
+  counterparty: string,
+  lastSent?: Message,
+): void {
+  const now = Date.now();
+  const cached = lastSent ? JSON.stringify(lastSent) : null;
+  db.drizzle
+    .insert(dmConversations)
+    .values({
+      owner,
+      dmId,
+      counterparty,
+      updatedAt: now,
+      lastMessageSeq: 0,
+      lastSentMessage: cached,
+    })
+    .onConflictDoUpdate({
+      target: [dmConversations.owner, dmConversations.dmId],
+      set: {
+        counterparty,
+        updatedAt: now,
+        ...(cached !== null ? { lastSentMessage: cached } : {}),
+      },
+    })
+    .run();
 }
 
 /** The newest inbox message for (owner, dmId), or undefined for an empty inbox. */

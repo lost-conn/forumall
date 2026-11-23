@@ -30,6 +30,8 @@
  */
 import {
   type Content,
+  type DmConversation,
+  DmConversationPointerRequestSchema,
   DmConversationSchema,
   DmConversationsResponseSchema,
   DmMessageCreateRequestSchema,
@@ -61,6 +63,7 @@ import {
 } from "../provider/dm-reactions.ts";
 import {
   type DmViewer,
+  getDmConversationItem,
   getDmConversationRow,
   getDmMessageByClientId,
   getDmMessageRow,
@@ -70,10 +73,13 @@ import {
   storeDmMessage,
   tombstoneDmMessage,
   updateDmMessageContent,
+  upsertDmPointer,
 } from "../provider/dms.ts";
 import type { FederationFetch } from "../provider/federation/http.ts";
 import { signedProviderFetch } from "../provider/federation/http.ts";
+import { getUserRow } from "../provider/guests.ts";
 import { previewText, sendPushToRecipient } from "../provider/push-send.ts";
+import type { Hub } from "../provider/ws-hub.ts";
 import { AppError } from "./errors.ts";
 import {
   requireActorOrProviderSignature,
@@ -422,17 +428,31 @@ export function createFederationDmsRouter() {
     const body = DmMessageCreateRequestSchema.parse(await c.req.json());
 
     // --- Recipient resolution + §8.3 {dmId} verification -------------------
-    // The recipient is the LOCAL user `u` whose derived dmId with the author
-    // equals {dmId}. O(n) over local users (acceptable for self-host v0.1; a
-    // precomputed index could replace this). No match → 400 (inbox poisoning).
+    // With `to` (OFSCP §7.4), the recipient is named: it must be a LOCAL user
+    // and {dmId} must derive from (author, to) — O(1). Without it (older
+    // clients), the recipient is the LOCAL user `u` whose derived dmId with the
+    // author equals {dmId}, found by scanning local users. Either way a
+    // mismatch → 400 (inbox poisoning).
     const authority = canonicalAuthority(config.domain);
-    const localUsers = db.drizzle.select({ handle: users.handle }).from(users).all();
     let owner: string | null = null;
-    for (const u of localUsers) {
-      const recipientActor = `${u.handle}@${authority}`;
-      if (deriveDmId(author, recipientActor) === dmId) {
-        owner = u.handle;
-        break;
+    if (body.to !== undefined) {
+      const at = body.to.lastIndexOf("@");
+      const toHandle = at > 0 ? body.to.slice(0, at) : "";
+      const toDomain = at > 0 ? canonicalAuthority(body.to.slice(at + 1)) : "";
+      if (
+        toDomain === authority &&
+        getUserRow(db, toHandle) &&
+        deriveDmId(author, `${toHandle}@${authority}`) === dmId
+      ) {
+        owner = toHandle;
+      }
+    } else {
+      const localUsers = db.drizzle.select({ handle: users.handle }).from(users).all();
+      for (const u of localUsers) {
+        if (deriveDmId(author, `${u.handle}@${authority}`) === dmId) {
+          owner = u.handle;
+          break;
+        }
       }
     }
     if (owner === null) {
@@ -466,6 +486,21 @@ export function createFederationDmsRouter() {
       type: "dm.message",
       data: dmMessageEventData(dmId, record.cursor, record.message, body.clientMessageId),
     });
+
+    // --- Sender's conversation pointer (§7.4) when the sender is LOCAL -------
+    // A remote sender's client records the pointer at its own home provider
+    // (PUT /api/me/dms/{dmId}); a local sender's home provider is this one, so
+    // record it here and tell the sender's other devices.
+    const authorAt = author.lastIndexOf("@");
+    const authorHandle = authorAt > 0 ? author.slice(0, authorAt) : "";
+    if (
+      authorAt > 0 &&
+      canonicalAuthority(author.slice(authorAt + 1)) === authority &&
+      authorHandle !== owner
+    ) {
+      upsertDmPointer(db, authorHandle, dmId, recipientActor, record.message);
+      publishDmConversation(hub, db, author, authorHandle, dmId);
+    }
 
     // --- Web Push: notify a DISCONNECTED recipient (no live WS) -------------
     // Gate strictly on liveConnectionCount === 0 (a connected recipient already
@@ -717,18 +752,48 @@ export function createMeDmsRouter() {
     });
 
     const response = {
-      items: page.items.map((conv) =>
-        DmConversationSchema.parse({
-          id: conv.dmId,
-          participants: [actor.actor, conv.counterparty],
-          ...(conv.lastMessage ? { lastMessage: conv.lastMessage } : {}),
-          updatedAt: rfc3339Timestamp(new Date(conv.updatedAt)),
-          metadata: [],
-        }),
-      ),
+      items: page.items.map((conv) => wireConversation(actor.actor, conv)),
       page: page.page,
     };
     return c.json(DmConversationsResponseSchema.parse(response));
+  });
+
+  // -- PUT /dms/{dmId} (§7.4 conversation pointer — signed, local caller) ---
+  // Record that the caller has a conversation with `with` (typically right
+  // after sending to `with`'s home provider), optionally caching the message
+  // just sent as a non-authoritative preview. Lists started conversations and
+  // syncs them to the caller's other devices via `dm.conversation`.
+  router.put("/dms/:dmId", signed, local, async (c) => {
+    const { db, hub } = c.var;
+    const actor = c.var.actor;
+    if (!actor) throw AppError.unauthorized();
+    const dmId = requireParam(c, "dmId");
+
+    const raw = await c.req.json().catch(() => {
+      throw AppError.badRequest({ detail: "request body must be valid JSON" });
+    });
+    const parsed = DmConversationPointerRequestSchema.safeParse(raw);
+    if (!parsed.success) {
+      throw AppError.badRequest({
+        detail: "invalid conversation pointer",
+        extensions: { errors: parsed.error.flatten() },
+      });
+    }
+    const { with: counterparty, lastMessage } = parsed.data;
+    if (counterparty === actor.actor || deriveDmId(actor.actor, counterparty) !== dmId) {
+      throw AppError.badRequest({
+        detail: "{dmId} does not match a conversation between the caller and `with`",
+      });
+    }
+    // The cached preview must be a message the CALLER sent in this conversation.
+    if (lastMessage !== undefined && lastMessage.author !== actor.actor) {
+      throw AppError.badRequest({ detail: "`lastMessage` must be authored by the caller" });
+    }
+
+    const handle = requireLocalHandle(c);
+    upsertDmPointer(db, handle, dmId, counterparty, lastMessage);
+    const item = publishDmConversation(hub, db, actor.actor, handle, dmId);
+    return c.json(item, 200);
   });
 
   return router;
@@ -1161,4 +1226,36 @@ export function createDmsRouter() {
   });
 
   return router;
+}
+
+/** Render a conversation-list item as the wire `DmConversation` for `ownerActor`. */
+function wireConversation(
+  ownerActor: string,
+  conv: { dmId: string; counterparty: string; updatedAt: number; lastMessage?: Message },
+): DmConversation {
+  return DmConversationSchema.parse({
+    id: conv.dmId,
+    participants: [ownerActor, conv.counterparty],
+    ...(conv.lastMessage ? { lastMessage: conv.lastMessage } : {}),
+    updatedAt: rfc3339Timestamp(new Date(conv.updatedAt)),
+    metadata: [],
+  });
+}
+
+/**
+ * Emit `dm.conversation` (§7.4) with the owner's current view of `dmId` to all
+ * of the owner's connections, and return that conversation.
+ */
+function publishDmConversation(
+  hub: Hub,
+  db: Db,
+  ownerActor: string,
+  ownerHandle: string,
+  dmId: string,
+): DmConversation | null {
+  const item = getDmConversationItem(db, ownerHandle, dmId);
+  if (!item) return null;
+  const conversation = wireConversation(ownerActor, item);
+  hub.publishToActor(ownerActor, { type: "dm.conversation", data: { conversation } });
+  return conversation;
 }

@@ -978,12 +978,18 @@ describe("DM edit/delete — only-sent author (no inbox row of their own)", () =
     const dmId = deriveDmId(alice.actor, bob.actor);
 
     // alice → bob and NOTHING else: bob holds the only copy + the only
-    // conversation row. alice's `/api/me/dms` is empty (no sender copy, §8.3).
+    // inbox row; alice has only a conversation pointer (no sender copy, §7.4).
     const sent = await sendDm(b, alice, dmId, { text: "typo heer", clientMessageId: "os1" });
     expect(sent.status).toBe(201);
     const msgId = ((await sent.json()) as { id: string }).id;
+    // No inbox row of her own — only the conversation POINTER (§7.4) her home
+    // provider records for the sender, previewing the message she sent.
     const convs = await signedReq(b, alice, "GET", "/api/me/dms");
-    expect(((await convs.json()) as { items: unknown[] }).items).toEqual([]);
+    const convItems = (
+      (await convs.json()) as { items: { id: string; lastMessage?: { author: string } }[] }
+    ).items;
+    expect(convItems.map((i) => i.id)).toEqual([dmId]);
+    expect(convItems[0]?.lastMessage?.author).toBe(alice.actor);
 
     const bobWs = await connectAuthenticated(b.url, b.domain, bob);
 
@@ -1291,12 +1297,18 @@ describe("DM reactions — only-sent author (no inbox row of their own)", () => 
     const dmId = deriveDmId(alice.actor, bob.actor);
 
     // alice → bob and NOTHING else: bob holds the only copy + the only
-    // conversation row. alice's `/api/me/dms` is empty (no sender copy, §8.3).
+    // inbox row; alice has only a conversation pointer (no sender copy, §7.4).
     const sent = await sendDm(b, alice, dmId, { text: "ship it", clientMessageId: "os1" });
     expect(sent.status).toBe(201);
     const msgId = ((await sent.json()) as { id: string }).id;
+    // No inbox row of her own — only the conversation POINTER (§7.4) her home
+    // provider records for the sender, previewing the message she sent.
     const convs = await signedReq(b, alice, "GET", "/api/me/dms");
-    expect(((await convs.json()) as { items: unknown[] }).items).toEqual([]);
+    const convItems = (
+      (await convs.json()) as { items: { id: string; lastMessage?: { author: string } }[] }
+    ).items;
+    expect(convItems.map((i) => i.id)).toEqual([dmId]);
+    expect(convItems[0]?.lastMessage?.author).toBe(alice.actor);
 
     const aliceWs = await connectAuthenticated(b.url, b.domain, alice);
     const bobWs = await connectAuthenticated(b.url, b.domain, bob);

@@ -23,7 +23,12 @@ import {
   UserRefSchema,
 } from "./common.ts";
 import { MemberSchema } from "./groups.ts";
-import { ContentSchema, MessageReferenceSchema, ReactionSchema } from "./messaging.ts";
+import {
+  ContentSchema,
+  DmConversationSchema,
+  MessageReferenceSchema,
+  ReactionSchema,
+} from "./messaging.ts";
 import { NotificationSchema } from "./notifications.ts";
 import { PresenceSchema } from "./privacy.ts";
 
@@ -67,6 +72,7 @@ export const WsEventTypeSchema = z.enum([
   "dm.message",
   "dm.reaction",
   "dm.typing",
+  "dm.conversation",
   "presence.subscribed",
   "presence.unsubscribed",
   "presence.update",
@@ -112,6 +118,7 @@ export const WsTypeSchema = z.enum([
   "dm.message",
   "dm.reaction",
   "dm.typing",
+  "dm.conversation",
   "presence.subscribed",
   "presence.unsubscribed",
   "presence.update",
@@ -569,6 +576,17 @@ export const WsDmTypingSchema = wsFrame(
     .passthrough(),
 );
 export type WsDmTyping = z.infer<typeof WsDmTypingSchema>;
+
+/**
+ * `dm.conversation` event (OFSCP §7.4): a conversation in the user's list was
+ * created or updated by one of their own sends — fanned to all of the user's
+ * connections so their other devices see conversations they started.
+ */
+export const WsDmConversationSchema = wsFrame(
+  "dm.conversation",
+  z.object({ conversation: DmConversationSchema }).passthrough(),
+);
+export type WsDmConversation = z.infer<typeof WsDmConversationSchema>;
 
 /** `presence.subscribed` event. */
 export const WsPresenceSubscribedSchema = wsFrame(
