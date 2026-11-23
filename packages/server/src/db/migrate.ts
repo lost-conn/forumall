@@ -14,6 +14,7 @@
  * one) when they introduce tables.
  */
 import type { Database } from "bun:sqlite";
+import { canonicalActor } from "@forumall/shared";
 
 import type { Db } from "./index.ts";
 
@@ -814,6 +815,33 @@ const migrations: readonly Migration[] = [
         .map((c) => c.name);
       if (!cols.includes("last_sent_at")) {
         sqlite.exec("ALTER TABLE dm_conversations ADD COLUMN last_sent_at INTEGER;");
+      }
+    },
+  },
+  {
+    // OFSCP §7.4: a provider MUST serve a pointer's counterparty in canonical
+    // actor form, normalizing values stored before `PUT /api/me/dms` required
+    // it. Rewrite each non-canonical `counterparty` to `canonicalActor(...)`
+    // (lowercase handle + canonical authority; `:443` stripped). The PK is
+    // (owner, dm_id), so this never collides. A value that cannot be made
+    // canonical is left as is: the runtime rule ignores any row whose
+    // counterparty does not derive its dmId (`conversationDerivesDmId`).
+    // Data-only and idempotent (a re-run finds nothing non-canonical).
+    id: "0036_dm_conversations_canonical_counterparty",
+    up: (sqlite) => {
+      const rows = sqlite
+        .query<{ owner: string; dm_id: string; counterparty: string }, []>(
+          "SELECT owner, dm_id, counterparty FROM dm_conversations",
+        )
+        .all();
+      const update = sqlite.prepare(
+        "UPDATE dm_conversations SET counterparty = ? WHERE owner = ? AND dm_id = ?",
+      );
+      for (const r of rows) {
+        const canonical = canonicalActor(r.counterparty);
+        if (canonical !== null && canonical !== r.counterparty) {
+          update.run(canonical, r.owner, r.dm_id);
+        }
       }
     },
   },

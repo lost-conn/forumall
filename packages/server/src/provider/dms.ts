@@ -28,6 +28,8 @@ import {
   type MessageReference,
   MessageSchema,
   type MetadataList,
+  canonicalActor,
+  deriveDmId,
   rfc3339Timestamp,
 } from "@forumall/shared";
 import { and, eq, or, sql } from "drizzle-orm";
@@ -239,25 +241,48 @@ export function storeDmMessage(
 // Conversations (§7.4 listing + participation checks)
 // ---------------------------------------------------------------------------
 
-/** The conversation summary row for (owner, dmId), or `null` if absent. */
+/**
+ * Whether a stored conversation row is CONSISTENT (OFSCP §7.4 pointer hygiene):
+ * its counterparty is (or canonicalizes to) an actor that derives the row's
+ * `dmId` together with `ownerActor`. A pointer's counterparty is fixed by its
+ * `dmId`; a row that fails this — e.g. one recorded before `PUT /api/me/dms`
+ * enforced the derivation, or a counterparty that cannot be made canonical — is
+ * IGNORED everywhere: neither listed (`GET /api/me/dms`, unread summary) nor
+ * acted on (participation, read markers, typing, reaction/edit/delete forwards).
+ * We ignore rather than delete so a read never writes; the next valid write for
+ * the same `(owner, dmId)` (an inbox message or a pointer PUT) replaces it.
+ */
+export function conversationDerivesDmId(
+  ownerActor: string,
+  row: { readonly dmId: string; readonly counterparty: string },
+): boolean {
+  const counterparty = canonicalActor(row.counterparty);
+  return counterparty !== null && deriveDmId(ownerActor, counterparty) === row.dmId;
+}
+
+/**
+ * The CONSISTENT conversation summary row for (owner, dmId), or `null` if absent
+ * or ignored by {@link conversationDerivesDmId}. `domain` is this provider's
+ * canonical authority (the local owner's actor is `owner@domain`).
+ */
 export function getDmConversationRow(
   db: Db,
   owner: string,
   dmId: string,
+  domain: string,
 ): DmConversationRow | null {
-  return (
-    db.drizzle
-      .select()
-      .from(dmConversations)
-      .where(and(eq(dmConversations.owner, owner), eq(dmConversations.dmId, dmId)))
-      .limit(1)
-      .all()[0] ?? null
-  );
+  const row = db.drizzle
+    .select()
+    .from(dmConversations)
+    .where(and(eq(dmConversations.owner, owner), eq(dmConversations.dmId, dmId)))
+    .limit(1)
+    .all()[0];
+  return row && conversationDerivesDmId(`${owner}@${domain}`, row) ? row : null;
 }
 
-/** Whether `owner` is a participant of `dmId` (has an inbox conversation row). */
-export function isDmParticipant(db: Db, owner: string, dmId: string): boolean {
-  return getDmConversationRow(db, owner, dmId) != null;
+/** Whether `owner` is a participant of `dmId` (has a consistent conversation row). */
+export function isDmParticipant(db: Db, owner: string, dmId: string, domain: string): boolean {
+  return getDmConversationRow(db, owner, dmId, domain) != null;
 }
 
 /**
@@ -290,20 +315,24 @@ export interface DmViewer {
  * only-sent — sender who has no inbox of their own here but whose sent messages
  * sit in a local recipient's inbox). A true non-participant matches neither.
  */
-export function isDmThreadParticipant(db: Db, dmId: string, viewer: DmViewer): boolean {
+export function isDmThreadParticipant(
+  db: Db,
+  dmId: string,
+  viewer: DmViewer,
+  domain: string,
+): boolean {
   if (
     viewer.localHandle !== undefined &&
-    getDmConversationRow(db, viewer.localHandle, dmId) != null
+    getDmConversationRow(db, viewer.localHandle, dmId, domain) != null
   ) {
     return true;
   }
-  const row = db.drizzle
-    .select({ owner: dmConversations.owner })
+  return db.drizzle
+    .select()
     .from(dmConversations)
     .where(and(eq(dmConversations.dmId, dmId), eq(dmConversations.counterparty, viewer.actor)))
-    .limit(1)
-    .all()[0];
-  return row != null;
+    .all()
+    .some((row) => conversationDerivesDmId(`${row.owner}@${domain}`, row));
 }
 
 /** Keyset position for the conversation listing: `(updatedAt, dmId)` total order. */
@@ -329,11 +358,14 @@ export interface DmConversationPage {
 /**
  * List one page of `owner`'s DM conversations, newest-first by `(updatedAt,
  * dmId)` (§7.4). Includes each conversation's last inbox message as
- * `lastMessage`. A malformed `cursor` is treated as the first page.
+ * `lastMessage`. A malformed `cursor` is treated as the first page. Rows ignored
+ * by {@link conversationDerivesDmId} are skipped (the page may then be short;
+ * the cursor still advances past them).
  */
 export function listDmConversations(
   db: Db,
   owner: string,
+  domain: string,
   opts: { cursor?: string | null; limit?: number } = {},
 ): DmConversationPage {
   const limit =
@@ -363,7 +395,10 @@ export function listDmConversations(
   const hasMore = rows.length > limit;
   const pageRows = hasMore ? rows.slice(0, limit) : rows;
 
-  const items = pageRows.map((row) => conversationItem(db, row));
+  const ownerActor = `${owner}@${domain}`;
+  const items = pageRows
+    .filter((row) => conversationDerivesDmId(ownerActor, row))
+    .map((row) => conversationItem(db, row));
 
   const last = pageRows[pageRows.length - 1];
   const nextCursor =
@@ -410,7 +445,9 @@ function conversationItem(db: Db, row: DmConversationRow) {
   return {
     owner: row.owner,
     dmId: row.dmId,
-    counterparty: row.counterparty,
+    // Served canonically (§7.4); callers only pass consistent rows, whose
+    // counterparty canonicalizes.
+    counterparty: canonicalActor(row.counterparty) ?? row.counterparty,
     updatedAt: row.updatedAt,
     ...(last ? { lastMessage: last } : {}),
   };
@@ -440,8 +477,8 @@ export function rekeyCachedMessageAuthor(
 }
 
 /** The conversation-list item for (owner, dmId), or `null` if there is none. */
-export function getDmConversationItem(db: Db, owner: string, dmId: string) {
-  const row = getDmConversationRow(db, owner, dmId);
+export function getDmConversationItem(db: Db, owner: string, dmId: string, domain: string) {
+  const row = getDmConversationRow(db, owner, dmId, domain);
   return row ? conversationItem(db, row) : null;
 }
 
@@ -464,12 +501,14 @@ export function upsertDmPointer(
 ): void {
   const now = Date.now();
   const cached = lastSent ? JSON.stringify(lastSent) : null;
+  // Stored (and served) in canonical form (§7.4).
+  const canonicalCounterparty = canonicalActor(counterparty) ?? counterparty;
   db.drizzle
     .insert(dmConversations)
     .values({
       owner,
       dmId,
-      counterparty,
+      counterparty: canonicalCounterparty,
       updatedAt: now,
       lastMessageSeq: 0,
       lastSentMessage: cached,
@@ -477,9 +516,11 @@ export function upsertDmPointer(
     })
     .onConflictDoUpdate({
       target: [dmConversations.owner, dmConversations.dmId],
-      // Never rewrite `counterparty` on an existing row: it is the verified
-      // participant that thread reads and real-time fan-out match on exactly.
+      // The caller verified `counterparty` derives `dmId` with the owner, so on
+      // a consistent row this is the same actor (§7.4: the counterparty is fixed
+      // by the dmId) — it only replaces an inconsistent, ignored row's value.
       set: {
+        counterparty: canonicalCounterparty,
         updatedAt: now,
         // The preview's store time moves only with the preview itself: a PUT
         // without `lastMessage` changes no preview, so it can't reorder one.

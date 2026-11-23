@@ -926,7 +926,7 @@ export function createWsHandlers(deps: WsHandlerDeps) {
         // A DM subscription acks against the caller's LOCAL inbox rows, which only
         // a local actor has; a remote participant's inbox lives at their own home
         // provider (DM delivery itself is `publishToActor`, not subscription-based).
-        if (state.localHandle && isDmParticipant(db, state.localHandle, channelId)) {
+        if (state.localHandle && isDmParticipant(db, state.localHandle, channelId, authority)) {
           authorized.push(channelId);
         } else {
           forbidden.push(channelId);
@@ -1379,7 +1379,7 @@ export function createWsHandlers(deps: WsHandlerDeps) {
       // The conversation row is a LOCAL inbox row (see ConnState.localHandle); a
       // remote actor has none here, so they cannot type into a local inbox.
       const handle = state.localHandle;
-      const conv = handle !== undefined ? getDmConversationRow(db, handle, dmId) : null;
+      const conv = handle !== undefined ? getDmConversationRow(db, handle, dmId, authority) : null;
       if (!conv) {
         send(
           ws,
@@ -1455,7 +1455,9 @@ export function createWsHandlers(deps: WsHandlerDeps) {
       const handle = state.localHandle;
       const counterparty =
         entry?.counterparty ??
-        (handle !== undefined ? getDmConversationRow(db, handle, dmId)?.counterparty : undefined);
+        (handle !== undefined
+          ? getDmConversationRow(db, handle, dmId, authority)?.counterparty
+          : undefined);
       clearDmTypingTimer(state, dmId);
       if (counterparty) hub.publishToActor(counterparty, dmTypingEvent(dmId, actor, "stop"));
       return;

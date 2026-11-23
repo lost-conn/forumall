@@ -528,7 +528,7 @@ describe("DM conversation pointers: input + federation policy hardening (§7.4, 
     expect(((await list.json()) as { items: unknown[] }).items).toEqual([]);
   });
 
-  test("upsertDmPointer never rewrites the counterparty of an existing row", async () => {
+  test("upsertDmPointer never rewrites the counterparty of an existing row to another actor", async () => {
     const b = boot("dm-pointer-no-overwrite");
     const alice = await registerUserWithKey(b, "alice");
     const bob = await registerUserWithKey(b, "bob");
@@ -536,9 +536,9 @@ describe("DM conversation pointers: input + federation policy hardening (§7.4, 
     await sendDm(b, bob, dmId, "hi alice", "cmsg_x"); // alice's inbox row, counterparty = bob
 
     // Even if a differently-spelled counterparty reached the upsert, the
-    // verified participant on the existing row is kept.
+    // verified participant on the existing row is kept, in canonical form.
     upsertDmPointer(b.db, "alice", dmId, bob.actor.toUpperCase());
-    expect(getDmConversationRow(b.db, "alice", dmId)?.counterparty).toBe(bob.actor);
+    expect(getDmConversationRow(b.db, "alice", dmId, DOMAIN)?.counterparty).toBe(bob.actor);
   });
 
   test("PUT refuses a counterparty on a deny-listed provider (403)", async () => {
@@ -656,13 +656,13 @@ describe("DM conversation preview: newer by provider-recorded time (§7.4)", () 
 
     const old = preview(alice, "msg_old", "2026-01-01T00:00:00Z");
     await putPointer(b, alice, dmId, old);
-    const storedAt = getDmConversationRow(b.db, "alice", dmId)?.lastSentAt;
+    const storedAt = getDmConversationRow(b.db, "alice", dmId, DOMAIN)?.lastSentAt;
     await tick();
     const reply = receive(b, dmId, "newer reply");
     await tick();
     // A retried/replayed PUT of the same message must not re-stamp it.
     await putPointer(b, alice, dmId, old);
-    expect(getDmConversationRow(b.db, "alice", dmId)?.lastSentAt).toBe(storedAt);
+    expect(getDmConversationRow(b.db, "alice", dmId, DOMAIN)?.lastSentAt).toBe(storedAt);
     expect(await previewId(b, alice, dmId)).toBe(reply);
 
     // A genuinely new message is stamped now and wins.
@@ -699,7 +699,7 @@ describe("DM conversation preview: newer by provider-recorded time (§7.4)", () 
     // With an empty inbox the legacy preview is still shown.
     await putPointer(b, alice, dmId, preview(alice, "msg_legacy", "2099-01-01T00:00:00Z"));
     clearTime();
-    expect(getDmConversationRow(b.db, "alice", dmId)?.lastSentAt).toBeNull();
+    expect(getDmConversationRow(b.db, "alice", dmId, DOMAIN)?.lastSentAt).toBeNull();
     expect(await previewId(b, alice, dmId)).toBe("msg_legacy");
 
     // Once anything is received, the received message wins.
