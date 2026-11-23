@@ -29,6 +29,7 @@ import { HEADER, type ProviderSignInput, contentDigest, signProvider } from "@fo
 import type { Config } from "../../config.ts";
 import type { Db } from "../../db/index.ts";
 import { getProviderSigningKey } from "../signing-key.ts";
+import { guardedFetch } from "./egress-guard.ts";
 
 /**
  * An injectable fetch keyed by the *logical* target domain.
@@ -45,10 +46,13 @@ import { getProviderSigningKey } from "../signing-key.ts";
 export type FederationFetch = (domain: string, request: Request) => Promise<Response>;
 
 /**
- * Default {@link FederationFetch}: perform the request as-is over the global
- * `fetch` (the URL is already `https://{domain}/...`).
+ * Default {@link FederationFetch}: perform the request over the egress guard
+ * (`egress-guard.ts`) — public https hosts only, no redirects followed, bounded
+ * by a timeout. Every peer domain reaching here was named by someone else (an
+ * `X-OFSCP-Actor` header, a peer list, a webhook target), so it must never be
+ * able to steer the provider at loopback, metadata or internal addresses.
  */
-export const defaultFederationFetch: FederationFetch = (_domain, request) => fetch(request);
+export const defaultFederationFetch: FederationFetch = (_domain, request) => guardedFetch(request);
 
 /** True for a loopback host (`localhost`, `127.0.0.1`, `[::1]`), port-agnostic. */
 function isLoopbackHost(host: string): boolean {
@@ -82,7 +86,8 @@ export const insecureLocalhostFederationFetch: FederationFetch = (_domain, reque
     // Preserve method/body/headers (incl. the X-OFSCP-* signing headers + Host).
     return fetch(new Request(url.toString(), request));
   }
-  return fetch(request);
+  // Non-loopback targets get the same egress guard as production.
+  return guardedFetch(request);
 };
 
 /** Split a target URL into the pieces the canonical string needs. */

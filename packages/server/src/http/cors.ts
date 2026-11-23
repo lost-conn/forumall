@@ -39,6 +39,12 @@ const OFSCP_HEADERS = [
 const ALLOW_METHODS = "GET, POST, PUT, PATCH, DELETE, OPTIONS";
 
 /**
+ * Response headers a cross-origin browser client may read: the OFSCP set plus
+ * `Retry-After` (429/503 backoff) and `ETag` (discovery/keys caching).
+ */
+const EXPOSE_HEADERS = `${OFSCP_HEADERS}, retry-after, etag`;
+
+/**
  * Permissive, credential-less CORS for the API + cross-provider well-known reads.
  * Applied app-wide before routing; a preflight (`OPTIONS`) returns 204 with the
  * allow headers and never reaches a handler.
@@ -70,7 +76,7 @@ export function cors(): MiddlewareHandler<AppBindings> {
 
     await next();
     c.res.headers.set("access-control-allow-origin", "*");
-    c.res.headers.set("access-control-expose-headers", OFSCP_HEADERS);
+    c.res.headers.set("access-control-expose-headers", EXPOSE_HEADERS);
     c.res.headers.set("vary", "Origin");
   };
 }

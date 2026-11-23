@@ -345,4 +345,44 @@ describe("contacts federation receiver (§6.7)", () => {
     expect(acc.status).toBe(200);
     expect(areContacts(b.db, "bob", from)).toBe(true);
   });
+
+  test("a federated accept cannot accept the sender's OWN request (no unilateral contact)", async () => {
+    const b = boot("contacts-fed-self-accept");
+    const bob = await registerUserWithKey(b, "bob");
+    const mallory = await registerUserWithKey(b, "mallory");
+
+    // mallory requests bob (bob's row: incoming pending) ...
+    const req = await signedReq(b, mallory, "POST", "/api/federation/contacts", {
+      action: "request",
+      from: mallory.actor,
+      to: bob.actor,
+    });
+    expect(req.status).toBe(200);
+    // ... then tries to "accept" it herself. bob never sent a request → 404.
+    const acc = await signedReq(b, mallory, "POST", "/api/federation/contacts", {
+      action: "accept",
+      from: mallory.actor,
+      to: bob.actor,
+    });
+    expect(acc.status).toBe(404);
+    expect(areContacts(b.db, "bob", mallory.actor)).toBe(false);
+  });
+
+  test("a federated accept succeeds when the local user sent the request", async () => {
+    const b = boot("contacts-fed-accept-outgoing");
+    const bob = await registerUserWithKey(b, "bob");
+    const alice = await registerUserWithKey(b, "alice");
+
+    // bob requests alice locally → bob's row about alice: outgoing pending.
+    const req = await signedReq(b, bob, "POST", "/api/me/contacts", { user: alice.actor });
+    expect(req.status).toBe(201);
+    // alice's provider mirrors her acceptance to bob's provider.
+    const acc = await signedReq(b, alice, "POST", "/api/federation/contacts", {
+      action: "accept",
+      from: alice.actor,
+      to: bob.actor,
+    });
+    expect(acc.status).toBe(200);
+    expect(areContacts(b.db, "bob", alice.actor)).toBe(true);
+  });
 });

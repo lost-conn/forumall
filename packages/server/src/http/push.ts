@@ -77,6 +77,12 @@ export function createPushRouter() {
       });
     }
 
+    // Push services are always https; anything else can only be an attempt to
+    // aim the provider's outbound push at something it shouldn't reach.
+    if (new URL(parsed.data.endpoint).protocol !== "https:") {
+      throw AppError.badRequest({ detail: "push endpoint must be an https URL" });
+    }
+
     const id = addSubscription(db, requireLocalHandle(c), {
       endpoint: parsed.data.endpoint,
       keys: { p256dh: parsed.data.keys.p256dh, auth: parsed.data.keys.auth },

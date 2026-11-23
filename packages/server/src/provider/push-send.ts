@@ -18,6 +18,7 @@ import { canonicalAuthority } from "@forumall/shared";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/index.ts";
 import { buildPushRequest } from "../lib/web-push.ts";
+import { DEFAULT_EGRESS_TIMEOUT_MS, assertPublicHttpsUrl } from "./federation/egress-guard.ts";
 import {
   deleteSubscriptionByEndpoint,
   getVapidKey,
@@ -89,6 +90,12 @@ export async function sendPushToRecipient(
           body: init.body as BodyInit,
         };
         if (config.pushProxy) reqInit.proxy = config.pushProxy;
+        // Push endpoints are supplied by browsers via /api/push/subscribe, so
+        // vet them like any federation target: public https host, no redirect
+        // following, bounded time (egress-guard.ts).
+        await assertPublicHttpsUrl(url);
+        reqInit.redirect = "manual";
+        reqInit.signal = AbortSignal.timeout(DEFAULT_EGRESS_TIMEOUT_MS);
         const res = await fetch(url, reqInit);
         return { status: res.status };
       });
