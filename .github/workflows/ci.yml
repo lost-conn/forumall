@@ -72,7 +72,11 @@ jobs:
   # playwright.config.ts reads PW_CHANNEL, defaulting to `chrome`).
   e2e:
     name: Playwright e2e
-    runs-on: ubuntu-latest
+    # Pinned: `ubuntu-latest` moved to 26.04, where the pinned Playwright
+    # (^1.50) refuses to install Chromium ("Playwright does not support chromium
+    # on ubuntu26.04-x64"), so this job failed before running any test.
+    # Unpin once @playwright/test supports the newer image.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
