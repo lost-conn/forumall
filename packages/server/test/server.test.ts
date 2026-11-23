@@ -188,6 +188,8 @@ describe("discovery (§3.1)", () => {
     expect(doc.provider.publicKeys[0]?.algorithm).toBe("Ed25519");
     expect(doc.provider.publicKeys[0]?.public_key.length).toBeGreaterThan(0);
     expect(doc.provider.software?.name).toBe("forumall");
+    // OFSCP §4.1.1: Forumall's registration mode is "open".
+    expect(body.provider.authentication.registration).toBe("open");
     expect(doc.provider.authentication.login_endpoint).toBe(
       "https://localhost:5555/api/auth/login",
     );
