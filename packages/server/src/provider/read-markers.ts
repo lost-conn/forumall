@@ -245,6 +245,28 @@ export function unreadEntryFor(
   return { scopeId, ...withMessageId(db, scopeId, lastReadSeq), lastReadSeq, unreadCount };
 }
 
+/**
+ * Whether `handle` may hold a read marker on `scopeId`: a channel it can
+ * currently read ({@link canViewChannel}: tier + membership + `view` override),
+ * or a DM conversation in its own inbox. Anything else is treated as an unknown
+ * scope (§7.7), so a PATCH can't be used to probe whether a message exists, or
+ * how active a channel is, in a scope the caller can't read.
+ */
+export function canHoldMarker(db: Db, handle: string, actor: string, scopeId: string): boolean {
+  if (isDmScope(scopeId)) {
+    return (
+      db.drizzle
+        .select({ dmId: dmConversations.dmId })
+        .from(dmConversations)
+        .where(and(eq(dmConversations.owner, handle), eq(dmConversations.dmId, scopeId)))
+        .limit(1)
+        .all().length > 0
+    );
+  }
+  const ch = db.drizzle.select().from(channels).where(eq(channels.id, scopeId)).limit(1).all()[0];
+  return ch !== undefined && canViewChannel(db, ch, actor);
+}
+
 /** True for a DM scope (`dm_<hex>`); otherwise the scope is a channel id. */
 function isDmScope(scopeId: string): boolean {
   return scopeId.startsWith("dm_");
