@@ -53,7 +53,7 @@ import {
   isMember,
   roleHoldsAll,
 } from "../provider/permissions.ts";
-import { tierReadableBy } from "../provider/tiers.ts";
+import { effectiveJoinPolicy, tierReadableBy } from "../provider/tiers.ts";
 import type { Hub } from "../provider/ws-hub.ts";
 import { AppError } from "./errors.ts";
 import { optionalSignature, requireSignature } from "./signature.ts";
@@ -131,7 +131,7 @@ export function createMembershipRouter() {
     const message =
       raw && typeof raw === "object" && typeof raw.message === "string" ? raw.message : undefined;
 
-    switch (group.joinPolicy) {
+    switch (effectiveJoinPolicy(group.tier, group.joinPolicy)) {
       case "open": {
         const member = addMember(db, groupId, actor.actor, "member");
         return c.json(member, 201);
@@ -244,6 +244,10 @@ export function createMembershipRouter() {
       const newOwner = transferOwnership(db, groupId, target);
       // The previous owner is demoted to admin: re-check `view`-restricted channels.
       revalidateGroupSubscriptions(db, hub, groupId);
+      // Both members' roles changed (§5.7 `member.updated`).
+      fanOutMemberUpdated(hub, db, groupId, newOwner);
+      const formerOwner = getMemberRow(db, groupId, actor.actor);
+      if (formerOwner) fanOutMemberUpdated(hub, db, groupId, rowToMember(formerOwner));
       return c.json(newOwner, 200);
     }
 
@@ -282,6 +286,9 @@ export function createMembershipRouter() {
     const updated = setMemberRole(db, groupId, target, role);
     // A role change can lose a channel's `permissions.view`: end those live subscriptions.
     revalidateGroupSubscriptions(db, hub, groupId);
+    // Announce the new role (§5.7 `member.updated`) — after revalidation, so a
+    // subscriber who just lost access does not receive it.
+    if (updated.role !== targetRow.role) fanOutMemberUpdated(hub, db, groupId, updated);
     return c.json(updated, 200);
   });
 

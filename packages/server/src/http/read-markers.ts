@@ -10,9 +10,10 @@
  *    event is fanned to the actor's OTHER devices via `hub.publishToActor` for
  *    multi-device sync. Returns the touched markers with recomputed unread counts.
  *
- * Read state is private + per-account; a scope the user can't see is harmless
- * (markers are private state) so an unknown/unseen scope is accepted, never 404'd
- * — the PATCH is idempotent.
+ * Read state is private + per-account. A marker on a scope the caller can't
+ * currently read (or a DM not in its inbox) is silently ignored, exactly like an
+ * unknown scope — never 403/404'd, so the response can't confirm a scope or
+ * message exists. The PATCH is idempotent.
  */
 import {
   ReadMarkersResponseSchema,
@@ -22,7 +23,13 @@ import {
 import { Hono } from "hono";
 
 import { getUserRow } from "../provider/guests.ts";
-import { getUnreadSummary, setReadMarkers, unreadEntryFor } from "../provider/read-markers.ts";
+import {
+  canHoldMarker,
+  getUnreadSummary,
+  seqForMessage,
+  setReadMarkers,
+  unreadEntryFor,
+} from "../provider/read-markers.ts";
 import { AppError } from "./errors.ts";
 import { requireLocalActor, requireLocalHandle, requireSignature } from "./signature.ts";
 import type { AppBindings } from "./types.ts";
@@ -69,17 +76,28 @@ export function createMeReadMarkersRouter() {
 
     const canonicalActor = `${handle}@${canonicalAuthority(config.domain)}`;
 
+    // Resolve each marker to a provider seq: OFSCP names the newest-read
+    // MESSAGE (`lastReadMessageId`); Forumall's own client may send the `seq`
+    // directly (extension). A marker naming a message this provider does not
+    // hold in that scope is ignored, like an unknown scope — as is any scope the
+    // caller can't read, so neither form becomes an existence/activity oracle.
+    const entries: { scopeId: string; lastReadSeq: number }[] = [];
+    for (const m of parsed.data.markers) {
+      if (!canHoldMarker(db, handle, canonicalActor, m.scopeId)) continue;
+      const seq =
+        m.lastReadMessageId !== undefined
+          ? seqForMessage(db, m.scopeId, m.lastReadMessageId)
+          : (m.lastReadSeq ?? null);
+      if (seq !== null) entries.push({ scopeId: m.scopeId, lastReadSeq: seq });
+    }
+
     // Persist monotonically; `advanced` is the set of scopes actually moved.
-    const advanced = setReadMarkers(
-      db,
-      handle,
-      parsed.data.markers.map((m) => ({ scopeId: m.scopeId, lastReadSeq: m.lastReadSeq })),
-    );
+    const advanced = setReadMarkers(db, handle, entries);
 
     // Recompute the touched markers with their new unread counts. Only the
     // scopes that actually advanced are reported (a no-op backward set is
-    // dropped). For each advanced scope we read back the persisted lastReadSeq.
-    const markers = parsed.data.markers
+    // dropped).
+    const markers = entries
       .filter((m) => advanced.has(m.scopeId))
       .map((m) => unreadEntryFor(db, handle, canonicalActor, m.scopeId, m.lastReadSeq));
 

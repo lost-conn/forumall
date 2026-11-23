@@ -50,7 +50,7 @@ function setSummary(entries: ReadMarker[]): void {
   const next: Record<string, ScopeReadState> = {};
   for (const e of entries) {
     next[e.scopeId] = {
-      lastReadSeq: e.lastReadSeq,
+      lastReadSeq: e.lastReadSeq ?? 0,
       unreadCount: e.unreadCount,
       groupId: e.groupId,
     };
@@ -78,7 +78,11 @@ export async function hydrateReadMarkers(): Promise<void> {
  * (which re-broadcasts to other devices). Safe to call frequently — it short-
  * circuits when the marker would not move.
  */
-export function markRead(scopeId: string, seq: number | null | undefined): void {
+export function markRead(
+  scopeId: string,
+  seq: number | null | undefined,
+  messageId?: string,
+): void {
   if (seq == null || !Number.isFinite(seq)) return;
   const cur = readState.scopes[scopeId];
   if (cur && cur.lastReadSeq >= seq) return; // monotonic guard
@@ -91,7 +95,11 @@ export function markRead(scopeId: string, seq: number | null | undefined): void 
 
   const client = sessionClient();
   if (!client) return;
-  void patchReadMarkers(client, [{ scopeId, lastReadSeq: seq }]).catch(() => undefined);
+  // OFSCP names the newest-read message; the seq rides along as Forumall's
+  // extension so older servers keep working.
+  void patchReadMarkers(client, [
+    { scopeId, lastReadSeq: seq, ...(messageId ? { lastReadMessageId: messageId } : {}) },
+  ]).catch(() => undefined);
 }
 
 /** Fold an inbound `read.updated` event (multi-device sync) into the store. */
@@ -99,9 +107,10 @@ export function applyReadUpdated(markers: ReadMarker[]): void {
   for (const m of markers) {
     const cur = readState.scopes[m.scopeId];
     // Monotonic: only advance.
-    if (cur && cur.lastReadSeq > m.lastReadSeq) continue;
+    const seq = m.lastReadSeq ?? 0;
+    if (cur && cur.lastReadSeq > seq) continue;
     setReadState("scopes", m.scopeId, {
-      lastReadSeq: Math.max(cur?.lastReadSeq ?? 0, m.lastReadSeq),
+      lastReadSeq: Math.max(cur?.lastReadSeq ?? 0, seq),
       unreadCount: m.unreadCount,
       // Preserve a known groupId if this update omits it.
       groupId: m.groupId ?? cur?.groupId,

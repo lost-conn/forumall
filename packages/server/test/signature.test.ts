@@ -558,6 +558,46 @@ describe("requireSignature — provider-wide nonce store (#21)", () => {
     expect(app.__nonceStore.has(nonceKeyId("actor", signer.keyId), nonce)).toBe(true);
   });
 
+  // §4.5: the pair is recorded only after the signature verifies, so a forged
+  // request can neither fill the store nor burn a nonce the real signer is about
+  // to use.
+  test("a request with an invalid signature does NOT burn its nonce", async () => {
+    const { app } = freshApp("nonce-not-burned-on-bad-sig");
+    const signer = await registerUserWithKey(app, "alice");
+    const forger = await registerUserWithKey(app, "mallory");
+    const nonce = "bad-sig-nonce-AAAAAAAAAAAAAAAAAA";
+    const path = "/api/auth/device-keys";
+
+    // alice's actor + key id, but signed with mallory's private key → 401.
+    const forged = sign({
+      actor: signer.actor,
+      keyId: signer.keyId,
+      privateKey: forger.privateKey,
+      authority: DOMAIN,
+      method: "GET",
+      path,
+      nonce,
+    });
+    const bad = await app.request(path, { method: "GET", headers: forged.headers });
+    expect(bad.status).toBe(401);
+
+    const { nonceKeyId } = await import("../src/provider/nonce-store.ts");
+    expect(app.__nonceStore.has(nonceKeyId("actor", signer.keyId), nonce)).toBe(false);
+
+    // The genuine signer can still use that nonce.
+    const good = sign({
+      actor: signer.actor,
+      keyId: signer.keyId,
+      privateKey: signer.privateKey,
+      authority: DOMAIN,
+      method: "GET",
+      path,
+      nonce,
+    });
+    const ok = await app.request(path, { method: "GET", headers: good.headers });
+    expect(ok.status).toBe(200);
+  });
+
   // A brand-new `requireSignature()` instance mounted AFTER `createApp` (as a
   // test/extension route would) still resolves `c.var.nonceStore` — proving the
   // sharing is structural (read from context per request), not something that

@@ -38,6 +38,8 @@ import {
 import { eq } from "drizzle-orm";
 
 import { contacts, presence, readMarkers, users } from "../src/db/schema.ts";
+import { createChannel } from "../src/provider/channels.ts";
+import { createGroup } from "../src/provider/groups.ts";
 import { type Federation, type Provider, startFederation } from "./helpers/two-provider.ts";
 
 let tmp: string;
@@ -223,7 +225,11 @@ describe("remote actor with a colliding handle is not the local user (§4.5/§4.
 
   test("PATCH /api/me/read-markers: 403 and no marker is written", async () => {
     const { fed, localAlice, remoteAlice } = await scenario();
-    const markers = { markers: [{ scopeId: "chan_x", lastReadSeq: 99 }] };
+    // A real channel local alice can read (a marker on an unreadable or unknown
+    // scope is ignored, so the control needs one).
+    const groupId = createGroup(fed.b.db, localAlice.actor, { name: "g", tier: "private" }).id;
+    const ch = createChannel(fed.b.db, groupId, { type: "text", tier: "private" });
+    const markers = { markers: [{ scopeId: ch.id, lastReadSeq: 99 }] };
 
     const attack = await signedToB(fed, remoteAlice, "PATCH", "/api/me/read-markers", markers);
     expect(attack.status).toBe(403);

@@ -38,6 +38,7 @@ import {
   notifications,
   users,
 } from "../db/schema.ts";
+import { canViewChannel, getChannelRow } from "./channels.ts";
 import { decodeCursor, encodeCursor } from "./membership.ts";
 import { getEffectiveMode } from "./notification-prefs.ts";
 
@@ -83,20 +84,19 @@ function mintNotificationId(): string {
  * `localDomain`; an explicit `@alice@other.com` keeps its domain. Duplicates are
  * collapsed (order-preserving).
  */
+// Handle = the longest run of handle characters (`[a-z0-9_-]`, OFSCP §2.2.1),
+// so a `.` ends it ("@alice." / "@alice.smith" → alice), per spec §10.1.
 const MENTION_RE =
-  /(?<![\w@])@([a-z0-9][a-z0-9_.-]*?)(?:@([a-z0-9.-]+\.[a-z]{2,}|localhost(?::\d+)?))?(?=[^a-z0-9_.@-]|$)/gi;
+  /(?<![\w@])@([a-z0-9_-]+)(?:@([a-z0-9.-]+\.[a-z]{2,}|localhost(?::\d+)?))?(?![a-z0-9_-])/gi;
 
 export function detectMentions(text: string, localDomain: string): string[] {
   const out: string[] = [];
   const seen = new Set<string>();
   for (const m of text.matchAll(MENTION_RE)) {
-    const handle = (m[1] ?? "").toLowerCase();
-    if (!handle) continue;
-    // Strip a trailing dot/dash that the lazy body may have left dangling
-    // (e.g. "@alice." → "alice"); a handle never ends in punctuation here.
-    const cleanHandle = handle.replace(/[.\-_]+$/, "");
+    const cleanHandle = (m[1] ?? "").toLowerCase();
     if (!cleanHandle) continue;
-    const domain = (m[2] ?? localDomain).toLowerCase();
+    // A trailing dot belongs to the sentence, not the domain ("@a@b.com.").
+    const domain = (m[2] ?? localDomain).toLowerCase().replace(/\.+$/, "");
     const actor = `${cleanHandle}@${domain}`;
     if (seen.has(actor)) continue;
     seen.add(actor);
@@ -243,6 +243,14 @@ export function notifyForChannelMessage(
   // `all`-path does not also create a `message` row for them).
   const directRecipients = new Set<string>();
 
+  // §10.1: a notification never discloses a message to someone who cannot read
+  // the channel — every recipient must pass the effective-read-access rule
+  // (§11.3) right now. Without this, mentioning a non-member of a private
+  // channel would hand them a notification (and a push preview of the text).
+  const channel = getChannelRow(db, channelId);
+  const canRead = (handle: string): boolean =>
+    channel != null && canViewChannel(db, channel, `${handle}@${localDomain}`);
+
   // --- Mentions ---------------------------------------------------------
   for (const actor of detectMentions(text, localDomain)) {
     if (actor === author) continue; // self-exclude
@@ -252,6 +260,7 @@ export function notifyForChannelMessage(
     // Local-recipient only: the resolved actor must be hosted here AND exist.
     if (domain !== localDomain) continue;
     if (!isLocalUser(db, handle)) continue;
+    if (!canRead(handle)) continue;
     // Muted: a `none` effective mode suppresses the mention notification.
     if (getEffectiveMode(db, handle, channelId, groupId) === "none") continue;
     directRecipients.add(handle);
@@ -278,9 +287,13 @@ export function notifyForChannelMessage(
       const handle = at > 0 ? parent.author.slice(0, at) : parent.author;
       const domain = at > 0 ? parent.author.slice(at + 1) : "";
       // Muted: a `none` effective mode suppresses the reply notification.
+      // At most one entry per user per message (§10.1): a mention outranks
+      // the reply, so an already-mentioned parent author gets no second row.
       if (
         domain === localDomain &&
+        !directRecipients.has(handle) &&
         isLocalUser(db, handle) &&
+        canRead(handle) &&
         getEffectiveMode(db, handle, channelId, groupId) !== "none"
       ) {
         directRecipients.add(handle);
@@ -307,6 +320,7 @@ export function notifyForChannelMessage(
       : null;
     if (authorHandle !== null && handle === authorHandle) continue; // self-exclude
     if (getEffectiveMode(db, handle, channelId, groupId) !== "all") continue;
+    if (!canRead(handle)) continue;
     inputs.push({
       recipient: handle,
       type: "message",

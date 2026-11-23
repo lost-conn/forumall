@@ -359,6 +359,99 @@ describe("GET/PATCH /api/me/read-markers", () => {
     expect(gbody.scopes.find((s) => s.scopeId === ch.id)?.unreadCount).toBe(0);
   });
 
+  test("PATCH by lastReadMessageId (OFSCP form) advances and is echoed back", async () => {
+    const b = boot("rm-http-by-id");
+    const alice = await registerUserWithKey(b, "alice");
+    const bob = await registerUserWithKey(b, "bob");
+    const groupId = seedGroup(b, alice);
+    addMember(b.db, groupId, bob.actor, "member");
+    const ch = createChannel(b.db, groupId, { type: "text", tier: "private" });
+    const first = createMessage(b.db, b.config, {
+      groupId,
+      channelId: ch.id,
+      author: bob.actor,
+      type: "message",
+      content: { text: "a", mime: "text/plain" },
+    }).message.id;
+    post(b, groupId, ch.id, bob.actor, "b");
+
+    // Mark the FIRST message read → one unread left, and the id is echoed.
+    const patch = await signedReq(b, alice, "PATCH", "/api/me/read-markers", {
+      markers: [{ scopeId: ch.id, lastReadMessageId: first }],
+    });
+    expect(patch.status).toBe(200);
+    type Scope = { scopeId: string; unreadCount: number; lastReadMessageId?: string };
+    const scope = ((await patch.json()) as { scopes: Scope[] }).scopes.find(
+      (s) => s.scopeId === ch.id,
+    );
+    expect(scope?.unreadCount).toBe(1);
+    expect(scope?.lastReadMessageId).toBe(first);
+
+    // GET reports the same marker by id.
+    const get = await signedReq(b, alice, "GET", "/api/me/read-markers");
+    const g = ((await get.json()) as { scopes: Scope[] }).scopes.find((s) => s.scopeId === ch.id);
+    expect(g?.lastReadMessageId).toBe(first);
+
+    // An unknown message id is ignored (nothing advances, no error).
+    const unknown = await signedReq(b, alice, "PATCH", "/api/me/read-markers", {
+      markers: [{ scopeId: ch.id, lastReadMessageId: "msg_nope" }],
+    });
+    expect(unknown.status).toBe(200);
+    expect(((await unknown.json()) as { scopes: unknown[] }).scopes.length).toBe(0);
+  });
+
+  test("PATCH ignores scopes the caller can't read (no existence/activity oracle)", async () => {
+    const b = boot("rm-http-scope-authz");
+    const alice = await registerUserWithKey(b, "alice");
+    const bob = await registerUserWithKey(b, "bob");
+    const eve = await registerUserWithKey(b, "eve");
+    const groupId = seedGroup(b, alice);
+    addMember(b.db, groupId, bob.actor, "member");
+    const ch = createChannel(b.db, groupId, { type: "text", tier: "private" });
+    const m1 = createMessage(b.db, b.config, {
+      groupId,
+      channelId: ch.id,
+      author: bob.actor,
+      type: "message",
+      content: { text: "secret", mime: "text/plain" },
+    });
+    post(b, groupId, ch.id, bob.actor, "more");
+
+    // A DM between alice and bob, held in alice's inbox — eve isn't a participant.
+    const dmId = deriveDmId(alice.actor, bob.actor);
+    const dm = storeDmMessage(b.db, b.config, {
+      dmId,
+      owner: "alice",
+      author: bob.actor,
+      content: { text: "private dm", mime: "text/plain" },
+    });
+
+    // Eve (not a member, not a participant) tries both the OFSCP id form and the
+    // Forumall seq extension on both scopes: everything is ignored like an
+    // unknown scope — 200 with no scopes, nothing stored, no read.updated.
+    const res = await signedReq(b, eve, "PATCH", "/api/me/read-markers", {
+      markers: [
+        { scopeId: ch.id, lastReadMessageId: m1.message.id },
+        { scopeId: ch.id, lastReadSeq: m1.seq },
+        { scopeId: dmId, lastReadMessageId: dm.message.id },
+        { scopeId: dmId, lastReadSeq: dm.seq },
+      ],
+    });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { scopes: unknown[] }).scopes).toEqual([]);
+    expect(getReadMarkers(b.db, "eve").size).toBe(0);
+
+    // Control: the same markers from a reader still advance.
+    const ok = await signedReq(b, alice, "PATCH", "/api/me/read-markers", {
+      markers: [
+        { scopeId: ch.id, lastReadMessageId: m1.message.id },
+        { scopeId: dmId, lastReadMessageId: dm.message.id },
+      ],
+    });
+    const scopes = ((await ok.json()) as { scopes: { scopeId: string }[] }).scopes;
+    expect(scopes.map((s) => s.scopeId).sort()).toEqual([ch.id, dmId].sort());
+  });
+
   test("PATCH with an invalid body → 400", async () => {
     const b = boot("rm-http-bad");
     const alice = await registerUserWithKey(b, "alice");

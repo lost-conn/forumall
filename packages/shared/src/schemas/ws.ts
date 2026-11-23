@@ -628,7 +628,9 @@ export const WsReadUpdatedSchema = wsFrame(
         z
           .object({
             scopeId: z.string().min(1),
-            lastReadSeq: z.number().int().nonnegative(),
+            lastReadMessageId: z.string().min(1).optional(),
+            // Forumall extension (not OFSCP); other providers omit it.
+            lastReadSeq: z.number().int().nonnegative().optional(),
             unreadCount: z.number().int().nonnegative(),
           })
           .passthrough(),

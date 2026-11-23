@@ -387,15 +387,16 @@ async function verifyAndSetActor(c: Context, vctx: VerifyContext): Promise<void>
       });
     }
 
-    // --- §4.5 step 4: (Key-ID, Nonce) not already seen → 401; remember it ----
+    // --- §4.5 step 4: (Key-ID, Nonce) not already seen → 401 ----------------
     // Namespaced by signer kind (#21): the store is now shared provider-wide
     // across actor- and provider-mode requests (and the WS handshake), so the
     // two independently-chosen key_id spaces must not be able to collide.
+    // The pair is only RECORDED once the signature has verified (after step 7,
+    // below), so unauthenticated junk can never fill the store.
     const nsKeyId = nonceKeyId(mode, keyId);
     if (nonceStore.has(nsKeyId, nonce)) {
       throw AppError.unauthorized({ detail: "replayed (key id, nonce): nonce already used" });
     }
-    nonceStore.remember(nsKeyId, nonce, nonceRetentionMs);
 
     // --- §4.5 step 5: recompute SHA-256 of the raw body → 400 ---------------
     // Read the body once as bytes; Hono caches it, so a downstream c.req.json()
@@ -454,6 +455,17 @@ async function verifyAndSetActor(c: Context, vctx: VerifyContext): Promise<void>
     const ok = signer.verified ?? verify({ publicKey: signer.publicKey, ...target });
     if (!ok) {
       throw AppError.unauthorized({ detail: "invalid request signature" });
+    }
+
+    // Verified: now burn the (key id, nonce) pair. Re-check first — a concurrent
+    // copy of this request may have verified while we awaited key resolution —
+    // and do the check + record with no await in between, so it is atomic on
+    // the single JS thread.
+    if (nonceStore.has(nsKeyId, nonce)) {
+      throw AppError.unauthorized({ detail: "replayed (key id, nonce): nonce already used" });
+    }
+    if (!nonceStore.remember(nsKeyId, nonce, nonceRetentionMs)) {
+      throw AppError.serviceUnavailable({ detail: "replay store is full; retry later" });
     }
 
     // Authenticated. Authorization (membership/tier) is applied separately.
