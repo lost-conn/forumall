@@ -38,6 +38,8 @@ export function buildDiscoveryDocument(config: Config, db: Db): ProviderDiscover
       authentication: {
         login_endpoint: absoluteUrl(config.domain, "/api/auth/login"),
         registration_endpoint: absoluteUrl(config.domain, "/api/auth/register"),
+        // OFSCP §4.1.1: anyone may self-register here.
+        registration: "open",
       },
       publicKeys: [
         {

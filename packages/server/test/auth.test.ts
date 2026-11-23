@@ -97,6 +97,20 @@ describe("POST /api/auth/register (§4.1.1)", () => {
     expect(row?.recoveryEmail).toBe("bob@example.net");
   });
 
+  test("an open provider ignores an inviteToken (OFSCP §4.1.1)", async () => {
+    const { app } = freshApp("register-invite-token");
+    const res = await app.request("/api/auth/register", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        handle: "carol",
+        password: "correct-horse",
+        inviteToken: "ai_unknown-to-this-provider",
+      }),
+    });
+    expect(res.status).toBe(201);
+  });
+
   test("duplicate handle -> 409 problem+json", async () => {
     const { app } = freshApp("register-dup");
     const make = () =>

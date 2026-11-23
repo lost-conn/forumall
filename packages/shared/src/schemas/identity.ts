@@ -70,9 +70,30 @@ export const AuthRegistrationRequestSchema = z
     handle: z.string().min(1),
     password: z.string().min(8),
     recoveryEmail: z.string().email().optional(),
+    /**
+     * Account invite (OFSCP §4.1.1). Forumall's registration mode is "open", so
+     * the token is accepted and ignored — an open provider MUST NOT reject a
+     * registration because of its inviteToken.
+     */
+    inviteToken: z.string().min(1).optional(),
   })
   .strict();
 export type AuthRegistrationRequest = z.infer<typeof AuthRegistrationRequestSchema>;
+
+/**
+ * POST /api/me/claim body (`guest-claim-request`, OFSCP §4.8.1). Claim follows
+ * the registration mode (§4.1.1); Forumall is "open", so `inviteToken` is
+ * accepted and ignored.
+ */
+export const GuestClaimRequestSchema = z
+  .object({
+    handle: z.string().min(1),
+    password: z.string().min(8),
+    displayName: z.string().optional(),
+    inviteToken: z.string().min(1).optional(),
+  })
+  .strict();
+export type GuestClaimRequest = z.infer<typeof GuestClaimRequestSchema>;
 
 /** Bootstrap-token response from login/register (`auth-bootstrap-response`). */
 export const AuthBootstrapResponseSchema = z
