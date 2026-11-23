@@ -114,6 +114,41 @@ export function setReadMarkers(
 }
 
 /**
+ * Re-key the read marker `(from.handle, from.scopeId)` to `(to.handle,
+ * to.scopeId)` — guest claim/merge (OFSCP §4.8.1) moving a marker keyed by a
+ * re-derived dmId. If `to` already holds a marker the two clash and the
+ * further-forward one is kept. A no-op when `from` holds no marker. The caller
+ * owns the transaction.
+ */
+export function moveReadMarker(
+  db: Db,
+  from: { readonly handle: string; readonly scopeId: string },
+  to: { readonly handle: string; readonly scopeId: string },
+): void {
+  if (from.handle === to.handle && from.scopeId === to.scopeId) return;
+  const moved = getReadMarkerRow(db, from.handle, from.scopeId);
+  if (!moved) return;
+  const existing = getReadMarkerRow(db, to.handle, to.scopeId);
+  const fromKey = and(eq(readMarkers.handle, from.handle), eq(readMarkers.scopeId, from.scopeId));
+  if (existing) {
+    if (moved.lastReadSeq > existing.lastReadSeq) {
+      db.drizzle
+        .update(readMarkers)
+        .set({ lastReadSeq: moved.lastReadSeq, updatedAt: Date.now() })
+        .where(and(eq(readMarkers.handle, to.handle), eq(readMarkers.scopeId, to.scopeId)))
+        .run();
+    }
+    db.drizzle.delete(readMarkers).where(fromKey).run();
+  } else {
+    db.drizzle
+      .update(readMarkers)
+      .set({ handle: to.handle, scopeId: to.scopeId })
+      .where(fromKey)
+      .run();
+  }
+}
+
+/**
  * Unread message count in a CHANNEL scope for `handle`: channel messages with
  * `seq > sinceSeq` not authored by `actor`. Tombstoned messages still keep a
  * `seq` and are counted (they remain visible as tombstones in history).

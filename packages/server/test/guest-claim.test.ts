@@ -36,11 +36,13 @@ import {
   groupMembers,
   messages,
   reactions,
+  readMarkers,
   users,
 } from "../src/db/schema.ts";
 import { storeDmMessage, upsertDmPointer } from "../src/provider/dms.ts";
 import { createMessage } from "../src/provider/messages.ts";
 import { addReaction } from "../src/provider/reactions.ts";
+import { setReadMarkers } from "../src/provider/read-markers.ts";
 
 const FAST_ARGON2: Argon2Params = { memoryKib: 1024, iterations: 1, parallelism: 1 };
 const DOMAIN = "providera.test";
@@ -413,6 +415,49 @@ test("claim: a third party's pointer to the guest keeps its preview and store ti
   const preview = JSON.parse(conv[0]?.lastSentMessage ?? "null") as { id: string; author: string };
   expect(preview.id).toBe("msg_alice");
   expect(preview.author).toBe(alice.actor);
+});
+
+test("claim: read markers keyed by a re-derived dmId move — the guest's and a third party's", async () => {
+  // §4.8.1: claim renames the conversation pointers AND read markers keyed by
+  // the re-derived dmIds, for the guest's own rows and third parties' rows.
+  const { app, config, db } = freshApp("claim-dm-markers");
+  const alice = await registerUserWithKey(app, "alice");
+  const group = await createGroup(app, alice, { name: "G", tier: "public", joinPolicy: "invite" });
+  const guest = await provisionGuest(app, alice, group.id);
+  const oldDmId = deriveDmId(alice.actor, guest.actor);
+  const newActor = `ada@${DOMAIN}`;
+  const newDmId = deriveDmId(alice.actor, newActor);
+
+  // alice DMed the guest (guest's inbox row + conversation) and holds a pointer.
+  const toGuest = storeDmMessage(db, config, {
+    owner: guest.handle,
+    dmId: oldDmId,
+    author: alice.actor,
+    content: { text: "hi guest", mime: "text/plain" },
+  });
+  upsertDmPointer(db, "alice", oldDmId, guest.actor);
+  setReadMarkers(db, guest.handle, [{ scopeId: oldDmId, lastReadSeq: toGuest.seq }]);
+  setReadMarkers(db, "alice", [{ scopeId: oldDmId, lastReadSeq: 7 }]);
+
+  const res = await signedRequest(app, guest, "POST", "/api/me/claim", {
+    handle: "ada",
+    password: "super-secret-pw",
+  });
+  expect(res.status).toBe(200);
+
+  const markers = db.drizzle
+    .select({
+      handle: readMarkers.handle,
+      scopeId: readMarkers.scopeId,
+      seq: readMarkers.lastReadSeq,
+    })
+    .from(readMarkers)
+    .all()
+    .sort((a, b) => a.handle.localeCompare(b.handle));
+  expect(markers).toEqual([
+    { handle: "ada", scopeId: newDmId, seq: toGuest.seq },
+    { handle: "alice", scopeId: newDmId, seq: 7 },
+  ]);
 });
 
 test("claim: a full account claiming → 409", async () => {

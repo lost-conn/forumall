@@ -39,14 +39,18 @@ import {
   deviceKeys,
   dmConversations,
   dmMessages,
+  dmReactions,
   groupMembers,
   messages,
   reactions,
+  readMarkers,
   users,
 } from "../src/db/schema.ts";
+import { addDmReaction } from "../src/provider/dm-reactions.ts";
 import { storeDmMessage, upsertDmPointer } from "../src/provider/dms.ts";
 import { createMessage } from "../src/provider/messages.ts";
 import { addReaction } from "../src/provider/reactions.ts";
+import { setReadMarkers } from "../src/provider/read-markers.ts";
 
 const FAST_ARGON2: Argon2Params = { memoryKib: 1024, iterations: 1, parallelism: 1 };
 const DOMAIN = "providera.test";
@@ -621,6 +625,237 @@ test("merge: a third party's pointer to the guest keeps its preview and store ti
   expect(row?.lastSentAt).toBe(3000);
   expect(preview?.id).toBe("msg_carol");
   expect(preview?.author).toBe(carol.actor);
+});
+
+/** Every read marker row for `handle`, as a `scopeId → lastReadSeq` record. */
+function markersOf(db: ReturnType<typeof freshApp>["db"], handle: string) {
+  const rows = db.drizzle.select().from(readMarkers).where(eq(readMarkers.handle, handle)).all();
+  return Object.fromEntries(rows.map((r) => [r.scopeId, r.lastReadSeq]));
+}
+
+test("merge: the guest↔target conversation is dropped entirely (no self-conversation)", async () => {
+  // §4.8.1: a conversation between the guest and the target would become a
+  // conversation with oneself and is dropped — messages, pointers, DM reactions
+  // and read markers alike.
+  const { app, config, db } = freshApp("merge-dm-drop-self");
+  const alice = await registerUserWithKey(app, "alice");
+  const group = await createGroup(app, alice, { name: "G", tier: "public", joinPolicy: "invite" });
+  const guest = await provisionGuest(app, alice, group.id);
+  const dmGuestAlice = deriveDmId(guest.actor, alice.actor);
+  const dmSelf = deriveDmId(alice.actor, alice.actor);
+
+  // Each sends the other a DM (one row in each inbox + a conversation row each).
+  const toAlice = storeDmMessage(db, config, {
+    owner: "alice",
+    dmId: dmGuestAlice,
+    author: guest.actor,
+    content: { text: "hi alice", mime: "text/plain" },
+  });
+  const toGuest = storeDmMessage(db, config, {
+    owner: guest.handle,
+    dmId: dmGuestAlice,
+    author: alice.actor,
+    content: { text: "hi guest", mime: "text/plain" },
+  });
+  addDmReaction(db, {
+    dmId: dmGuestAlice,
+    messageId: toAlice.message.id,
+    author: alice.actor,
+    key: "heart",
+  });
+  addDmReaction(db, {
+    dmId: dmGuestAlice,
+    messageId: toGuest.message.id,
+    author: guest.actor,
+    key: "heart",
+  });
+  setReadMarkers(db, "alice", [{ scopeId: dmGuestAlice, lastReadSeq: toAlice.seq }]);
+  setReadMarkers(db, guest.handle, [{ scopeId: dmGuestAlice, lastReadSeq: toGuest.seq }]);
+
+  const res = await signedRequest(app, guest, "POST", "/api/me/merge", {
+    handle: "alice",
+    password: PASSWORD,
+  });
+  expect(res.status).toBe(200);
+
+  for (const dmId of [dmGuestAlice, dmSelf]) {
+    expect(db.drizzle.select().from(dmMessages).where(eq(dmMessages.dmId, dmId)).all()).toEqual([]);
+    expect(
+      db.drizzle.select().from(dmConversations).where(eq(dmConversations.dmId, dmId)).all(),
+    ).toEqual([]);
+    expect(db.drizzle.select().from(dmReactions).where(eq(dmReactions.dmId, dmId)).all()).toEqual(
+      [],
+    );
+    expect(
+      db.drizzle.select().from(readMarkers).where(eq(readMarkers.scopeId, dmId)).all(),
+    ).toEqual([]);
+  }
+  const list = await signedRequest(app, alice, "GET", "/api/me/dms");
+  expect(((await list.json()) as { items: unknown[] }).items).toEqual([]);
+});
+
+test("merge: a third party with conversations with both ends with one conversation, pointer and marker", async () => {
+  // §4.8.1: for ANY user whose records are re-keyed, the re-keyed pointer yields
+  // to the existing one and of two clashing markers the further-forward is kept.
+  const { app, config, db } = freshApp("merge-dm-third-party-clash");
+  const alice = await registerUserWithKey(app, "alice");
+  const carol = await registerUserWithKey(app, "carol");
+  const group = await createGroup(app, alice, { name: "G", tier: "public", joinPolicy: "invite" });
+  const guest = await provisionGuest(app, alice, group.id);
+  const dmCarolAlice = deriveDmId(carol.actor, alice.actor);
+  const dmCarolGuest = deriveDmId(carol.actor, guest.actor);
+
+  // carol DMed both: her pointers (with previews) + their inbox copies.
+  const toAlice = storeDmMessage(db, config, {
+    owner: "alice",
+    dmId: dmCarolAlice,
+    author: carol.actor,
+    content: { text: "to alice", mime: "text/plain" },
+  });
+  const toGuest = storeDmMessage(db, config, {
+    owner: guest.handle,
+    dmId: dmCarolGuest,
+    author: carol.actor,
+    content: { text: "to guest", mime: "text/plain" },
+  });
+  upsertDmPointer(db, "carol", dmCarolAlice, alice.actor, sentPreview("msg_to_alice", carol.actor));
+  upsertDmPointer(db, "carol", dmCarolGuest, guest.actor, sentPreview("msg_to_guest", carol.actor));
+  // carol's marker on the guest conversation is further forward than on alice's;
+  // alice's own marker is further forward than the guest's.
+  setReadMarkers(db, "carol", [
+    { scopeId: dmCarolAlice, lastReadSeq: 5 },
+    { scopeId: dmCarolGuest, lastReadSeq: 9 },
+  ]);
+  setReadMarkers(db, "alice", [{ scopeId: dmCarolAlice, lastReadSeq: toGuest.seq + 10 }]);
+  setReadMarkers(db, guest.handle, [{ scopeId: dmCarolGuest, lastReadSeq: toGuest.seq }]);
+
+  const res = await signedRequest(app, guest, "POST", "/api/me/merge", {
+    handle: "alice",
+    password: PASSWORD,
+  });
+  expect(res.status).toBe(200);
+
+  // carol: ONE conversation (the existing pointer wins) and ONE marker (9).
+  const carolConvs = db.drizzle
+    .select()
+    .from(dmConversations)
+    .where(eq(dmConversations.owner, "carol"))
+    .all();
+  expect(carolConvs.map((r) => r.dmId)).toEqual([dmCarolAlice]);
+  expect(carolConvs[0]?.counterparty).toBe(alice.actor);
+  expect(JSON.parse(carolConvs[0]?.lastSentMessage ?? "null")?.id).toBe("msg_to_alice");
+  expect(markersOf(db, "carol")).toEqual({ [dmCarolAlice]: 9 });
+
+  // alice: one conversation with carol holding both inbox messages; her own
+  // further-forward marker kept.
+  const aliceConvs = db.drizzle
+    .select()
+    .from(dmConversations)
+    .where(eq(dmConversations.owner, "alice"))
+    .all();
+  expect(aliceConvs.map((r) => r.dmId)).toEqual([dmCarolAlice]);
+  const aliceInbox = db.drizzle
+    .select({ id: dmMessages.id })
+    .from(dmMessages)
+    .where(and(eq(dmMessages.owner, "alice"), eq(dmMessages.dmId, dmCarolAlice)))
+    .all()
+    .map((r) => r.id)
+    .sort();
+  expect(aliceInbox).toEqual([toAlice.message.id, toGuest.message.id].sort());
+  expect(markersOf(db, "alice")).toEqual({ [dmCarolAlice]: toGuest.seq + 10 });
+  expect(markersOf(db, guest.handle)).toEqual({});
+});
+
+test("merge: a moved message whose idempotency key collides survives with clientMessageId cleared", async () => {
+  // §4.8.1: re-keyed messages are never dropped — a colliding
+  // (author, channelId|dmId, clientMessageId) has the moved row's key cleared.
+  const { app, config, db } = freshApp("merge-client-msg-collision");
+  const alice = await registerUserWithKey(app, "alice");
+  const carol = await registerUserWithKey(app, "carol");
+  const group = await createGroup(app, alice, { name: "G", tier: "public", joinPolicy: "invite" });
+  const chRes = await signedRequest(app, alice, "POST", `/api/groups/${group.id}/channels`, {
+    name: "general",
+    tier: "group",
+    type: "text",
+  });
+  expect(chRes.status).toBe(201);
+  const channel = (await chRes.json()) as { id: string };
+  const guest = await provisionGuest(app, alice, group.id);
+
+  // Channel: alice and the guest used the same clientMessageId in one channel.
+  const aliceMsg = createMessage(db, config, {
+    channelId: channel.id,
+    groupId: group.id,
+    author: alice.actor,
+    type: "message",
+    content: { text: "alice", mime: "text/plain" },
+    clientMessageId: "cm_1",
+  });
+  const guestMsg = createMessage(db, config, {
+    channelId: channel.id,
+    groupId: group.id,
+    author: guest.actor,
+    type: "message",
+    content: { text: "guest", mime: "text/plain" },
+    clientMessageId: "cm_1",
+  });
+  // DM (received): carol sent alice and the guest the same clientMessageId.
+  const dmCarolAlice = deriveDmId(carol.actor, alice.actor);
+  const carolToAlice = storeDmMessage(db, config, {
+    owner: "alice",
+    dmId: dmCarolAlice,
+    author: carol.actor,
+    content: { text: "to alice", mime: "text/plain" },
+    clientMessageId: "dm_1",
+  });
+  const carolToGuest = storeDmMessage(db, config, {
+    owner: guest.handle,
+    dmId: deriveDmId(carol.actor, guest.actor),
+    author: carol.actor,
+    content: { text: "to guest", mime: "text/plain" },
+    clientMessageId: "dm_1",
+  });
+  // DM (sent): alice and the guest sent carol the same clientMessageId.
+  const aliceToCarol = storeDmMessage(db, config, {
+    owner: "carol",
+    dmId: dmCarolAlice,
+    author: alice.actor,
+    content: { text: "from alice", mime: "text/plain" },
+    clientMessageId: "dm_2",
+  });
+  const guestToCarol = storeDmMessage(db, config, {
+    owner: "carol",
+    dmId: deriveDmId(carol.actor, guest.actor),
+    author: guest.actor,
+    content: { text: "from guest", mime: "text/plain" },
+    clientMessageId: "dm_2",
+  });
+
+  const res = await signedRequest(app, guest, "POST", "/api/me/merge", {
+    handle: "alice",
+    password: PASSWORD,
+  });
+  expect(res.status).toBe(200);
+
+  const ch = (id: string) => db.drizzle.select().from(messages).where(eq(messages.id, id)).all()[0];
+  expect(ch(aliceMsg.message.id)?.clientMessageId).toBe("cm_1");
+  expect(ch(guestMsg.message.id)?.author).toBe(alice.actor);
+  expect(ch(guestMsg.message.id)?.clientMessageId).toBeNull();
+
+  const dm = (id: string) =>
+    db.drizzle.select().from(dmMessages).where(eq(dmMessages.id, id)).all()[0];
+  expect(dm(carolToAlice.message.id)?.clientMessageId).toBe("dm_1");
+  expect(dm(carolToGuest.message.id)).toMatchObject({
+    owner: "alice",
+    dmId: dmCarolAlice,
+    clientMessageId: null,
+  });
+  expect(dm(aliceToCarol.message.id)?.clientMessageId).toBe("dm_2");
+  expect(dm(guestToCarol.message.id)).toMatchObject({
+    author: alice.actor,
+    dmId: dmCarolAlice,
+    clientMessageId: null,
+  });
 });
 
 // ---------------------------------------------------------------------------

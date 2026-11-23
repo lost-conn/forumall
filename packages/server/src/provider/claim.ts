@@ -43,7 +43,8 @@
  *
  *  dm-special (re-derive dmId): any dm_messages / dm_conversations / dm_reactions
  *  row where the guest is author/owner/counterparty has its `dm_id` recomputed
- *  with the new actor.
+ *  with the new actor, and the read markers keyed by a re-derived dmId (the
+ *  guest's own AND third parties') move to the new dmId (§4.8.1).
  */
 import { canonicalAuthority, deriveDmId } from "@forumall/shared";
 import { and, eq, like } from "drizzle-orm";
@@ -80,6 +81,7 @@ import { AppError } from "../http/errors.ts";
 import { rekeyCachedMessageAuthor } from "./dms.ts";
 import { GUEST_HANDLE_PREFIX, HandleSchema } from "./handle.ts";
 import { hashPassword } from "./password.ts";
+import { moveReadMarker } from "./read-markers.ts";
 
 /** Input to {@link claimGuestAccount}. */
 export interface ClaimGuestInput {
@@ -354,6 +356,10 @@ function rekeyDmMessages(
  *  - rows in another local user's inbox WHERE the counterparty is the guest:
  *    `counterparty = oldActor` → newActor; dm_id recomputed from (owner@domain,
  *    newActor).
+ *
+ * Each re-keyed row's read marker (`read_markers.scope_id` = the old dm_id) moves
+ * to the new dm_id ({@link moveReadMarker}). The guest's markers were already
+ * renamed to `newHandle` by the bare-handle pass, so they are found there.
  */
 function rekeyDmConversations(
   db: Db,
@@ -377,6 +383,11 @@ function rekeyDmConversations(
       .delete(dmConversations)
       .where(and(eq(dmConversations.owner, r.owner), eq(dmConversations.dmId, r.dmId)))
       .run();
+    moveReadMarker(
+      db,
+      { handle: newHandle, scopeId: r.dmId },
+      { handle: newHandle, scopeId: newDmId },
+    );
     db.drizzle
       .insert(dmConversations)
       .values({
@@ -404,6 +415,7 @@ function rekeyDmConversations(
       .delete(dmConversations)
       .where(and(eq(dmConversations.owner, r.owner), eq(dmConversations.dmId, r.dmId)))
       .run();
+    moveReadMarker(db, { handle: r.owner, scopeId: r.dmId }, { handle: r.owner, scopeId: newDmId });
     db.drizzle
       .insert(dmConversations)
       .values({

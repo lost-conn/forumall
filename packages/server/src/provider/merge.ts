@@ -18,7 +18,9 @@
  *                            else re-point (target joins with the guest's role).
  *  - privacy_settings,
  *    presence              : TARGET WINS (drop the guest's singleton row).
- *  - read_markers          : per channel keep MAX(guest, target) seq.
+ *  - read_markers          : per scope keep MAX(guest, target) seq (the
+ *                            further-forward); DM markers move with their
+ *                            re-derived dmId (the guest's AND third parties').
  *  - groups.owner,
  *    messages.author,
  *    media.owner,
@@ -36,19 +38,27 @@
  *    dm_conversations,
  *    dm_reactions           : re-key to the target actor + recompute `dm_id`,
  *                             merging into the target's threads (conversations
- *                             coalesce to one row per (owner, dm_id); reactions
- *                             dedupe on their unique tuple).
+ *                             coalesce to one row per (owner, dm_id), the
+ *                             existing pointer winning; reactions dedupe on
+ *                             their unique tuple). The guest↔target
+ *                             conversation would become a conversation with
+ *                             oneself and is DROPPED (§4.8.1).
+ *  - messages / dm_messages
+ *    client_message_id      : a moved message whose idempotency key collides
+ *                             with an existing one has it CLEARED — re-keyed
+ *                             messages are never dropped (§4.8.1).
  *
  * The target's OWN attributes (`is_admin`, password, display name, avatar, bio,
  * privacy) are NEVER touched — a merge only MOVES the guest's data in. All of the
  * above runs inside a single `db.sqlite.transaction(...)`.
  */
 import { canonicalAuthority, deriveDmId } from "@forumall/shared";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNotNull, ne, sql } from "drizzle-orm";
 
 import type { Config } from "../config.ts";
 import type { Db } from "../db/index.ts";
 import {
+  type DmMessageRow,
   type UserRow,
   bootstrapTokens,
   contacts,
@@ -76,6 +86,7 @@ import {
 import { AppError } from "../http/errors.ts";
 import { rekeyCachedMessageAuthor } from "./dms.ts";
 import { hashPassword, verifyPassword } from "./password.ts";
+import { moveReadMarker } from "./read-markers.ts";
 
 /**
  * A precomputed Argon2id hash of a throwaway password, used as the verify target
@@ -182,7 +193,6 @@ export function mergeGuestIntoAccount(
     mergeDeviceKeys(db, guestHandle, targetHandle);
     mergeGroupMembers(db, guestActor, targetActor);
     mergeSingletonState(db, guestHandle);
-    mergeReadMarkers(db, guestHandle, targetHandle);
     mergeTransferredColumns(db, guestHandle, guestActor, targetHandle, targetActor);
     mergeReactions(db, guestActor, targetActor);
     mergeNotifications(db, guestHandle, targetHandle);
@@ -191,10 +201,14 @@ export function mergeGuestIntoAccount(
     mergeFollows(db, guestHandle, targetHandle);
     mergeJoinRequests(db, guestActor, targetActor);
 
-    // DM re-keying + thread merge (recompute dm_id from the target actor).
+    // DM re-keying + thread merge (recompute dm_id from the target actor). The
+    // guest↔target conversation is dropped first; conversations re-key their
+    // read markers, so the generic marker merge runs after them.
+    dropGuestTargetConversation(db, guestActor, targetActor);
     mergeDmMessages(db, guestHandle, guestActor, targetHandle, targetActor);
     mergeDmConversations(db, guestHandle, guestActor, targetHandle, targetActor);
     mergeDmReactions(db, guestActor, targetActor);
+    mergeReadMarkers(db, guestHandle, targetHandle);
 
     // Finally: the guest is fully merged in; drop its row + ephemeral tokens.
     db.drizzle.delete(bootstrapTokens).where(eq(bootstrapTokens.handle, guestHandle)).run();
@@ -321,6 +335,20 @@ function mergeTransferredColumns(
 ): void {
   // Full-actor columns.
   db.drizzle.update(groups).set({ owner: targetActor }).where(eq(groups.owner, guestActor)).run();
+  // §4.8.1: a moved channel message whose idempotency key (author, channelId,
+  // clientMessageId) collides with one of the target's has its clientMessageId
+  // cleared — never dropped, and the unique index never fails the merge.
+  db.drizzle
+    .update(messages)
+    .set({ clientMessageId: null })
+    .where(
+      and(
+        eq(messages.author, guestActor),
+        isNotNull(messages.clientMessageId),
+        sql`EXISTS (SELECT 1 FROM messages AS m2 WHERE m2.author = ${targetActor} AND m2.channel_id = ${messages.channelId} AND m2.client_message_id = ${messages.clientMessageId})`,
+      ),
+    )
+    .run();
   db.drizzle
     .update(messages)
     .set({ author: targetActor })
@@ -589,22 +617,65 @@ function mergeJoinRequests(db: Db, guestActor: string, targetActor: string): voi
 // ---------------------------------------------------------------------------
 
 /**
+ * §4.8.1: a conversation between the guest and the target would become a
+ * conversation with oneself, so it is DROPPED — its messages (in both inboxes),
+ * DM reactions, conversation rows/pointers and read markers. Its dmId names only
+ * those two participants, so matching on it is exact.
+ */
+function dropGuestTargetConversation(db: Db, guestActor: string, targetActor: string): void {
+  const dmId = deriveDmId(guestActor, targetActor);
+  db.drizzle.delete(dmReactions).where(eq(dmReactions.dmId, dmId)).run();
+  db.drizzle.delete(dmMessages).where(eq(dmMessages.dmId, dmId)).run();
+  db.drizzle.delete(dmConversations).where(eq(dmConversations.dmId, dmId)).run();
+  db.drizzle.delete(readMarkers).where(eq(readMarkers.scopeId, dmId)).run();
+}
+
+/**
+ * The `client_message_id` a DM row keeps when it moves to `(owner, dmId,
+ * author)`: unchanged, or `null` when another row already holds that
+ * idempotency key `(owner, dmId, author, clientMessageId)` — §4.8.1, re-keyed
+ * messages are never dropped.
+ */
+function movedDmClientMessageId(
+  db: Db,
+  row: DmMessageRow,
+  to: { owner: string; dmId: string; author: string },
+): string | null {
+  if (row.clientMessageId === null) return null;
+  const clash = db.drizzle
+    .select({ id: dmMessages.id })
+    .from(dmMessages)
+    .where(
+      and(
+        eq(dmMessages.owner, to.owner),
+        eq(dmMessages.dmId, to.dmId),
+        eq(dmMessages.author, to.author),
+        eq(dmMessages.clientMessageId, row.clientMessageId),
+        ne(dmMessages.id, row.id),
+      ),
+    )
+    .limit(1)
+    .all()[0];
+  return clash ? null : row.clientMessageId;
+}
+
+/**
  * dm_messages: re-key every row the guest authored or received into the target's
  * threads, recomputing `dm_id` from the (counterparty, targetActor) pair. Each
  * message has a globally-unique `id`, so re-keyed messages simply COEXIST with
- * the target's existing messages in the merged thread (no per-message collision).
+ * the target's existing messages in the merged thread; only a colliding
+ * idempotency key is cleared ({@link movedDmClientMessageId}).
  *
  *  - rows in the guest's OWN inbox (`owner = guestHandle`): the counterparty is
  *    `author`; new dm_id = deriveDmId(author, targetActor); `owner` → targetHandle.
- *    (A self-DM where author = guestActor maps to (targetActor, targetActor).)
+ *    (A guest self-DM where author = guestActor maps to (targetActor, targetActor).)
  *  - rows the guest SENT, sitting in another recipient's inbox (`author =
  *    guestActor`): counterparty is `owner@domain`; new dm_id =
  *    deriveDmId(owner@domain, targetActor); `author` → targetActor. (Self-DM rows
  *    were already handled by the owner pass — their author is now targetActor.)
  *
- * A guest→target DM (the guest had DMed the target before merging) collapses into
- * a target self-DM thread (deriveDmId(targetActor, targetActor)); the messages
- * land in the target's inbox and coexist there.
+ * The guest↔target conversation was already dropped
+ * ({@link dropGuestTargetConversation}), so neither pass sees it.
  */
 function mergeDmMessages(
   db: Db,
@@ -623,14 +694,14 @@ function mergeDmMessages(
     .all();
   for (const r of received) {
     const counterparty = r.author === guestActor ? targetActor : r.author;
-    const newDmId = deriveDmId(counterparty, targetActor);
+    const to = {
+      owner: targetHandle,
+      dmId: deriveDmId(counterparty, targetActor),
+      author: counterparty,
+    };
     db.drizzle
       .update(dmMessages)
-      .set({
-        owner: targetHandle,
-        dmId: newDmId,
-        ...(r.author === guestActor ? { author: targetActor } : {}),
-      })
+      .set({ ...to, clientMessageId: movedDmClientMessageId(db, r, to) })
       .where(eq(dmMessages.id, r.id))
       .run();
   }
@@ -644,10 +715,14 @@ function mergeDmMessages(
     .all();
   for (const r of stillGuestAuthor) {
     const counterpartyActor = `${r.owner}@${domain}`;
-    const newDmId = deriveDmId(counterpartyActor, targetActor);
+    const to = {
+      owner: r.owner,
+      dmId: deriveDmId(counterpartyActor, targetActor),
+      author: targetActor,
+    };
     db.drizzle
       .update(dmMessages)
-      .set({ author: targetActor, dmId: newDmId })
+      .set({ ...to, clientMessageId: movedDmClientMessageId(db, r, to) })
       .where(eq(dmMessages.id, r.id))
       .run();
   }
@@ -666,6 +741,10 @@ function mergeDmMessages(
  *  - rows in another user's inbox whose counterparty is the guest
  *    (`counterparty = guestActor`): counterparty → targetActor; dm_id recomputed
  *    from (owner@domain, targetActor).
+ *
+ * Each re-keyed row's read marker moves with it ({@link moveReadMarker}): for
+ * the guest's rows to (targetHandle, new dm_id), for a third party's to (owner,
+ * new dm_id) — of two clashing markers the further-forward is kept (§4.8.1).
  */
 function mergeDmConversations(
   db: Db,
@@ -688,6 +767,11 @@ function mergeDmConversations(
       .delete(dmConversations)
       .where(and(eq(dmConversations.owner, r.owner), eq(dmConversations.dmId, r.dmId)))
       .run();
+    moveReadMarker(
+      db,
+      { handle: guestHandle, scopeId: r.dmId },
+      { handle: targetHandle, scopeId: newDmId },
+    );
     upsertMergedConversation(db, {
       owner: targetHandle,
       dmId: newDmId,
@@ -711,6 +795,7 @@ function mergeDmConversations(
       .delete(dmConversations)
       .where(and(eq(dmConversations.owner, r.owner), eq(dmConversations.dmId, r.dmId)))
       .run();
+    moveReadMarker(db, { handle: r.owner, scopeId: r.dmId }, { handle: r.owner, scopeId: newDmId });
     upsertMergedConversation(db, {
       owner: r.owner,
       dmId: newDmId,
