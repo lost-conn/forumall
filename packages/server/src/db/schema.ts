@@ -653,6 +653,12 @@ export const dmConversations = sqliteTable(
      * The authoritative copy lives in the counterparty's inbox.
      */
     lastSentMessage: text("last_sent_message"),
+    /**
+     * When THIS provider stored `lastSentMessage` (epoch millis). Decides which
+     * preview is newer (§7.4) instead of the client-supplied `createdAt` inside
+     * it. Set only when `lastSentMessage` is written; NULL on legacy rows.
+     */
+    lastSentAt: integer("last_sent_at", { mode: "number" }),
   },
   (t) => ({
     pk: primaryKey({ columns: [t.owner, t.dmId] }),

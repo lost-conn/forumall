@@ -452,6 +452,68 @@ describe("GET/PATCH /api/me/read-markers", () => {
     expect(scopes.map((s) => s.scopeId).sort()).toEqual([ch.id, dmId].sort());
   });
 
+  test("PATCH ignores a readable public channel in a group the caller hasn't joined", async () => {
+    // §7.7: a marker is accepted only for a scope GET would list — a readable
+    // channel IN A GROUP THE USER BELONGS TO. A public channel of a public group
+    // is readable by anyone, but a non-member's GET never lists it, so a marker
+    // there is an unknown scope: 200, not stored, not reported, no read.updated.
+    const b = boot("rm-http-public-nonmember");
+    const alice = await registerUserWithKey(b, "alice");
+    const bob = await registerUserWithKey(b, "bob");
+    const carol = await registerUserWithKey(b, "carol");
+    const groupId = createGroup(b.db, alice.actor, { name: "pub", tier: "public" }).id;
+    addMember(b.db, groupId, bob.actor, "member");
+    const ch = createChannel(b.db, groupId, { type: "text", tier: "public" });
+    const m1 = createMessage(b.db, b.config, {
+      groupId,
+      channelId: ch.id,
+      author: alice.actor,
+      type: "message",
+      content: { text: "hello world", mime: "text/plain" },
+    });
+    // A DM in carol's inbox: a scope she CAN mark, to sequence the WS check.
+    const dmId = deriveDmId(carol.actor, alice.actor);
+    const dm = storeDmMessage(b.db, b.config, {
+      dmId,
+      owner: "carol",
+      author: alice.actor,
+      content: { text: "hi carol", mime: "text/plain" },
+    });
+
+    const carolDevice2 = await connectAuthenticated(b, carol);
+    const res = await signedReq(b, carol, "PATCH", "/api/me/read-markers", {
+      markers: [
+        { scopeId: ch.id, lastReadMessageId: m1.message.id },
+        { scopeId: ch.id, lastReadSeq: m1.seq },
+      ],
+    });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { scopes: unknown[] }).scopes).toEqual([]);
+    expect(getReadMarkers(b.db, "carol").has(ch.id)).toBe(false);
+    const get = await signedReq(b, carol, "GET", "/api/me/read-markers");
+    const listed = ((await get.json()) as { scopes: { scopeId: string }[] }).scopes;
+    expect(listed.some((s) => s.scopeId === ch.id)).toBe(false);
+
+    // No read.updated was emitted for the ignored marker: the first one carol's
+    // other device sees is for the DM she marks next.
+    const ok = await signedReq(b, carol, "PATCH", "/api/me/read-markers", {
+      markers: [{ scopeId: dmId, lastReadMessageId: dm.message.id }],
+    });
+    expect(ok.status).toBe(200);
+    const evt = await carolDevice2.ofType("read.updated");
+    const scopeIds = (evt.data as { markers: { scopeId: string }[] }).markers.map((m) => m.scopeId);
+    expect(scopeIds).toEqual([dmId]);
+    carolDevice2.close();
+
+    // Control: a member's marker on the same channel still advances.
+    const member = await signedReq(b, bob, "PATCH", "/api/me/read-markers", {
+      markers: [{ scopeId: ch.id, lastReadMessageId: m1.message.id }],
+    });
+    const scopes = ((await member.json()) as { scopes: { scopeId: string }[] }).scopes;
+    expect(scopes.map((s) => s.scopeId)).toEqual([ch.id]);
+    expect(getReadMarkers(b.db, "bob").get(ch.id)).toBe(m1.seq);
+  });
+
   test("PATCH with an invalid body → 400", async () => {
     const b = boot("rm-http-bad");
     const alice = await registerUserWithKey(b, "alice");

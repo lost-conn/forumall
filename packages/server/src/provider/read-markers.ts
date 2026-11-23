@@ -246,11 +246,14 @@ export function unreadEntryFor(
 }
 
 /**
- * Whether `handle` may hold a read marker on `scopeId`: a channel it can
- * currently read ({@link canViewChannel}: tier + membership + `view` override),
- * or a DM conversation in its own inbox. Anything else is treated as an unknown
- * scope (§7.7), so a PATCH can't be used to probe whether a message exists, or
- * how active a channel is, in a scope the caller can't read.
+ * Whether `handle` may hold a read marker on `scopeId` — exactly the scopes
+ * {@link getUnreadSummary} (`GET /api/me/read-markers`) lists: a channel it can
+ * currently read ({@link canViewChannel}: tier + membership + `view` override)
+ * IN A GROUP IT BELONGS TO, or a DM conversation in its conversation list (inbox
+ * or pointer). Anything else is treated as an unknown scope (§7.7) — including a
+ * public channel of a public group the user hasn't joined, which is readable but
+ * never listed — so a PATCH can't store a marker GET never returns, nor probe
+ * whether a message exists, or how active a channel is, in an unlisted scope.
  */
 export function canHoldMarker(db: Db, handle: string, actor: string, scopeId: string): boolean {
   if (isDmScope(scopeId)) {
@@ -264,7 +267,15 @@ export function canHoldMarker(db: Db, handle: string, actor: string, scopeId: st
     );
   }
   const ch = db.drizzle.select().from(channels).where(eq(channels.id, scopeId)).limit(1).all()[0];
-  return ch !== undefined && canViewChannel(db, ch, actor);
+  if (ch === undefined) return false;
+  const member =
+    db.drizzle
+      .select({ user: groupMembers.user })
+      .from(groupMembers)
+      .where(and(eq(groupMembers.groupId, ch.groupId), eq(groupMembers.user, actor)))
+      .limit(1)
+      .all().length > 0;
+  return member && canViewChannel(db, ch, actor);
 }
 
 /** True for a DM scope (`dm_<hex>`); otherwise the scope is a channel id. */

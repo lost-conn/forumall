@@ -391,12 +391,22 @@ function decodeConversationCursor(cursor: string): ConversationCursor | null {
  * One conversation-list item for a `dm_conversations` row: its newest message
  * is the later of the newest RECEIVED message (authoritative, in this inbox)
  * and the cached newest SENT message from a conversation pointer (§7.4).
+ *
+ * "Later" is decided by times THIS provider recorded — when it stored the
+ * received message (`dm_messages.created_at`) and when it stored the cached
+ * preview (`last_sent_at`) — never by the client-supplied `createdAt` inside the
+ * cached preview, which the client can forge to pin the conversation's preview.
+ * On a tie the received message wins. A legacy row whose preview predates
+ * `last_sent_at` (NULL) has no trustworthy store time, so it loses to any
+ * received message and is shown only when the inbox is empty.
  */
 function conversationItem(db: Db, row: DmConversationRow) {
-  const received = lastInboxMessage(db, row.owner, row.dmId);
+  const received = lastInboxRow(db, row.owner, row.dmId);
   const sent = parseCachedMessage(row.lastSentMessage);
-  const last =
-    received && sent ? (sent.createdAt > received.createdAt ? sent : received) : (received ?? sent);
+  const sentWins =
+    sent !== undefined &&
+    (received === undefined || (row.lastSentAt != null && row.lastSentAt > received.createdAt));
+  const last = sentWins ? sent : received ? rowToDmMessage(received) : undefined;
   return {
     owner: row.owner,
     dmId: row.dmId,
@@ -415,6 +425,20 @@ function parseCachedMessage(json: string | null | undefined): Message | undefine
   }
 }
 
+/**
+ * Re-point a cached pointer preview's `author` from `from` to `to` (guest claim
+ * / merge re-key the owner's actor). Returns the JSON unchanged when it is
+ * absent, unparseable, or authored by someone else.
+ */
+export function rekeyCachedMessageAuthor(
+  json: string | null,
+  from: string,
+  to: string,
+): string | null {
+  const msg = parseCachedMessage(json);
+  return msg && msg.author === from ? JSON.stringify({ ...msg, author: to }) : json;
+}
+
 /** The conversation-list item for (owner, dmId), or `null` if there is none. */
 export function getDmConversationItem(db: Db, owner: string, dmId: string) {
   const row = getDmConversationRow(db, owner, dmId);
@@ -426,7 +450,8 @@ export function getDmConversationItem(db: Db, owner: string, dmId: string) {
  * conversation `dmId` with `counterparty`, optionally caching the message they
  * just sent (non-authoritative; the real copy is in the counterparty's inbox).
  * Creates the row if absent (with no inbox message, `lastMessageSeq` 0) and
- * bumps `updatedAt` so the conversation sorts by latest activity. Never touches
+ * bumps `updatedAt` (server time) so the conversation sorts by latest activity.
+ * `lastSentAt` records when the cached preview was stored. Never touches
  * `lastMessageSeq`, which tracks this inbox only. The caller has already
  * verified `dmId` = deriveDmId(owner actor, counterparty).
  */
@@ -448,6 +473,7 @@ export function upsertDmPointer(
       updatedAt: now,
       lastMessageSeq: 0,
       lastSentMessage: cached,
+      lastSentAt: cached !== null ? now : null,
     })
     .onConflictDoUpdate({
       target: [dmConversations.owner, dmConversations.dmId],
@@ -455,22 +481,31 @@ export function upsertDmPointer(
       // participant that thread reads and real-time fan-out match on exactly.
       set: {
         updatedAt: now,
-        ...(cached !== null ? { lastSentMessage: cached } : {}),
+        // The preview's store time moves only with the preview itself: a PUT
+        // without `lastMessage` changes no preview, so it can't reorder one.
+        // Re-sending the SAME message (by `id`, e.g. a retried or replayed PUT)
+        // keeps the original store time, so an old message can't be re-stamped
+        // to beat a newer received reply.
+        ...(lastSent !== undefined && cached !== null
+          ? {
+              lastSentMessage: cached,
+              lastSentAt: sql`CASE WHEN json_valid(${dmConversations.lastSentMessage}) THEN CASE WHEN json_extract(${dmConversations.lastSentMessage}, '$.id') = ${lastSent.id} THEN ${dmConversations.lastSentAt} ELSE ${now} END ELSE ${now} END`,
+            }
+          : {}),
       },
     })
     .run();
 }
 
-/** The newest inbox message for (owner, dmId), or undefined for an empty inbox. */
-function lastInboxMessage(db: Db, owner: string, dmId: string): Message | undefined {
-  const row = db.drizzle
+/** The newest inbox row for (owner, dmId), or undefined for an empty inbox. */
+function lastInboxRow(db: Db, owner: string, dmId: string): DmMessageRow | undefined {
+  return db.drizzle
     .select()
     .from(dmMessages)
     .where(and(eq(dmMessages.owner, owner), eq(dmMessages.dmId, dmId)))
     .orderBy(sql`${dmMessages.seq} DESC`)
     .limit(1)
     .all()[0];
-  return row ? rowToDmMessage(row) : undefined;
 }
 
 // ---------------------------------------------------------------------------

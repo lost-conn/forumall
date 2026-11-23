@@ -44,7 +44,7 @@ import {
   reactions,
   users,
 } from "../src/db/schema.ts";
-import { storeDmMessage } from "../src/provider/dms.ts";
+import { storeDmMessage, upsertDmPointer } from "../src/provider/dms.ts";
 import { createMessage } from "../src/provider/messages.ts";
 import { addReaction } from "../src/provider/reactions.ts";
 
@@ -488,6 +488,139 @@ test("merge: coalesces a DM conversation the target already has", async () => {
     .where(and(eq(dmConversations.owner, "alice"), eq(dmConversations.dmId, dmAliceCarol)))
     .all();
   expect(conv).toHaveLength(1);
+});
+
+/** A cached pointer preview (`Message`) with a fixed client `createdAt`. */
+function sentPreview(id: string, author: string) {
+  return {
+    id,
+    author,
+    type: "message",
+    content: { text: id, mime: "text/plain" },
+    attachments: [],
+    createdAt: "2026-01-01T00:00:00Z",
+    metadata: [],
+  } as unknown as Parameters<typeof upsertDmPointer>[4];
+}
+
+function conversationRow(db: ReturnType<typeof freshApp>["db"], owner: string, dmId: string) {
+  const rows = db.drizzle
+    .select()
+    .from(dmConversations)
+    .where(and(eq(dmConversations.owner, owner), eq(dmConversations.dmId, dmId)))
+    .all();
+  expect(rows).toHaveLength(1);
+  const row = rows[0];
+  const preview = JSON.parse(row?.lastSentMessage ?? "null") as {
+    id: string;
+    author: string;
+  } | null;
+  return { row, preview };
+}
+
+test("merge: a clashing re-keyed pointer yields — the target's preview is kept even if older", async () => {
+  // §4.8.1: a re-keyed pointer that clashes with one already keyed by the new
+  // dmId yields to the existing one, whatever the preview store times.
+  const { app, db } = freshApp("merge-dm-preview-yield");
+  const alice = await registerUserWithKey(app, "alice");
+  const carol = await registerUserWithKey(app, "carol");
+  const group = await createGroup(app, alice, { name: "G", tier: "public", joinPolicy: "invite" });
+  const guest = await provisionGuest(app, alice, group.id);
+  const oldActor = guest.actor;
+
+  const dmAliceCarol = deriveDmId(carol.actor, alice.actor);
+  upsertDmPointer(db, "alice", dmAliceCarol, carol.actor, sentPreview("msg_alice", alice.actor));
+  upsertDmPointer(
+    db,
+    guest.handle,
+    deriveDmId(carol.actor, oldActor),
+    carol.actor,
+    sentPreview("msg_guest", oldActor),
+  );
+  // The guest's preview was STORED later — it still yields.
+  db.sqlite.query("UPDATE dm_conversations SET last_sent_at = 1000 WHERE owner = 'alice'").run();
+  db.sqlite
+    .query("UPDATE dm_conversations SET last_sent_at = 2000 WHERE owner = ?")
+    .run(guest.handle);
+
+  const res = await signedRequest(app, guest, "POST", "/api/me/merge", {
+    handle: "alice",
+    password: PASSWORD,
+  });
+  expect(res.status).toBe(200);
+
+  const { row, preview } = conversationRow(db, "alice", dmAliceCarol);
+  expect(row?.lastSentAt).toBe(1000);
+  expect(preview?.id).toBe("msg_alice");
+});
+
+test("merge: a re-keyed preview fills a clashing row that has none (re-authored, with its time)", async () => {
+  const { app, config, db } = freshApp("merge-dm-preview-fill");
+  const alice = await registerUserWithKey(app, "alice");
+  const carol = await registerUserWithKey(app, "carol");
+  const group = await createGroup(app, alice, { name: "G", tier: "public", joinPolicy: "invite" });
+  const guest = await provisionGuest(app, alice, group.id);
+  const oldActor = guest.actor;
+
+  // alice's row for carol has no preview (only a received message).
+  const dmAliceCarol = deriveDmId(carol.actor, alice.actor);
+  storeDmMessage(db, config, {
+    owner: "alice",
+    dmId: dmAliceCarol,
+    author: carol.actor,
+    content: { text: "to alice", mime: "text/plain" },
+  });
+  upsertDmPointer(
+    db,
+    guest.handle,
+    deriveDmId(carol.actor, oldActor),
+    carol.actor,
+    sentPreview("msg_guest", oldActor),
+  );
+  db.sqlite
+    .query("UPDATE dm_conversations SET last_sent_at = 2000 WHERE owner = ?")
+    .run(guest.handle);
+
+  const res = await signedRequest(app, guest, "POST", "/api/me/merge", {
+    handle: "alice",
+    password: PASSWORD,
+  });
+  expect(res.status).toBe(200);
+
+  const { row, preview } = conversationRow(db, "alice", dmAliceCarol);
+  expect(row?.lastSentAt).toBe(2000);
+  expect(preview?.id).toBe("msg_guest");
+  expect(preview?.author).toBe(alice.actor);
+});
+
+test("merge: a third party's pointer to the guest keeps its preview and store time", async () => {
+  const { app, db } = freshApp("merge-dm-preview-third-party");
+  const alice = await registerUserWithKey(app, "alice");
+  const carol = await registerUserWithKey(app, "carol");
+  const group = await createGroup(app, alice, { name: "G", tier: "public", joinPolicy: "invite" });
+  const guest = await provisionGuest(app, alice, group.id);
+
+  // carol's pointer to the guest, caching a message carol sent.
+  upsertDmPointer(
+    db,
+    "carol",
+    deriveDmId(carol.actor, guest.actor),
+    guest.actor,
+    sentPreview("msg_carol", carol.actor),
+  );
+  db.sqlite.query("UPDATE dm_conversations SET last_sent_at = 3000 WHERE owner = 'carol'").run();
+
+  const res = await signedRequest(app, guest, "POST", "/api/me/merge", {
+    handle: "alice",
+    password: PASSWORD,
+  });
+  expect(res.status).toBe(200);
+
+  const { row, preview } = conversationRow(db, "carol", deriveDmId(carol.actor, alice.actor));
+  expect(row?.counterparty).toBe(alice.actor);
+  expect(row?.lastSentAt).toBe(3000);
+  expect(preview?.id).toBe("msg_carol");
+  expect(preview?.author).toBe(carol.actor);
 });
 
 // ---------------------------------------------------------------------------
