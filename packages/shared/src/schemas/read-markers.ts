@@ -17,9 +17,18 @@ export const ReadMarkerSchema = z
   .object({
     /** Channel id (`chn_…`) or DM conversation id (`dmId`). */
     scopeId: z.string().min(1),
-    /** Highest `seq` the user has read in this scope. */
-    lastReadSeq: z.number().int().nonnegative(),
-    /** Unread message count in this scope (`seq > lastReadSeq`, own excluded). */
+    /**
+     * The newest message the user has read in this scope (OFSCP read markers);
+     * absent when nothing has been read yet.
+     */
+    lastReadMessageId: z.string().min(1).optional(),
+    /**
+     * Forumall extension (not OFSCP): the provider-internal `seq` of that
+     * message, used by Forumall's own web client. Other clients use
+     * `lastReadMessageId`. Optional on the wire (other providers omit it).
+     */
+    lastReadSeq: z.number().int().nonnegative().optional(),
+    /** Unread message count in this scope (newer than the marker, own excluded). */
     unreadCount: z.number().int().nonnegative(),
     /** Owning group id for a channel scope; absent for DM scopes. */
     groupId: z.string().optional(),
@@ -43,9 +52,15 @@ export type ReadMarkersResponse = z.infer<typeof ReadMarkersResponseSchema>;
 export const ReadMarkerUpdateSchema = z
   .object({
     scopeId: z.string().min(1),
-    lastReadSeq: z.number().int().nonnegative(),
+    /** OFSCP: the newest message read. Preferred when present. */
+    lastReadMessageId: z.string().min(1).optional(),
+    /** Forumall extension: the same position as a provider `seq`. */
+    lastReadSeq: z.number().int().nonnegative().optional(),
   })
-  .passthrough();
+  .passthrough()
+  .refine((m) => m.lastReadMessageId !== undefined || m.lastReadSeq !== undefined, {
+    message: "a marker needs lastReadMessageId (or the Forumall lastReadSeq extension)",
+  });
 export type ReadMarkerUpdate = z.infer<typeof ReadMarkerUpdateSchema>;
 
 /**

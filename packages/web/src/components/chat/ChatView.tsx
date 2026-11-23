@@ -441,14 +441,19 @@ export const ChatView: Component<{
   // The newest decodable `seq` among loaded messages (optimistic echoes carry no
   // cursor; tombstones/edits keep theirs). This is the high-water mark we advance
   // the read marker to.
-  const newestSeq = createMemo(() => {
+  const newestRead = createMemo(() => {
     let max = 0;
+    let id: string | undefined;
     for (const m of messages()) {
       const s = seqFromCursor(m.cursor);
-      if (s != null && s > max) max = s;
+      if (s != null && s > max) {
+        max = s;
+        id = m.id;
+      }
     }
-    return max;
+    return { seq: max, id };
   });
+  const newestSeq = createMemo(() => newestRead().seq);
 
   // Divider anchor: snapshot the stored `lastReadSeq` when the channel opens, so
   // the "New messages" line stays put for this viewing session even as
@@ -490,7 +495,7 @@ export const ChatView: Component<{
         if (seq <= 0) return;
         // `pinned` starts true on open/switch, so initial-open marks read; once
         // the user scrolls up it goes false and we stop advancing.
-        if (pinned) markRead(channelId(), seq);
+        if (pinned) markRead(channelId(), seq, newestRead().id);
       },
     ),
   );

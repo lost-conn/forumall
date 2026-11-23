@@ -145,6 +145,36 @@ describe("POST /api/groups/{groupId}/join (§5.7)", () => {
     expect(member.role).toBe("member");
   });
 
+  test("a private-tier group is invite-only even with joinPolicy open (§11)", async () => {
+    const { app } = freshApp("join-private-open");
+    const alice = await registerUserWithKey(app, "alice");
+    const bob = await registerUserWithKey(app, "bob");
+    const group = await createGroup(app, alice, {
+      name: "Secret",
+      tier: "private",
+      joinPolicy: "open",
+    });
+
+    const res = await signedRequest(app, bob, "POST", `/api/groups/${group.id}/join`);
+    expect(res.status).toBe(403);
+
+    // The channel-join alias (§8.2) applies the same rule.
+    const ch = await signedRequest(app, alice, "POST", `/api/groups/${group.id}/channels`, {
+      type: "text",
+      name: "general",
+      tier: "private",
+    });
+    expect(ch.status).toBe(201);
+    const channelId = ((await ch.json()) as { id: string }).id;
+    const viaChannel = await signedRequest(
+      app,
+      bob,
+      "POST",
+      `/api/groups/${group.id}/channels/${channelId}/join`,
+    );
+    expect(viaChannel.status).toBe(403);
+  });
+
   test("request group → 202 JoinRequest; repeat returns the same pending one", async () => {
     const { app, db } = freshApp("join-request");
     const alice = await registerUserWithKey(app, "alice");

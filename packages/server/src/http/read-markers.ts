@@ -22,7 +22,12 @@ import {
 import { Hono } from "hono";
 
 import { getUserRow } from "../provider/guests.ts";
-import { getUnreadSummary, setReadMarkers, unreadEntryFor } from "../provider/read-markers.ts";
+import {
+  getUnreadSummary,
+  seqForMessage,
+  setReadMarkers,
+  unreadEntryFor,
+} from "../provider/read-markers.ts";
 import { AppError } from "./errors.ts";
 import { requireLocalActor, requireLocalHandle, requireSignature } from "./signature.ts";
 import type { AppBindings } from "./types.ts";
@@ -69,17 +74,26 @@ export function createMeReadMarkersRouter() {
 
     const canonicalActor = `${handle}@${canonicalAuthority(config.domain)}`;
 
+    // Resolve each marker to a provider seq: OFSCP names the newest-read
+    // MESSAGE (`lastReadMessageId`); Forumall's own client may send the `seq`
+    // directly (extension). A marker naming a message this provider does not
+    // hold in that scope is ignored, like an unknown scope.
+    const entries: { scopeId: string; lastReadSeq: number }[] = [];
+    for (const m of parsed.data.markers) {
+      const seq =
+        m.lastReadMessageId !== undefined
+          ? seqForMessage(db, m.scopeId, m.lastReadMessageId)
+          : (m.lastReadSeq ?? null);
+      if (seq !== null) entries.push({ scopeId: m.scopeId, lastReadSeq: seq });
+    }
+
     // Persist monotonically; `advanced` is the set of scopes actually moved.
-    const advanced = setReadMarkers(
-      db,
-      handle,
-      parsed.data.markers.map((m) => ({ scopeId: m.scopeId, lastReadSeq: m.lastReadSeq })),
-    );
+    const advanced = setReadMarkers(db, handle, entries);
 
     // Recompute the touched markers with their new unread counts. Only the
     // scopes that actually advanced are reported (a no-op backward set is
-    // dropped). For each advanced scope we read back the persisted lastReadSeq.
-    const markers = parsed.data.markers
+    // dropped).
+    const markers = entries
       .filter((m) => advanced.has(m.scopeId))
       .map((m) => unreadEntryFor(db, handle, canonicalActor, m.scopeId, m.lastReadSeq));
 

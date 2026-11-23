@@ -59,6 +59,15 @@ export const TIERS: TiersResponse = {
 /** Tiers that are readable without group membership (§11, §5.5). */
 export const PUBLIC_TIERS: ReadonlySet<string> = new Set(["public", "discoverable"]);
 
+/**
+ * The join policy that actually applies (OFSCP §11): a `private`-tier group is
+ * invite-only whatever its stored `joinPolicy`, so `join` can never let someone
+ * into it without an invite. Other tiers use the stored policy.
+ */
+export function effectiveJoinPolicy(tier: string, joinPolicy: string): string {
+  return tier === "private" ? "invite" : joinPolicy;
+}
+
 /** Whether `tier` alone grants read access to anyone, without membership. */
 export function isPublicTier(tier: string): boolean {
   return PUBLIC_TIERS.has(tier);
