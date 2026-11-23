@@ -146,11 +146,6 @@ export function problemResponse(
 }
 
 /**
- * Hono `onError` handler. Renders {@link AppError} faithfully; any other thrown
- * value becomes a generic 500 with no internal detail leaked to the client
- * (the real error is logged server-side).
- */
-/**
  * Validate a REQUEST body against `schema`, throwing a `400` on failure. Use
  * this (not `schema.parse`) wherever the input came from the client: a bare
  * `.parse` throws a `ZodError`, which — correctly, since most `.parse` calls
@@ -162,6 +157,11 @@ export function parseRequestBody<T>(schema: ZodType<T>, raw: unknown, what = "re
   return parsed.data;
 }
 
+/**
+ * Hono `onError` handler. Renders {@link AppError} faithfully; any other thrown
+ * value becomes a generic 500 with no internal detail leaked to the client
+ * (the real error is logged server-side).
+ */
 export function onError(err: Error, c: Context): Response {
   if (err instanceof AppError) {
     if (err.status >= 500) console.error("[server] AppError:", err);

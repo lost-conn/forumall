@@ -253,7 +253,7 @@ export function createMessagesRouter() {
     const messageId = requireParam(c, "messageId");
     const key = requireParam(c, "key");
 
-    const body = ReactionPutBodySchema.parse(await readOptionalJson(c));
+    const body = parseRequestBody(ReactionPutBodySchema, await readOptionalJson(c));
 
     const outcome = authorizeReaction(db, groupId, channelId, messageId, actor.actor);
     if (outcome.error) throw toAppError(outcome.error);

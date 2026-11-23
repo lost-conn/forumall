@@ -564,7 +564,8 @@ export function createFederationDmsRouter() {
 
     const raw = (await c.req.json().catch(() => ({}))) as { actor?: unknown; content?: unknown };
     const actingActor = federationActingActor(c, raw.actor);
-    const content = MessageUpdateRequestSchema.parse({ content: raw.content }).content as Content;
+    const content = parseRequestBody(MessageUpdateRequestSchema, { content: raw.content })
+      .content as Content;
 
     const { owner, ownerActor } = resolveFederationDmOwner(db, config, actingActor, dmId);
     const row = getDmMessageRow(db, owner, dmId, messageId);

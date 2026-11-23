@@ -545,6 +545,20 @@ describe("request vs. output validation failures (review of #23)", () => {
     expect(body.errors).toBeUndefined(); // no zod internals leaked
   });
 
+  test("a malformed reaction PUT body → 400, not 500", async () => {
+    const { app } = freshApp();
+    const alice = await registerUserWithKey(app, "alice");
+    // The body is validated before the reaction is authorized, so any target works.
+    const res = await signedJson(
+      app,
+      alice,
+      "PUT",
+      "/api/groups/grp_x/channels/chn_x/messages/msg_x/reactions/heart",
+      { image: "http://not-https.example/x.png" },
+    );
+    expect(res.status).toBe(400);
+  });
+
   test("a failed validation of the server's OWN output → 500, not 400", async () => {
     const { app } = freshApp();
     app.get("/api/test/bad-output", (c) => c.json(MessageSchema.parse({ id: 1 })));
