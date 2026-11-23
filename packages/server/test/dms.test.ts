@@ -31,6 +31,8 @@ import { type AppWithWebSocket, createApp } from "../src/app.ts";
 import { type Argon2Params, type Config, loadConfig } from "../src/config.ts";
 import { openDb } from "../src/db/index.ts";
 import { migrate } from "../src/db/migrate.ts";
+import { getDmConversationRow, upsertDmPointer } from "../src/provider/dms.ts";
+import { signedProviderFetch } from "../src/provider/federation/http.ts";
 import type { Hub } from "../src/provider/ws-hub.ts";
 
 const FAST_ARGON2: Argon2Params = { memoryKib: 1024, iterations: 1, parallelism: 1 };
@@ -504,6 +506,69 @@ describe("DM delivery `to` + conversation pointers (§7.4)", () => {
       lastMessage: { ...sent, author: remote },
     });
     expect(forged.status).toBe(400);
+  });
+});
+
+describe("DM conversation pointers: input + federation policy hardening (§7.4, §8)", () => {
+  test("PUT rejects a URI or non-canonical `with` (400, never 500)", async () => {
+    const b = boot("dm-pointer-canon");
+    const alice = await registerUserWithKey(b, "alice");
+    const dmId = deriveDmId(alice.actor, "dave@remote.example");
+
+    for (const bad of [
+      "https://remote.example/u/dave",
+      "DAVE@remote.example",
+      "dave@Remote.Example",
+    ]) {
+      const res = await signedReq(b, alice, "PUT", `/api/me/dms/${dmId}`, { with: bad });
+      expect(res.status).toBe(400);
+    }
+    // Nothing was recorded.
+    const list = await signedReq(b, alice, "GET", "/api/me/dms");
+    expect(((await list.json()) as { items: unknown[] }).items).toEqual([]);
+  });
+
+  test("upsertDmPointer never rewrites the counterparty of an existing row", async () => {
+    const b = boot("dm-pointer-no-overwrite");
+    const alice = await registerUserWithKey(b, "alice");
+    const bob = await registerUserWithKey(b, "bob");
+    const dmId = deriveDmId(alice.actor, bob.actor);
+    await sendDm(b, bob, dmId, "hi alice", "cmsg_x"); // alice's inbox row, counterparty = bob
+
+    // Even if a differently-spelled counterparty reached the upsert, the
+    // verified participant on the existing row is kept.
+    upsertDmPointer(b.db, "alice", dmId, bob.actor.toUpperCase());
+    expect(getDmConversationRow(b.db, "alice", dmId)?.counterparty).toBe(bob.actor);
+  });
+
+  test("PUT refuses a counterparty on a deny-listed provider (403)", async () => {
+    const b = boot("dm-pointer-deny", { FEDERATION_DENY: "evil.example" });
+    const alice = await registerUserWithKey(b, "alice");
+    const remote = "x@evil.example";
+    const dmId = deriveDmId(alice.actor, remote);
+
+    const res = await signedReq(b, alice, "PUT", `/api/me/dms/${dmId}`, { with: remote });
+    expect(res.status).toBe(403);
+    const list = await signedReq(b, alice, "GET", "/api/me/dms");
+    expect(((await list.json()) as { items: unknown[] }).items).toEqual([]);
+  });
+
+  test("outbound provider-signed calls never reach a deny-listed provider", async () => {
+    const b = boot("dm-outbound-deny", { FEDERATION_DENY: "evil.example" });
+    let calls = 0;
+    const stub = (async () => {
+      calls++;
+      return new Response("{}", { status: 200 });
+    }) as unknown as Parameters<typeof signedProviderFetch>[3];
+
+    const res = await signedProviderFetch(
+      b.db,
+      b.config,
+      { method: "PUT", url: "https://evil.example/api/federation/dms/x/reactions/y" },
+      stub,
+    );
+    expect(res.status).toBe(403);
+    expect(calls).toBe(0);
   });
 });
 

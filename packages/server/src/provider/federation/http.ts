@@ -30,6 +30,7 @@ import type { Config } from "../../config.ts";
 import type { Db } from "../../db/index.ts";
 import { getProviderSigningKey } from "../signing-key.ts";
 import { guardedFetch } from "./egress-guard.ts";
+import { isProviderAllowed } from "./policy.ts";
 
 /**
  * An injectable fetch keyed by the *logical* target domain.
@@ -137,8 +138,14 @@ export async function signedProviderFetch(
   init: SignedProviderFetchInit,
   federationFetch: FederationFetch = defaultFederationFetch,
 ): Promise<Response> {
-  const key = getProviderSigningKey(db);
   const { domain, authority, path, query } = targetParts(init.url);
+  // Deny wins outbound too (§8): never sign a request to a provider the policy
+  // blocks, whatever stored row named it. Answer like a refusing peer so
+  // callers' existing `!res.ok` handling applies.
+  if (!isProviderAllowed(config, domain)) {
+    return new Response(null, { status: 403, statusText: "federation policy" });
+  }
+  const key = getProviderSigningKey(db);
   const body = init.body ?? new Uint8Array(0);
 
   const signInput: ProviderSignInput = {

@@ -451,8 +451,9 @@ export function upsertDmPointer(
     })
     .onConflictDoUpdate({
       target: [dmConversations.owner, dmConversations.dmId],
+      // Never rewrite `counterparty` on an existing row: it is the verified
+      // participant that thread reads and real-time fan-out match on exactly.
       set: {
-        counterparty,
         updatedAt: now,
         ...(cached !== null ? { lastSentMessage: cached } : {}),
       },

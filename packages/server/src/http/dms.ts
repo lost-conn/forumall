@@ -77,6 +77,7 @@ import {
 } from "../provider/dms.ts";
 import type { FederationFetch } from "../provider/federation/http.ts";
 import { signedProviderFetch } from "../provider/federation/http.ts";
+import { isProviderAllowed } from "../provider/federation/policy.ts";
 import { getUserRow } from "../provider/guests.ts";
 import { previewText, sendPushToRecipient } from "../provider/push-send.ts";
 import type { Hub } from "../provider/ws-hub.ts";
@@ -764,7 +765,7 @@ export function createMeDmsRouter() {
   // just sent as a non-authoritative preview. Lists started conversations and
   // syncs them to the caller's other devices via `dm.conversation`.
   router.put("/dms/:dmId", signed, local, async (c) => {
-    const { db, hub } = c.var;
+    const { config, db, hub } = c.var;
     const actor = c.var.actor;
     if (!actor) throw AppError.unauthorized();
     const dmId = requireParam(c, "dmId");
@@ -780,10 +781,32 @@ export function createMeDmsRouter() {
       });
     }
     const { with: counterparty, lastMessage } = parsed.data;
+    // `with` must be an actor in canonical form (`handle@domain`, lowercase,
+    // canonical authority). A URI or non-canonical spelling would either throw
+    // in deriveDmId or be stored as typed and break exact participant matching.
+    const at = counterparty.lastIndexOf("@");
+    const withDomain = at > 0 ? counterparty.slice(at + 1) : "";
+    if (
+      at <= 0 ||
+      withDomain === "" ||
+      counterparty !==
+        `${counterparty.slice(0, at).toLowerCase()}@${canonicalAuthority(withDomain)}`
+    ) {
+      throw AppError.badRequest({ detail: "`with` must be a canonical actor (handle@domain)" });
+    }
     if (counterparty === actor.actor || deriveDmId(actor.actor, counterparty) !== dmId) {
       throw AppError.badRequest({
         detail: "{dmId} does not match a conversation between the caller and `with`",
       });
+    }
+    // A pointer row makes this provider send provider-signed requests to the
+    // counterparty's host (reaction/edit/delete forwards), so it must obey the
+    // same federation policy as an inbound remote sender (§8).
+    if (
+      withDomain !== canonicalAuthority(config.domain) &&
+      !isProviderAllowed(config, withDomain)
+    ) {
+      throw AppError.forbidden({ detail: "federation with that provider is not allowed" });
     }
     // The cached preview must be a message the CALLER sent in this conversation.
     if (lastMessage !== undefined && lastMessage.author !== actor.actor) {
