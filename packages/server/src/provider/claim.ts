@@ -43,7 +43,8 @@
  *
  *  dm-special (re-derive dmId): any dm_messages / dm_conversations / dm_reactions
  *  row where the guest is author/owner/counterparty has its `dm_id` recomputed
- *  with the new actor.
+ *  with the new actor, and the read markers keyed by a re-derived dmId (the
+ *  guest's own AND third parties') move to the new dmId (§4.8.1).
  */
 import { canonicalAuthority, deriveDmId } from "@forumall/shared";
 import { and, eq, like } from "drizzle-orm";
@@ -77,9 +78,10 @@ import {
   users,
 } from "../db/schema.ts";
 import { AppError } from "../http/errors.ts";
-import { rekeyCachedMessageAuthor } from "./dms.ts";
+import { conversationDerivesDmId, rekeyCachedMessageAuthor } from "./dms.ts";
 import { GUEST_HANDLE_PREFIX, HandleSchema } from "./handle.ts";
 import { hashPassword } from "./password.ts";
+import { deleteReadMarker, moveReadMarker } from "./read-markers.ts";
 
 /** Input to {@link claimGuestAccount}. */
 export interface ClaimGuestInput {
@@ -354,6 +356,17 @@ function rekeyDmMessages(
  *  - rows in another local user's inbox WHERE the counterparty is the guest:
  *    `counterparty = oldActor` → newActor; dm_id recomputed from (owner@domain,
  *    newActor).
+ *
+ * Each re-keyed row's read marker (`read_markers.scope_id` = the old dm_id) moves
+ * to the new dm_id ({@link moveReadMarker}). The guest's markers were already
+ * renamed to `newHandle` by the bare-handle pass, so they are found there.
+ * A row whose counterparty does not derive its dm_id with its owner (ignored,
+ * §7.4) is never re-keyed — re-deriving would turn it into a valid
+ * conversation; it is deleted with its marker. The one exception is a third
+ * party's row whose inbox still holds messages under its dm_id (an old author
+ * spelling can fail the derivation): it is kept, still ignored, so those
+ * messages keep their row. (The guest's own inbox is fully re-keyed by
+ * {@link rekeyDmMessages}, so a guest row never holds messages here.)
  */
 function rekeyDmConversations(
   db: Db,
@@ -370,13 +383,24 @@ function rekeyDmConversations(
     .where(eq(dmConversations.owner, currentHandle))
     .all();
   for (const r of owned) {
+    // An inconsistent (ignored, §7.4) row is never re-derived into a valid
+    // conversation. It is DELETED with its marker (renamed to newHandle by the
+    // bare-handle pass): the guest's whole inbox was already re-keyed
+    // (rekeyDmMessages), so no message is left under its dm_id.
+    if (!conversationDerivesDmId(oldActor, r)) {
+      deleteConversationRow(db, r.owner, r.dmId);
+      deleteReadMarker(db, newHandle, r.dmId);
+      continue;
+    }
+    // Delete + reinsert: the PK is (owner, dmId), and both change.
+    deleteConversationRow(db, r.owner, r.dmId);
     const counterparty = r.counterparty === oldActor ? newActor : r.counterparty;
     const newDmId = deriveDmId(counterparty, newActor);
-    // Delete + reinsert: the PK is (owner, dmId), and both change.
-    db.drizzle
-      .delete(dmConversations)
-      .where(and(eq(dmConversations.owner, r.owner), eq(dmConversations.dmId, r.dmId)))
-      .run();
+    moveReadMarker(
+      db,
+      { handle: newHandle, scopeId: r.dmId },
+      { handle: newHandle, scopeId: newDmId },
+    );
     db.drizzle
       .insert(dmConversations)
       .values({
@@ -399,11 +423,21 @@ function rekeyDmConversations(
     .all();
   for (const r of pointingAtGuest) {
     const counterpartyActor = `${r.owner}@${domain}`;
+    // Inconsistent (ignored, §7.4): deleted with its marker unless the owner's
+    // inbox still holds messages under its dm_id — then it is left as is (still
+    // ignored) so those messages keep their conversation row.
+    if (!conversationDerivesDmId(counterpartyActor, r)) {
+      if (!inboxHasMessages(db, r.owner, r.dmId)) {
+        deleteConversationRow(db, r.owner, r.dmId);
+        deleteReadMarker(db, r.owner, r.dmId);
+      } else {
+        warnKeptInconsistentRow(r);
+      }
+      continue;
+    }
+    deleteConversationRow(db, r.owner, r.dmId);
     const newDmId = deriveDmId(counterpartyActor, newActor);
-    db.drizzle
-      .delete(dmConversations)
-      .where(and(eq(dmConversations.owner, r.owner), eq(dmConversations.dmId, r.dmId)))
-      .run();
+    moveReadMarker(db, { handle: r.owner, scopeId: r.dmId }, { handle: r.owner, scopeId: newDmId });
     db.drizzle
       .insert(dmConversations)
       .values({
@@ -417,6 +451,30 @@ function rekeyDmConversations(
       })
       .run();
   }
+}
+
+function deleteConversationRow(db: Db, owner: string, dmId: string): void {
+  db.drizzle
+    .delete(dmConversations)
+    .where(and(eq(dmConversations.owner, owner), eq(dmConversations.dmId, dmId)))
+    .run();
+}
+
+function inboxHasMessages(db: Db, owner: string, dmId: string): boolean {
+  return (
+    db.drizzle
+      .select({ id: dmMessages.id })
+      .from(dmMessages)
+      .where(and(eq(dmMessages.owner, owner), eq(dmMessages.dmId, dmId)))
+      .limit(1)
+      .all().length > 0
+  );
+}
+
+function warnKeptInconsistentRow(r: { owner: string; dmId: string }): void {
+  console.warn(
+    `[claim] kept inconsistent DM conversation row (${r.owner}, ${r.dmId}) holding received messages; it stays ignored (§7.4)`,
+  );
 }
 
 /**

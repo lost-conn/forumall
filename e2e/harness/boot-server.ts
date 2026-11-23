@@ -79,7 +79,7 @@ const config = loadConfig({
 });
 
 const db = openDb(config.dbPath);
-migrate(db);
+migrate(db, { domain });
 getProviderSigningKey(db); // ensure §8.1 provider identity exists
 
 // Optional short WS heartbeat/idle timings (§7.1) so the presence e2e can observe

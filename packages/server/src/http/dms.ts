@@ -44,6 +44,7 @@ import {
   ReactionSchema,
   WsDmMessageSchema,
   WsDmReactionSchema,
+  canonicalActor,
   canonicalAuthority,
   deriveDmId,
   rfc3339Timestamp,
@@ -166,8 +167,11 @@ function resolveLocalDmOwner(db: Db, config: Config, author: string, dmId: strin
  * `null`. `owner` is a local handle (the inbox key) — a remote caller has no
  * inbox here, so callers must not reach for this with a foreign handle.
  */
-function counterpartyOf(db: Db, owner: string, dmId: string): string | null {
-  return getDmConversationRow(db, owner, dmId)?.counterparty ?? null;
+function counterpartyOf(db: Db, owner: string, dmId: string, domain: string): string | null {
+  // An inconsistent pointer (§7.4) resolves to `null`, so it never triggers a
+  // forward or a fan-out. Served in canonical form.
+  const row = getDmConversationRow(db, owner, dmId, domain);
+  return row ? canonicalActor(row.counterparty) : null;
 }
 
 /**
@@ -532,7 +536,7 @@ export function createFederationDmsRouter() {
       canonicalAuthority(author.slice(authorAt + 1)) === authority &&
       authorHandle !== owner
     ) {
-      upsertDmPointer(db, authorHandle, dmId, recipientActor, record.message);
+      upsertDmPointer(db, `${authorHandle}@${authority}`, dmId, recipientActor, record.message);
       publishDmConversation(hub, db, author, authorHandle, dmId);
     }
 
@@ -777,12 +781,12 @@ export function createMeDmsRouter() {
 
   // -- GET /dms (§7.4 — signed, local caller) ------------------------------
   router.get("/dms", signed, local, (c) => {
-    const { db } = c.var;
+    const { config, db } = c.var;
     const actor = c.var.actor;
     if (!actor) throw AppError.unauthorized();
 
     const { cursor, limit } = pageQuery(c);
-    const page = listDmConversations(db, requireLocalHandle(c), {
+    const page = listDmConversations(db, requireLocalHandle(c), canonicalAuthority(config.domain), {
       cursor,
       ...(limit !== undefined ? { limit } : {}),
     });
@@ -841,7 +845,13 @@ export function createMeDmsRouter() {
     }
 
     const handle = requireLocalHandle(c);
-    upsertDmPointer(db, handle, dmId, counterparty, lastMessage);
+    upsertDmPointer(
+      db,
+      `${handle}@${canonicalAuthority(config.domain)}`,
+      dmId,
+      counterparty,
+      lastMessage,
+    );
     const item = publishDmConversation(hub, db, actor.actor, handle, dmId);
     return c.json(item, 200);
   });
@@ -865,7 +875,7 @@ export function createDmsRouter() {
   // cross-provider (a remote sender reading the recipient's provider gets their
   // sent rows by `author` scope).
   router.get("/:dmId/messages", signed, (c) => {
-    const { db } = c.var;
+    const { config, db } = c.var;
     const actor = c.var.actor;
     if (!actor) throw AppError.unauthorized();
     const dmId = requireParam(c, "dmId");
@@ -874,7 +884,7 @@ export function createDmsRouter() {
     // Participation: the caller must own a local inbox row for dmId, OR be named
     // as the counterparty of some local inbox row for dmId (covers an only-sent /
     // cross-provider sender with no inbox here). A true non-participant → 404.
-    if (!isDmThreadParticipant(db, dmId, viewer)) {
+    if (!isDmThreadParticipant(db, dmId, viewer, canonicalAuthority(config.domain))) {
       throw AppError.notFound({ detail: "no such conversation" });
     }
 
@@ -895,14 +905,14 @@ export function createDmsRouter() {
   // Paged list of the replies to a DM message within the caller's inbox. Same
   // participant-only gate + `messages-page` shape as the history read.
   router.get("/:dmId/messages/:messageId/replies", signed, (c) => {
-    const { db } = c.var;
+    const { config, db } = c.var;
     const actor = c.var.actor;
     if (!actor) throw AppError.unauthorized();
     const dmId = requireParam(c, "dmId");
     const messageId = requireParam(c, "messageId");
     const viewer: DmViewer = dmViewerOf(actor);
 
-    if (!isDmThreadParticipant(db, dmId, viewer)) {
+    if (!isDmThreadParticipant(db, dmId, viewer, canonicalAuthority(config.domain))) {
       throw AppError.notFound({ detail: "no such conversation" });
     }
 
@@ -980,7 +990,8 @@ export function createDmsRouter() {
     // out an event that names nobody.
     const me = actor.localHandle;
     const own = me !== undefined ? getDmMessageRow(db, me, dmId, messageId) : null;
-    const ownCounterparty = me !== undefined && own ? counterpartyOf(db, me, dmId) : null;
+    const ownCounterparty =
+      me !== undefined && own ? counterpartyOf(db, me, dmId, authority) : null;
     if (own && ownCounterparty !== null) {
       const existed = hasDmReaction(db, dmId, messageId, actor.actor, key);
       const reaction = addDmReaction(db, { dmId, messageId, author: actor.actor, key });
@@ -1014,7 +1025,7 @@ export function createDmsRouter() {
     }
 
     // (c) The counterparty is REMOTE → the message lives on their provider.
-    const counterparty = me !== undefined ? counterpartyOf(db, me, dmId) : null;
+    const counterparty = me !== undefined ? counterpartyOf(db, me, dmId, authority) : null;
     const cpDomain = counterparty !== null ? domainOf(counterparty) : "";
     if (cpDomain !== "" && cpDomain !== authority) {
       const res = await forwardDmReaction(db, config, federationFetch, {
@@ -1057,7 +1068,8 @@ export function createDmsRouter() {
     // (a) The target lives in the caller's own LOCAL inbox.
     const me = actor.localHandle;
     const own = me !== undefined ? getDmMessageRow(db, me, dmId, messageId) : null;
-    const ownCounterparty = me !== undefined && own ? counterpartyOf(db, me, dmId) : null;
+    const ownCounterparty =
+      me !== undefined && own ? counterpartyOf(db, me, dmId, authority) : null;
     if (own && ownCounterparty !== null) {
       removeDmReaction(db, dmId, messageId, actor.actor, key);
       fanOutDmReaction(hub, {
@@ -1087,7 +1099,7 @@ export function createDmsRouter() {
     }
 
     // (c) The counterparty is REMOTE → the message lives on their provider.
-    const counterparty = me !== undefined ? counterpartyOf(db, me, dmId) : null;
+    const counterparty = me !== undefined ? counterpartyOf(db, me, dmId, authority) : null;
     const cpDomain = counterparty !== null ? domainOf(counterparty) : "";
     if (cpDomain !== "" && cpDomain !== authority) {
       const res = await forwardDmReaction(db, config, federationFetch, {
@@ -1186,7 +1198,7 @@ export function createDmsRouter() {
     }
 
     // (c) The counterparty is REMOTE → the message lives on their provider.
-    const counterparty = me !== undefined ? counterpartyOf(db, me, dmId) : null;
+    const counterparty = me !== undefined ? counterpartyOf(db, me, dmId, authority) : null;
     const cpDomain = counterparty !== null ? domainOf(counterparty) : "";
     if (cpDomain !== "" && cpDomain !== authority) {
       const res = await forwardDmEdit(db, config, federationFetch, {
@@ -1258,7 +1270,7 @@ export function createDmsRouter() {
     }
 
     // (c) The counterparty is REMOTE → the message lives on their provider.
-    const counterparty = me !== undefined ? counterpartyOf(db, me, dmId) : null;
+    const counterparty = me !== undefined ? counterpartyOf(db, me, dmId, authority) : null;
     const cpDomain = counterparty !== null ? domainOf(counterparty) : "";
     if (cpDomain !== "" && cpDomain !== authority) {
       const res = await forwardDmDelete(db, config, federationFetch, {
@@ -1302,7 +1314,7 @@ function publishDmConversation(
   ownerHandle: string,
   dmId: string,
 ): DmConversation | null {
-  const item = getDmConversationItem(db, ownerHandle, dmId);
+  const item = getDmConversationItem(db, ownerHandle, dmId, domainOf(ownerActor));
   if (!item) return null;
   const conversation = wireConversation(ownerActor, item);
   hub.publishToActor(ownerActor, { type: "dm.conversation", data: { conversation } });

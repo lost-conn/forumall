@@ -441,6 +441,42 @@ describe("DM real-time delivery (§7.4)", () => {
   });
 });
 
+describe("ignored conversation rows over WS (§7.4 pointer hygiene)", () => {
+  test("WS subscribe and typing against a row whose counterparty does not derive its dmId are refused", async () => {
+    const b = boot("dm-ws-ignored-row");
+    const alice = await registerUserWithKey(b, "alice");
+    const bob = await registerUserWithKey(b, "bob");
+    // dmId of alice↔carol, but the stored counterparty is bob.
+    const dmId = deriveDmId(alice.actor, `carol@${DOMAIN}`);
+    b.db.sqlite
+      .query(
+        "INSERT INTO dm_conversations (owner, dm_id, counterparty, updated_at, last_message_seq) VALUES ('alice', ?, ?, ?, 0)",
+      )
+      .run(dmId, bob.actor, Date.now());
+
+    const aConn = await connectAuthenticated(b, alice);
+    const bConn = await connectAuthenticated(b, bob);
+
+    aConn.send({
+      id: "a_sub",
+      type: "subscribe",
+      ts: rfc3339Timestamp(),
+      data: { channels: [dmId] },
+    });
+    const subErr = await aConn.ofType("error");
+    expect((subErr.data as { code: string }).code).toBe("forbidden");
+
+    aConn.send({ id: "a_typ", type: "typing.start", ts: rfc3339Timestamp(), data: { dmId } });
+    const typErr = await aConn.ofType("error");
+    expect((typErr.data as { code: string }).code).toBe("forbidden");
+    aConn.send({ id: "a_stop", type: "typing.stop", ts: rfc3339Timestamp(), data: { dmId } });
+    await bConn.expectNoneOfType("dm.typing");
+
+    aConn.close();
+    bConn.close();
+  });
+});
+
 describe("DM delivery `to` + conversation pointers (§7.4)", () => {
   test("delivery naming `to` is accepted; a `to` that does not match {dmId} → 400", async () => {
     const b = boot("dm-to");
@@ -528,7 +564,7 @@ describe("DM conversation pointers: input + federation policy hardening (§7.4, 
     expect(((await list.json()) as { items: unknown[] }).items).toEqual([]);
   });
 
-  test("upsertDmPointer never rewrites the counterparty of an existing row", async () => {
+  test("upsertDmPointer never rewrites the counterparty of an existing row to another actor", async () => {
     const b = boot("dm-pointer-no-overwrite");
     const alice = await registerUserWithKey(b, "alice");
     const bob = await registerUserWithKey(b, "bob");
@@ -536,9 +572,9 @@ describe("DM conversation pointers: input + federation policy hardening (§7.4, 
     await sendDm(b, bob, dmId, "hi alice", "cmsg_x"); // alice's inbox row, counterparty = bob
 
     // Even if a differently-spelled counterparty reached the upsert, the
-    // verified participant on the existing row is kept.
-    upsertDmPointer(b.db, "alice", dmId, bob.actor.toUpperCase());
-    expect(getDmConversationRow(b.db, "alice", dmId)?.counterparty).toBe(bob.actor);
+    // verified participant on the existing row is kept, in canonical form.
+    upsertDmPointer(b.db, alice.actor, dmId, bob.actor.toUpperCase());
+    expect(getDmConversationRow(b.db, "alice", dmId, DOMAIN)?.counterparty).toBe(bob.actor);
   });
 
   test("PUT refuses a counterparty on a deny-listed provider (403)", async () => {
@@ -656,13 +692,13 @@ describe("DM conversation preview: newer by provider-recorded time (§7.4)", () 
 
     const old = preview(alice, "msg_old", "2026-01-01T00:00:00Z");
     await putPointer(b, alice, dmId, old);
-    const storedAt = getDmConversationRow(b.db, "alice", dmId)?.lastSentAt;
+    const storedAt = getDmConversationRow(b.db, "alice", dmId, DOMAIN)?.lastSentAt;
     await tick();
     const reply = receive(b, dmId, "newer reply");
     await tick();
     // A retried/replayed PUT of the same message must not re-stamp it.
     await putPointer(b, alice, dmId, old);
-    expect(getDmConversationRow(b.db, "alice", dmId)?.lastSentAt).toBe(storedAt);
+    expect(getDmConversationRow(b.db, "alice", dmId, DOMAIN)?.lastSentAt).toBe(storedAt);
     expect(await previewId(b, alice, dmId)).toBe(reply);
 
     // A genuinely new message is stamped now and wins.
@@ -699,7 +735,7 @@ describe("DM conversation preview: newer by provider-recorded time (§7.4)", () 
     // With an empty inbox the legacy preview is still shown.
     await putPointer(b, alice, dmId, preview(alice, "msg_legacy", "2099-01-01T00:00:00Z"));
     clearTime();
-    expect(getDmConversationRow(b.db, "alice", dmId)?.lastSentAt).toBeNull();
+    expect(getDmConversationRow(b.db, "alice", dmId, DOMAIN)?.lastSentAt).toBeNull();
     expect(await previewId(b, alice, dmId)).toBe("msg_legacy");
 
     // Once anything is received, the received message wins.

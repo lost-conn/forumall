@@ -36,6 +36,7 @@ import {
   readMarkers,
 } from "../db/schema.ts";
 import { canViewChannel } from "./channels.ts";
+import { conversationDerivesDmId } from "./dms.ts";
 
 /** A stored read marker (no unread count). */
 export interface ReadMarkerEntry {
@@ -110,6 +111,49 @@ export function setReadMarkers(
     }
   })();
   return advanced;
+}
+
+/** Delete `handle`'s read marker on `scopeId`, if any. The caller owns the transaction. */
+export function deleteReadMarker(db: Db, handle: string, scopeId: string): void {
+  db.drizzle
+    .delete(readMarkers)
+    .where(and(eq(readMarkers.handle, handle), eq(readMarkers.scopeId, scopeId)))
+    .run();
+}
+
+/**
+ * Re-key the read marker `(from.handle, from.scopeId)` to `(to.handle,
+ * to.scopeId)` — guest claim/merge (OFSCP §4.8.1) moving a marker keyed by a
+ * re-derived dmId. If `to` already holds a marker the two clash and the
+ * further-forward one is kept. A no-op when `from` holds no marker. The caller
+ * owns the transaction.
+ */
+export function moveReadMarker(
+  db: Db,
+  from: { readonly handle: string; readonly scopeId: string },
+  to: { readonly handle: string; readonly scopeId: string },
+): void {
+  if (from.handle === to.handle && from.scopeId === to.scopeId) return;
+  const moved = getReadMarkerRow(db, from.handle, from.scopeId);
+  if (!moved) return;
+  const existing = getReadMarkerRow(db, to.handle, to.scopeId);
+  const fromKey = and(eq(readMarkers.handle, from.handle), eq(readMarkers.scopeId, from.scopeId));
+  if (existing) {
+    if (moved.lastReadSeq > existing.lastReadSeq) {
+      db.drizzle
+        .update(readMarkers)
+        .set({ lastReadSeq: moved.lastReadSeq, updatedAt: Date.now() })
+        .where(and(eq(readMarkers.handle, to.handle), eq(readMarkers.scopeId, to.scopeId)))
+        .run();
+    }
+    db.drizzle.delete(readMarkers).where(fromKey).run();
+  } else {
+    db.drizzle
+      .update(readMarkers)
+      .set({ handle: to.handle, scopeId: to.scopeId })
+      .where(fromKey)
+      .run();
+  }
 }
 
 /**
@@ -191,12 +235,13 @@ export function getUnreadSummary(db: Db, handle: string, actor: string): UnreadE
     }
   }
 
-  // --- DMs: enumerate the user's inbox conversations. ---
+  // --- DMs: enumerate the user's inbox conversations (consistent rows only, §7.4). ---
   const convRows = db.drizzle
-    .select({ dmId: dmConversations.dmId })
+    .select({ dmId: dmConversations.dmId, counterparty: dmConversations.counterparty })
     .from(dmConversations)
     .where(eq(dmConversations.owner, handle))
-    .all();
+    .all()
+    .filter((row) => conversationDerivesDmId(actor, row));
   for (const conv of convRows) {
     const sinceSeq = markers.get(conv.dmId) ?? 0;
     const unreadCount = dmUnread(db, handle, conv.dmId, sinceSeq, actor);
@@ -250,21 +295,21 @@ export function unreadEntryFor(
  * {@link getUnreadSummary} (`GET /api/me/read-markers`) lists: a channel it can
  * currently read ({@link canViewChannel}: tier + membership + `view` override)
  * IN A GROUP IT BELONGS TO, or a DM conversation in its conversation list (inbox
- * or pointer). Anything else is treated as an unknown scope (§7.7) — including a
+ * or pointer) whose counterparty derives its dmId with the owner (§7.4 — an
+ * inconsistent pointer is ignored). Anything else is treated as an unknown scope (§7.7) — including a
  * public channel of a public group the user hasn't joined, which is readable but
  * never listed — so a PATCH can't store a marker GET never returns, nor probe
  * whether a message exists, or how active a channel is, in an unlisted scope.
  */
 export function canHoldMarker(db: Db, handle: string, actor: string, scopeId: string): boolean {
   if (isDmScope(scopeId)) {
-    return (
-      db.drizzle
-        .select({ dmId: dmConversations.dmId })
-        .from(dmConversations)
-        .where(and(eq(dmConversations.owner, handle), eq(dmConversations.dmId, scopeId)))
-        .limit(1)
-        .all().length > 0
-    );
+    return db.drizzle
+      .select({ dmId: dmConversations.dmId, counterparty: dmConversations.counterparty })
+      .from(dmConversations)
+      .where(and(eq(dmConversations.owner, handle), eq(dmConversations.dmId, scopeId)))
+      .limit(1)
+      .all()
+      .some((row) => conversationDerivesDmId(actor, row));
   }
   const ch = db.drizzle.select().from(channels).where(eq(channels.id, scopeId)).limit(1).all()[0];
   if (ch === undefined) return false;

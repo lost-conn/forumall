@@ -14,7 +14,7 @@ import { ZodError } from "zod";
 import { createApp } from "./app.ts";
 import { type Config, loadConfig } from "./config.ts";
 import { openDb } from "./db/index.ts";
-import { migrate } from "./db/migrate.ts";
+import { migrate, migrationDomain } from "./db/migrate.ts";
 import { getProviderSigningKey } from "./provider/signing-key.ts";
 
 /**
@@ -67,7 +67,20 @@ if (config.dnsServers.length > 0) {
 }
 
 const db = openDb(config.dbPath);
-const applied = migrate(db);
+// The localhost fallback is NOT trusted as the authority stored data was written
+// under (a lost DOMAIN must never drive a destructive data migration), so the
+// domain is passed only when the operator configured it.
+const applied = migrate(db, {
+  domain: migrationDomain(config),
+  onDeferred: (id, reason) => {
+    console.warn(
+      [
+        `[server]   ⚠ migration ${id} was not applied (nothing was changed); it is retried on each boot:`,
+        `[server]     ${reason}.`,
+      ].join("\n"),
+    );
+  },
+});
 if (applied.length > 0) {
   console.log(`[server] applied migrations: ${applied.join(", ")}`);
 }
