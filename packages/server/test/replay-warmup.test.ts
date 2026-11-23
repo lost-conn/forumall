@@ -171,6 +171,43 @@ describe("§4.5 Restarts: replay-store warm-up", () => {
     await expectWarmup503(await signedList(app, signer, T0 + SKEW_MS - 1), 1);
   });
 
+  test("unsigned requests are unaffected: a public GET → 200 during warm-up", async () => {
+    const { store } = clockedStore();
+    const { app } = freshApp("unsigned", { nonceStore: store });
+    expect((await app.request("/api/tiers")).status).toBe(200);
+    expect((await app.request("/.well-known/ofscp-provider")).status).toBe(200);
+    // An optionalSignature route read anonymously runs normally (404 for an
+    // unknown group — not 503).
+    expect((await app.request("/api/groups/grp_nope")).status).toBe(404);
+  });
+
+  test("a signed request through optionalSignature → 503 during warm-up", async () => {
+    const { clock, store } = clockedStore();
+    const { app } = freshApp("optional-signed", { nonceStore: store });
+    const signer = await registerUserWithKey(app, "alice");
+    const path = "/api/groups/grp_nope";
+    const { headers } = sign({
+      actor: signer.actor,
+      keyId: signer.keyId,
+      privateKey: signer.privateKey,
+      authority: DOMAIN,
+      method: "GET",
+      path,
+      timestamp: rfc3339Timestamp(new Date(clock.now)),
+    });
+    await expectWarmup503(await app.request(path, { method: "GET", headers }), 300);
+  });
+
+  test("lagging client: Retry-After covers the gap on the CLIENT's clock too", async () => {
+    const { clock, store } = clockedStore();
+    const { app } = freshApp("lagging", { nonceStore: store });
+    const signer = await registerUserWithKey(app, "alice");
+    // Our clock: T₀+100s (200s of warm-up left). The client's clock lags ours by
+    // 200s, so ITS clock reaches T₀+skew only 400s from now.
+    clock.now = T0 + 100_000;
+    await expectWarmup503(await signedList(app, signer, clock.now - 200_000), 400);
+  });
+
   test("provider-signed (§8.1) requests are subject to the same warm-up", async () => {
     const { clock, store } = clockedStore();
     const { app, db } = freshApp("provider-signed", { nonceStore: store });

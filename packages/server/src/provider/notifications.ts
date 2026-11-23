@@ -42,7 +42,7 @@ import { and, eq } from "drizzle-orm";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/index.ts";
 import { type NotificationEndpointRow, groupMembers, notificationEndpoints } from "../db/schema.ts";
-import { type FederationFetch, signedProviderFetch } from "./federation/http.ts";
+import { BACKGROUND_RETRY, type FederationFetch, signedProviderFetch } from "./federation/http.ts";
 import { getProviderSigningKey } from "./signing-key.ts";
 
 /** `nep_` id prefix + entropy for a registered endpoint. */
@@ -289,6 +289,10 @@ async function deliverOne(
         url: row.target,
         body,
         headers: { "content-type": "application/json" },
+        // Fire-and-forget background delivery: ride out a target's §4.5 warm-up.
+        // The body is identified by its (event, resource), which a receiver can
+        // dedupe on, so a re-signed retry is safe.
+        retry: BACKGROUND_RETRY,
       },
       federationFetch,
     );
