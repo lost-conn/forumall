@@ -10,6 +10,9 @@
  * Building here, once, means workers only ever read a finished `dist`.
  * Environment variables set in global setup are inherited by workers, so the
  * flag below tells `ensureWebBuilt` not to rebuild.
+ *
+ * UI / watch mode: global setup runs once per session, so after editing
+ * `packages/web` restart the UI (or the run) to pick up a fresh build.
  */
 import { buildWebOnce } from "./fixtures.ts";
 

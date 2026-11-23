@@ -66,6 +66,9 @@ function ensureWebBuilt(): void {
       throw new Error(`global setup did not produce ${WEB_DIR}/index.html`);
     }
   } else {
+    // Fallback for use WITHOUT the global setup. Unlocked: with several workers
+    // this reintroduces the rebuild-under-neighbours race — always run via the
+    // Playwright config (which registers global-setup.ts) for parallel runs.
     buildWebOnce();
   }
   webBuilt = true;
@@ -177,8 +180,8 @@ export interface TwoProviders {
  */
 export async function startTwoProviders(): Promise<TwoProviders> {
   const fedEnv = { FEDERATION_INSECURE_LOCALHOST: "true" };
-  // Boot sequentially: ensureWebBuilt() guards a single build, and a parallel
-  // first-build race would have both workers shell out to `vite build`.
+  // Boot sequentially (simple and deterministic; the web build already happened
+  // once in global setup, so there is no build race either way).
   const a = await bootServer(fedEnv);
   const b = await bootServer(fedEnv);
   return {
