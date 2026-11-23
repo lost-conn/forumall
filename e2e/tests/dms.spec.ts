@@ -107,7 +107,7 @@ async function conversationRows(page: Page): Promise<{ dmId: string; lastMessage
   });
 }
 
-test("A → B live DM: B sees it live + in the list; A's copy is local-only (no sender inbox copy)", async ({
+test("A → B live DM: B sees it live + in the list; A gets a conversation pointer (no sender inbox copy)", async ({
   page,
   browser,
   appServer,
@@ -146,11 +146,14 @@ test("A → B live DM: B sees it live + in the list; A's copy is local-only (no 
     b.page.locator(`[data-testid="dm-conversation"][data-counterparty="${a.actor}"]`),
   ).toHaveCount(1);
 
-  // §8.3 no sender copy: the send created a conversation row for B's inbox ONLY.
-  // A — who has only SENT here — has no row for this dmId at all (nothing was
-  // stored on A's side; A's thread rendered purely from the local sent-store).
+  // §8.3 no sender COPY: the message itself is stored in B's inbox only. But A's
+  // home provider (this one — same-provider DM) records a conversation POINTER
+  // for A (OFSCP §7.4), so the conversation A started lists for A too, with A's
+  // own sent message as its (non-authoritative) preview.
   const aConvRows = await conversationRows(a.page);
-  expect(aConvRows.map((r) => r.dmId)).not.toContain(dmIdA);
+  const aConv = aConvRows.find((r) => r.dmId === dmIdA);
+  expect(aConv).toBeDefined();
+  expect(aConv?.lastMessageText).toBe(msg1);
   const bConv = (await conversationRows(b.page)).find((r) => r.dmId === dmIdB);
   expect(bConv?.lastMessageText).toBe(msg1);
   // §7.4 broadened read: each side's conversation view contains the message —
