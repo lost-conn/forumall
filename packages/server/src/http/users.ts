@@ -24,6 +24,7 @@
  * never appear in any response here.
  */
 import {
+  GuestClaimRequestSchema,
   PresenceUpdateRequestSchema,
   PrivacySettingsSchema,
   PrivacySettingsUpdateRequestSchema,
@@ -62,13 +63,9 @@ import type { AppBindings, AuthenticatedActor } from "./types.ts";
  * reserved prefix, availability) inside {@link claimGuestAccount}; the password
  * mirrors the §4.1 register minimum (`min(8)`).
  */
-const ClaimRequestSchema = z
-  .object({
-    handle: z.string().min(1),
-    password: z.string().min(8),
-    displayName: z.string().optional(),
-  })
-  .strict();
+// The shared `guest-claim-request` schema (OFSCP §4.8.1); it carries an optional
+// `inviteToken`, which this "open" provider accepts and ignores (§4.1.1).
+const ClaimRequestSchema = GuestClaimRequestSchema;
 
 /**
  * `POST /api/me/merge` body: the EXISTING target account's handle + password

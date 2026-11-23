@@ -568,6 +568,20 @@ test("claim: a full account claiming → 409", async () => {
   expect(res.status).toBe(409);
 });
 
+test("claim: an open provider ignores an inviteToken (OFSCP §4.1.1)", async () => {
+  const { app } = freshApp("claim-invite-token");
+  const alice = await registerUserWithKey(app, "alice");
+  const group = await createGroup(app, alice, { name: "G", tier: "public", joinPolicy: "invite" });
+  const guest = await provisionGuest(app, alice, group.id);
+
+  const res = await signedRequest(app, guest, "POST", "/api/me/claim", {
+    handle: "ada",
+    password: "super-secret-pw",
+    inviteToken: "ai_unknown-to-this-provider",
+  });
+  expect(res.status).toBe(200);
+});
+
 test("claim: taken handle → 409", async () => {
   const { app } = freshApp("claim-taken");
   const alice = await registerUserWithKey(app, "alice");
