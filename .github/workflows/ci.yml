@@ -109,11 +109,6 @@ jobs:
         working-directory: e2e
         run: bunx playwright install --with-deps chromium
 
-      # The harness builds packages/web/dist itself before the first test, but
-      # building up-front fails fast on a broken bundle and warms the cache.
-      - name: Build web bundle
-        run: bun run build
-
       - name: Run e2e
         # Select the bundled Chromium (vs the local default `chrome` channel) and
         # cap workers so the CI runner doesn't oversubscribe booting a provider

@@ -1,9 +1,10 @@
 /**
  * Playwright fixtures (P8 e2e harness — P9 reuses + extends this).
  *
- * Per worker it:
- *   1. builds the web client once (`vite build` → packages/web/dist) — guarded by
- *      a lock so parallel workers build at most once,
+ * The web client is built ONCE per run, before any worker starts, by
+ * `global-setup.ts` (`vite build` → packages/web/dist). Per test it:
+ *   1. checks that build exists (and only builds it itself when run without the
+ *      global setup, e.g. a fixture imported elsewhere),
  *   2. boots `@forumall/server` on an ephemeral port against a fresh temp
  *      DATA_DIR, serving that dist (via `harness/boot-server.ts` under `bun`),
  *   3. exposes the live base URL as the `appServer` fixture (+ overrides the
@@ -33,10 +34,13 @@ export interface BootedServer {
 }
 
 let webBuilt = false;
-/** Build the web client once per process. */
-function ensureWebBuilt(): void {
-  if (webBuilt) return;
-  // Always (re)build so the served dist reflects the current source.
+
+/**
+ * Build the web client (`vite build`). Called once per run from `global-setup.ts`
+ * so the served dist reflects the current source. Never call it while servers
+ * may be serving `dist`: vite empties the directory before writing.
+ */
+export function buildWebOnce(): void {
   const res = spawnSync("bun", ["run", "--filter", "@forumall/web", "build"], {
     cwd: REPO_ROOT,
     stdio: "inherit",
@@ -46,6 +50,26 @@ function ensureWebBuilt(): void {
   }
   if (!existsSync(join(WEB_DIR, "index.html"))) {
     throw new Error(`web build did not produce ${WEB_DIR}/index.html`);
+  }
+}
+
+/**
+ * Make sure a built web client exists. Under the Playwright config, global setup
+ * has already built it (and set FORUMALL_E2E_WEB_BUILT), so workers never rebuild
+ * — a worker replaced after a failing test must not empty `dist` under its
+ * neighbours. Without the global setup, build once per process as before.
+ */
+function ensureWebBuilt(): void {
+  if (webBuilt) return;
+  if (process.env.FORUMALL_E2E_WEB_BUILT === "1") {
+    if (!existsSync(join(WEB_DIR, "index.html"))) {
+      throw new Error(`global setup did not produce ${WEB_DIR}/index.html`);
+    }
+  } else {
+    // Fallback for use WITHOUT the global setup. Unlocked: with several workers
+    // this reintroduces the rebuild-under-neighbours race — always run via the
+    // Playwright config (which registers global-setup.ts) for parallel runs.
+    buildWebOnce();
   }
   webBuilt = true;
 }
@@ -156,8 +180,8 @@ export interface TwoProviders {
  */
 export async function startTwoProviders(): Promise<TwoProviders> {
   const fedEnv = { FEDERATION_INSECURE_LOCALHOST: "true" };
-  // Boot sequentially: ensureWebBuilt() guards a single build, and a parallel
-  // first-build race would have both workers shell out to `vite build`.
+  // Boot sequentially (simple and deterministic; the web build already happened
+  // once in global setup, so there is no build race either way).
   const a = await bootServer(fedEnv);
   const b = await bootServer(fedEnv);
   return {

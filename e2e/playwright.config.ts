@@ -12,6 +12,8 @@ import { defineConfig, devices } from "@playwright/test";
  */
 export default defineConfig({
   testDir: "./tests",
+  // Build the web client once, before any worker starts (see harness/global-setup.ts).
+  globalSetup: "./harness/global-setup.ts",
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: 0,
