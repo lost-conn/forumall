@@ -82,7 +82,7 @@ import { getUserRow } from "../provider/guests.ts";
 import { previewText, sendPushToRecipient } from "../provider/push-send.ts";
 import type { Hub } from "../provider/ws-hub.ts";
 import { assertCanonicalActorField } from "./canonical-fields.ts";
-import { AppError } from "./errors.ts";
+import { AppError, parseRequestBody } from "./errors.ts";
 import {
   requireActorOrProviderSignature,
   requireLocalActor,
@@ -427,7 +427,7 @@ export function createFederationDmsRouter() {
     const dmId = requireParam(c, "dmId");
     const author = actor.actor;
 
-    const body = DmMessageCreateRequestSchema.parse(await c.req.json());
+    const body = parseRequestBody(DmMessageCreateRequestSchema, await c.req.json());
 
     // --- Recipient resolution + §8.3 {dmId} verification -------------------
     // With `to` (OFSCP §7.4), the recipient is named: it must be a LOCAL user
@@ -1118,7 +1118,7 @@ export function createDmsRouter() {
     const messageId = requireParam(c, "messageId");
     const authority = canonicalAuthority(config.domain);
 
-    const body = MessageUpdateRequestSchema.parse(await c.req.json());
+    const body = parseRequestBody(MessageUpdateRequestSchema, await c.req.json());
     const content = body.content as Content;
 
     // (a) The target lives in the caller's own LOCAL inbox.

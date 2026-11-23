@@ -101,15 +101,24 @@ export function contentDigest(bodyBytes: Uint8Array | string): string {
  * {@link isCanonicalAuthority}).
  */
 export function canonicalAuthority(authority: string): string {
+  return normalizeAuthority(authority) ?? authority.trim().toLowerCase();
+}
+
+/**
+ * The URL-parser normalization behind {@link canonicalAuthority}, or `null`
+ * when `authority` is not a bare, parseable `host[:port]` (so callers can fail
+ * closed on e.g. `a.test:65536`, `999.1.1.1`, `x@a.test`, `a.test/x`).
+ */
+function normalizeAuthority(authority: string): string | null {
   const raw = authority.trim().toLowerCase();
-  if (raw === "" || /[/?#@\\]/.test(raw)) return raw;
+  if (raw === "" || /[/?#@\\]/.test(raw)) return null;
   let u: URL;
   try {
     u = new URL(`https://${raw}`);
   } catch {
-    return raw;
+    return null;
   }
-  if (u.username || u.password || u.pathname !== "/" || u.search || u.hash) return raw;
+  if (u.username || u.password || u.pathname !== "/" || u.search || u.hash) return null;
   const host = u.hostname.replace(/\.+$/, "");
   // `u.port` is "" for the https default (443, in any spelling) and is
   // otherwise the decimal port without leading zeros.
@@ -131,7 +140,8 @@ const CANONICAL_AUTHORITY_RE =
  * converting it uses this, so no alias of a host can pass as a distinct one.
  */
 export function isCanonicalAuthority(authority: string): boolean {
-  return CANONICAL_AUTHORITY_RE.test(authority) && canonicalAuthority(authority) === authority;
+  // Fails closed: anything the URL parser rejects is never canonical.
+  return CANONICAL_AUTHORITY_RE.test(authority) && normalizeAuthority(authority) === authority;
 }
 
 /** Handle charset (§2.2.1, without the length bound): no `@`, `/`, case, … */

@@ -325,6 +325,9 @@ describe("WS handshake (§7.1 Authentication)", () => {
     "alice@a..test",
     "alice@.a.test",
     `alice@${DOMAIN}:abc`,
+    `alice@${DOMAIN}:65536`,
+    "alice@999.1.1.1",
+    "alice@4294967296",
   ].entries()) {
     test(`non-canonical actor ${spelling} → error then close 4001`, async () => {
       const b = boot(`auth-noncanon-${i}`);

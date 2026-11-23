@@ -21,6 +21,7 @@ import {
   signProvider,
 } from "@forumall/shared";
 
+import { MessageSchema } from "@forumall/shared";
 import { createApp } from "../src/app.ts";
 import { type Argon2Params, type Config, loadConfig } from "../src/config.ts";
 import { openDb } from "../src/db/index.ts";
@@ -54,6 +55,10 @@ const ALIAS_AUTHORITIES = [
   "a..test",
   ".a.test",
   "a.test:abc",
+  // Unparseable by the URL parser — must fail closed, never pass as canonical.
+  "a.test:65536",
+  "999.1.1.1",
+  "4294967296",
 ];
 
 let tmp: string;
@@ -521,5 +526,29 @@ describe("§8: no outbound request of any kind to a denied provider", () => {
       expect(await scrapeKnownProviders(db, config, host, spy.fetch)).toEqual([]);
     }
     expect(spy.calls).toEqual([]);
+  });
+});
+
+describe("request vs. output validation failures (review of #23)", () => {
+  test("a malformed REQUEST body → 400 (DM send, contacts)", async () => {
+    const { app } = freshApp();
+    const alice = await registerUserWithKey(app, "alice");
+    const dm = await signedJson(app, alice, "POST", "/api/federation/dms/dm_x/messages", {
+      clientMessageId: "c1",
+      to: "bob@x@a.test",
+      content: { mime: "text/plain", text: "hi" },
+    });
+    expect(dm.status).toBe(400);
+    const contact = await signedJson(app, alice, "POST", "/api/me/contacts", { user: 42 });
+    expect(contact.status).toBe(400);
+    const body = (await contact.json()) as Record<string, unknown>;
+    expect(body.errors).toBeUndefined(); // no zod internals leaked
+  });
+
+  test("a failed validation of the server's OWN output → 500, not 400", async () => {
+    const { app } = freshApp();
+    app.get("/api/test/bad-output", (c) => c.json(MessageSchema.parse({ id: 1 })));
+    const res = await app.request("/api/test/bad-output");
+    expect(res.status).toBe(500);
   });
 });

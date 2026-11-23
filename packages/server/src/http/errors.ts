@@ -14,7 +14,7 @@
 import { type ProblemDetails, ProblemDetailsSchema } from "@forumall/shared";
 import type { Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
-import { ZodError } from "zod";
+import type { ZodType } from "zod";
 
 export const PROBLEM_CONTENT_TYPE = "application/problem+json";
 
@@ -150,22 +150,22 @@ export function problemResponse(
  * value becomes a generic 500 with no internal detail leaked to the client
  * (the real error is logged server-side).
  */
+/**
+ * Validate a REQUEST body against `schema`, throwing a `400` on failure. Use
+ * this (not `schema.parse`) wherever the input came from the client: a bare
+ * `.parse` throws a `ZodError`, which — correctly, since most `.parse` calls
+ * check the server's OWN output — renders as a logged `500`.
+ */
+export function parseRequestBody<T>(schema: ZodType<T>, raw: unknown, what = "request body"): T {
+  const parsed = schema.safeParse(raw);
+  if (!parsed.success) throw AppError.badRequest({ detail: `invalid ${what}` });
+  return parsed.data;
+}
+
 export function onError(err: Error, c: Context): Response {
   if (err instanceof AppError) {
     if (err.status >= 500) console.error("[server] AppError:", err);
     return problemResponse(c, err.toProblem(), err.headers);
-  }
-
-  // A request body that failed a route's `Schema.parse(...)` is the client's
-  // fault (§7.3 400), e.g. a malformed user ref — not an internal error.
-  if (err instanceof ZodError) {
-    return problemResponse(
-      c,
-      AppError.badRequest({
-        detail: "request body failed validation",
-        extensions: { errors: err.flatten() },
-      }).toProblem(),
-    );
   }
 
   // Unknown/unexpected error: log everything, expose nothing.
