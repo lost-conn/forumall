@@ -173,8 +173,9 @@ export class DmSentStore {
 
   /**
    * Remember the counterparty for a `dmId` (so a conversation this user has only
-   * SENT to — with no inbox row on the server, hence absent from `GET /api/me/dms`
-   * — still shows the participant in the list). `deriveDmId` is one-way, so the
+   * SENT to still shows the participant in the list even when the server has no
+   * row for it — e.g. a cross-provider send whose conversation-pointer write
+   * (OFSCP §7.4) failed). `deriveDmId` is one-way, so the
    * counterparty can't be recovered from the id alone; we persist it here.
    */
   rememberCounterparty(dmId: string, counterparty: string): void {

@@ -6,11 +6,11 @@
  *
  *  1. A opens a DM to B and sends → B sees it live (inbox + `dm.message`) and it
  *     appears in B's conversation list.
- *  2. A's OWN thread shows A's sent message from the LOCAL sent-store, while the
- *     server stored NO sender copy (§8.3): A gets no conversation row of their own
- *     for a conversation they have only sent in, and once they do have one it
- *     summarizes only their INBOX. (A's §7.4 read still returns the sent message —
- *     the conversation view is sent ∪ received.)
+ *  2. A's OWN thread shows A's sent message, while the server stored NO sender
+ *     COPY (§8.3): the message lives only in B's inbox. A does get a conversation
+ *     row — a POINTER recorded by A's home provider on delivery (§7.4), previewing
+ *     A's own last sent message — and A's §7.4 read returns the sent message
+ *     exactly once (the conversation view is sent ∪ received).
  *  3. B replies → A sees the reply live; both threads show the full back-and-forth.
  *  4. Reload persistence: A still sees their sent history (local store) and B still
  *     sees received history (server).
@@ -91,9 +91,9 @@ async function inboxTextsFor(page: Page, dmId: string): Promise<string[]> {
 }
 
 /**
- * The caller's OWN DM conversation rows (`GET /api/me/dms`). A row exists only
- * for an inbox that stores messages, and its `lastMessageText` is that INBOX's
- * newest message — the server-side probe for "no sender copy" (§8.3).
+ * The caller's OWN DM conversation rows (`GET /api/me/dms`): one per conversation
+ * with a message in their inbox OR a conversation pointer (§7.4). `lastMessageText`
+ * is the newer of the inbox's newest message and the pointer's cached sent message.
  */
 async function conversationRows(page: Page): Promise<{ dmId: string; lastMessageText: string }[]> {
   return page.evaluate(async () => {
@@ -107,7 +107,7 @@ async function conversationRows(page: Page): Promise<{ dmId: string; lastMessage
   });
 }
 
-test("A → B live DM: B sees it live + in the list; A's copy is local-only (no sender inbox copy)", async ({
+test("A → B live DM: B sees it live + in the list; A gets a conversation pointer (no sender inbox copy)", async ({
   page,
   browser,
   appServer,
@@ -146,11 +146,19 @@ test("A → B live DM: B sees it live + in the list; A's copy is local-only (no 
     b.page.locator(`[data-testid="dm-conversation"][data-counterparty="${a.actor}"]`),
   ).toHaveCount(1);
 
-  // §8.3 no sender copy: the send created a conversation row for B's inbox ONLY.
-  // A — who has only SENT here — has no row for this dmId at all (nothing was
-  // stored on A's side; A's thread rendered purely from the local sent-store).
+  // §8.3 no sender COPY: the message itself is stored in B's inbox only. A's home
+  // provider (this one — same-provider DM) also records a conversation POINTER for
+  // A on delivery — Forumall's choice for a local sender; §7.4 only requires the
+  // client to record one after a cross-provider send — so the conversation A
+  // started lists for A too, previewing A's own sent message (from the pointer's
+  // cache, not from any stored copy).
   const aConvRows = await conversationRows(a.page);
-  expect(aConvRows.map((r) => r.dmId)).not.toContain(dmIdA);
+  const aConv = aConvRows.find((r) => r.dmId === dmIdA);
+  expect(aConv).toBeDefined();
+  expect(aConv?.lastMessageText).toBe(msg1);
+  // The real no-sender-copy probe: A's conversation view is (rows A authored) ∪
+  // (A's own inbox), so a stray copy stored in A's inbox would show up TWICE.
+  expect((await inboxTextsFor(a.page, dmIdA)).filter((t) => t === msg1)).toHaveLength(1);
   const bConv = (await conversationRows(b.page)).find((r) => r.dmId === dmIdB);
   expect(bConv?.lastMessageText).toBe(msg1);
   // §7.4 broadened read: each side's conversation view contains the message —
@@ -248,9 +256,9 @@ test("reload persistence: A keeps sent history (local), B keeps received history
     1,
     { timeout: 15_000 },
   );
-  // §8.3 no sender copy: A's conversation row exists only because B REPLIED, and
-  // it summarizes A's INBOX — whose newest (only) message is B's reply. A's own
-  // sent message was never stored on A's side; it came back from the local store.
+  // A's row (a §7.4 pointer from A's own send, plus now B's reply in A's inbox)
+  // previews the NEWER of the two: B's reply. A's sent message was never stored in
+  // A's inbox (§8.3); it lives in B's inbox and in the pointer's preview cache.
   const aConv = (await conversationRows(page)).find((r) => r.dmId === dmIdA);
   expect(aConv?.lastMessageText).toBe(bMsg);
   // …while the §7.4 view (sent ∪ received) does return A's sent message.
