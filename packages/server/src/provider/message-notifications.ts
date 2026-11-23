@@ -76,12 +76,7 @@ export function fireMessageNotifications(
       // recipient already got the in-app chime/badge). Fire-and-forget — never
       // block or fail message creation.
       if (hub.liveConnectionCount(recipientActor) === 0) {
-        const payload = channelPushPayload(
-          notification.type,
-          input.author,
-          input.text,
-          input.groupId,
-        );
+        const payload = channelPushPayload(notification, input.text);
         void sendPushToRecipient(db, config, recipientActor, payload);
       }
       out.push(notification);
@@ -94,12 +89,8 @@ export function fireMessageNotifications(
 }
 
 /** Build the Web Push payload for a channel mention/reply/message notification. */
-function channelPushPayload(
-  type: string,
-  author: string,
-  text: string,
-  groupId: string,
-): PushPayload {
+function channelPushPayload(notification: Notification, text: string): PushPayload {
+  const { type, author, groupId, channelId, sourceMessageId } = notification;
   const handle = author.includes("@") ? author.slice(0, author.lastIndexOf("@")) : author;
   const title =
     type === "reply"
@@ -111,6 +102,12 @@ function channelPushPayload(
     title,
     body: previewText(text),
     tag: `chan:${groupId}`,
-    data: { targetUrl: `/groups/${groupId}` },
+    data: {
+      type,
+      groupId,
+      channelId,
+      messageId: sourceMessageId,
+      targetUrl: `/groups/${groupId}`,
+    },
   };
 }

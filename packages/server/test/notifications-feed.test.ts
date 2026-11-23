@@ -34,6 +34,7 @@ import { type Argon2Params, type Config, loadConfig } from "../src/config.ts";
 import { type Db, openDb } from "../src/db/index.ts";
 import { migrate } from "../src/db/migrate.ts";
 import { createChannel } from "../src/provider/channels.ts";
+import { createGroup } from "../src/provider/groups.ts";
 import { addMember } from "../src/provider/membership.ts";
 import { createMessage } from "../src/provider/messages.ts";
 import {
@@ -162,11 +163,13 @@ function signedReq(
   });
 }
 
-/** Seed a private group owned by `owner`, return its id. */
+/**
+ * Seed a real private group owned by `owner` (group row + owner membership),
+ * return its id. Recipients must pass the channel read check (§10.1), which
+ * needs the group row to exist.
+ */
 function seedGroup(b: Booted, owner: Signer): string {
-  const groupId = `grp_${owner.handle}`;
-  addMember(b.db, groupId, owner.actor, "owner");
-  return groupId;
+  return createGroup(b.db, owner.actor, { name: `${owner.handle}'s group`, tier: "private" }).id;
 }
 
 /** Post `text` from `author` in `(groupId, channelId)`; return the message id. */
@@ -207,6 +210,11 @@ describe("detectMentions", () => {
   test("dedupes repeated mentions", () => {
     const out = detectMentions("@alice @alice @alice", DOMAIN);
     expect(out).toEqual([`alice@${DOMAIN}`]);
+  });
+
+  test("a `.` ends the handle (spec §10.1: handle chars are [a-z0-9_-])", () => {
+    const out = detectMentions("ping @alice. then @bob.smith, and @carol@other.com.", DOMAIN);
+    expect(out).toEqual([`alice@${DOMAIN}`, `bob@${DOMAIN}`, "carol@other.com"]);
   });
 });
 
@@ -299,6 +307,49 @@ describe("notifyForChannelMessage", () => {
       replyToId: parent,
     });
     expect(created2.length).toBe(0);
+  });
+
+  test("a mention never notifies someone who cannot read the channel", async () => {
+    const b = boot("nf-no-access");
+    const alice = await registerUserWithKey(b, "alice");
+    await registerUserWithKey(b, "carol"); // a local user, NOT a member
+    const groupId = seedGroup(b, alice);
+    const ch = createChannel(b.db, groupId, { type: "text", tier: "private" });
+
+    const msgId = post(b, groupId, ch.id, alice.actor, "secret plans, right @carol?");
+    const created = notifyForChannelMessage(b.db, {
+      text: "secret plans, right @carol?",
+      author: alice.actor,
+      sourceMessageId: msgId,
+      channelId: ch.id,
+      groupId,
+      localDomain: DOMAIN,
+    });
+    expect(created.length).toBe(0);
+    expect(listNotifications(b.db, "carol").items.length).toBe(0);
+  });
+
+  test("a reply that also mentions the parent's author yields ONE mention entry", async () => {
+    const b = boot("nf-one-per-message");
+    const alice = await registerUserWithKey(b, "alice");
+    const bob = await registerUserWithKey(b, "bob");
+    const groupId = seedGroup(b, alice);
+    addMember(b.db, groupId, bob.actor, "member");
+    const ch = createChannel(b.db, groupId, { type: "text", tier: "private" });
+
+    const parent = post(b, groupId, ch.id, alice.actor, "the original");
+    const reply = post(b, groupId, ch.id, bob.actor, "@alice agreed", parent);
+    const created = notifyForChannelMessage(b.db, {
+      text: "@alice agreed",
+      author: bob.actor,
+      sourceMessageId: reply,
+      channelId: ch.id,
+      groupId,
+      localDomain: DOMAIN,
+      replyToId: parent,
+    });
+    expect(created.length).toBe(1);
+    expect(created[0]?.notification.type).toBe("mention");
   });
 
   test("dedupes a single message that mentions the same user twice", async () => {
@@ -610,9 +661,10 @@ describe("notification.created WS fan-out", () => {
     const b = boot("nf-ws");
     const alice = await registerUserWithKey(b, "alice");
     const bob = await registerUserWithKey(b, "bob");
-    // alice owns the group + channel (the owner can post). bob is a LOCAL user →
-    // an eligible mention recipient.
+    // alice owns the group + channel (the owner can post). bob is a LOCAL member
+    // who can read the channel → an eligible mention recipient (§10.1).
     const { groupId, channelId } = await makeGroupChannel(b, alice);
+    addMember(b.db, groupId, bob.actor, "member");
 
     // bob connects (the fan-out is publishToActor — he need not subscribe).
     const bobWs = await connectAuthenticated(b, bob);

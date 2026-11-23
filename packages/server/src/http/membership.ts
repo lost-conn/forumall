@@ -244,6 +244,10 @@ export function createMembershipRouter() {
       const newOwner = transferOwnership(db, groupId, target);
       // The previous owner is demoted to admin: re-check `view`-restricted channels.
       revalidateGroupSubscriptions(db, hub, groupId);
+      // Both members' roles changed (§5.7 `member.updated`).
+      fanOutMemberUpdated(hub, db, groupId, newOwner);
+      const formerOwner = getMemberRow(db, groupId, actor.actor);
+      if (formerOwner) fanOutMemberUpdated(hub, db, groupId, rowToMember(formerOwner));
       return c.json(newOwner, 200);
     }
 
@@ -282,6 +286,9 @@ export function createMembershipRouter() {
     const updated = setMemberRole(db, groupId, target, role);
     // A role change can lose a channel's `permissions.view`: end those live subscriptions.
     revalidateGroupSubscriptions(db, hub, groupId);
+    // Announce the new role (§5.7 `member.updated`) — after revalidation, so a
+    // subscriber who just lost access does not receive it.
+    if (updated.role !== targetRow.role) fanOutMemberUpdated(hub, db, groupId, updated);
     return c.json(updated, 200);
   });
 

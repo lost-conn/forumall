@@ -33,8 +33,18 @@ export interface PushPayload {
   readonly body: string;
   /** Coalescing tag (replaces a prior notification with the same tag). */
   readonly tag: string;
-  /** Click-through routing data. */
-  readonly data: { readonly targetUrl: string };
+  /**
+   * Click-through routing data (OFSCP §10.3): `type` plus the structured ids
+   * any client can route on, and Forumall's own web-app `targetUrl`.
+   */
+  readonly data: {
+    readonly type: string;
+    readonly groupId?: string;
+    readonly channelId?: string;
+    readonly messageId?: string;
+    readonly dmId?: string;
+    readonly targetUrl: string;
+  };
 }
 
 /** The minimal fetch surface, injectable so tests can simulate 410/ok. */

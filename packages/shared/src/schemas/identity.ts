@@ -195,3 +195,13 @@ export const UserGroupsResponseSchema = z
   })
   .passthrough();
 export type UserGroupsResponse = z.infer<typeof UserGroupsResponseSchema>;
+
+/** POST /api/me/claim and /api/me/merge response (OFSCP §4.8.1). */
+export const GuestUpgradeResponseSchema = z
+  .object({
+    actor: UserRefSchema,
+    keyId: z.string().min(1),
+    profile: UserProfileSchema,
+  })
+  .passthrough();
+export type GuestUpgradeResponse = z.infer<typeof GuestUpgradeResponseSchema>;

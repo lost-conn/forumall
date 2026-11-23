@@ -480,7 +480,7 @@ export function createFederationDmsRouter() {
         title: authorHandle,
         body: previewText(text),
         tag: `dm:${dmId}`,
-        data: { targetUrl: `/dms/${dmId}` },
+        data: { type: "dm", dmId, messageId: record.message.id, targetUrl: `/dms/${dmId}` },
       });
     }
 
