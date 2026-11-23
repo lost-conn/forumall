@@ -31,6 +31,7 @@ import {
   MigrationDeferred,
   migrate,
   migrationDomain,
+  migrations,
   runMigrations,
 } from "../src/db/migrate.ts";
 import { dmConversations, readMarkers } from "../src/db/schema.ts";
@@ -294,7 +295,7 @@ for (const count of [1, 5]) {
       migrate(db, { domain: "staging.example", onDeferred: (_id, why) => reasons.push(why) }),
     ).toEqual([]);
     expect(reasons).toHaveLength(1);
-    expect(reasons[0]).toContain(`none of the ${count}`);
+    expect(reasons[0]).toContain("cannot be confirmed");
     expect(snapshot(db)).toEqual(before);
     expect(isApplied(db)).toBe(false);
     // The correct DOMAIN later applies it, deleting nothing.
@@ -304,7 +305,7 @@ for (const count of [1, 5]) {
   });
 }
 
-test("a deferred migration stops the run: later migrations wait (strict order)", () => {
+test("a deferred NON-independent migration stops the run: later migrations wait", () => {
   const { db } = freshApp("hygiene-runner-order");
   let ready = false;
   const ran: string[] = [];
@@ -326,6 +327,92 @@ test("a deferred migration stops the run: later migrations wait (strict order)",
   ready = true;
   expect(runMigrations(db, list)).toEqual(["t2_defers", "t3_after"]);
   expect(ran).toEqual(["t1_first", "t2_defers", "t3_after"]);
+});
+
+test("a deferred INDEPENDENT migration is skipped: later ones still apply; it retries next run", () => {
+  const { db } = freshApp("hygiene-runner-independent");
+  let ready = false;
+  const list: Migration[] = [
+    {
+      id: "t1_independent_defers",
+      independent: true,
+      up: () => {
+        if (!ready) throw new MigrationDeferred("not yet");
+      },
+    },
+    { id: "t2_after", up: () => {} },
+  ];
+  const deferred: string[] = [];
+  expect(runMigrations(db, list, { onDeferred: (id) => deferred.push(id) })).toEqual(["t2_after"]);
+  expect(deferred).toEqual(["t1_independent_defers"]);
+  ready = true;
+  expect(runMigrations(db, list)).toEqual(["t1_independent_defers"]);
+});
+
+test("only 0036 is marked independent, and a later migration applies while it defers", async () => {
+  expect(migrations.filter((m) => m.independent).map((m) => m.id)).toEqual([MIGRATION]);
+  const { db } = freshApp("hygiene-0036-defers-later-applies");
+  insertRawConversation(db, "alice", "dm_x", "bob@remote.example");
+  db.sqlite.query("DELETE FROM _migrations WHERE id = ?").run(MIGRATION);
+  let laterRan = false;
+  const later: Migration = {
+    id: "9999_later",
+    up: () => {
+      laterRan = true;
+    },
+  };
+  const deferred: string[] = [];
+  // DOMAIN unset → 0036 defers; the later (dependent-style) migration still runs.
+  expect(
+    runMigrations(db, [...migrations, later], {
+      onDeferred: (id, why) => deferred.push(`${id}: ${why}`),
+    }),
+  ).toEqual(["9999_later"]);
+  expect(laterRan).toBe(true);
+  expect(deferred).toHaveLength(1);
+  expect(deferred[0]).toContain("DOMAIN is not configured");
+  expect(isApplied(db)).toBe(false);
+});
+
+test("migration 0036 proceeds when every row is inconsistent but a local author proves DOMAIN", async () => {
+  const { app, db } = freshApp("hygiene-migration-proven-by-author");
+  const alice = await registerUserWithKey(app, "alice");
+  // Every conversation row is inconsistent under the right DOMAIN…
+  const dead = deriveDmId(alice.actor, "carol@remote.example");
+  insertRawConversation(db, "alice", dead, "mallory@remote.example");
+  insertRawMarker(db, "alice", dead, 9);
+  const legacy = deriveDmId(alice.actor, "erin@remote.example:443");
+  insertRawConversation(db, "alice", legacy, "erin@remote.example:443", 5);
+  db.sqlite
+    .query(
+      "INSERT INTO dm_messages (id, dm_id, owner, author, content, attachments, seq, created_at, edit_until) VALUES ('msg_e', ?, 'alice', 'erin@remote.example:443', ?, '[]', 5, ?, ?)",
+    )
+    .run(legacy, JSON.stringify({ text: "hi", mime: "text/plain" }), Date.now(), Date.now());
+  // …but alice (a local user) authored a stored message as alice@DOMAIN.
+  db.sqlite
+    .query(
+      "INSERT INTO dm_messages (id, dm_id, owner, author, content, attachments, seq, created_at, edit_until) VALUES ('msg_a', 'dm_other', 'zed', ?, ?, '[]', 6, ?, ?)",
+    )
+    .run(alice.actor, JSON.stringify({ text: "yo", mime: "text/plain" }), Date.now(), Date.now());
+  db.sqlite.query("DELETE FROM _migrations WHERE id = ?").run(MIGRATION);
+
+  // A wrong domain is still not proven (no local author under it).
+  const reasons: string[] = [];
+  expect(
+    migrate(db, { domain: "typo.example", onDeferred: (_id, why) => reasons.push(why) }),
+  ).toEqual([]);
+  expect(reasons[0]).toContain("cannot be confirmed");
+
+  const log: string[] = [];
+  expect(migrate(db, { domain: DOMAIN, log: (l) => log.push(l) })).toEqual([MIGRATION]);
+  expect(log[0]).toContain(
+    "1 inconsistent pointers deleted, 1 inconsistent rows with received messages kept",
+  );
+  const rows = db.drizzle.select({ dmId: dmConversations.dmId }).from(dmConversations).all();
+  expect(rows).toEqual([{ dmId: legacy }]);
+  expect(db.drizzle.select().from(readMarkers).where(eq(readMarkers.scopeId, dead)).all()).toEqual(
+    [],
+  );
 });
 
 test("upsertDmPointer refuses a counterparty that does not derive the dmId", async () => {

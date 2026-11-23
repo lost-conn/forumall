@@ -75,9 +75,8 @@ const applied = migrate(db, {
   onDeferred: (id, reason) => {
     console.warn(
       [
-        `[server]   ⚠ migration ${id} was NOT applied and will be retried on the next boot:`,
+        `[server]   ⚠ migration ${id} was not applied (nothing was changed); it is retried on each boot:`,
         `[server]     ${reason}.`,
-        "[server]     Nothing was changed; the server runs normally meanwhile.",
       ].join("\n"),
     );
   },
