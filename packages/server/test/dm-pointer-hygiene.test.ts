@@ -388,10 +388,10 @@ test("migration 0036 proceeds when every row is inconsistent but a local author 
       "INSERT INTO dm_messages (id, dm_id, owner, author, content, attachments, seq, created_at, edit_until) VALUES ('msg_e', ?, 'alice', 'erin@remote.example:443', ?, '[]', 5, ?, ?)",
     )
     .run(legacy, JSON.stringify({ text: "hi", mime: "text/plain" }), Date.now(), Date.now());
-  // …but alice (a local user) authored a stored message as alice@DOMAIN.
+  // …but alice (a local user) authored a stored channel message as alice@DOMAIN.
   db.sqlite
     .query(
-      "INSERT INTO dm_messages (id, dm_id, owner, author, content, attachments, seq, created_at, edit_until) VALUES ('msg_a', 'dm_other', 'zed', ?, ?, '[]', 6, ?, ?)",
+      "INSERT INTO messages (id, channel_id, group_id, author, type, content, attachments, tags, seq, created_at, edit_until) VALUES ('msg_a', 'chn_x', 'grp_x', ?, 'message', ?, '[]', '[]', 6, ?, ?)",
     )
     .run(alice.actor, JSON.stringify({ text: "yo", mime: "text/plain" }), Date.now(), Date.now());
   db.sqlite.query("DELETE FROM _migrations WHERE id = ?").run(MIGRATION);

@@ -914,16 +914,19 @@ export const migrations: readonly Migration[] = [
         const canonical = canonicalActor(r.counterparty);
         return canonical === null || deriveDmId(`${r.owner}@${domain}`, canonical) !== r.dm_id;
       });
-      const localAuthorUnder = (table: "messages" | "dm_messages") =>
+      // A local user who authored a CHANNEL message as handle@DOMAIN proves
+      // DOMAIN. One indexed lookup per local user: `messages` has an author-first
+      // unique index, so `m.author = <constant>` per user is an index probe, not
+      // a scan. (`dm_messages` is not consulted: it has no author index, and a
+      // local user's DMs live in the RECIPIENT's inbox; DM ownership is already
+      // covered by the conversation-row derivation above.)
+      const localChannelAuthor = () =>
         sqlite
           .query<{ one: number }, [string]>(
-            `SELECT 1 AS one FROM ${table} m JOIN users u ON m.author = u.handle || '@' || ?1 LIMIT 1`,
+            `SELECT 1 AS one FROM users u WHERE EXISTS (SELECT 1 FROM messages m WHERE m.author = u.handle || '@' || ?1) LIMIT 1`,
           )
           .all(domain).length > 0;
-      const domainProven =
-        failing.length < rows.length ||
-        localAuthorUnder("dm_messages") ||
-        localAuthorUnder("messages");
+      const domainProven = failing.length < rows.length || localChannelAuthor();
       if (!domainProven) {
         throw new MigrationDeferred(
           `DOMAIN=${domain} cannot be confirmed against stored data (none of the ${rows.length} DM conversation rows derives its id under it and no local user authored a message under it). If DOMAIN is wrong, fix it; if it is right, this resolves once a local user posts a message. Nothing was deleted`,
