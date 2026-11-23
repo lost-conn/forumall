@@ -348,7 +348,7 @@ test("claim: a conversation pointer keeps its preview (re-authored) and its stor
   const group = await createGroup(app, alice, { name: "G", tier: "public", joinPolicy: "invite" });
   const guest = await provisionGuest(app, alice, group.id);
   const remote = "dave@remote.example";
-  upsertDmPointer(db, guest.handle, deriveDmId(guest.actor, remote), remote, {
+  upsertDmPointer(db, guest.actor, deriveDmId(guest.actor, remote), remote, {
     id: "msg_guest",
     author: guest.actor,
     type: "message",
@@ -386,7 +386,7 @@ test("claim: a third party's pointer to the guest keeps its preview and store ti
   const group = await createGroup(app, alice, { name: "G", tier: "public", joinPolicy: "invite" });
   const guest = await provisionGuest(app, alice, group.id);
   // alice's pointer to the guest, caching a message alice sent.
-  upsertDmPointer(db, "alice", deriveDmId(alice.actor, guest.actor), guest.actor, {
+  upsertDmPointer(db, alice.actor, deriveDmId(alice.actor, guest.actor), guest.actor, {
     id: "msg_alice",
     author: alice.actor,
     type: "message",
@@ -435,7 +435,7 @@ test("claim: read markers keyed by a re-derived dmId move — the guest's and a 
     author: alice.actor,
     content: { text: "hi guest", mime: "text/plain" },
   });
-  upsertDmPointer(db, "alice", oldDmId, guest.actor);
+  upsertDmPointer(db, alice.actor, oldDmId, guest.actor);
   setReadMarkers(db, guest.handle, [{ scopeId: oldDmId, lastReadSeq: toGuest.seq }]);
   setReadMarkers(db, "alice", [{ scopeId: oldDmId, lastReadSeq: 7 }]);
 
@@ -458,6 +458,53 @@ test("claim: read markers keyed by a re-derived dmId move — the guest's and a 
     { handle: "ada", scopeId: newDmId, seq: toGuest.seq },
     { handle: "alice", scopeId: newDmId, seq: 7 },
   ]);
+});
+
+/** Write raw `dm_conversations` + `read_markers` rows, bypassing every write-path check. */
+function insertRawPointer(
+  db: ReturnType<typeof freshApp>["db"],
+  owner: string,
+  dmId: string,
+  counterparty: string,
+  markerSeq: number,
+  lastSentMessage: string | null = null,
+) {
+  db.sqlite
+    .query(
+      "INSERT INTO dm_conversations (owner, dm_id, counterparty, updated_at, last_message_seq, last_sent_message, last_sent_at) VALUES (?, ?, ?, ?, 0, ?, ?)",
+    )
+    .run(owner, dmId, counterparty, Date.now(), lastSentMessage, lastSentMessage ? 1 : null);
+  db.sqlite
+    .query(
+      "INSERT INTO read_markers (handle, scope_id, last_read_seq, updated_at) VALUES (?, ?, ?, ?)",
+    )
+    .run(owner, dmId, markerSeq, Date.now());
+}
+
+test("claim: inconsistent (ignored) rows are deleted with their markers, never revived", async () => {
+  const { app, db } = freshApp("claim-inconsistent-rows");
+  const alice = await registerUserWithKey(app, "alice");
+  const group = await createGroup(app, alice, { name: "G", tier: "public", joinPolicy: "invite" });
+  const guest = await provisionGuest(app, alice, group.id);
+  // A: the guest's row names alice under a dmId that is not guest↔alice.
+  insertRawPointer(
+    db,
+    guest.handle,
+    deriveDmId(guest.actor, "zed@remote.example"),
+    alice.actor,
+    11,
+  );
+  // B: alice's bogus row names the guest under a dmId that is not alice↔guest.
+  insertRawPointer(db, "alice", deriveDmId(alice.actor, "zed@remote.example"), guest.actor, 50);
+
+  const res = await signedRequest(app, guest, "POST", "/api/me/claim", {
+    handle: "ada",
+    password: "super-secret-pw",
+  });
+  expect(res.status).toBe(200);
+
+  expect(db.drizzle.select().from(dmConversations).all()).toEqual([]);
+  expect(db.drizzle.select().from(readMarkers).all()).toEqual([]);
 });
 
 test("claim: a full account claiming → 409", async () => {

@@ -84,9 +84,9 @@ import {
   users,
 } from "../db/schema.ts";
 import { AppError } from "../http/errors.ts";
-import { rekeyCachedMessageAuthor } from "./dms.ts";
+import { conversationDerivesDmId, rekeyCachedMessageAuthor } from "./dms.ts";
 import { hashPassword, verifyPassword } from "./password.ts";
-import { moveReadMarker } from "./read-markers.ts";
+import { deleteReadMarker, moveReadMarker } from "./read-markers.ts";
 
 /**
  * A precomputed Argon2id hash of a throwaway password, used as the verify target
@@ -745,6 +745,9 @@ function mergeDmMessages(
  * Each re-keyed row's read marker moves with it ({@link moveReadMarker}): for
  * the guest's rows to (targetHandle, new dm_id), for a third party's to (owner,
  * new dm_id) — of two clashing markers the further-forward is kept (§4.8.1).
+ * A row whose counterparty does not derive its dm_id with its owner (ignored,
+ * §7.4) is deleted together with its marker instead of being re-keyed — else
+ * re-deriving would turn it into a valid conversation.
  */
 function mergeDmConversations(
   db: Db,
@@ -761,12 +764,18 @@ function mergeDmConversations(
     .where(eq(dmConversations.owner, guestHandle))
     .all();
   for (const r of owned) {
-    const counterparty = r.counterparty === guestActor ? targetActor : r.counterparty;
-    const newDmId = deriveDmId(counterparty, targetActor);
     db.drizzle
       .delete(dmConversations)
       .where(and(eq(dmConversations.owner, r.owner), eq(dmConversations.dmId, r.dmId)))
       .run();
+    // An inconsistent (ignored, §7.4) row is deleted with its marker, never
+    // re-derived into a valid conversation.
+    if (!conversationDerivesDmId(guestActor, r)) {
+      deleteReadMarker(db, guestHandle, r.dmId);
+      continue;
+    }
+    const counterparty = r.counterparty === guestActor ? targetActor : r.counterparty;
+    const newDmId = deriveDmId(counterparty, targetActor);
     moveReadMarker(
       db,
       { handle: guestHandle, scopeId: r.dmId },
@@ -790,11 +799,15 @@ function mergeDmConversations(
     .all();
   for (const r of pointingAtGuest) {
     const counterpartyActor = `${r.owner}@${domain}`;
-    const newDmId = deriveDmId(counterpartyActor, targetActor);
     db.drizzle
       .delete(dmConversations)
       .where(and(eq(dmConversations.owner, r.owner), eq(dmConversations.dmId, r.dmId)))
       .run();
+    if (!conversationDerivesDmId(counterpartyActor, r)) {
+      deleteReadMarker(db, r.owner, r.dmId);
+      continue;
+    }
+    const newDmId = deriveDmId(counterpartyActor, targetActor);
     moveReadMarker(db, { handle: r.owner, scopeId: r.dmId }, { handle: r.owner, scopeId: newDmId });
     upsertMergedConversation(db, {
       owner: r.owner,

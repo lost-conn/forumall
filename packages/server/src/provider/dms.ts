@@ -249,8 +249,10 @@ export function storeDmMessage(
  * enforced the derivation, or a counterparty that cannot be made canonical — is
  * IGNORED everywhere: neither listed (`GET /api/me/dms`, unread summary) nor
  * acted on (participation, read markers, typing, reaction/edit/delete forwards).
- * We ignore rather than delete so a read never writes; the next valid write for
- * the same `(owner, dmId)` (an inbox message or a pointer PUT) replaces it.
+ * Migration 0036 deletes the rows already stored this way, and guest
+ * claim/merge delete any they meet; at read time we ignore rather than delete so
+ * a read never writes. The next valid write for the same `(owner, dmId)` (an
+ * inbox message or a pointer PUT) replaces it.
  */
 export function conversationDerivesDmId(
   ownerActor: string,
@@ -483,26 +485,37 @@ export function getDmConversationItem(db: Db, owner: string, dmId: string, domai
 }
 
 /**
- * Record a conversation POINTER for `owner` (OFSCP §7.4): the owner has a
- * conversation `dmId` with `counterparty`, optionally caching the message they
- * just sent (non-authoritative; the real copy is in the counterparty's inbox).
+ * Record a conversation POINTER for the local owner `ownerActor`
+ * (`handle@<thisDomain>`, OFSCP §7.4): the owner has a conversation `dmId` with
+ * `counterparty`, optionally caching the message they just sent
+ * (non-authoritative; the real copy is in the counterparty's inbox).
  * Creates the row if absent (with no inbox message, `lastMessageSeq` 0) and
  * bumps `updatedAt` (server time) so the conversation sorts by latest activity.
  * `lastSentAt` records when the cached preview was stored. Never touches
- * `lastMessageSeq`, which tracks this inbox only. The caller has already
- * verified `dmId` = deriveDmId(owner actor, counterparty).
+ * `lastMessageSeq`, which tracks this inbox only.
+ *
+ * Refuses (records nothing, returns `false`) unless `counterparty` canonicalizes
+ * and derives `dmId` together with the owner — a pointer's counterparty is fixed
+ * by its dmId (§7.4). Callers verify this too; this is the storage-level guard.
  */
 export function upsertDmPointer(
   db: Db,
-  owner: string,
+  ownerActor: string,
   dmId: string,
   counterparty: string,
   lastSent?: Message,
-): void {
+): boolean {
+  // Stored (and served) in canonical form (§7.4).
+  const canonicalCounterparty = canonicalActor(counterparty);
+  if (
+    canonicalCounterparty === null ||
+    !conversationDerivesDmId(ownerActor, { dmId, counterparty: canonicalCounterparty })
+  ) {
+    return false;
+  }
+  const owner = ownerActor.slice(0, ownerActor.lastIndexOf("@"));
   const now = Date.now();
   const cached = lastSent ? JSON.stringify(lastSent) : null;
-  // Stored (and served) in canonical form (§7.4).
-  const canonicalCounterparty = canonicalActor(counterparty) ?? counterparty;
   db.drizzle
     .insert(dmConversations)
     .values({
@@ -536,6 +549,7 @@ export function upsertDmPointer(
       },
     })
     .run();
+  return true;
 }
 
 /** The newest inbox row for (owner, dmId), or undefined for an empty inbox. */

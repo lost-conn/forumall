@@ -505,7 +505,7 @@ export function createFederationDmsRouter() {
       canonicalAuthority(author.slice(authorAt + 1)) === authority &&
       authorHandle !== owner
     ) {
-      upsertDmPointer(db, authorHandle, dmId, recipientActor, record.message);
+      upsertDmPointer(db, `${authorHandle}@${authority}`, dmId, recipientActor, record.message);
       publishDmConversation(hub, db, author, authorHandle, dmId);
     }
 
@@ -814,7 +814,13 @@ export function createMeDmsRouter() {
     }
 
     const handle = requireLocalHandle(c);
-    upsertDmPointer(db, handle, dmId, counterparty, lastMessage);
+    upsertDmPointer(
+      db,
+      `${handle}@${canonicalAuthority(config.domain)}`,
+      dmId,
+      counterparty,
+      lastMessage,
+    );
     const item = publishDmConversation(hub, db, actor.actor, handle, dmId);
     return c.json(item, 200);
   });

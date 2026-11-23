@@ -113,6 +113,14 @@ export function setReadMarkers(
   return advanced;
 }
 
+/** Delete `handle`'s read marker on `scopeId`, if any. The caller owns the transaction. */
+export function deleteReadMarker(db: Db, handle: string, scopeId: string): void {
+  db.drizzle
+    .delete(readMarkers)
+    .where(and(eq(readMarkers.handle, handle), eq(readMarkers.scopeId, scopeId)))
+    .run();
+}
+
 /**
  * Re-key the read marker `(from.handle, from.scopeId)` to `(to.handle,
  * to.scopeId)` — guest claim/merge (OFSCP §4.8.1) moving a marker keyed by a

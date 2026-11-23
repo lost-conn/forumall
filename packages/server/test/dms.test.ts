@@ -441,6 +441,42 @@ describe("DM real-time delivery (§7.4)", () => {
   });
 });
 
+describe("ignored conversation rows over WS (§7.4 pointer hygiene)", () => {
+  test("WS subscribe and typing against a row whose counterparty does not derive its dmId are refused", async () => {
+    const b = boot("dm-ws-ignored-row");
+    const alice = await registerUserWithKey(b, "alice");
+    const bob = await registerUserWithKey(b, "bob");
+    // dmId of alice↔carol, but the stored counterparty is bob.
+    const dmId = deriveDmId(alice.actor, `carol@${DOMAIN}`);
+    b.db.sqlite
+      .query(
+        "INSERT INTO dm_conversations (owner, dm_id, counterparty, updated_at, last_message_seq) VALUES ('alice', ?, ?, ?, 0)",
+      )
+      .run(dmId, bob.actor, Date.now());
+
+    const aConn = await connectAuthenticated(b, alice);
+    const bConn = await connectAuthenticated(b, bob);
+
+    aConn.send({
+      id: "a_sub",
+      type: "subscribe",
+      ts: rfc3339Timestamp(),
+      data: { channels: [dmId] },
+    });
+    const subErr = await aConn.ofType("error");
+    expect((subErr.data as { code: string }).code).toBe("forbidden");
+
+    aConn.send({ id: "a_typ", type: "typing.start", ts: rfc3339Timestamp(), data: { dmId } });
+    const typErr = await aConn.ofType("error");
+    expect((typErr.data as { code: string }).code).toBe("forbidden");
+    aConn.send({ id: "a_stop", type: "typing.stop", ts: rfc3339Timestamp(), data: { dmId } });
+    await bConn.expectNoneOfType("dm.typing");
+
+    aConn.close();
+    bConn.close();
+  });
+});
+
 describe("DM delivery `to` + conversation pointers (§7.4)", () => {
   test("delivery naming `to` is accepted; a `to` that does not match {dmId} → 400", async () => {
     const b = boot("dm-to");
@@ -537,7 +573,7 @@ describe("DM conversation pointers: input + federation policy hardening (§7.4, 
 
     // Even if a differently-spelled counterparty reached the upsert, the
     // verified participant on the existing row is kept, in canonical form.
-    upsertDmPointer(b.db, "alice", dmId, bob.actor.toUpperCase());
+    upsertDmPointer(b.db, alice.actor, dmId, bob.actor.toUpperCase());
     expect(getDmConversationRow(b.db, "alice", dmId, DOMAIN)?.counterparty).toBe(bob.actor);
   });
 

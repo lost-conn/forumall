@@ -14,15 +14,25 @@
  * one) when they introduce tables.
  */
 import type { Database } from "bun:sqlite";
-import { canonicalActor } from "@forumall/shared";
+import { canonicalActor, deriveDmId } from "@forumall/shared";
 
 import type { Db } from "./index.ts";
+
+/** Provider facts a data migration may need (see {@link migrate}). */
+export interface MigrationContext {
+  /**
+   * This provider's canonical authority (`canonicalAuthority(config.domain)`):
+   * a local handle `h` is the actor `h@domain`. Boot always passes it; a test
+   * migrating a fresh database may omit it.
+   */
+  readonly domain?: string;
+}
 
 interface Migration {
   /** Stable, unique identifier; ledgered once applied. Never reuse/rename. */
   readonly id: string;
   /** Idempotent-friendly DDL. Runs inside a transaction. */
-  readonly up: (sqlite: Database) => void;
+  readonly up: (sqlite: Database, ctx: MigrationContext) => void;
 }
 
 /**
@@ -819,27 +829,48 @@ const migrations: readonly Migration[] = [
     },
   },
   {
-    // OFSCP §7.4: a provider MUST serve a pointer's counterparty in canonical
-    // actor form, normalizing values stored before `PUT /api/me/dms` required
-    // it. Rewrite each non-canonical `counterparty` to `canonicalActor(...)`
-    // (lowercase handle + canonical authority; `:443` stripped). The PK is
-    // (owner, dm_id), so this never collides. A value that cannot be made
-    // canonical is left as is: the runtime rule ignores any row whose
-    // counterparty does not derive its dmId (`conversationDerivesDmId`).
-    // Data-only and idempotent (a re-run finds nothing non-canonical).
+    // OFSCP §7.4 pointer hygiene for rows stored before the rules existed:
+    //  - a provider MUST serve a pointer's counterparty in canonical actor form,
+    //    normalizing values stored before: rewrite each non-canonical
+    //    `counterparty` to `canonicalActor(...)` (lowercase handle + canonical
+    //    authority; `:443` stripped). The PK is (owner, dm_id): no collision.
+    //  - a pointer whose counterparty does not derive its dmId together with the
+    //    owner MUST be ignored or deleted: DELETE every row whose counterparty
+    //    cannot be made canonical, or whose canonical counterparty does not
+    //    derive `dm_id` with `owner@domain` — together with the owner's read
+    //    marker keyed by that dm_id (it belonged to no real conversation). The
+    //    owner's inbox messages are untouched (a stored message's author always
+    //    derives its dmId, so an inbox conversation row is never inconsistent).
+    // The runtime still ignores any such row (`conversationDerivesDmId`), so a
+    // row this migration cannot judge is never served. The derivation check
+    // needs the provider domain; without it (only a test migrating a fresh DB
+    // omits it) the migration refuses to run over existing rows rather than be
+    // ledgered half-done. Data-only and idempotent.
     id: "0036_dm_conversations_canonical_counterparty",
-    up: (sqlite) => {
+    up: (sqlite, ctx) => {
       const rows = sqlite
         .query<{ owner: string; dm_id: string; counterparty: string }, []>(
           "SELECT owner, dm_id, counterparty FROM dm_conversations",
         )
         .all();
+      if (rows.length === 0) return;
+      const domain = ctx.domain;
+      if (domain === undefined) {
+        throw new Error("migration 0036 needs the provider domain (migrate(db, { domain }))");
+      }
       const update = sqlite.prepare(
         "UPDATE dm_conversations SET counterparty = ? WHERE owner = ? AND dm_id = ?",
       );
+      const remove = sqlite.prepare("DELETE FROM dm_conversations WHERE owner = ? AND dm_id = ?");
+      const removeMarker = sqlite.prepare(
+        "DELETE FROM read_markers WHERE handle = ? AND scope_id = ?",
+      );
       for (const r of rows) {
         const canonical = canonicalActor(r.counterparty);
-        if (canonical !== null && canonical !== r.counterparty) {
+        if (canonical === null || deriveDmId(`${r.owner}@${domain}`, canonical) !== r.dm_id) {
+          remove.run(r.owner, r.dm_id);
+          removeMarker.run(r.owner, r.dm_id);
+        } else if (canonical !== r.counterparty) {
           update.run(canonical, r.owner, r.dm_id);
         }
       }
@@ -857,8 +888,10 @@ const LEDGER_DDL = `
 /**
  * Apply any not-yet-applied migrations. Idempotent: safe to call on every boot.
  * Returns the ids that were applied during this call (empty if up to date).
+ * `ctx.domain` is the provider's canonical authority (needed by data migrations
+ * that reason about local actors, e.g. 0036).
  */
-export function migrate(db: Db): string[] {
+export function migrate(db: Db, ctx: MigrationContext = {}): string[] {
   const { sqlite } = db;
   sqlite.exec(LEDGER_DDL);
 
@@ -872,7 +905,7 @@ export function migrate(db: Db): string[] {
     if (applied.has(m.id)) continue;
     // Each migration is atomic: DDL + ledger insert commit together.
     sqlite.transaction(() => {
-      m.up(sqlite);
+      m.up(sqlite, ctx);
       record.run(m.id, Date.now());
     })();
     newlyApplied.push(m.id);

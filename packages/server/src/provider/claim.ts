@@ -78,10 +78,10 @@ import {
   users,
 } from "../db/schema.ts";
 import { AppError } from "../http/errors.ts";
-import { rekeyCachedMessageAuthor } from "./dms.ts";
+import { conversationDerivesDmId, rekeyCachedMessageAuthor } from "./dms.ts";
 import { GUEST_HANDLE_PREFIX, HandleSchema } from "./handle.ts";
 import { hashPassword } from "./password.ts";
-import { moveReadMarker } from "./read-markers.ts";
+import { deleteReadMarker, moveReadMarker } from "./read-markers.ts";
 
 /** Input to {@link claimGuestAccount}. */
 export interface ClaimGuestInput {
@@ -360,6 +360,9 @@ function rekeyDmMessages(
  * Each re-keyed row's read marker (`read_markers.scope_id` = the old dm_id) moves
  * to the new dm_id ({@link moveReadMarker}). The guest's markers were already
  * renamed to `newHandle` by the bare-handle pass, so they are found there.
+ * A row whose counterparty does not derive its dm_id with its owner (ignored,
+ * §7.4) is deleted together with its marker instead of being re-keyed — else
+ * re-deriving would turn it into a valid conversation.
  */
 function rekeyDmConversations(
   db: Db,
@@ -376,13 +379,19 @@ function rekeyDmConversations(
     .where(eq(dmConversations.owner, currentHandle))
     .all();
   for (const r of owned) {
-    const counterparty = r.counterparty === oldActor ? newActor : r.counterparty;
-    const newDmId = deriveDmId(counterparty, newActor);
     // Delete + reinsert: the PK is (owner, dmId), and both change.
     db.drizzle
       .delete(dmConversations)
       .where(and(eq(dmConversations.owner, r.owner), eq(dmConversations.dmId, r.dmId)))
       .run();
+    // An inconsistent (ignored, §7.4) row is deleted with its marker, never
+    // re-derived into a valid conversation.
+    if (!conversationDerivesDmId(oldActor, r)) {
+      deleteReadMarker(db, newHandle, r.dmId);
+      continue;
+    }
+    const counterparty = r.counterparty === oldActor ? newActor : r.counterparty;
+    const newDmId = deriveDmId(counterparty, newActor);
     moveReadMarker(
       db,
       { handle: newHandle, scopeId: r.dmId },
@@ -410,11 +419,15 @@ function rekeyDmConversations(
     .all();
   for (const r of pointingAtGuest) {
     const counterpartyActor = `${r.owner}@${domain}`;
-    const newDmId = deriveDmId(counterpartyActor, newActor);
     db.drizzle
       .delete(dmConversations)
       .where(and(eq(dmConversations.owner, r.owner), eq(dmConversations.dmId, r.dmId)))
       .run();
+    if (!conversationDerivesDmId(counterpartyActor, r)) {
+      deleteReadMarker(db, r.owner, r.dmId);
+      continue;
+    }
+    const newDmId = deriveDmId(counterpartyActor, newActor);
     moveReadMarker(db, { handle: r.owner, scopeId: r.dmId }, { handle: r.owner, scopeId: newDmId });
     db.drizzle
       .insert(dmConversations)

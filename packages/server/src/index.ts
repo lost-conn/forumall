@@ -10,6 +10,7 @@
  */
 import dns from "node:dns";
 import { mkdirSync } from "node:fs";
+import { canonicalAuthority } from "@forumall/shared";
 import { ZodError } from "zod";
 import { createApp } from "./app.ts";
 import { type Config, loadConfig } from "./config.ts";
@@ -67,7 +68,7 @@ if (config.dnsServers.length > 0) {
 }
 
 const db = openDb(config.dbPath);
-const applied = migrate(db);
+const applied = migrate(db, { domain: canonicalAuthority(config.domain) });
 if (applied.length > 0) {
   console.log(`[server] applied migrations: ${applied.join(", ")}`);
 }

@@ -533,10 +533,16 @@ test("merge: a clashing re-keyed pointer yields — the target's preview is kept
   const oldActor = guest.actor;
 
   const dmAliceCarol = deriveDmId(carol.actor, alice.actor);
-  upsertDmPointer(db, "alice", dmAliceCarol, carol.actor, sentPreview("msg_alice", alice.actor));
   upsertDmPointer(
     db,
-    guest.handle,
+    alice.actor,
+    dmAliceCarol,
+    carol.actor,
+    sentPreview("msg_alice", alice.actor),
+  );
+  upsertDmPointer(
+    db,
+    guest.actor,
     deriveDmId(carol.actor, oldActor),
     carol.actor,
     sentPreview("msg_guest", oldActor),
@@ -576,7 +582,7 @@ test("merge: a re-keyed preview fills a clashing row that has none (re-authored,
   });
   upsertDmPointer(
     db,
-    guest.handle,
+    guest.actor,
     deriveDmId(carol.actor, oldActor),
     carol.actor,
     sentPreview("msg_guest", oldActor),
@@ -607,7 +613,7 @@ test("merge: a third party's pointer to the guest keeps its preview and store ti
   // carol's pointer to the guest, caching a message carol sent.
   upsertDmPointer(
     db,
-    "carol",
+    carol.actor,
     deriveDmId(carol.actor, guest.actor),
     guest.actor,
     sentPreview("msg_carol", carol.actor),
@@ -718,8 +724,20 @@ test("merge: a third party with conversations with both ends with one conversati
     author: carol.actor,
     content: { text: "to guest", mime: "text/plain" },
   });
-  upsertDmPointer(db, "carol", dmCarolAlice, alice.actor, sentPreview("msg_to_alice", carol.actor));
-  upsertDmPointer(db, "carol", dmCarolGuest, guest.actor, sentPreview("msg_to_guest", carol.actor));
+  upsertDmPointer(
+    db,
+    carol.actor,
+    dmCarolAlice,
+    alice.actor,
+    sentPreview("msg_to_alice", carol.actor),
+  );
+  upsertDmPointer(
+    db,
+    carol.actor,
+    dmCarolGuest,
+    guest.actor,
+    sentPreview("msg_to_guest", carol.actor),
+  );
   // carol's marker on the guest conversation is further forward than on alice's;
   // alice's own marker is further forward than the guest's.
   setReadMarkers(db, "carol", [
@@ -856,6 +874,65 @@ test("merge: a moved message whose idempotency key collides survives with client
     dmId: dmCarolAlice,
     clientMessageId: null,
   });
+});
+
+/** Write raw `dm_conversations` + `read_markers` rows, bypassing every write-path check. */
+function insertRawPointer(
+  db: ReturnType<typeof freshApp>["db"],
+  owner: string,
+  dmId: string,
+  counterparty: string,
+  markerSeq: number,
+  lastSentMessage: string | null = null,
+) {
+  db.sqlite
+    .query(
+      "INSERT INTO dm_conversations (owner, dm_id, counterparty, updated_at, last_message_seq, last_sent_message, last_sent_at) VALUES (?, ?, ?, ?, 0, ?, ?)",
+    )
+    .run(owner, dmId, counterparty, Date.now(), lastSentMessage, lastSentMessage ? 1 : null);
+  db.sqlite
+    .query(
+      "INSERT INTO read_markers (handle, scope_id, last_read_seq, updated_at) VALUES (?, ?, ?, ?)",
+    )
+    .run(owner, dmId, markerSeq, Date.now());
+}
+
+test("merge: inconsistent (ignored) rows are deleted with their markers, never revived", async () => {
+  // §7.4: a pointer whose counterparty does not derive its dmId is ignored; a
+  // merge must not re-derive it into a valid conversation.
+  const { app, db } = freshApp("merge-inconsistent-rows");
+  const alice = await registerUserWithKey(app, "alice");
+  const carol = await registerUserWithKey(app, "carol");
+  const group = await createGroup(app, alice, { name: "G", tier: "public", joinPolicy: "invite" });
+  const guest = await provisionGuest(app, alice, group.id);
+  // A: the guest's row names alice but its dmId is not guest↔alice — re-keying
+  // would make it a listed alice↔alice self-conversation.
+  const dmX = deriveDmId(guest.actor, "zed@remote.example");
+  insertRawPointer(db, guest.handle, dmX, alice.actor, 11);
+  // B: carol's bogus row names the guest — re-keying would make it a valid
+  // carol↔alice conversation carrying a stale preview and another thread's marker.
+  const dmBogus = deriveDmId(carol.actor, "zed@remote.example");
+  insertRawPointer(
+    db,
+    "carol",
+    dmBogus,
+    guest.actor,
+    50,
+    JSON.stringify(sentPreview("msg_stale", carol.actor)),
+  );
+
+  const res = await signedRequest(app, guest, "POST", "/api/me/merge", {
+    handle: "alice",
+    password: PASSWORD,
+  });
+  expect(res.status).toBe(200);
+
+  expect(db.drizzle.select().from(dmConversations).all()).toEqual([]);
+  expect(db.drizzle.select().from(readMarkers).all()).toEqual([]);
+  for (const who of [alice, carol]) {
+    const list = await signedRequest(app, who, "GET", "/api/me/dms");
+    expect(((await list.json()) as { items: unknown[] }).items).toEqual([]);
+  }
 });
 
 // ---------------------------------------------------------------------------
