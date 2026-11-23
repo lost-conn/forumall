@@ -16,7 +16,9 @@
 import { NotificationsWebhookRegistrationSchema } from "@forumall/shared";
 import { type Context, Hono } from "hono";
 
+import { isProviderAllowed } from "../provider/federation/policy.ts";
 import { deleteEndpoint, listEndpoints, registerEndpoint } from "../provider/notifications.ts";
+import { assertCanonicalUriAuthority } from "./canonical-fields.ts";
 import { AppError } from "./errors.ts";
 import { requireLocalActor, requireLocalHandle, requireSignature } from "./signature.ts";
 import type { AppBindings } from "./types.ts";
@@ -47,6 +49,14 @@ export function createNotificationsRouter() {
         detail: "invalid notification webhook registration",
         extensions: { errors: parsed.error.flatten() },
       });
+    }
+
+    // §2.2/§8: the target's host is a provider authority this provider will
+    // POST to — reject a non-canonical spelling, then apply allow/deny, before
+    // storing it. (Delivery re-checks policy at the outbound door, `app.ts`.)
+    const targetHost = assertCanonicalUriAuthority(parsed.data.target, "target");
+    if (!isProviderAllowed(c.var.config, targetHost)) {
+      throw AppError.forbidden({ detail: "federation with that provider is not allowed" });
     }
 
     const endpoint = registerEndpoint(db, requireLocalHandle(c), parsed.data);

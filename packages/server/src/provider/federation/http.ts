@@ -55,6 +55,42 @@ export type FederationFetch = (domain: string, request: Request) => Promise<Resp
  */
 export const defaultFederationFetch: FederationFetch = (_domain, request) => guardedFetch(request);
 
+/**
+ * Wrap a {@link FederationFetch} so it refuses — without touching the network —
+ * every request to a provider the §8 allow/deny policy denies.
+ *
+ * §8 "Authorization" forbids sending ANY outbound request to a denied provider:
+ * signed or unsigned, on our own behalf or forwarded for a user (DM delivery,
+ * reactions, edits, deletes, notification delivery), key (§4.6) and discovery
+ * (§3.1) fetches included — whatever stored state names it. `createApp` wraps
+ * its transport with this, so every caller that reaches a peer through
+ * `c.var.federationFetch` or the app's discovery/user-keys caches passes this
+ * one door. Both the logical `domain` and the request URL's authority are
+ * checked, each after {@link isProviderAllowed}'s canonicalization (§2.2), so
+ * `evil.example.` or `EVIL.example:443` cannot slip past a deny of
+ * `evil.example`. A refusal is answered like a refusing peer (`403`) so
+ * callers' existing `!res.ok` handling applies.
+ */
+export function withFederationPolicy(config: Config, inner: FederationFetch): FederationFetch {
+  return (domain, request) => {
+    let urlAuthority: string;
+    try {
+      urlAuthority = new URL(request.url).host;
+    } catch {
+      return Promise.resolve(policyRefusal());
+    }
+    if (!isProviderAllowed(config, domain) || !isProviderAllowed(config, urlAuthority)) {
+      return Promise.resolve(policyRefusal());
+    }
+    return inner(domain, request);
+  };
+}
+
+/** The synthetic response for a request the federation policy refused. */
+function policyRefusal(): Response {
+  return new Response(null, { status: 403, statusText: "federation policy" });
+}
+
 /** True for a loopback host (`localhost`, `127.0.0.1`, `[::1]`), port-agnostic. */
 function isLoopbackHost(host: string): boolean {
   // `host` may carry a port (e.g. `localhost:8787`); strip it before matching.
@@ -142,8 +178,8 @@ export async function signedProviderFetch(
   // Deny wins outbound too (§8): never sign a request to a provider the policy
   // blocks, whatever stored row named it. Answer like a refusing peer so
   // callers' existing `!res.ok` handling applies.
-  if (!isProviderAllowed(config, domain)) {
-    return new Response(null, { status: 403, statusText: "federation policy" });
+  if (!isProviderAllowed(config, domain) || !isProviderAllowed(config, authority)) {
+    return policyRefusal();
   }
   const key = getProviderSigningKey(db);
   const body = init.body ?? new Uint8Array(0);

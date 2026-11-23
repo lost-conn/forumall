@@ -19,6 +19,7 @@ import type { Config } from "../config.ts";
 import type { Db } from "../db/index.ts";
 import { buildPushRequest } from "../lib/web-push.ts";
 import { DEFAULT_EGRESS_TIMEOUT_MS, assertPublicHttpsUrl } from "./federation/egress-guard.ts";
+import { isProviderAllowed } from "./federation/policy.ts";
 import {
   deleteSubscriptionByEndpoint,
   getVapidKey,
@@ -114,6 +115,9 @@ export async function sendPushToRecipient(
     await Promise.all(
       subs.map(async (sub) => {
         try {
+          // §8: never send to a push host the federation policy denies, whatever
+          // stored subscription names it (canonicalized by `isProviderAllowed`).
+          if (!isProviderAllowed(config, new URL(sub.endpoint).host)) return;
           const req = await buildPushRequest(
             { endpoint: sub.endpoint, p256dh: sub.p256dh, auth: sub.auth },
             payloadBytes,

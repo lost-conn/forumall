@@ -29,6 +29,7 @@ import type { Db } from "../db/index.ts";
 import { type KnownProviderRow, knownProviders } from "../db/schema.ts";
 import { federationGet } from "./federation/http.ts";
 import type { FederationFetch } from "./federation/http.ts";
+import { isProviderAllowed } from "./federation/policy.ts";
 
 /** The `GET /api/providers` path on a peer (§8.6). */
 const PROVIDERS_PATH = "/api/providers";
@@ -125,6 +126,9 @@ export async function scrapeKnownProviders(
   const host = canonicalAuthority(domain);
   const selfHost = canonicalAuthority(config.domain);
   const url = `https://${host}${PROVIDERS_PATH}`;
+  // §8: never contact a denied provider, even when no policy-wrapped transport
+  // was passed in.
+  if (!isProviderAllowed(config, host)) return [];
 
   let res: Response;
   try {

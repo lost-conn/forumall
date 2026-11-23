@@ -13,7 +13,7 @@
  * local accept flips both rows). Each row shows a live presence dot for the
  * contact, subscribed while the screen is mounted.
  */
-import type { Contact } from "@forumall/shared";
+import { type Contact, canonicalActor } from "@forumall/shared";
 import {
   type Component,
   For,
@@ -125,7 +125,9 @@ export const ContactsPage: Component = () => {
   };
 
   const submitRequest = (): void => {
-    const value = newActor().trim().toLowerCase();
+    // Senders MUST send actors in canonical form (§2.2): `Bob@host:443` → `bob@host`.
+    const raw = newActor().trim();
+    const value = canonicalActor(raw) ?? raw.toLowerCase();
     if (!/^[^@\s]+@[^@\s]+$/.test(value)) {
       setError("Enter a contact as handle@domain.");
       return;

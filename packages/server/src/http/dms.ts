@@ -81,6 +81,7 @@ import { isProviderAllowed } from "../provider/federation/policy.ts";
 import { getUserRow } from "../provider/guests.ts";
 import { previewText, sendPushToRecipient } from "../provider/push-send.ts";
 import type { Hub } from "../provider/ws-hub.ts";
+import { assertCanonicalActorField } from "./canonical-fields.ts";
 import { AppError } from "./errors.ts";
 import {
   requireActorOrProviderSignature,
@@ -437,6 +438,7 @@ export function createFederationDmsRouter() {
     const authority = canonicalAuthority(config.domain);
     let owner: string | null = null;
     if (body.to !== undefined) {
+      assertCanonicalActorField(body.to, "to");
       const at = body.to.lastIndexOf("@");
       const toHandle = at > 0 ? body.to.slice(0, at) : "";
       const toDomain = at > 0 ? canonicalAuthority(body.to.slice(at + 1)) : "";
@@ -633,6 +635,7 @@ function federationActingActor(c: Context<AppBindings>, bodyActor: unknown): str
 
   const actingActor = typeof bodyActor === "string" ? bodyActor : "";
   if (actingActor === "") throw AppError.badRequest({ detail: "missing acting actor" });
+  assertCanonicalActorField(actingActor, "actor");
   if (domainOf(actingActor) !== signer.domain) {
     throw AppError.forbidden({ detail: "a provider may only act on behalf of its own users" });
   }
@@ -784,16 +787,8 @@ export function createMeDmsRouter() {
     // `with` must be an actor in canonical form (`handle@domain`, lowercase,
     // canonical authority). A URI or non-canonical spelling would either throw
     // in deriveDmId or be stored as typed and break exact participant matching.
-    const at = counterparty.lastIndexOf("@");
-    const withDomain = at > 0 ? counterparty.slice(at + 1) : "";
-    if (
-      at <= 0 ||
-      withDomain === "" ||
-      counterparty !==
-        `${counterparty.slice(0, at).toLowerCase()}@${canonicalAuthority(withDomain)}`
-    ) {
-      throw AppError.badRequest({ detail: "`with` must be a canonical actor (handle@domain)" });
-    }
+    assertCanonicalActorField(counterparty, "with");
+    const withDomain = counterparty.slice(counterparty.lastIndexOf("@") + 1);
     if (counterparty === actor.actor || deriveDmId(actor.actor, counterparty) !== dmId) {
       throw AppError.badRequest({
         detail: "{dmId} does not match a conversation between the caller and `with`",

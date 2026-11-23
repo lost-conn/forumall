@@ -51,6 +51,7 @@ import {
 } from "../provider/presence.ts";
 import { getPrivacySettings, updatePrivacySettings } from "../provider/privacy.ts";
 import { canView } from "../provider/visibility.ts";
+import { assertCanonicalActorField } from "./canonical-fields.ts";
 import { AppError } from "./errors.ts";
 import { requireLocalActor, requireLocalHandle, requireSignature } from "./signature.ts";
 import type { AppBindings, AuthenticatedActor } from "./types.ts";
@@ -327,6 +328,12 @@ export function createMeUserRouter() {
     const denyList = Array.isArray(body.denyList)
       ? (body.denyList.filter((x) => typeof x === "string") as string[])
       : undefined;
+    // §2.2: an actor entry is compared against viewer actors verbatim, so it must
+    // be canonical (rejected otherwise, see `canonical-fields.ts`). A `UserRef` URI
+    // entry is left as-is.
+    for (const entry of [...(allowList ?? []), ...(denyList ?? [])]) {
+      if (!entry.startsWith("https://")) assertCanonicalActorField(entry, "allowList/denyList");
+    }
 
     const settings = updatePrivacySettings(db, requireLocalHandle(c), {
       ...(parsed.data.presenceVisibility !== undefined

@@ -17,8 +17,10 @@
 import { PushSubscribeRequestSchema, PushUnsubscribeRequestSchema } from "@forumall/shared";
 import { Hono } from "hono";
 
+import { isProviderAllowed } from "../provider/federation/policy.ts";
 import { egressCheck } from "../provider/push-egress-check.ts";
 import { addSubscription, getVapidKey, removeSubscription } from "../provider/push.ts";
+import { assertCanonicalUriAuthority } from "./canonical-fields.ts";
 import { AppError } from "./errors.ts";
 import {
   optionalSignature,
@@ -81,6 +83,11 @@ export function createPushRouter() {
     // aim the provider's outbound push at something it shouldn't reach.
     if (new URL(parsed.data.endpoint).protocol !== "https:") {
       throw AppError.badRequest({ detail: "push endpoint must be an https URL" });
+    }
+    // §2.2/§8: canonical authority, then allow/deny, before storing the endpoint.
+    const pushHost = assertCanonicalUriAuthority(parsed.data.endpoint, "endpoint");
+    if (!isProviderAllowed(c.var.config, pushHost)) {
+      throw AppError.forbidden({ detail: "this provider's policy denies that push endpoint" });
     }
 
     const id = addSubscription(db, requireLocalHandle(c), {

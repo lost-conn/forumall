@@ -86,18 +86,57 @@ export function contentDigest(bodyBytes: Uint8Array | string): string {
 }
 
 /**
- * Normalize the authority line: lowercase host; append `:port` only when the
- * port is present and non-default (not 443).
+ * Normalize an authority to its canonical form (§2.2 "canonical authority",
+ * §4.4.2 `<authority>`): lowercase host, no trailing dot, internationalized
+ * names in ASCII (`xn--`) form, and `:port` only when the port is present and
+ * non-default (not 443). Two spellings of one provider — `A.test`, `a.test.`,
+ * `a.test:443` — all canonicalize to `a.test`.
  */
 export function canonicalAuthority(authority: string): string {
   const lower = authority.trim().toLowerCase();
   const colon = lower.lastIndexOf(":");
   // No port, or an IPv6 literal without a port (e.g. `[::1]`).
-  if (colon === -1 || lower.endsWith("]")) return lower;
-  const host = lower.slice(0, colon);
-  const port = lower.slice(colon + 1);
+  const hasPort = colon !== -1 && !lower.endsWith("]");
+  const host = asciiHost((hasPort ? lower.slice(0, colon) : lower).replace(/\.+$/, ""));
+  const port = hasPort ? lower.slice(colon + 1) : "";
   if (port === "443" || port === "") return host;
   return `${host}:${port}`;
+}
+
+/** IDNA-encode a non-ASCII host (`bücher.test` → `xn--bcher-kva.test`). */
+function asciiHost(host: string): string {
+  if (/^[\x20-\x7e]*$/.test(host)) return host; // printable ASCII: nothing to encode
+  try {
+    return new URL(`http://${host}`).hostname;
+  } catch {
+    return host; // not a valid host at all; left as-is (it is non-canonical)
+  }
+}
+
+/** True iff `authority` is non-empty and already in canonical form (§2.2). */
+export function isCanonicalAuthority(authority: string): boolean {
+  return authority !== "" && canonicalAuthority(authority) === authority;
+}
+
+/**
+ * The canonical form (§2.2) of an actor `handle@domain` — handle lowercased,
+ * domain a {@link canonicalAuthority} — or `null` if it is not `handle@domain`.
+ */
+export function canonicalActor(actor: string): string | null {
+  const at = actor.lastIndexOf("@");
+  if (at <= 0 || at === actor.length - 1) return null;
+  const domain = canonicalAuthority(actor.slice(at + 1));
+  if (domain === "") return null;
+  return `${actor.slice(0, at).toLowerCase()}@${domain}`;
+}
+
+/**
+ * True iff `actor` is `handle@domain` spelled in canonical form (§2.2). A
+ * receiver that rejects non-canonical actors (rather than converting them) uses
+ * this before any comparison, lookup, hashing, authorization or storage.
+ */
+export function isCanonicalActor(actor: string): boolean {
+  return canonicalActor(actor) === actor;
 }
 
 /**
