@@ -31,13 +31,13 @@ import {
 import type { RegistryErrorCode } from "./errors.ts";
 
 /**
- * A structured failure: a §7.3 registry `errorCode`, human message, and the
- * code's fixed HTTP status (kept alongside for the REST mapping).
+ * A structured failure: a §7.3 registry `errorCode` and a human message. The
+ * HTTP status is NOT carried — it is fixed by the code (`errorCodeStatus`), so
+ * the two cannot disagree.
  */
 export interface MutationError {
   readonly code: RegistryErrorCode;
   readonly message: string;
-  readonly status: number;
 }
 
 /** Either the resolved message row (authorized) or a structured error. */
@@ -46,11 +46,11 @@ export type MutationOutcome =
   | { readonly error?: undefined; readonly row: MessageRow };
 
 function notFound(): MutationOutcome {
-  return { error: { code: "not_found", message: "no such message", status: 404 } };
+  return { error: { code: "not_found", message: "no such message" } };
 }
 
 function forbidden(message: string): MutationOutcome {
-  return { error: { code: "forbidden", message, status: 403 } };
+  return { error: { code: "forbidden", message } };
 }
 
 /**
@@ -173,7 +173,7 @@ export function authorizeChannelPost(
   type: MessageKind,
   reference: { readonly type: string; readonly id: string } | undefined,
 ): MutationError | null {
-  const deny = (message: string): MutationError => ({ code: "forbidden", message, status: 403 });
+  const deny = (message: string): MutationError => ({ code: "forbidden", message });
 
   const channel = getChannelRow(db, channelId);
   if (!channel || channel.groupId !== groupId)
@@ -202,7 +202,6 @@ export function authorizeChannelPost(
       return {
         code: "bad_request",
         message: "reply target not found in this channel",
-        status: 400,
       };
     }
   }

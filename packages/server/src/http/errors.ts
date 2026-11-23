@@ -122,6 +122,16 @@ export const PROBLEM_STATUS = {
 
 export type ProblemSlug = keyof typeof PROBLEM_STATUS;
 
+/** The {@link AppError} slug whose registry `errorCode` is `code`. */
+export function slugForErrorCode(code: RegistryErrorCode): ProblemSlug {
+  const slug = (Object.keys(PROBLEM_STATUS) as ProblemSlug[]).find(
+    (k) => PROBLEM_STATUS[k].errorCode === code,
+  );
+  // Unreachable: every registry code has a slug (pinned by problem-registry.test.ts).
+  if (slug === undefined) throw new TypeError(`no AppError slug for errorCode ${code}`);
+  return slug;
+}
+
 /**
  * Mint a problem `type` URI (OFSCP §2.6): `https://{authority}/problems/{errorCode}`,
  * where `authority` is this provider's canonical authority (§2.2,

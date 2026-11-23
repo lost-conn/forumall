@@ -63,9 +63,9 @@ import type { RemoteDiscoveryCache } from "../provider/federation/discovery-cach
 import { isProviderAllowed } from "../provider/federation/policy.ts";
 import type { RemoteUserKeysCache } from "../provider/federation/user-keys-cache.ts";
 import {
-  DEFAULT_NONCE_RETENTION_MS,
   type NonceStore,
   nonceKeyId,
+  nonceRetentionMs as retentionForSkew,
 } from "../provider/nonce-store.ts";
 import { getProviderSigningKeyById } from "../provider/signing-key.ts";
 import { AppError } from "./errors.ts";
@@ -88,7 +88,7 @@ export interface RequireSignatureOptions {
   nonceStore?: NonceStore;
   /** Allowed ±skew for `X-OFSCP-Timestamp`, seconds. Default 300 (§4.5 step 3). */
   skewSeconds?: number;
-  /** Nonce retention window, ms. Default 600_000 (≥600s, §4.5 step 4). */
+  /** Nonce retention window, ms. Default `2 · skewSeconds` (600s; §4.5 step 4). */
   nonceRetentionMs?: number;
 }
 
@@ -319,7 +319,7 @@ export function requireSignature(
 ): MiddlewareHandler<AppBindings> {
   const mode: SignatureMode = opts.mode ?? "actor";
   const skewSeconds = opts.skewSeconds ?? DEFAULT_TIMESTAMP_SKEW_SECONDS;
-  const nonceRetentionMs = opts.nonceRetentionMs ?? DEFAULT_NONCE_RETENTION_MS;
+  const nonceRetentionMs = opts.nonceRetentionMs ?? retentionForSkew(skewSeconds);
   const identityHeader = mode === "provider" ? HEADER.PROVIDER : HEADER.ACTOR;
 
   return async (c, next) => {
@@ -417,9 +417,12 @@ async function verifyAndSetActor(c: Context, vctx: VerifyContext): Promise<void>
     if (t0 !== null) {
       const warmupEnd = t0 + skewSeconds * 1000;
       if (tsMillis < warmupEnd) {
-        // ≥ remaining, rounded up; ≥1s even when local time has already passed
-        // T₀ + skew (a client whose clock lags must wait for it to catch up).
-        const retryAfter = Math.max(1, Math.ceil((warmupEnd - now) / 1000));
+        // At least the time until T₀ + skew on OUR clock — and, for a client
+        // whose clock lags ours, until ITS clock reaches T₀ + skew (its next
+        // timestamp is ≈ tsMillis + elapsed): so the larger of the two gaps.
+        // Rounded up, and ≥1s.
+        const remainingMs = Math.max(warmupEnd - now, warmupEnd - tsMillis);
+        const retryAfter = Math.max(1, Math.ceil(remainingMs / 1000));
         throw AppError.serviceUnavailable({
           detail:
             "replay store is warming up after a restart; re-sign the request with a fresh timestamp and nonce after Retry-After",
@@ -549,7 +552,7 @@ export function optionalSignature(
 ): MiddlewareHandler<AppBindings> {
   const mode: SignatureMode = opts.mode ?? "actor";
   const skewSeconds = opts.skewSeconds ?? DEFAULT_TIMESTAMP_SKEW_SECONDS;
-  const nonceRetentionMs = opts.nonceRetentionMs ?? DEFAULT_NONCE_RETENTION_MS;
+  const nonceRetentionMs = opts.nonceRetentionMs ?? retentionForSkew(skewSeconds);
   const identityHeader = mode === "provider" ? HEADER.PROVIDER : HEADER.ACTOR;
 
   // A request is "signing" if it carries ANY of the X-OFSCP signing headers; if
@@ -604,7 +607,7 @@ export function requireActorOrProviderSignature(
   opts: Omit<RequireSignatureOptions, "mode"> = {},
 ): MiddlewareHandler<AppBindings> {
   const skewSeconds = opts.skewSeconds ?? DEFAULT_TIMESTAMP_SKEW_SECONDS;
-  const nonceRetentionMs = opts.nonceRetentionMs ?? DEFAULT_NONCE_RETENTION_MS;
+  const nonceRetentionMs = opts.nonceRetentionMs ?? retentionForSkew(skewSeconds);
 
   return async (c, next) => {
     const mode: SignatureMode = c.req.header(HEADER.PROVIDER) !== undefined ? "provider" : "actor";

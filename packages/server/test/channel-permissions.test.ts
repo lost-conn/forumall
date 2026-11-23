@@ -186,7 +186,7 @@ describe("per-channel permissions (§5.2.1)", () => {
     ).toBeNull();
     // `memo`/`article` require admin → member denied, admin allowed.
     const denied = authorizeChannelPost(db, group.id, channel.id, member.actor, "memo", undefined);
-    expect(denied?.status).toBe(403);
+    expect(denied?.code).toBe("forbidden");
     expect(
       authorizeChannelPost(db, group.id, channel.id, admin.actor, "memo", undefined),
     ).toBeNull();
@@ -201,8 +201,8 @@ describe("per-channel permissions (§5.2.1)", () => {
     // Non-member cannot post at all.
     const stranger = await registerUserWithKey(app, "stranger2");
     expect(
-      authorizeChannelPost(db, group.id, channel.id, stranger.actor, "message", undefined)?.status,
-    ).toBe(403);
+      authorizeChannelPost(db, group.id, channel.id, stranger.actor, "message", undefined)?.code,
+    ).toBe("forbidden");
   });
 
   test("reply qualification: replyOnly + replyOnlyTo", async () => {
@@ -236,8 +236,8 @@ describe("per-channel permissions (§5.2.1)", () => {
 
     // Member (reply-restricted) cannot post a top-level message.
     expect(
-      authorizeChannelPost(db, group.id, channel.id, member.actor, "message", undefined)?.status,
-    ).toBe(403);
+      authorizeChannelPost(db, group.id, channel.id, member.actor, "message", undefined)?.code,
+    ).toBe("forbidden");
     // Replying to a memo is allowed.
     expect(
       authorizeChannelPost(db, group.id, channel.id, member.actor, "message", {
@@ -250,8 +250,8 @@ describe("per-channel permissions (§5.2.1)", () => {
       authorizeChannelPost(db, group.id, channel.id, member.actor, "message", {
         type: "reply",
         id: chat.message.id,
-      })?.status,
-    ).toBe(403);
+      })?.code,
+    ).toBe("forbidden");
     // Owner is never reply-restricted.
     expect(
       authorizeChannelPost(db, group.id, channel.id, owner.actor, "message", undefined),
@@ -261,8 +261,8 @@ describe("per-channel permissions (§5.2.1)", () => {
       authorizeChannelPost(db, group.id, channel.id, member.actor, "message", {
         type: "reply",
         id: "msg_nope",
-      })?.status,
-    ).toBe(400);
+      })?.code,
+    ).toBe("bad_request");
   });
 
   test("view override restricts read access, overriding tier", async () => {

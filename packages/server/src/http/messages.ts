@@ -39,8 +39,9 @@ import {
   updateMessageContent,
 } from "../provider/messages.ts";
 import { addReaction, hasReaction, listReactions, removeReaction } from "../provider/reactions.ts";
-import { AppError, parseRequestBody } from "./errors.ts";
+import { AppError, parseRequestBody, slugForErrorCode } from "./errors.ts";
 import {
+  type MutationError,
   authorizeMessageDelete,
   authorizeMessageEdit,
   authorizeReaction,
@@ -48,11 +49,9 @@ import {
 import { optionalSignature, requireSignature } from "./signature.ts";
 import type { AppBindings } from "./types.ts";
 
-/** Turn a {@link MutationError} status into the matching {@link AppError}. */
-function toAppError(error: { code: string; message: string; status: number }): AppError {
-  return error.status === 404
-    ? AppError.notFound({ detail: error.message })
-    : AppError.forbidden({ detail: error.message });
+/** Turn a {@link MutationError} into the {@link AppError} for its registry code. */
+function toAppError(error: MutationError): AppError {
+  return new AppError(slugForErrorCode(error.code), { detail: error.message });
 }
 
 /**

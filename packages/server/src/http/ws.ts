@@ -90,11 +90,7 @@ import {
   tombstoneMessage,
   updateMessageContent,
 } from "../provider/messages.ts";
-import {
-  DEFAULT_NONCE_RETENTION_MS,
-  type NonceStore,
-  nonceKeyId,
-} from "../provider/nonce-store.ts";
+import { type NonceStore, nonceKeyId, nonceRetentionMs } from "../provider/nonce-store.ts";
 import { deliverNotification, groupMemberActors } from "../provider/notifications.ts";
 import {
   type PresenceRegistry,
@@ -160,11 +156,6 @@ function mintChallengeNonce(): string {
   const raw = new Uint8Array(CHALLENGE_NONCE_BYTES);
   crypto.getRandomValues(raw);
   return Buffer.from(raw).toString("base64url");
-}
-
-/** RFC 3339 timestamp helper local to this module (avoids an extra import). */
-function isoNow(offsetMs = 0): string {
-  return new Date(Date.now() + offsetMs).toISOString();
 }
 
 /**
@@ -454,7 +445,9 @@ export function createWsHandlers(deps: WsHandlerDeps) {
      */
     onOpen(_evt: unknown, ws: WsContext): void {
       const nonce = issueChallengeNonce();
-      const now = Date.now();
+      // Challenge expiry and the authenticate timestamp check use the replay
+      // store's clock, like the REST verifier (§4.5: one clock).
+      const now = nonceStore.now();
       const state: ConnState = {
         authenticated: false,
         challengeNonce: nonce,
@@ -472,7 +465,7 @@ export function createWsHandlers(deps: WsHandlerDeps) {
       // §7.1 step 1: the challenge MUST be the first frame the client sees.
       send(ws, {
         type: "auth.challenge",
-        data: { nonce, expiresAt: isoNow(timings.challengeTtlMs) },
+        data: { nonce, expiresAt: new Date(state.challengeExpiresAt).toISOString() },
       });
 
       // Close if no valid `authenticate` within the window (§7.1).
@@ -721,7 +714,10 @@ export function createWsHandlers(deps: WsHandlerDeps) {
 
     // §4.5 step 3: timestamp within ±skew.
     const tsMillis = Date.parse(timestamp);
-    if (Number.isNaN(tsMillis) || Math.abs(Date.now() - tsMillis) > TIMESTAMP_SKEW_SECONDS * 1000) {
+    if (
+      Number.isNaN(tsMillis) ||
+      Math.abs(nonceStore.now() - tsMillis) > TIMESTAMP_SKEW_SECONDS * 1000
+    ) {
       fail("authenticate timestamp is outside the allowed window");
       return;
     }
@@ -733,7 +729,7 @@ export function createWsHandlers(deps: WsHandlerDeps) {
       fail("challenge nonce already used");
       return;
     }
-    if (Date.now() > state.challengeExpiresAt) {
+    if (nonceStore.now() > state.challengeExpiresAt) {
       fail("challenge nonce expired");
       return;
     }
@@ -820,7 +816,7 @@ export function createWsHandlers(deps: WsHandlerDeps) {
     // have verified the same pair while we awaited key resolution).
     if (
       nonceStore.has(nsKeyId, state.challengeNonce) ||
-      !nonceStore.remember(nsKeyId, state.challengeNonce, DEFAULT_NONCE_RETENTION_MS)
+      !nonceStore.remember(nsKeyId, state.challengeNonce, nonceRetentionMs(TIMESTAMP_SKEW_SECONDS))
     ) {
       fail("challenge nonce already used");
       return;
