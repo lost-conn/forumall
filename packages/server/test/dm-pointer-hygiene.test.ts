@@ -26,7 +26,13 @@ import { eq } from "drizzle-orm";
 import { createApp } from "../src/app.ts";
 import { type Argon2Params, type Config, loadConfig } from "../src/config.ts";
 import { openDb } from "../src/db/index.ts";
-import { migrate, migrationDomain } from "../src/db/migrate.ts";
+import {
+  type Migration,
+  MigrationDeferred,
+  migrate,
+  migrationDomain,
+  runMigrations,
+} from "../src/db/migrate.ts";
 import { dmConversations, readMarkers } from "../src/db/schema.ts";
 import { isDmThreadParticipant, upsertDmPointer } from "../src/provider/dms.ts";
 
@@ -168,6 +174,11 @@ test("migration 0036 canonicalizes a fixable counterparty, deletes inconsistent 
   // stored as `erin@remote.example:443`): kept, with its marker, but ignored.
   const legacy = deriveDmId(alice.actor, "erin@remote.example:443");
   insertRawConversation(db, "alice", legacy, "erin@remote.example:443", 5);
+  db.sqlite
+    .query(
+      "INSERT INTO dm_messages (id, dm_id, owner, author, content, attachments, seq, created_at, edit_until) VALUES ('msg_e', ?, 'alice', 'erin@remote.example:443', ?, '[]', 5, ?, ?)",
+    )
+    .run(legacy, JSON.stringify({ text: "hi", mime: "text/plain" }), Date.now(), Date.now());
   insertRawMarker(db, "alice", legacy, 5);
   // An unrelated marker is kept.
   insertRawMarker(db, "alice", dmId, 3);
@@ -243,26 +254,78 @@ test("migration 0036 with no / the default DOMAIN changes nothing and stays unap
   expect(snapshot(db).conversations).toHaveLength(1);
 });
 
-test("migration 0036 sanity guard: a likely wrong DOMAIN deletes nothing and stays unapplied", async () => {
+test("migration 0036 sanity guard: over half (and more than 5) rows failing defers, deleting nothing", async () => {
   const { db } = freshApp("hygiene-migration-guard");
-  // Six consistent pointers under DOMAIN — all fail under a wrong domain.
+  // One row validates; six pure pointers do not (6 of 7 fail).
+  const ok = deriveDmId(`alice@${DOMAIN}`, "zed@remote.example");
+  insertRawConversation(db, "alice", ok, "zed@remote.example");
   for (const peer of ["a", "b", "c", "d", "e", "f"]) {
-    const cp = `${peer}@remote.example`;
-    insertRawConversation(db, "alice", deriveDmId(`alice@${DOMAIN}`, cp), cp);
+    insertRawConversation(
+      db,
+      "alice",
+      deriveDmId(`alice@${DOMAIN}`, `${peer}@remote.example`),
+      "mallory@remote.example",
+    );
   }
   db.sqlite.query("DELETE FROM _migrations WHERE id = ?").run(MIGRATION);
   const before = snapshot(db);
   const reasons: string[] = [];
-  expect(
-    migrate(db, { domain: "wrong.example", onDeferred: (_id, why) => reasons.push(why) }),
-  ).toEqual([]);
+  expect(migrate(db, { domain: DOMAIN, onDeferred: (_id, why) => reasons.push(why) })).toEqual([]);
   expect(reasons).toHaveLength(1);
-  expect(reasons[0]).toContain("6 of 6");
+  expect(reasons[0]).toContain("6 of 7");
   expect(snapshot(db)).toEqual(before);
   expect(isApplied(db)).toBe(false);
-  // The right domain finds nothing to delete.
-  expect(migrate(db, { domain: DOMAIN, log: () => {} })).toEqual([MIGRATION]);
-  expect(snapshot(db)).toEqual(before);
+});
+
+for (const count of [1, 5]) {
+  test(`migration 0036 under a wrong DOMAIN with ${count} row(s) changes nothing and stays unapplied`, async () => {
+    const { db } = freshApp(`hygiene-migration-wrong-${count}`);
+    for (let i = 0; i < count; i++) {
+      // Pure pointers that are consistent under the REAL domain.
+      const cp = `peer${i}@remote.example`;
+      const dmId = deriveDmId(`alice@${DOMAIN}`, cp);
+      insertRawConversation(db, "alice", dmId, cp);
+      insertRawMarker(db, "alice", dmId, i + 1);
+    }
+    db.sqlite.query("DELETE FROM _migrations WHERE id = ?").run(MIGRATION);
+    const before = snapshot(db);
+    const reasons: string[] = [];
+    expect(
+      migrate(db, { domain: "staging.example", onDeferred: (_id, why) => reasons.push(why) }),
+    ).toEqual([]);
+    expect(reasons).toHaveLength(1);
+    expect(reasons[0]).toContain(`none of the ${count}`);
+    expect(snapshot(db)).toEqual(before);
+    expect(isApplied(db)).toBe(false);
+    // The correct DOMAIN later applies it, deleting nothing.
+    expect(migrate(db, { domain: DOMAIN, log: () => {} })).toEqual([MIGRATION]);
+    expect(snapshot(db)).toEqual(before);
+    expect(isApplied(db)).toBe(true);
+  });
+}
+
+test("a deferred migration stops the run: later migrations wait (strict order)", () => {
+  const { db } = freshApp("hygiene-runner-order");
+  let ready = false;
+  const ran: string[] = [];
+  const list: Migration[] = [
+    { id: "t1_first", up: () => void ran.push("t1_first") },
+    {
+      id: "t2_defers",
+      up: () => {
+        if (!ready) throw new MigrationDeferred("not yet");
+        ran.push("t2_defers");
+      },
+    },
+    { id: "t3_after", up: () => void ran.push("t3_after") },
+  ];
+  const deferred: string[] = [];
+  expect(runMigrations(db, list, { onDeferred: (id) => deferred.push(id) })).toEqual(["t1_first"]);
+  expect(deferred).toEqual(["t2_defers"]);
+  expect(ran).toEqual(["t1_first"]);
+  ready = true;
+  expect(runMigrations(db, list)).toEqual(["t2_defers", "t3_after"]);
+  expect(ran).toEqual(["t1_first", "t2_defers", "t3_after"]);
 });
 
 test("upsertDmPointer refuses a counterparty that does not derive the dmId", async () => {

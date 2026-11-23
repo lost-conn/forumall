@@ -877,6 +877,29 @@ test("merge: a moved message whose idempotency key collides survives with client
 });
 
 /** Write raw `dm_conversations` + `read_markers` rows, bypassing every write-path check. */
+/** Write a raw `dm_messages` inbox row. */
+function insertRawInboxMessage(
+  db: ReturnType<typeof freshApp>["db"],
+  id: string,
+  owner: string,
+  dmId: string,
+  author: string,
+) {
+  db.sqlite
+    .query(
+      "INSERT INTO dm_messages (id, dm_id, owner, author, content, attachments, seq, created_at, edit_until) VALUES (?, ?, ?, ?, ?, '[]', 1000, ?, ?)",
+    )
+    .run(
+      id,
+      dmId,
+      owner,
+      author,
+      JSON.stringify({ text: "x", mime: "text/plain" }),
+      Date.now(),
+      Date.now(),
+    );
+}
+
 function insertRawPointer(
   db: ReturnType<typeof freshApp>["db"],
   owner: string,
@@ -906,7 +929,7 @@ function insertRawPointer(
     .run(owner, dmId, markerSeq, Date.now());
 }
 
-test("merge: inconsistent (ignored) rows are never revived — pure pointers deleted, rows with messages kept", async () => {
+test("merge: inconsistent (ignored) rows are never revived — dead rows deleted, rows with messages kept", async () => {
   // §7.4: a pointer whose counterparty does not derive its dmId is ignored; a
   // merge must not re-derive it into a valid conversation.
   const { app, db } = freshApp("merge-inconsistent-rows");
@@ -930,12 +953,15 @@ test("merge: inconsistent (ignored) rows are never revived — pure pointers del
     JSON.stringify(sentPreview("msg_stale", carol.actor)),
   );
 
-  // Inconsistent rows that hold received messages are KEPT (never deleted, never
-  // re-derived): the guest's moves to alice with its dmId; carol's is untouched.
-  const dmKeepGuest = deriveDmId(guest.actor, "yan@remote.example");
-  insertRawPointer(db, guest.handle, dmKeepGuest, "erin@remote.example", 4, null, 4);
+  // An inconsistent guest row whose inbox message is re-keyed away is dead: deleted.
+  const dmDeadGuest = deriveDmId(guest.actor, "yan@remote.example");
+  insertRawPointer(db, guest.handle, dmDeadGuest, "erin@remote.example", 4, null, 4);
+  insertRawInboxMessage(db, "msg_g", guest.handle, dmDeadGuest, "erin@remote.example");
+  // A third party's inconsistent row whose inbox still holds a message under its
+  // dmId is KEPT as is (still ignored) so that message keeps its row.
   const dmKeepCarol = deriveDmId(carol.actor, "yan@remote.example");
   insertRawPointer(db, "carol", dmKeepCarol, guest.actor, 6, null, 6);
+  insertRawInboxMessage(db, "msg_c", "carol", dmKeepCarol, "yan@remote.example");
 
   const res = await signedRequest(app, guest, "POST", "/api/me/merge", {
     handle: "alice",
@@ -948,19 +974,13 @@ test("merge: inconsistent (ignored) rows are never revived — pure pointers del
     .from(dmConversations)
     .all()
     .sort((x, y) => x.owner.localeCompare(y.owner));
-  expect(convs).toEqual([
-    { owner: "alice", dmId: dmKeepGuest },
-    { owner: "carol", dmId: dmKeepCarol },
-  ]);
+  expect(convs).toEqual([{ owner: "carol", dmId: dmKeepCarol }]);
   const markers = db.drizzle
     .select({ handle: readMarkers.handle, scopeId: readMarkers.scopeId })
     .from(readMarkers)
     .all()
     .sort((x, y) => x.handle.localeCompare(y.handle));
-  expect(markers).toEqual([
-    { handle: "alice", scopeId: dmKeepGuest },
-    { handle: "carol", scopeId: dmKeepCarol },
-  ]);
+  expect(markers).toEqual([{ handle: "carol", scopeId: dmKeepCarol }]);
   for (const who of [alice, carol]) {
     const list = await signedRequest(app, who, "GET", "/api/me/dms");
     expect(((await list.json()) as { items: unknown[] }).items).toEqual([]);

@@ -362,9 +362,11 @@ function rekeyDmMessages(
  * renamed to `newHandle` by the bare-handle pass, so they are found there.
  * A row whose counterparty does not derive its dm_id with its owner (ignored,
  * §7.4) is never re-keyed — re-deriving would turn it into a valid
- * conversation. A pure pointer (`lastMessageSeq` 0) is deleted with its marker;
- * a row holding received messages is kept (an old author spelling can fail the
- * derivation, and deleting would orphan the messages) and stays ignored.
+ * conversation; it is deleted with its marker. The one exception is a third
+ * party's row whose inbox still holds messages under its dm_id (an old author
+ * spelling can fail the derivation): it is kept, still ignored, so those
+ * messages keep their row. (The guest's own inbox is fully re-keyed by
+ * {@link rekeyDmMessages}, so a guest row never holds messages here.)
  */
 function rekeyDmConversations(
   db: Db,
@@ -382,21 +384,12 @@ function rekeyDmConversations(
     .all();
   for (const r of owned) {
     // An inconsistent (ignored, §7.4) row is never re-derived into a valid
-    // conversation: a pure pointer is deleted with its marker; one holding
-    // received messages keeps its dm_id (still ignored) and only moves to the
-    // new handle (its marker already did, in the bare-handle pass).
+    // conversation. It is DELETED with its marker (renamed to newHandle by the
+    // bare-handle pass): the guest's whole inbox was already re-keyed
+    // (rekeyDmMessages), so no message is left under its dm_id.
     if (!conversationDerivesDmId(oldActor, r)) {
-      if (r.lastMessageSeq === 0) {
-        deleteConversationRow(db, r.owner, r.dmId);
-        deleteReadMarker(db, newHandle, r.dmId);
-      } else {
-        warnKeptInconsistentRow(r);
-        db.drizzle
-          .update(dmConversations)
-          .set({ owner: newHandle })
-          .where(and(eq(dmConversations.owner, r.owner), eq(dmConversations.dmId, r.dmId)))
-          .run();
-      }
+      deleteConversationRow(db, r.owner, r.dmId);
+      deleteReadMarker(db, newHandle, r.dmId);
       continue;
     }
     // Delete + reinsert: the PK is (owner, dmId), and both change.
@@ -430,10 +423,11 @@ function rekeyDmConversations(
     .all();
   for (const r of pointingAtGuest) {
     const counterpartyActor = `${r.owner}@${domain}`;
-    // Inconsistent (ignored, §7.4): a pure pointer is deleted with its marker;
-    // one holding received messages is left as is (still ignored).
+    // Inconsistent (ignored, §7.4): deleted with its marker unless the owner's
+    // inbox still holds messages under its dm_id — then it is left as is (still
+    // ignored) so those messages keep their conversation row.
     if (!conversationDerivesDmId(counterpartyActor, r)) {
-      if (r.lastMessageSeq === 0) {
+      if (!inboxHasMessages(db, r.owner, r.dmId)) {
         deleteConversationRow(db, r.owner, r.dmId);
         deleteReadMarker(db, r.owner, r.dmId);
       } else {
@@ -464,6 +458,17 @@ function deleteConversationRow(db: Db, owner: string, dmId: string): void {
     .delete(dmConversations)
     .where(and(eq(dmConversations.owner, owner), eq(dmConversations.dmId, dmId)))
     .run();
+}
+
+function inboxHasMessages(db: Db, owner: string, dmId: string): boolean {
+  return (
+    db.drizzle
+      .select({ id: dmMessages.id })
+      .from(dmMessages)
+      .where(and(eq(dmMessages.owner, owner), eq(dmMessages.dmId, dmId)))
+      .limit(1)
+      .all().length > 0
+  );
 }
 
 function warnKeptInconsistentRow(r: { owner: string; dmId: string }): void {

@@ -747,9 +747,11 @@ function mergeDmMessages(
  * new dm_id) — of two clashing markers the further-forward is kept (§4.8.1).
  * A row whose counterparty does not derive its dm_id with its owner (ignored,
  * §7.4) is never re-keyed — re-deriving would turn it into a valid
- * conversation. A pure pointer (`lastMessageSeq` 0) is deleted with its marker;
- * a row holding received messages is kept (an old author spelling can fail the
- * derivation, and deleting would orphan the messages) and stays ignored.
+ * conversation; it is deleted with its marker. The one exception is a third
+ * party's row whose inbox still holds messages under its dm_id (an old author
+ * spelling can fail the derivation): it is kept, still ignored, so those
+ * messages keep their row. (The guest's own inbox is fully re-keyed by
+ * {@link mergeDmMessages}, so a guest row never holds messages here.)
  */
 function mergeDmConversations(
   db: Db,
@@ -767,27 +769,11 @@ function mergeDmConversations(
     .all();
   for (const r of owned) {
     // An inconsistent (ignored, §7.4) row is never re-derived into a valid
-    // conversation: a pure pointer is deleted with its marker; one holding
-    // received messages keeps its dm_id (still ignored) and only moves to the
-    // target — unless the target already has that row, which wins.
+    // conversation. It is DELETED with its marker: the guest's whole inbox was
+    // already re-keyed (mergeDmMessages), so no message is left under its dm_id.
     if (!conversationDerivesDmId(guestActor, r)) {
-      const targetHas = r.lastMessageSeq !== 0 && conversationRowExists(db, targetHandle, r.dmId);
-      if (r.lastMessageSeq === 0 || targetHas) {
-        deleteConversationRow(db, r.owner, r.dmId);
-        deleteReadMarker(db, guestHandle, r.dmId);
-      } else {
-        warnKeptInconsistentRow(r);
-        db.drizzle
-          .update(dmConversations)
-          .set({ owner: targetHandle })
-          .where(and(eq(dmConversations.owner, r.owner), eq(dmConversations.dmId, r.dmId)))
-          .run();
-        moveReadMarker(
-          db,
-          { handle: guestHandle, scopeId: r.dmId },
-          { handle: targetHandle, scopeId: r.dmId },
-        );
-      }
+      deleteConversationRow(db, r.owner, r.dmId);
+      deleteReadMarker(db, guestHandle, r.dmId);
       continue;
     }
     deleteConversationRow(db, r.owner, r.dmId);
@@ -816,10 +802,11 @@ function mergeDmConversations(
     .all();
   for (const r of pointingAtGuest) {
     const counterpartyActor = `${r.owner}@${domain}`;
-    // Inconsistent (ignored, §7.4): a pure pointer is deleted with its marker;
-    // one holding received messages is left as is (still ignored).
+    // Inconsistent (ignored, §7.4): deleted with its marker unless the owner's
+    // inbox still holds messages under its dm_id — then it is left as is (still
+    // ignored) so those messages keep their conversation row.
     if (!conversationDerivesDmId(counterpartyActor, r)) {
-      if (r.lastMessageSeq === 0) {
+      if (!inboxHasMessages(db, r.owner, r.dmId)) {
         deleteConversationRow(db, r.owner, r.dmId);
         deleteReadMarker(db, r.owner, r.dmId);
       } else {
@@ -849,12 +836,12 @@ function deleteConversationRow(db: Db, owner: string, dmId: string): void {
     .run();
 }
 
-function conversationRowExists(db: Db, owner: string, dmId: string): boolean {
+function inboxHasMessages(db: Db, owner: string, dmId: string): boolean {
   return (
     db.drizzle
-      .select({ dmId: dmConversations.dmId })
-      .from(dmConversations)
-      .where(and(eq(dmConversations.owner, owner), eq(dmConversations.dmId, dmId)))
+      .select({ id: dmMessages.id })
+      .from(dmMessages)
+      .where(and(eq(dmMessages.owner, owner), eq(dmMessages.dmId, dmId)))
       .limit(1)
       .all().length > 0
   );

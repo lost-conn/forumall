@@ -51,15 +51,15 @@ export function migrationDomain(
 /**
  * Thrown by a DATA migration that cannot run safely yet (e.g. it needs the
  * provider domain). {@link migrate} rolls it back, leaves it unledgered so the
- * next boot retries it, reports it via `onDeferred`, and carries on: only a
- * migration that later migrations do not depend on may defer.
+ * next boot retries it, reports it via `onDeferred`, and stops: later
+ * migrations wait for it (strict ordering).
  */
 export class MigrationDeferred extends Error {}
 
 /** 0036 sanity guard: refuse when more than this many rows AND over half fail. */
 const DM_HYGIENE_MAX_UNGUARDED_FAILURES = 5;
 
-interface Migration {
+export interface Migration {
   /** Stable, unique identifier; ledgered once applied. Never reuse/rename. */
   readonly id: string;
   /** Idempotent-friendly DDL. Runs inside a transaction. */
@@ -866,26 +866,34 @@ const migrations: readonly Migration[] = [
     //    `counterparty` to `canonicalActor(...)` (lowercase handle + canonical
     //    authority; `:443` stripped). The PK is (owner, dm_id): no collision.
     //  - a pointer whose counterparty does not derive its dmId together with the
-    //    owner MUST be ignored or deleted. A failing PURE POINTER
-    //    (`last_message_seq = 0`, no received message) is DELETED with the
+    //    owner MUST be ignored or deleted. A failing row whose owner's inbox
+    //    holds NO message under its dm_id (a pure pointer) is DELETED with the
     //    owner's read marker on that dm_id. A failing row that holds received
     //    messages is KEPT (logged): an old author spelling such as
     //    `bob@host:443` derives a different id than its canonical form, so
     //    deleting the row would orphan those messages. The runtime ignores it.
-    // Safety: the derivation check needs the provider domain, and a wrong one
-    // makes EVERY row fail. So the migration DEFERS (rolls back, stays
-    // unledgered, retried next boot) when no domain is given — boot passes one
-    // only when DOMAIN is configured — or when more than a handful AND more than
-    // half of the rows fail (a likely wrong DOMAIN). Until it runs, the runtime
-    // ignore rule (`conversationDerivesDmId`) still applies. Data-only and
-    // idempotent; logs how many rows it canonicalized, deleted and kept.
+    // Safety: the derivation check needs the RIGHT provider domain — under a
+    // wrong one no row derives its dmId. So the migration DEFERS (rolls back,
+    // stays unledgered, retried next boot; see `migrate`) when:
+    //  - no domain is given (boot passes one only when DOMAIN is configured);
+    //  - NO row validates under the domain (failing === all rows). A row
+    //    validates only if `deriveDmId(owner@domain, counterparty)` reproduces
+    //    its stored dm_id — a SHA-256 match that a wrong domain cannot produce —
+    //    so at least one validating row proves the domain is the one the data
+    //    was written under. (An install whose every row is inconsistent keeps
+    //    them ignored at runtime instead; nothing is lost.)
+    //  - more than a handful AND more than half of the rows fail.
+    // Until it runs, the runtime ignore rule (`conversationDerivesDmId`) applies.
+    // Data-only and idempotent; logs how many rows it canonicalized, deleted
+    // and kept.
     id: "0036_dm_conversations_canonical_counterparty",
     up: (sqlite, ctx) => {
       const rows = sqlite
-        .query<
-          { owner: string; dm_id: string; counterparty: string; last_message_seq: number },
-          []
-        >("SELECT owner, dm_id, counterparty, last_message_seq FROM dm_conversations")
+        .query<{ owner: string; dm_id: string; counterparty: string; has_messages: number }, []>(
+          `SELECT c.owner, c.dm_id, c.counterparty,
+                  EXISTS (SELECT 1 FROM dm_messages m WHERE m.owner = c.owner AND m.dm_id = c.dm_id) AS has_messages
+             FROM dm_conversations c`,
+        )
         .all();
       if (rows.length === 0) return;
       const domain = ctx.domain;
@@ -898,6 +906,11 @@ const migrations: readonly Migration[] = [
         const canonical = canonicalActor(r.counterparty);
         return canonical === null || deriveDmId(`${r.owner}@${domain}`, canonical) !== r.dm_id;
       });
+      if (failing.length === rows.length) {
+        throw new MigrationDeferred(
+          `none of the ${rows.length} DM conversation rows derive their dmId under DOMAIN=${domain}; check that DOMAIN is the authority this data was written under`,
+        );
+      }
       if (failing.length > DM_HYGIENE_MAX_UNGUARDED_FAILURES && failing.length * 2 > rows.length) {
         throw new MigrationDeferred(
           `${failing.length} of ${rows.length} DM conversation rows do not derive their dmId under DOMAIN=${domain}; check that DOMAIN is the authority this data was written under`,
@@ -916,7 +929,7 @@ const migrations: readonly Migration[] = [
       let kept = 0;
       for (const r of rows) {
         if (failed.has(r)) {
-          if (r.last_message_seq === 0) {
+          if (!r.has_messages) {
             remove.run(r.owner, r.dm_id);
             removeMarker.run(r.owner, r.dm_id);
             deleted++;
@@ -949,11 +962,24 @@ const LEDGER_DDL = `
  * Apply any not-yet-applied migrations. Idempotent: safe to call on every boot.
  * Returns the ids that were applied during this call (empty if up to date).
  * `ctx.domain` is the provider's canonical authority (needed by data migrations
- * that reason about local actors, e.g. 0036). A migration that throws
- * {@link MigrationDeferred} is rolled back, left unapplied and reported via
- * `ctx.onDeferred`; the rest still run.
+ * that reason about local actors, e.g. 0036). See {@link runMigrations}.
  */
 export function migrate(db: Db, ctx: MigrationContext = {}): string[] {
+  return runMigrations(db, migrations, ctx);
+}
+
+/**
+ * Apply the not-yet-applied entries of `list`, in order. Each migration is
+ * atomic (its changes + ledger row commit together). One that throws
+ * {@link MigrationDeferred} is rolled back, left unapplied and reported via
+ * `ctx.onDeferred`, and the run STOPS there: later migrations wait for it, so
+ * ordering stays strict. Exported for tests (synthetic migration lists).
+ */
+export function runMigrations(
+  db: Db,
+  list: readonly Migration[],
+  ctx: MigrationContext = {},
+): string[] {
   const { sqlite } = db;
   sqlite.exec(LEDGER_DDL);
 
@@ -963,9 +989,8 @@ export function migrate(db: Db, ctx: MigrationContext = {}): string[] {
   const record = sqlite.prepare("INSERT INTO _migrations (id, applied_at) VALUES (?, ?)");
 
   const newlyApplied: string[] = [];
-  for (const m of migrations) {
+  for (const m of list) {
     if (applied.has(m.id)) continue;
-    // Each migration is atomic: DDL + ledger insert commit together.
     try {
       sqlite.transaction(() => {
         m.up(sqlite, ctx);
@@ -973,12 +998,12 @@ export function migrate(db: Db, ctx: MigrationContext = {}): string[] {
       })();
     } catch (err) {
       if (!(err instanceof MigrationDeferred)) throw err;
-      // Rolled back and unledgered: retried on the next boot.
+      // Rolled back and unledgered: retried (with everything after it) next boot.
       (ctx.onDeferred ?? ((id, reason) => console.warn(`[migrate] ${id} deferred: ${reason}`)))(
         m.id,
         err.message,
       );
-      continue;
+      break;
     }
     newlyApplied.push(m.id);
   }
