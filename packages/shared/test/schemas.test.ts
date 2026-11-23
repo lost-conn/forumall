@@ -23,6 +23,7 @@ import {
   ContactsResponseSchema,
   DeviceKeyRegistrationSchema,
   DeviceKeyResponseSchema,
+  DeviceKeysResponseSchema,
   DiscoverResponseSchema,
   DmConversationSchema,
   DmConversationsResponseSchema,
@@ -41,6 +42,7 @@ import {
   MessageSchema,
   MessageUpdateRequestSchema,
   MessagesPageSchema,
+  NotificationEndpointsResponseSchema,
   NotificationsDeliverySchema,
   NotificationsWebhookRegistrationSchema,
   PresenceSchema,
@@ -138,6 +140,8 @@ const SAMPLE_SCHEMAS: Record<string, z.ZodTypeAny> = {
   "device-key-response": DeviceKeyResponseSchema,
   "guest-create-request": GuestCreateRequestSchema,
   "user-keys-response": UserKeysResponseSchema,
+  "device-keys-response": DeviceKeysResponseSchema,
+  "notifications-endpoints-response": NotificationEndpointsResponseSchema,
   "user-profile": UserProfileSchema,
 
   // Groups / channels
@@ -183,6 +187,7 @@ const SAMPLE_SCHEMAS: Record<string, z.ZodTypeAny> = {
   "ws-subscribed": WsSubscribedSchema,
   "ws-unsubscribe": WsUnsubscribeSchema,
   "ws-unsubscribed": WsUnsubscribedSchema,
+  "ws-unsubscribed-revoked": WsUnsubscribedSchema,
   "ws-message-create": WsMessageCreateSchema,
   "ws-message-created": WsMessageCreatedSchema,
   "ws-message-update": WsMessageUpdateSchema,

@@ -131,6 +131,18 @@ export type NotificationsWebhookRegistration = z.infer<
   typeof NotificationsWebhookRegistrationSchema
 >;
 
+/** A registered notification endpoint: the registration plus its id (§10). */
+export const NotificationEndpointSchema = NotificationsWebhookRegistrationSchema.extend({
+  id: z.string().min(1),
+});
+export type NotificationEndpoint = z.infer<typeof NotificationEndpointSchema>;
+
+/** GET /api/notifications/endpoints response (`notifications-endpoints-response`, §10). */
+export const NotificationEndpointsResponseSchema = z
+  .object({ endpoints: z.array(NotificationEndpointSchema) })
+  .passthrough();
+export type NotificationEndpointsResponse = z.infer<typeof NotificationEndpointsResponseSchema>;
+
 /** Signed notification delivery payload (`notifications-delivery`). */
 export const NotificationsDeliverySchema = z
   .object({
