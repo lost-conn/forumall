@@ -107,6 +107,7 @@ import {
 } from "../provider/presence.ts";
 import { addReaction, removeReaction } from "../provider/reactions.ts";
 import type { Hub, HubConnection, HubSocket, OutboundEvent } from "../provider/ws-hub.ts";
+import { type RegistryErrorCode, errorCodeStatus } from "./errors.ts";
 import {
   authorizeChannelPost,
   authorizeMessageDelete,
@@ -256,17 +257,21 @@ function rawSocket(ws: WsContext): HubSocket | undefined {
   return ws.raw as HubSocket | undefined;
 }
 
-/** Build an `error` event payload (matches `WsErrorSchema`). */
-function errorEvent(
-  code: string,
+/**
+ * Build an `error` event payload (matches `WsErrorSchema`). §7.3: the event's
+ * `code` MUST be an `errorCode` and its `status` the matching HTTP status, so
+ * `code` is typed to the registry and `status` is DERIVED from it — a mismatched
+ * pair (or an off-registry code like `rate_limited`) cannot be expressed.
+ */
+export function errorEvent(
+  code: RegistryErrorCode,
   message: string,
-  status: number,
   correlationId?: string,
 ): OutboundEvent {
   return {
     type: "error",
     ...(correlationId !== undefined ? { correlationId } : {}),
-    data: { code, message, status },
+    data: { code, message, status: errorCodeStatus(code) },
   };
 }
 
@@ -506,12 +511,12 @@ export function createWsHandlers(deps: WsHandlerDeps) {
       try {
         raw_json = JSON.parse(text);
       } catch {
-        send(ws, errorEvent("bad_request", "frame is not valid JSON", 400));
+        send(ws, errorEvent("bad_request", "frame is not valid JSON"));
         return;
       }
       const parsed = WsEnvelopeSchema.safeParse(raw_json);
       if (!parsed.success) {
-        send(ws, errorEvent("bad_request", "frame does not match the WS envelope", 400));
+        send(ws, errorEvent("bad_request", "frame does not match the WS envelope"));
         return;
       }
       const envelope = parsed.data;
@@ -619,7 +624,7 @@ export function createWsHandlers(deps: WsHandlerDeps) {
       presenceRegistry.removeConnection(hubConn);
       hub.remove(hubConn);
     }
-    send(ws, errorEvent("unauthorized", reason, 401));
+    send(ws, errorEvent("unauthorized", reason));
     ws.close(code, reason);
   }
 
@@ -695,7 +700,7 @@ export function createWsHandlers(deps: WsHandlerDeps) {
     frameId: string,
   ): Promise<void> {
     const fail = (message: string): void => {
-      send(ws, errorEvent("unauthorized", message, 401, frameId));
+      send(ws, errorEvent("unauthorized", message, frameId));
       ws.close(WS_CLOSE_AUTH_FAILED, "authentication failed");
     };
 
@@ -905,7 +910,7 @@ export function createWsHandlers(deps: WsHandlerDeps) {
   ): void {
     const parsed = WsSubscribeSchema.safeParse(rawFrame);
     if (!parsed.success) {
-      send(ws, errorEvent("bad_request", "malformed subscribe command", 400, frameId));
+      send(ws, errorEvent("bad_request", "malformed subscribe command", frameId));
       return;
     }
     const hubConn = state.hubConn;
@@ -949,12 +954,7 @@ export function createWsHandlers(deps: WsHandlerDeps) {
     if (forbidden.length > 0) {
       send(
         ws,
-        errorEvent(
-          "forbidden",
-          `not authorized to subscribe to: ${forbidden.join(", ")}`,
-          403,
-          frameId,
-        ),
+        errorEvent("forbidden", `not authorized to subscribe to: ${forbidden.join(", ")}`, frameId),
       );
     }
     if (authorized.length === 0) return;
@@ -1008,7 +1008,7 @@ export function createWsHandlers(deps: WsHandlerDeps) {
   ): void {
     const parsed = WsUnsubscribeSchema.safeParse(rawFrame);
     if (!parsed.success) {
-      send(ws, errorEvent("bad_request", "malformed unsubscribe command", 400, frameId));
+      send(ws, errorEvent("bad_request", "malformed unsubscribe command", frameId));
       return;
     }
     const hubConn = state.hubConn;
@@ -1039,7 +1039,7 @@ export function createWsHandlers(deps: WsHandlerDeps) {
   ): void {
     const parsed = WsMessageCreateSchema.safeParse(rawFrame);
     if (!parsed.success) {
-      send(ws, errorEvent("bad_request", "malformed message.create command", 400, frameId));
+      send(ws, errorEvent("bad_request", "malformed message.create command", frameId));
       return;
     }
     const hubConn = state.hubConn;
@@ -1055,7 +1055,7 @@ export function createWsHandlers(deps: WsHandlerDeps) {
     // Message kind (§5.3): default to a chat `message`; reject an unknown kind.
     const typeResult = MessageKindSchema.safeParse(extra.type ?? "message");
     if (!typeResult.success) {
-      send(ws, errorEvent("bad_request", "invalid message type", 400, frameId));
+      send(ws, errorEvent("bad_request", "invalid message type", frameId));
       return;
     }
     const type = typeResult.data;
@@ -1073,7 +1073,7 @@ export function createWsHandlers(deps: WsHandlerDeps) {
     // qualification. Existence failures surface as forbidden (don't leak).
     const postError = authorizeChannelPost(db, groupId, channelId, author, type, ref);
     if (postError) {
-      send(ws, errorEvent(postError.code, postError.message, postError.status, frameId));
+      send(ws, errorEvent(postError.code, postError.message, frameId));
       return;
     }
 
@@ -1189,7 +1189,7 @@ export function createWsHandlers(deps: WsHandlerDeps) {
   ): void {
     const parsed = WsMessageUpdateSchema.safeParse(rawFrame);
     if (!parsed.success) {
-      send(ws, errorEvent("bad_request", "malformed message.update command", 400, frameId));
+      send(ws, errorEvent("bad_request", "malformed message.update command", frameId));
       return;
     }
     const actor = state.actor;
@@ -1198,10 +1198,7 @@ export function createWsHandlers(deps: WsHandlerDeps) {
     const { groupId, channelId, messageId, content } = parsed.data.data;
     const outcome = authorizeMessageEdit(db, groupId, channelId, messageId, actor);
     if (outcome.error) {
-      send(
-        ws,
-        errorEvent(outcome.error.code, outcome.error.message, outcome.error.status, frameId),
-      );
+      send(ws, errorEvent(outcome.error.code, outcome.error.message, frameId));
       return;
     }
 
@@ -1223,7 +1220,7 @@ export function createWsHandlers(deps: WsHandlerDeps) {
   ): void {
     const parsed = WsMessageDeleteSchema.safeParse(rawFrame);
     if (!parsed.success) {
-      send(ws, errorEvent("bad_request", "malformed message.delete command", 400, frameId));
+      send(ws, errorEvent("bad_request", "malformed message.delete command", frameId));
       return;
     }
     const actor = state.actor;
@@ -1232,10 +1229,7 @@ export function createWsHandlers(deps: WsHandlerDeps) {
     const { groupId, channelId, messageId } = parsed.data.data;
     const outcome = authorizeMessageDelete(db, groupId, channelId, messageId, actor);
     if (outcome.error) {
-      send(
-        ws,
-        errorEvent(outcome.error.code, outcome.error.message, outcome.error.status, frameId),
-      );
+      send(ws, errorEvent(outcome.error.code, outcome.error.message, frameId));
       return;
     }
 
@@ -1270,7 +1264,7 @@ export function createWsHandlers(deps: WsHandlerDeps) {
   ): void {
     const parsed = WsReactionAddSchema.safeParse(rawFrame);
     if (!parsed.success) {
-      send(ws, errorEvent("bad_request", "malformed reaction.add command", 400, frameId));
+      send(ws, errorEvent("bad_request", "malformed reaction.add command", frameId));
       return;
     }
     const author = state.actor;
@@ -1279,10 +1273,7 @@ export function createWsHandlers(deps: WsHandlerDeps) {
     const { groupId, channelId, messageId, key, unicode, image } = parsed.data.data;
     const outcome = authorizeReaction(db, groupId, channelId, messageId, author);
     if (outcome.error) {
-      send(
-        ws,
-        errorEvent(outcome.error.code, outcome.error.message, outcome.error.status, frameId),
-      );
+      send(ws, errorEvent(outcome.error.code, outcome.error.message, frameId));
       return;
     }
 
@@ -1318,7 +1309,7 @@ export function createWsHandlers(deps: WsHandlerDeps) {
   ): void {
     const parsed = WsReactionRemoveSchema.safeParse(rawFrame);
     if (!parsed.success) {
-      send(ws, errorEvent("bad_request", "malformed reaction.remove command", 400, frameId));
+      send(ws, errorEvent("bad_request", "malformed reaction.remove command", frameId));
       return;
     }
     const author = state.actor;
@@ -1327,10 +1318,7 @@ export function createWsHandlers(deps: WsHandlerDeps) {
     const { groupId, channelId, messageId, key } = parsed.data.data;
     const outcome = authorizeReaction(db, groupId, channelId, messageId, author);
     if (outcome.error) {
-      send(
-        ws,
-        errorEvent(outcome.error.code, outcome.error.message, outcome.error.status, frameId),
-      );
+      send(ws, errorEvent(outcome.error.code, outcome.error.message, frameId));
       return;
     }
 
@@ -1367,7 +1355,7 @@ export function createWsHandlers(deps: WsHandlerDeps) {
   ): void {
     const parsed = WsTypingStartSchema.safeParse(rawFrame);
     if (!parsed.success) {
-      send(ws, errorEvent("bad_request", "malformed typing.start command", 400, frameId));
+      send(ws, errorEvent("bad_request", "malformed typing.start command", frameId));
       return;
     }
     const actor = state.actor;
@@ -1381,10 +1369,7 @@ export function createWsHandlers(deps: WsHandlerDeps) {
       const handle = state.localHandle;
       const conv = handle !== undefined ? getDmConversationRow(db, handle, dmId) : null;
       if (!conv) {
-        send(
-          ws,
-          errorEvent("forbidden", "not authorized to type in this conversation", 403, frameId),
-        );
+        send(ws, errorEvent("forbidden", "not authorized to type in this conversation", frameId));
         return;
       }
       const counterparty = conv.counterparty;
@@ -1403,12 +1388,12 @@ export function createWsHandlers(deps: WsHandlerDeps) {
 
     const channelId = parsed.data.data.channelId;
     if (channelId === undefined) {
-      send(ws, errorEvent("bad_request", "typing.start needs a channelId or dmId", 400, frameId));
+      send(ws, errorEvent("bad_request", "typing.start needs a channelId or dmId", frameId));
       return;
     }
     const channel = getChannelRow(db, channelId);
     if (!channel || !canViewChannel(db, channel, actor)) {
-      send(ws, errorEvent("forbidden", "not authorized to type in this channel", 403, frameId));
+      send(ws, errorEvent("forbidden", "not authorized to type in this channel", frameId));
       return;
     }
 
@@ -1440,7 +1425,7 @@ export function createWsHandlers(deps: WsHandlerDeps) {
   ): void {
     const parsed = WsTypingStopSchema.safeParse(rawFrame);
     if (!parsed.success) {
-      send(ws, errorEvent("bad_request", "malformed typing.stop command", 400, frameId));
+      send(ws, errorEvent("bad_request", "malformed typing.stop command", frameId));
       return;
     }
     const actor = state.actor;
@@ -1489,7 +1474,7 @@ export function createWsHandlers(deps: WsHandlerDeps) {
   ): void {
     const parsed = WsPresenceSubscribeSchema.safeParse(rawFrame);
     if (!parsed.success) {
-      send(ws, errorEvent("bad_request", "malformed presence.subscribe command", 400, frameId));
+      send(ws, errorEvent("bad_request", "malformed presence.subscribe command", frameId));
       return;
     }
     const hubConn = state.hubConn;
@@ -1537,7 +1522,7 @@ export function createWsHandlers(deps: WsHandlerDeps) {
   ): void {
     const parsed = WsPresenceUnsubscribeSchema.safeParse(rawFrame);
     if (!parsed.success) {
-      send(ws, errorEvent("bad_request", "malformed presence.unsubscribe command", 400, frameId));
+      send(ws, errorEvent("bad_request", "malformed presence.unsubscribe command", frameId));
       return;
     }
     const hubConn = state.hubConn;
@@ -1570,7 +1555,7 @@ export function createWsHandlers(deps: WsHandlerDeps) {
     if (!parsed.success) {
       // A malformed frame OR an `offline` availability (not in the set enum) lands
       // here — both are rejected (§7.5: `offline` is not settable).
-      send(ws, errorEvent("bad_request", "malformed presence.set command", 400, frameId));
+      send(ws, errorEvent("bad_request", "malformed presence.set command", frameId));
       return;
     }
     // Stored presence is keyed on a LOCAL handle and a remote actor's presence is
@@ -1578,7 +1563,7 @@ export function createWsHandlers(deps: WsHandlerDeps) {
     // it here — it would otherwise write the like-named local user's row.
     const handle = state.localHandle;
     if (handle === undefined) {
-      send(ws, errorEvent("forbidden", "presence is managed by your home provider", 403, frameId));
+      send(ws, errorEvent("forbidden", "presence is managed by your home provider", frameId));
       return;
     }
 

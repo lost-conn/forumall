@@ -26,12 +26,14 @@ import { Hono } from "hono";
  */
 import { createBunWebSocket } from "hono/bun";
 
+import { canonicalAuthority } from "@forumall/shared";
 import type { Config } from "./config.ts";
 import type { Db } from "./db/index.ts";
 import { createApiRouter } from "./http/api.ts";
 import { cors } from "./http/cors.ts";
 import { createDiscoveryRouter } from "./http/discovery.ts";
-import { notFound, onError } from "./http/errors.ts";
+import { createProblemHandlers } from "./http/errors.ts";
+import { createProblemsRouter } from "./http/problems.ts";
 import { createStaticHandler } from "./http/static.ts";
 import type { AppBindings } from "./http/types.ts";
 import { createUserKeysRouter } from "./http/user-keys.ts";
@@ -172,6 +174,10 @@ export function createApp(config: Config, deps: AppDeps): AppWithWebSocket {
   // Also mounted before the static handler so it isn't shadowed by the SPA.
   app.route("/", createUserKeysRouter());
 
+  // Problem-type descriptions (§2.6): `GET /problems/{errorCode}` — the URL every
+  // problem `type` this provider emits points at. Before the SPA fallback.
+  app.route("/", createProblemsRouter());
+
   // Real-time WebSocket endpoint (§7.1): the signed-challenge handshake,
   // subscribe/unsubscribe, and heartbeat. Mounted before the SPA static handler
   // (it lives under `/api/`, so it falls through the static guard anyway, but we
@@ -221,8 +227,11 @@ export function createApp(config: Config, deps: AppDeps): AppWithWebSocket {
     });
   }
 
-  app.notFound(notFound);
-  app.onError(onError);
+  // Problem `type` URIs are minted under THIS provider's canonical authority
+  // (§2.6/§2.2): `https://{authority}/problems/{errorCode}`.
+  const problems = createProblemHandlers(canonicalAuthority(config.domain));
+  app.notFound(problems.notFound);
+  app.onError(problems.onError);
 
   // Attach the Bun WS handler object + hub + registry for the entry/test harness.
   return Object.assign(app, {

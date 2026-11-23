@@ -28,10 +28,14 @@ import {
   replyOnlyToTypes,
   roleMeets,
 } from "../provider/permissions.ts";
+import type { RegistryErrorCode } from "./errors.ts";
 
-/** A structured failure: a stable code, human message, and HTTP status. */
+/**
+ * A structured failure: a §7.3 registry `errorCode`, human message, and the
+ * code's fixed HTTP status (kept alongside for the REST mapping).
+ */
 export interface MutationError {
-  readonly code: string;
+  readonly code: RegistryErrorCode;
   readonly message: string;
   readonly status: number;
 }
