@@ -68,4 +68,18 @@ describe("nonceKeyId — actor/provider namespace disambiguation (#21)", () => {
     expect(nonceKeyId("actor", "dk_abc")).toBe(nonceKeyId("actor", "dk_abc"));
     expect(nonceKeyId("actor", "dk_abc")).not.toBe(nonceKeyId("provider", "dk_abc"));
   });
+
+  test("at capacity it refuses new pairs instead of evicting live ones", () => {
+    let t = 0;
+    const s = new InMemoryNonceStore({ maxEntries: 2, now: () => t });
+    expect(s.remember("k", "a", 1_000)).toBe(true);
+    expect(s.remember("k", "b", 1_000)).toBe(true);
+    // Full of live entries → refused; existing pairs stay remembered.
+    expect(s.remember("k", "c", 1_000)).toBe(false);
+    expect(s.has("k", "a")).toBe(true);
+    expect(s.has("k", "c")).toBe(false);
+    // Once entries expire, a forced sweep frees room.
+    t = 2_000;
+    expect(s.remember("k", "c", 1_000)).toBe(true);
+  });
 });

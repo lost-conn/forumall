@@ -201,9 +201,15 @@ export function createFederationContactsRouter() {
         return c.json(contact, 200);
       }
       case "accept": {
+        // `from` may only accept a request that `to` actually SENT them: `to`'s
+        // row about `from` must be an outgoing pending request. Without this, a
+        // remote actor could `request` and then `accept` their own request and
+        // become an accepted contact unilaterally (§6.7).
         const row = getContactRow(db, toHandle, body.from);
-        if (!row) {
-          throw AppError.notFound({ detail: "no contact row to accept for this user" });
+        if (!row || row.state !== "pending" || row.direction !== "outgoing") {
+          throw AppError.notFound({
+            detail: "no outgoing pending contact request to this user to accept",
+          });
         }
         const contact = acceptContact(db, toHandle, body.from);
         return c.json(contact, 200);

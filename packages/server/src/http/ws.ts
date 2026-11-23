@@ -729,15 +729,14 @@ export function createWsHandlers(deps: WsHandlerDeps) {
     // already burned by another connection (e.g. a colliding/replayed
     // challenge nonce) or by a REST request. Namespaced "actor" — WS only ever
     // authenticates a user device key (§4.4), never a provider identity
-    // (§8.1). Burned as soon as we accept the pair for verification, mirroring
-    // the REST §4.5-step-4 "burn before crypto verify" ordering, so a failed
-    // signature still consumes it.
+    // (§8.1). Recorded only once the signature verifies (below), mirroring the
+    // REST middleware, so failed handshakes never fill the store; a failed
+    // attempt still ends this connection, whose challenge is single-use.
     const nsKeyId = nonceKeyId("actor", keyId);
     if (nonceStore.has(nsKeyId, state.challengeNonce)) {
       fail("challenge nonce already used");
       return;
     }
-    nonceStore.remember(nsKeyId, state.challengeNonce, DEFAULT_NONCE_RETENTION_MS);
 
     // Parse the actor identity (§4.5 step 6 split).
     const at = actor.lastIndexOf("@");
@@ -799,6 +798,16 @@ export function createWsHandlers(deps: WsHandlerDeps) {
     // A late frame may have raced the async key resolution and already closed /
     // re-authenticated this connection; bail if so (don't double-register).
     if (state.authenticated || state.challengeUsed) {
+      return;
+    }
+
+    // Verified: burn the pair provider-wide (re-check — another connection may
+    // have verified the same pair while we awaited key resolution).
+    if (
+      nonceStore.has(nsKeyId, state.challengeNonce) ||
+      !nonceStore.remember(nsKeyId, state.challengeNonce, DEFAULT_NONCE_RETENTION_MS)
+    ) {
+      fail("challenge nonce already used");
       return;
     }
 
