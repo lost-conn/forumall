@@ -77,6 +77,7 @@ import {
   users,
 } from "../db/schema.ts";
 import { AppError } from "../http/errors.ts";
+import { rekeyCachedMessageAuthor } from "./dms.ts";
 import { GUEST_HANDLE_PREFIX, HandleSchema } from "./handle.ts";
 import { hashPassword } from "./password.ts";
 
@@ -384,6 +385,9 @@ function rekeyDmConversations(
         counterparty,
         updatedAt: r.updatedAt,
         lastMessageSeq: r.lastMessageSeq,
+        // The pointer preview (§7.4) moves with its store time, re-authored.
+        lastSentMessage: rekeyCachedMessageAuthor(r.lastSentMessage, oldActor, newActor),
+        lastSentAt: r.lastSentAt,
       })
       .run();
   }
@@ -408,6 +412,8 @@ function rekeyDmConversations(
         counterparty: newActor,
         updatedAt: r.updatedAt,
         lastMessageSeq: r.lastMessageSeq,
+        lastSentMessage: r.lastSentMessage,
+        lastSentAt: r.lastSentAt,
       })
       .run();
   }

@@ -799,6 +799,24 @@ const migrations: readonly Migration[] = [
       }
     },
   },
+  {
+    // When the provider stored a pointer's cached `last_sent_message` (OFSCP
+    // §7.4): the conversation preview picks the newer of received vs. sent by
+    // provider-recorded times, not the client-supplied preview `createdAt`.
+    // Nullable, no backfill: a legacy preview has no trustworthy store time,
+    // so it loses to any received message (see `conversationItem`). Guarded so
+    // a re-run is a no-op.
+    id: "0035_dm_conversations_last_sent_at",
+    up: (sqlite) => {
+      const cols = sqlite
+        .query<{ name: string }, []>("PRAGMA table_info(dm_conversations)")
+        .all()
+        .map((c) => c.name);
+      if (!cols.includes("last_sent_at")) {
+        sqlite.exec("ALTER TABLE dm_conversations ADD COLUMN last_sent_at INTEGER;");
+      }
+    },
+  },
 ];
 
 const LEDGER_DDL = `

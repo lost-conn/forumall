@@ -44,7 +44,7 @@ import {
   reactions,
   users,
 } from "../src/db/schema.ts";
-import { storeDmMessage } from "../src/provider/dms.ts";
+import { storeDmMessage, upsertDmPointer } from "../src/provider/dms.ts";
 import { createMessage } from "../src/provider/messages.ts";
 import { addReaction } from "../src/provider/reactions.ts";
 
@@ -488,6 +488,53 @@ test("merge: coalesces a DM conversation the target already has", async () => {
     .where(and(eq(dmConversations.owner, "alice"), eq(dmConversations.dmId, dmAliceCarol)))
     .all();
   expect(conv).toHaveLength(1);
+});
+
+test("merge: a coalesced conversation keeps the later-stored pointer preview, re-authored", async () => {
+  const { app, db } = freshApp("merge-dm-preview");
+  const alice = await registerUserWithKey(app, "alice");
+  const carol = await registerUserWithKey(app, "carol");
+  const group = await createGroup(app, alice, { name: "G", tier: "public", joinPolicy: "invite" });
+  const guest = await provisionGuest(app, alice, group.id);
+  const oldActor = guest.actor;
+  const sent = (id: string, author: string) =>
+    ({
+      id,
+      author,
+      type: "message",
+      content: { text: id, mime: "text/plain" },
+      attachments: [],
+      createdAt: "2026-01-01T00:00:00Z",
+      metadata: [],
+    }) as unknown as Parameters<typeof upsertDmPointer>[4];
+
+  // Both alice and the guest have a pointer (with a preview) to carol; the
+  // guest's preview was STORED later (§7.4 provider-recorded time).
+  const dmAliceCarol = deriveDmId(carol.actor, alice.actor);
+  upsertDmPointer(db, "alice", dmAliceCarol, carol.actor, sent("msg_alice", alice.actor));
+  const dmGuestCarol = deriveDmId(carol.actor, oldActor);
+  upsertDmPointer(db, guest.handle, dmGuestCarol, carol.actor, sent("msg_guest", oldActor));
+  db.sqlite.query("UPDATE dm_conversations SET last_sent_at = 1000 WHERE owner = 'alice'").run();
+  db.sqlite
+    .query("UPDATE dm_conversations SET last_sent_at = 2000 WHERE owner = ?")
+    .run(guest.handle);
+
+  const res = await signedRequest(app, guest, "POST", "/api/me/merge", {
+    handle: "alice",
+    password: PASSWORD,
+  });
+  expect(res.status).toBe(200);
+
+  const conv = db.drizzle
+    .select()
+    .from(dmConversations)
+    .where(and(eq(dmConversations.owner, "alice"), eq(dmConversations.dmId, dmAliceCarol)))
+    .all();
+  expect(conv).toHaveLength(1);
+  expect(conv[0]?.lastSentAt).toBe(2000);
+  const preview = JSON.parse(conv[0]?.lastSentMessage ?? "null") as { id: string; author: string };
+  expect(preview.id).toBe("msg_guest");
+  expect(preview.author).toBe(alice.actor);
 });
 
 // ---------------------------------------------------------------------------

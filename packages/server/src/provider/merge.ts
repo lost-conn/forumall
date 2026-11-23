@@ -74,6 +74,7 @@ import {
   users,
 } from "../db/schema.ts";
 import { AppError } from "../http/errors.ts";
+import { rekeyCachedMessageAuthor } from "./dms.ts";
 import { hashPassword, verifyPassword } from "./password.ts";
 
 /**
@@ -693,6 +694,8 @@ function mergeDmConversations(
       counterparty,
       updatedAt: r.updatedAt,
       lastMessageSeq: r.lastMessageSeq,
+      lastSentMessage: rekeyCachedMessageAuthor(r.lastSentMessage, guestActor, targetActor),
+      lastSentAt: r.lastSentAt,
     });
   }
 
@@ -714,6 +717,8 @@ function mergeDmConversations(
       counterparty: targetActor,
       updatedAt: r.updatedAt,
       lastMessageSeq: r.lastMessageSeq,
+      lastSentMessage: r.lastSentMessage,
+      lastSentAt: r.lastSentAt,
     });
   }
 }
@@ -721,7 +726,9 @@ function mergeDmConversations(
 /**
  * Insert a re-keyed conversation summary, MERGING with the target's existing row
  * for (owner, dm_id) if one is present: keep the later `updatedAt` and the
- * greater `lastMessageSeq`, keeping a single row.
+ * greater `lastMessageSeq`, keeping a single row. The pointer preview (§7.4)
+ * kept is the one this provider stored LATER (`lastSentAt`; a legacy NULL time
+ * loses), so it stays paired with its own store time.
  */
 function upsertMergedConversation(
   db: Db,
@@ -731,6 +738,8 @@ function upsertMergedConversation(
     counterparty: string;
     updatedAt: number;
     lastMessageSeq: number;
+    lastSentMessage: string | null;
+    lastSentAt: number | null;
   },
 ): void {
   const existing = db.drizzle
@@ -746,6 +755,12 @@ function upsertMergedConversation(
         counterparty: row.counterparty,
         updatedAt: Math.max(existing.updatedAt, row.updatedAt),
         lastMessageSeq: Math.max(existing.lastMessageSeq, row.lastMessageSeq),
+        ...(row.lastSentMessage !== null &&
+        (existing.lastSentMessage === null ||
+          (row.lastSentAt ?? Number.NEGATIVE_INFINITY) >
+            (existing.lastSentAt ?? Number.NEGATIVE_INFINITY))
+          ? { lastSentMessage: row.lastSentMessage, lastSentAt: row.lastSentAt }
+          : {}),
       })
       .where(and(eq(dmConversations.owner, row.owner), eq(dmConversations.dmId, row.dmId)))
       .run();
