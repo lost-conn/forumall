@@ -14,6 +14,7 @@
 import { type ProblemDetails, ProblemDetailsSchema } from "@forumall/shared";
 import type { Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
+import type { ZodType } from "zod";
 
 export const PROBLEM_CONTENT_TYPE = "application/problem+json";
 
@@ -142,6 +143,18 @@ export function problemResponse(
     "content-type": PROBLEM_CONTENT_TYPE,
     ...headers,
   });
+}
+
+/**
+ * Validate a REQUEST body against `schema`, throwing a `400` on failure. Use
+ * this (not `schema.parse`) wherever the input came from the client: a bare
+ * `.parse` throws a `ZodError`, which — correctly, since most `.parse` calls
+ * check the server's OWN output — renders as a logged `500`.
+ */
+export function parseRequestBody<T>(schema: ZodType<T>, raw: unknown, what = "request body"): T {
+  const parsed = schema.safeParse(raw);
+  if (!parsed.success) throw AppError.badRequest({ detail: `invalid ${what}` });
+  return parsed.data;
 }
 
 /**

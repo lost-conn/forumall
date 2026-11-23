@@ -39,7 +39,7 @@ import {
   updateMessageContent,
 } from "../provider/messages.ts";
 import { addReaction, hasReaction, listReactions, removeReaction } from "../provider/reactions.ts";
-import { AppError } from "./errors.ts";
+import { AppError, parseRequestBody } from "./errors.ts";
 import {
   authorizeMessageDelete,
   authorizeMessageEdit,
@@ -150,7 +150,7 @@ export function createMessagesRouter() {
     const channelId = requireParam(c, "channelId");
     const messageId = requireParam(c, "messageId");
 
-    const body = MessageUpdateRequestSchema.parse(await c.req.json());
+    const body = parseRequestBody(MessageUpdateRequestSchema, await c.req.json());
 
     const outcome = authorizeMessageEdit(db, groupId, channelId, messageId, actor.actor);
     if (outcome.error) throw toAppError(outcome.error);
@@ -253,7 +253,7 @@ export function createMessagesRouter() {
     const messageId = requireParam(c, "messageId");
     const key = requireParam(c, "key");
 
-    const body = ReactionPutBodySchema.parse(await readOptionalJson(c));
+    const body = parseRequestBody(ReactionPutBodySchema, await readOptionalJson(c));
 
     const outcome = authorizeReaction(db, groupId, channelId, messageId, actor.actor);
     if (outcome.error) throw toAppError(outcome.error);

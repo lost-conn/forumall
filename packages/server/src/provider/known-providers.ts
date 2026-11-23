@@ -20,6 +20,7 @@ import {
   type ProvidersResponse,
   ProvidersResponseSchema,
   canonicalAuthority,
+  isCanonicalAuthority,
   rfc3339Timestamp,
 } from "@forumall/shared";
 import { eq } from "drizzle-orm";
@@ -29,6 +30,7 @@ import type { Db } from "../db/index.ts";
 import { type KnownProviderRow, knownProviders } from "../db/schema.ts";
 import { federationGet } from "./federation/http.ts";
 import type { FederationFetch } from "./federation/http.ts";
+import { isProviderAllowed } from "./federation/policy.ts";
 
 /** The `GET /api/providers` path on a peer (§8.6). */
 const PROVIDERS_PATH = "/api/providers";
@@ -124,7 +126,11 @@ export async function scrapeKnownProviders(
 ): Promise<string[]> {
   const host = canonicalAuthority(domain);
   const selfHost = canonicalAuthority(config.domain);
+  if (!isCanonicalAuthority(host)) return [];
   const url = `https://${host}${PROVIDERS_PATH}`;
+  // §8: never contact a denied provider, even when no policy-wrapped transport
+  // was passed in.
+  if (!isProviderAllowed(config, host)) return [];
 
   let res: Response;
   try {
@@ -152,7 +158,9 @@ export async function scrapeKnownProviders(
     const peer = canonicalAuthority(entry.domain);
     // Skip ourselves; a peer MAY list us back, but we never record our own
     // domain as a "known provider".
-    if (peer === selfHost) continue;
+    // §2.2: a peer cannot plant junk/aliased entries — record only an entry
+    // that canonicalizes to a strict canonical authority.
+    if (peer === selfHost || !isCanonicalAuthority(peer)) continue;
     // Hook: a provider MAY apply its §8 allow/deny policy here before recording a
     // scraped peer (§8.6). Left open — merge is unconditional in v0.1.
     if (addKnownProvider(db, peer, entry.name ?? null).created) newlyAdded.push(peer);

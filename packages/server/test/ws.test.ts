@@ -308,6 +308,40 @@ describe("WS handshake (§7.1 Authentication)", () => {
     expect(client.closeCode).toBe(4001);
   });
 
+  // §2.2: the `authenticate` actor MUST be canonical; Forumall rejects (rather
+  // than converts) a non-canonical spelling of an otherwise valid identity.
+  for (const [i, spelling] of [
+    `alice@${DOMAIN}:443`,
+    `alice@${DOMAIN.toUpperCase()}`,
+    `alice@${DOMAIN}.`,
+    `Alice@${DOMAIN}`,
+    // Aliases a URL parser resolves to the real host (review of #23).
+    `alice@${DOMAIN}:0443`,
+    `alice@${DOMAIN}:00443`,
+    `alice@x@${DOMAIN}`,
+    `alice@${DOMAIN}/x?`,
+    "alice@0x01020304",
+    "alice@[0:0:0:0:0:0:0:1]",
+    "alice@a..test",
+    "alice@.a.test",
+    `alice@${DOMAIN}:abc`,
+    `alice@${DOMAIN}:65536`,
+    "alice@999.1.1.1",
+    "alice@4294967296",
+  ].entries()) {
+    test(`non-canonical actor ${spelling} → error then close 4001`, async () => {
+      const b = boot(`auth-noncanon-${i}`);
+      const signer = await registerUserWithKey(b, "alice");
+      const { client, nonce } = await connectAndChallenge(b);
+      // Correctly signed with alice's real key — only the actor spelling differs.
+      sendAuthenticate(client, { ...signer, actor: spelling }, nonce);
+      const err = await client.ofType("error");
+      expect((err.data as { status: number }).status).toBe(401);
+      await client.waitClosed();
+      expect(client.closeCode).toBe(4001);
+    });
+  }
+
   test("authenticate with a different/old nonce (not the one issued) → rejected", async () => {
     const b = boot("auth-wrongnonce");
     const signer = await registerUserWithKey(b, "alice");

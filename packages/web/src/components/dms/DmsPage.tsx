@@ -16,7 +16,7 @@
  * explicit (DMs are readable by the recipient's provider; not E2E-encrypted).
  */
 import type { Attachment, Notification } from "@forumall/shared";
-import { deriveDmId } from "@forumall/shared";
+import { canonicalActor, deriveDmId } from "@forumall/shared";
 import { A, useNavigate, useParams } from "@solidjs/router";
 import {
   type Accessor,
@@ -1359,7 +1359,9 @@ const NewDmModal: Component<{ onClose: () => void; onStart: (counterparty: strin
   onMount(() => inputEl?.focus());
 
   const submit = (): void => {
-    const value = recipient().trim().toLowerCase();
+    // Senders MUST send actors in canonical form (§2.2): `Bob@host:443` → `bob@host`.
+    const raw = recipient().trim();
+    const value = canonicalActor(raw) ?? raw.toLowerCase();
     if (!/^[^@\s]+@[^@\s]+$/.test(value)) {
       setError("Enter a recipient as handle@domain.");
       return;

@@ -128,6 +128,25 @@ describe("requireSignature — §4.5 ordered checks", () => {
     expect(res.status).toBe(401);
   });
 
+  // §2.2: X-OFSCP-Actor MUST be canonical — a non-canonical spelling of a real,
+  // correctly-signed identity is rejected (401), never converted.
+  test("non-canonical X-OFSCP-Actor (case, :443, trailing dot) → 401", async () => {
+    const { app } = freshApp("noncanonical-actor");
+    const signer = await registerUserWithKey(app, "alice");
+    for (const actor of [
+      `alice@${DOMAIN}:443`,
+      `alice@${DOMAIN.toUpperCase()}`,
+      `alice@${DOMAIN}.`,
+      `Alice@${DOMAIN}`,
+    ]) {
+      const res = await signedListRequest(app, { ...signer, actor });
+      expect(res.status).toBe(401);
+      expect(res.headers.get("content-type")).toContain(PROBLEM_CT);
+    }
+    // The canonical spelling of the same signer still verifies.
+    expect((await signedListRequest(app, signer)).status).toBe(200);
+  });
+
   // 3. Timestamp outside ±300s → 401.
   test("step 3: timestamp outside ±300s → 401", async () => {
     const { app } = freshApp("timestamp");

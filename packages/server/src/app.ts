@@ -42,6 +42,7 @@ import {
   type FederationFetch,
   defaultFederationFetch,
   insecureLocalhostFederationFetch,
+  withFederationPolicy,
 } from "./provider/federation/http.ts";
 import { RemoteUserKeysCache } from "./provider/federation/user-keys-cache.ts";
 import { InMemoryNonceStore, type NonceStore } from "./provider/nonce-store.ts";
@@ -120,7 +121,10 @@ export function createApp(config: Config, deps: AppDeps): AppWithWebSocket {
   const defaultTransport = config.federationInsecureLocalhost
     ? insecureLocalhostFederationFetch
     : defaultFederationFetch;
-  const federationFetch = deps.federationFetch ?? defaultTransport;
+  // §8: every outbound request — signed or not, key/discovery fetches included —
+  // passes the allow/deny policy at this single door, wrapping even an injected
+  // transport so tests exercise the same refusal production applies.
+  const federationFetch = withFederationPolicy(config, deps.federationFetch ?? defaultTransport);
   // The discovery cache shares the injected federation fetch so it reaches the
   // same (real or in-process-peer) transport the rest of federation uses.
   const discoveryCache = deps.discoveryCache ?? new RemoteDiscoveryCache({ federationFetch });

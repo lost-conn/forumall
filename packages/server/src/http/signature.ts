@@ -50,6 +50,8 @@ import {
   buildCanonicalString,
   canonicalAuthority,
   contentDigest,
+  isCanonicalActor,
+  isCanonicalAuthority,
   verify,
 } from "@forumall/shared";
 import type { Context, MiddlewareHandler } from "hono";
@@ -365,6 +367,17 @@ async function verifyAndSetActor(c: Context, vctx: VerifyContext): Promise<void>
     if (!identity || !keyId || !timestamp || !nonce || !digest || !signature) {
       throw AppError.unauthorized({
         detail: "missing one or more required X-OFSCP-* signing headers",
+      });
+    }
+
+    // --- §2.2: the identity header MUST be in canonical form → 401 ----------
+    // We REJECT a non-canonical spelling (`Alice@a.test`, `alice@a.test:443`,
+    // `a.test.`) rather than converting it, so every comparison, key lookup,
+    // allow/deny decision and stored row downstream sees exactly one spelling of
+    // each actor/provider. Checked before any policy decision or network fetch.
+    if (mode === "provider" ? !isCanonicalAuthority(identity) : !isCanonicalActor(identity)) {
+      throw AppError.unauthorized({
+        detail: `${identityHeader} must be in canonical form (OFSCP §2.2)`,
       });
     }
 

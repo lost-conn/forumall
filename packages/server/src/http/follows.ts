@@ -37,7 +37,9 @@ import {
 import { type Context, Hono } from "hono";
 
 import { canViewChannel, getChannelRow } from "../provider/channels.ts";
+import { isProviderAllowed } from "../provider/federation/policy.ts";
 import { addFollow, listFollows, removeFollow } from "../provider/follows.ts";
+import { assertCanonicalUriAuthority } from "./canonical-fields.ts";
 import { AppError } from "./errors.ts";
 import { requireLocalActor, requireLocalHandle, requireSignature } from "./signature.ts";
 import type { AppBindings } from "./types.ts";
@@ -124,6 +126,13 @@ export function createMeFollowsRouter() {
 
     const channel = parsed.data.channel;
     const groupId = parsed.data.groupId ?? null;
+    // §2.2: an object URI must name its provider canonically — local or remote —
+    // so the stored pointer has one spelling (`EVIL.example:443`,
+    // `a.test:0443`, `x@a.test` → 400).
+    const uriHost =
+      channel.startsWith("https://") || channel.startsWith("http://")
+        ? assertCanonicalUriAuthority(channel, "channel")
+        : null;
     const classified = classifyChannelRef(c, channel);
 
     if (classified.kind === "local") {
@@ -136,6 +145,12 @@ export function createMeFollowsRouter() {
       if (!row) throw AppError.notFound({ detail: "no such local channel" });
       if (!canViewChannel(db, row, actor.actor)) {
         throw AppError.forbidden({ detail: "you do not have access to this channel" });
+      }
+    }
+    if (classified.kind === "remote") {
+      // §8: the remote host (canonical, checked above) must be allowed.
+      if (uriHost === null || !isProviderAllowed(c.var.config, uriHost)) {
+        throw AppError.forbidden({ detail: "federation with that provider is not allowed" });
       }
     }
     // else: remote channel (foreign-host URI). Real access verification requires

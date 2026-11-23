@@ -63,7 +63,9 @@ import {
   WsTypingStartSchema,
   WsTypingStopSchema,
   WsUnsubscribeSchema,
+  canonicalActor,
   canonicalAuthority,
+  isCanonicalActor,
   isKnownWsType,
   rfc3339Timestamp,
   verifyWsAuthenticate,
@@ -703,6 +705,14 @@ export function createWsHandlers(deps: WsHandlerDeps) {
       return;
     }
     const { actor, keyId, timestamp, signature } = parsed.data.data;
+
+    // §2.2: the `authenticate` actor MUST be canonical. Rejected (error + close
+    // 4001), never converted, so the connection's identity — hub routing,
+    // presence, policy, storage — has exactly one spelling.
+    if (!isCanonicalActor(actor)) {
+      fail("authenticate actor must be in canonical form (OFSCP §2.2)");
+      return;
+    }
 
     // §4.5 step 3: timestamp within ±skew.
     const tsMillis = Date.parse(timestamp);
@@ -1589,11 +1599,9 @@ export function createWsHandlers(deps: WsHandlerDeps) {
  * as a key into provider-local storage").
  */
 function canonicalSubjectActor(ref: string, localAuthority: string): string {
-  const at = ref.lastIndexOf("@");
-  if (at > 0 && at < ref.length - 1) {
-    return `${ref.slice(0, at)}@${canonicalAuthority(ref.slice(at + 1))}`;
-  }
-  return `${ref}@${localAuthority}`;
+  // §2.2: a `handle@domain` ref is converted to canonical form (handle + domain)
+  // before it keys the presence registry or any visibility decision.
+  return canonicalActor(ref) ?? `${ref}@${localAuthority}`;
 }
 
 /**

@@ -11,7 +11,7 @@
  * Both load their current values via `createResource` from the signed client and
  * save through the social-api wrappers, surfacing a saved/error state.
  */
-import type { VisibilityPolicy } from "@forumall/shared";
+import { type VisibilityPolicy, canonicalActor } from "@forumall/shared";
 import { type Component, For, Show, createEffect, createResource, createSignal } from "solid-js";
 import { resolveAttachmentUrl, uploadMedia } from "../../lib/chat-api.ts";
 import { OfscpHttpError } from "../../lib/ofscp-client.ts";
@@ -51,10 +51,14 @@ const POLICY_LABEL: Record<string, string> = {
 
 /** Split a comma/newline-separated list into trimmed non-empty actor refs. */
 function parseList(raw: string): string[] {
-  return raw
-    .split(/[\n,]/)
-    .map((s) => s.trim().toLowerCase())
-    .filter((s) => s.length > 0);
+  return (
+    raw
+      .split(/[\n,]/)
+      .map((s) => s.trim().toLowerCase())
+      .filter((s) => s.length > 0)
+      // Senders MUST send actors in canonical form (§2.2): `bob@host:443` → `bob@host`.
+      .map((s) => (s.startsWith("https://") ? s : (canonicalActor(s) ?? s)))
+  );
 }
 
 // ---------------------------------------------------------------------------

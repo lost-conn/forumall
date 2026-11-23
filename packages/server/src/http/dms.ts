@@ -81,7 +81,8 @@ import { isProviderAllowed } from "../provider/federation/policy.ts";
 import { getUserRow } from "../provider/guests.ts";
 import { previewText, sendPushToRecipient } from "../provider/push-send.ts";
 import type { Hub } from "../provider/ws-hub.ts";
-import { AppError } from "./errors.ts";
+import { assertCanonicalActorField } from "./canonical-fields.ts";
+import { AppError, parseRequestBody } from "./errors.ts";
 import {
   requireActorOrProviderSignature,
   requireLocalActor,
@@ -426,7 +427,7 @@ export function createFederationDmsRouter() {
     const dmId = requireParam(c, "dmId");
     const author = actor.actor;
 
-    const body = DmMessageCreateRequestSchema.parse(await c.req.json());
+    const body = parseRequestBody(DmMessageCreateRequestSchema, await c.req.json());
 
     // --- Recipient resolution + §8.3 {dmId} verification -------------------
     // With `to` (OFSCP §7.4), the recipient is named: it must be a LOCAL user
@@ -437,6 +438,7 @@ export function createFederationDmsRouter() {
     const authority = canonicalAuthority(config.domain);
     let owner: string | null = null;
     if (body.to !== undefined) {
+      assertCanonicalActorField(body.to, "to");
       const at = body.to.lastIndexOf("@");
       const toHandle = at > 0 ? body.to.slice(0, at) : "";
       const toDomain = at > 0 ? canonicalAuthority(body.to.slice(at + 1)) : "";
@@ -562,7 +564,8 @@ export function createFederationDmsRouter() {
 
     const raw = (await c.req.json().catch(() => ({}))) as { actor?: unknown; content?: unknown };
     const actingActor = federationActingActor(c, raw.actor);
-    const content = MessageUpdateRequestSchema.parse({ content: raw.content }).content as Content;
+    const content = parseRequestBody(MessageUpdateRequestSchema, { content: raw.content })
+      .content as Content;
 
     const { owner, ownerActor } = resolveFederationDmOwner(db, config, actingActor, dmId);
     const row = getDmMessageRow(db, owner, dmId, messageId);
@@ -633,6 +636,7 @@ function federationActingActor(c: Context<AppBindings>, bodyActor: unknown): str
 
   const actingActor = typeof bodyActor === "string" ? bodyActor : "";
   if (actingActor === "") throw AppError.badRequest({ detail: "missing acting actor" });
+  assertCanonicalActorField(actingActor, "actor");
   if (domainOf(actingActor) !== signer.domain) {
     throw AppError.forbidden({ detail: "a provider may only act on behalf of its own users" });
   }
@@ -784,16 +788,8 @@ export function createMeDmsRouter() {
     // `with` must be an actor in canonical form (`handle@domain`, lowercase,
     // canonical authority). A URI or non-canonical spelling would either throw
     // in deriveDmId or be stored as typed and break exact participant matching.
-    const at = counterparty.lastIndexOf("@");
-    const withDomain = at > 0 ? counterparty.slice(at + 1) : "";
-    if (
-      at <= 0 ||
-      withDomain === "" ||
-      counterparty !==
-        `${counterparty.slice(0, at).toLowerCase()}@${canonicalAuthority(withDomain)}`
-    ) {
-      throw AppError.badRequest({ detail: "`with` must be a canonical actor (handle@domain)" });
-    }
+    assertCanonicalActorField(counterparty, "with");
+    const withDomain = counterparty.slice(counterparty.lastIndexOf("@") + 1);
     if (counterparty === actor.actor || deriveDmId(actor.actor, counterparty) !== dmId) {
       throw AppError.badRequest({
         detail: "{dmId} does not match a conversation between the caller and `with`",
@@ -1123,7 +1119,7 @@ export function createDmsRouter() {
     const messageId = requireParam(c, "messageId");
     const authority = canonicalAuthority(config.domain);
 
-    const body = MessageUpdateRequestSchema.parse(await c.req.json());
+    const body = parseRequestBody(MessageUpdateRequestSchema, await c.req.json());
     const content = body.content as Content;
 
     // (a) The target lives in the caller's own LOCAL inbox.

@@ -43,7 +43,8 @@ import {
   upsertContact,
 } from "../provider/contacts.ts";
 import { getUserRow } from "../provider/guests.ts";
-import { AppError } from "./errors.ts";
+import { assertCanonicalActorField } from "./canonical-fields.ts";
+import { AppError, parseRequestBody } from "./errors.ts";
 import { requireLocalActor, requireLocalHandle, requireSignature } from "./signature.ts";
 import type { AppBindings } from "./types.ts";
 
@@ -86,8 +87,9 @@ export function createMeContactsRouter() {
     const actor = c.var.actor;
     if (!actor) throw AppError.unauthorized();
 
-    const body = ContactCreateRequestSchema.parse(await c.req.json());
+    const body = parseRequestBody(ContactCreateRequestSchema, await c.req.json());
     const other = body.user;
+    assertCanonicalActorField(other, "user");
     if (other === actor.actor) {
       throw AppError.badRequest({ detail: "cannot add yourself as a contact" });
     }
@@ -180,7 +182,9 @@ export function createFederationContactsRouter() {
     const actor = c.var.actor;
     if (!actor) throw AppError.unauthorized();
 
-    const body = ContactEventSchema.parse(await c.req.json());
+    const body = parseRequestBody(ContactEventSchema, await c.req.json());
+    assertCanonicalActorField(body.from, "from");
+    assertCanonicalActorField(body.to, "to");
 
     // The signer MUST be `from` (§6.7). The §4.5 middleware verified the
     // signature against the actor's key; here we bind that identity to the body.
