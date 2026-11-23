@@ -48,7 +48,7 @@ function freshApp(name: string, overrides: Partial<Config> = {}) {
   const config: Config = Object.freeze({ ...base, argon2: FAST_ARGON2, ...overrides });
   const db = openDb(config.dbPath);
   migrate(db);
-  const app = createApp(config, { db });
+  const app = createApp(config, { testOnlySkipReplayWarmup: true, db });
   return { app, config, db };
 }
 

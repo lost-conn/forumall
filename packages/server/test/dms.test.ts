@@ -75,7 +75,7 @@ function boot(name: string, env: Record<string, string> = {}): Booted {
   const config: Config = Object.freeze({ ...base, argon2: FAST_ARGON2 });
   const db = openDb(config.dbPath);
   migrate(db);
-  const app = createApp(config, { db, wsTimings: FAST_TIMINGS });
+  const app = createApp(config, { testOnlySkipReplayWarmup: true, db, wsTimings: FAST_TIMINGS });
   const server = Bun.serve({ port: 0, fetch: app.fetch, websocket: app.__websocket });
   const url = `ws://${server.hostname}:${server.port}/api/ws`;
   const b: Booted = { app, hub: app.__hub, db, config, server, url };

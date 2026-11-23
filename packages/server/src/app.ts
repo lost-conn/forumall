@@ -84,6 +84,22 @@ export interface AppDeps {
    */
   readonly nonceStore?: NonceStore;
   /**
+   * **TEST-ONLY.** Skip the §4.5 "Restarts" replay-store warm-up. The default
+   * in-memory replay store forgets every nonce on restart, so for the first
+   * skew window (300s) after boot the provider answers every signed request
+   * whose timestamp is earlier than T₀ + skew with `503` + `Retry-After` — which
+   * a test that boots a server and signs immediately would trip. When `true`,
+   * the default store is created with T₀ = the Unix epoch, i.e. as if it had
+   * been accepting entries forever, so there is no warm-up.
+   *
+   * Only test harnesses set this (the unit/integration suites, the two-provider
+   * helper, and `e2e/harness/boot-server.ts`). The production entry point
+   * (`src/index.ts`) never does, and it is deliberately NOT reachable from env
+   * or config, so a deployment cannot switch the warm-up off. Ignored when
+   * `nonceStore` is injected (that store's own `startedAt` governs).
+   */
+  readonly testOnlySkipReplayWarmup?: boolean;
+  /**
    * Auth rate limiters (§4.1.5, reconciliation #26); built from `config.rateLimit`
    * if not injected. Tests that want to trip a limit deliberately (or bypass it
    * without touching env/config) inject their own via `provider/ratelimit.ts`'s
@@ -138,7 +154,11 @@ export function createApp(config: Config, deps: AppDeps): AppWithWebSocket {
   // `requireSignature()`/`optionalSignature()`/`requireProviderSignature()`,
   // which now default to `c.var.nonceStore` instead of minting their own) and
   // the WS handshake. See the module doc on `provider/nonce-store.ts`.
-  const nonceStore = deps.nonceStore ?? new InMemoryNonceStore();
+  // T₀ (§4.5 "Restarts") is the moment this store is constructed, unless a
+  // test harness opted out of the warm-up (see `testOnlySkipReplayWarmup`).
+  const nonceStore =
+    deps.nonceStore ??
+    new InMemoryNonceStore(deps.testOnlySkipReplayWarmup === true ? { startedAt: 0 } : {});
   // Auth rate limiters (§4.1.5, reconciliation #26): built from `config.rateLimit`
   // unless a caller injects its own (tests that want a deliberate trip or bypass).
   const rateLimits = deps.rateLimits ?? createRateLimits(config);

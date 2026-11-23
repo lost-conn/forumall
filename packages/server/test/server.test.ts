@@ -46,7 +46,7 @@ function freshApp(name: string, overrides: Record<string, string> = {}) {
   });
   const db = openDb(config.dbPath);
   migrate(db);
-  return { app: createApp(config, { db }), config, db };
+  return { app: createApp(config, { testOnlySkipReplayWarmup: true, db }), config, db };
 }
 
 describe("config", () => {
@@ -267,7 +267,7 @@ describe("discovery (§3.1)", () => {
       const config = loadConfig({ DATA_DIR: tmp, DB_PATH: dbPath, WEB_DIR: join(tmp, "pk-web") });
       const db = openDb(config.dbPath);
       migrate(db);
-      return { app: createApp(config, { db }), db };
+      return { app: createApp(config, { testOnlySkipReplayWarmup: true, db }), db };
     };
 
     const first = mk();
