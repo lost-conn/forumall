@@ -62,6 +62,7 @@ function freshApp(name: string) {
   // Every outbound provider request is recorded (and answered 200).
   const outbound: string[] = [];
   const app = createApp(config, {
+    testOnlySkipReplayWarmup: true,
     db,
     federationFetch: async (_domain, request) => {
       outbound.push(`${request.method} ${request.url}`);
