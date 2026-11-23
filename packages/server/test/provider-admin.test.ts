@@ -26,7 +26,7 @@ import { openDb } from "../src/db/index.ts";
 import { migrate } from "../src/db/migrate.ts";
 import { users } from "../src/db/schema.ts";
 import { requireAdmin } from "../src/http/admin-guard.ts";
-import { onError } from "../src/http/errors.ts";
+import { createProblemHandlers } from "../src/http/errors.ts";
 import type { AppBindings } from "../src/http/types.ts";
 import { countUsers, isProviderAdmin } from "../src/provider/admin.ts";
 
@@ -51,7 +51,7 @@ function freshApp(name: string, overrides: Partial<Config> = {}) {
   const config: Config = Object.freeze({ ...base, argon2: FAST_ARGON2, ...overrides });
   const db = openDb(config.dbPath);
   migrate(db);
-  const app = createApp(config, { db });
+  const app = createApp(config, { testOnlySkipReplayWarmup: true, db });
   return { app, config, db };
 }
 
@@ -165,7 +165,7 @@ describe("requireAdmin guard", () => {
       await next();
     });
     app.get("/probe", requireAdmin(), (c) => c.json({ ok: true }));
-    app.onError(onError); // render AppError as problem+json (mirrors the real app)
+    app.onError(createProblemHandlers(DOMAIN).onError); // render AppError as problem+json (mirrors the real app)
     return app;
   }
 

@@ -24,7 +24,14 @@
  * there (or accepts it as an argument). Production passes nothing → the global-
  * `fetch` default; the two-provider test harness passes a domain→port router.
  */
-import { HEADER, type ProviderSignInput, contentDigest, signProvider } from "@forumall/shared";
+import {
+  HEADER,
+  OFSCP_TIMESTAMP_SKEW_SECONDS,
+  type ProviderSignInput,
+  contentDigest,
+  parseRetryAfterMs,
+  signProvider,
+} from "@forumall/shared";
 
 import type { Config } from "../../config.ts";
 import type { Db } from "../../db/index.ts";
@@ -155,7 +162,70 @@ export interface SignedProviderFetchInit {
   /** Override timestamp/nonce (tests/replay control); defaults applied by `signProvider`. */
   readonly timestamp?: string;
   readonly nonce?: string;
+  /**
+   * Retry a `503` that carries `Retry-After` — e.g. a peer in its §4.5
+   * replay-store warm-up after a restart — RE-SIGNING each attempt with a fresh
+   * timestamp + nonce (resending the same signed request can never succeed).
+   * Omit for no retry. See {@link Retry503Policy} for when it is safe to set.
+   */
+  readonly retry?: Retry503Policy;
 }
+
+/**
+ * Bounded retry-on-503 policy for {@link signedProviderFetch}.
+ *
+ * **When to set it.** Only for requests that are safe to deliver twice: an
+ * idempotent method (GET/HEAD/PUT/DELETE), or a request whose body carries an
+ * idempotency key the peer dedupes on (e.g. an edit that REPLACES content, a
+ * notification identified by its event + resource). A §4.5 warm-up `503` is
+ * sent before the peer processes anything, but a 503 from some other component
+ * might not be, so non-idempotent requests MUST NOT opt in.
+ *
+ * **Behaviour.** Only a `503` with a usable `Retry-After` is retried, after
+ * waiting exactly that long — per the strict shared `parseRetryAfterMs`: a
+ * positive integer delta-seconds or a future IMF-fixdate, never less than 1s.
+ * `0`, past dates and malformed values mean "no usable Retry-After" → no retry.
+ * The request is re-signed each time. It gives up — returning the last `503` to the caller —
+ * once the next wait would push the total past `maxTotalWaitMs`, or after
+ * `maxAttempts` attempts. Requests with a caller-pinned `timestamp`/`nonce` are
+ * never retried (they could not be re-signed fresh).
+ */
+export interface Retry503Policy {
+  /** Cap on the summed `Retry-After` waits, ms. */
+  readonly maxTotalWaitMs: number;
+  /** Cap on total attempts (first try included). Default 4. */
+  readonly maxAttempts?: number;
+  /** Injectable sleep (tests). Default: a real timer. */
+  readonly sleep?: (ms: number) => Promise<void>;
+  /** Injectable clock for HTTP-date `Retry-After` (tests). Default `Date.now`. */
+  readonly now?: () => number;
+}
+
+/**
+ * Background sends nobody is waiting on (§10 notification delivery): long
+ * enough to ride out a peer's whole §4.5 warm-up. The peer asks us to wait
+ * until T₀ + skew on ITS clock *and* on ours (`max(T₀+skew − now, T₀+skew −
+ * timestamp)`), so if our clock lags the peer's by up to the skew window the
+ * first `Retry-After` can approach **2 × skew** (600s). Cap = 2 × skew + 60s
+ * slack; 6 attempts leave room for a couple of shorter follow-up waits.
+ */
+export const BACKGROUND_RETRY: Retry503Policy = {
+  maxTotalWaitMs: (2 * OFSCP_TIMESTAMP_SKEW_SECONDS + 60) * 1000,
+  maxAttempts: 6,
+};
+
+/**
+ * Sends made inline while a user's own request waits (DM edit/delete/reaction
+ * forwards, §8.3): a short wait only. A longer warm-up 503 is relayed to the
+ * user's client WITH its `Retry-After`, and the client decides (the web client
+ * retries briefly, then shows a clear "provider restarting" message).
+ */
+export const INLINE_RETRY: Retry503Policy = { maxTotalWaitMs: 10_000 };
+
+/** Re-exported: the strict shared parser (see `@forumall/shared` retry-after.ts). */
+export { parseRetryAfterMs };
+
+const realSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /**
  * Perform an outbound **provider-signed** (§8.1) request to another provider.
@@ -184,31 +254,51 @@ export async function signedProviderFetch(
   const key = getProviderSigningKey(db);
   const body = init.body ?? new Uint8Array(0);
 
-  const signInput: ProviderSignInput = {
-    provider: config.domain,
-    keyId: key.keyId,
-    privateKey: key.privateKey,
-    authority,
-    method: init.method,
-    path,
-    query,
-    body,
-    ...(init.timestamp !== undefined ? { timestamp: init.timestamp } : {}),
-    ...(init.nonce !== undefined ? { nonce: init.nonce } : {}),
-  };
-  const { headers: signed } = signProvider(signInput);
+  // Build + sign one attempt. Called afresh per attempt so a retry carries a new
+  // timestamp + nonce (§4.5: a re-sent signed request can never succeed).
+  const attempt = (): Promise<Response> => {
+    const signInput: ProviderSignInput = {
+      provider: config.domain,
+      keyId: key.keyId,
+      privateKey: key.privateKey,
+      authority,
+      method: init.method,
+      path,
+      query,
+      body,
+      ...(init.timestamp !== undefined ? { timestamp: init.timestamp } : {}),
+      ...(init.nonce !== undefined ? { nonce: init.nonce } : {}),
+    };
+    const { headers: signed } = signProvider(signInput);
 
-  const requestInit: RequestInit = {
-    method: init.method,
-    headers: { ...init.headers, ...signed },
+    const requestInit: RequestInit = {
+      method: init.method,
+      headers: { ...init.headers, ...signed },
+    };
+    if (!isEmptyBody(body)) {
+      // BodyInit accepts string and BufferSource (incl. Uint8Array).
+      requestInit.body = body as BodyInit;
+    }
+    return federationFetch(domain, new Request(init.url, requestInit));
   };
-  if (!isEmptyBody(body)) {
-    // BodyInit accepts string and BufferSource (incl. Uint8Array).
-    requestInit.body = body as BodyInit;
+
+  const policy = init.retry;
+  if (policy === undefined || init.timestamp !== undefined || init.nonce !== undefined) {
+    return attempt();
   }
-  const request = new Request(init.url, requestInit);
-
-  return federationFetch(domain, request);
+  const sleep = policy.sleep ?? realSleep;
+  const now = policy.now ?? Date.now;
+  const maxAttempts = policy.maxAttempts ?? 4;
+  let waited = 0;
+  for (let n = 1; ; n++) {
+    const res = await attempt();
+    if (res.status !== 503 || n >= maxAttempts) return res;
+    const waitMs = parseRetryAfterMs(res.headers.get("retry-after"), now());
+    if (waitMs === null || waited + waitMs > policy.maxTotalWaitMs) return res;
+    await res.body?.cancel(); // discard this attempt's body before waiting
+    await sleep(waitMs);
+    waited += waitMs;
+  }
 }
 
 function isEmptyBody(body: string | Uint8Array): boolean {

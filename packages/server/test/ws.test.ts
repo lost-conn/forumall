@@ -81,6 +81,7 @@ function boot(
   const db = openDb(config.dbPath);
   migrate(db);
   const app = createApp(config, {
+    testOnlySkipReplayWarmup: true,
     db,
     wsTimings: timings,
     ...(mintChallengeNonce !== undefined ? { mintChallengeNonce } : {}),

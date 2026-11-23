@@ -14,6 +14,7 @@ import {
   ProblemDetailsSchema,
   ProviderDiscoverySchema,
   TiersResponseSchema,
+  canonicalAuthority,
 } from "@forumall/shared";
 import { Hono } from "hono";
 
@@ -45,7 +46,7 @@ function freshApp(name: string, overrides: Record<string, string> = {}) {
   });
   const db = openDb(config.dbPath);
   migrate(db);
-  return { app: createApp(config, { db }), config, db };
+  return { app: createApp(config, { testOnlySkipReplayWarmup: true, db }), config, db };
 }
 
 describe("config", () => {
@@ -119,8 +120,8 @@ describe("error handling (problem+json)", () => {
     probe.get("/api/boom", () => {
       throw AppError.forbidden({ detail: "nope" });
     });
-    const { onError } = await import("../src/http/errors.ts");
-    probe.onError(onError);
+    const { createProblemHandlers } = await import("../src/http/errors.ts");
+    probe.onError(createProblemHandlers(canonicalAuthority(config.domain)).onError);
 
     const res = await probe.request("/api/boom");
     expect(res.status).toBe(403);
@@ -129,6 +130,7 @@ describe("error handling (problem+json)", () => {
     expect(parsed.status).toBe(403);
     expect(parsed.errorCode).toBe("forbidden");
     expect(parsed.detail).toBe("nope");
+    expect(parsed.type).toBe(`https://${canonicalAuthority(config.domain)}/problems/forbidden`);
   });
 
   test("unexpected thrown error -> 500 problem+json with no stack leak", async () => {
@@ -142,8 +144,8 @@ describe("error handling (problem+json)", () => {
     probe.get("/api/explode", () => {
       throw new Error("secret internal detail");
     });
-    const { onError } = await import("../src/http/errors.ts");
-    probe.onError(onError);
+    const { createProblemHandlers } = await import("../src/http/errors.ts");
+    probe.onError(createProblemHandlers(canonicalAuthority(config.domain)).onError);
 
     const res = await probe.request("/api/explode");
     expect(res.status).toBe(500);
@@ -153,6 +155,10 @@ describe("error handling (problem+json)", () => {
     const parsed = ProblemDetailsSchema.parse(JSON.parse(text));
     expect(parsed.status).toBe(500);
     expect(parsed.errorCode).toBe("internal_error");
+    // §2.6: even the unknown-error path mints `type` under THIS provider.
+    expect(parsed.type).toBe(
+      `https://${canonicalAuthority(config.domain)}/problems/internal_error`,
+    );
   });
 });
 
@@ -263,7 +269,7 @@ describe("discovery (§3.1)", () => {
       const config = loadConfig({ DATA_DIR: tmp, DB_PATH: dbPath, WEB_DIR: join(tmp, "pk-web") });
       const db = openDb(config.dbPath);
       migrate(db);
-      return { app: createApp(config, { db }), db };
+      return { app: createApp(config, { testOnlySkipReplayWarmup: true, db }), db };
     };
 
     const first = mk();

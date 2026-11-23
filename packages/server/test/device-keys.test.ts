@@ -45,7 +45,7 @@ function freshApp(name: string, overrides: Partial<Config> = {}) {
   const config: Config = Object.freeze({ ...base, argon2: FAST_ARGON2, ...overrides });
   const db = openDb(config.dbPath);
   migrate(db);
-  return { app: createApp(config, { db }), config, db };
+  return { app: createApp(config, { testOnlySkipReplayWarmup: true, db }), config, db };
 }
 
 /** Register a user and return its bootstrap token. */

@@ -98,6 +98,10 @@ const wsTimings = {
 };
 
 const app = createApp(config, {
+  // TEST-ONLY: specs sign requests the instant the server is up, which the
+  // OFSCP §4.5 "Restarts" replay-store warm-up (300s of 503s after boot) would
+  // reject. Production (`src/index.ts`) never sets this; it is not an env knob.
+  testOnlySkipReplayWarmup: true,
   db,
   ...(Object.keys(wsTimings).length > 0 ? { wsTimings } : {}),
 });
