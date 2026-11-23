@@ -53,7 +53,7 @@ import {
   isMember,
   roleHoldsAll,
 } from "../provider/permissions.ts";
-import { tierReadableBy } from "../provider/tiers.ts";
+import { effectiveJoinPolicy, tierReadableBy } from "../provider/tiers.ts";
 import type { Hub } from "../provider/ws-hub.ts";
 import { AppError } from "./errors.ts";
 import { optionalSignature, requireSignature } from "./signature.ts";
@@ -131,7 +131,7 @@ export function createMembershipRouter() {
     const message =
       raw && typeof raw === "object" && typeof raw.message === "string" ? raw.message : undefined;
 
-    switch (group.joinPolicy) {
+    switch (effectiveJoinPolicy(group.tier, group.joinPolicy)) {
       case "open": {
         const member = addMember(db, groupId, actor.actor, "member");
         return c.json(member, 201);

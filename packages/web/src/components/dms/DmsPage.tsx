@@ -544,20 +544,25 @@ const ThreadView: Component<{
   // newest decodable seq (the DM view always follows the bottom, so an open
   // thread is effectively "pinned"). Excludes the caller's own messages from
   // unread server-side. Re-fires as new messages arrive while the thread is open.
-  const newestDmSeq = createMemo(() => {
+  const newestRead = createMemo(() => {
     let max = 0;
+    let id: string | undefined;
     for (const m of messages()) {
       const s = seqFromCursor(m.cursor);
-      if (s != null && s > max) max = s;
+      if (s != null && s > max) {
+        max = s;
+        id = m.id;
+      }
     }
-    return max;
+    return { seq: max, id };
   });
+  const newestDmSeq = createMemo(() => newestRead().seq);
   createEffect(
     on(
       () => [props.dmId, newestDmSeq()] as const,
       () => {
         const seq = newestDmSeq();
-        if (seq > 0) markRead(props.dmId, seq);
+        if (seq > 0) markRead(props.dmId, seq, newestRead().id);
       },
     ),
   );

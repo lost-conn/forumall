@@ -46,6 +46,8 @@ export interface ReadMarkerEntry {
 /** A summary entry: a marker plus the recomputed unread count for its scope. */
 export interface UnreadEntry {
   readonly scopeId: string;
+  /** The message at `lastReadSeq` (OFSCP wire field); absent at seq 0. */
+  readonly lastReadMessageId?: string;
   readonly lastReadSeq: number;
   readonly unreadCount: number;
   /** Owning group id for a channel scope; absent for DM scopes. */
@@ -179,7 +181,13 @@ export function getUnreadSummary(db: Db, handle: string, actor: string): UnreadE
       if (!canViewChannel(db, ch, actor)) continue;
       const sinceSeq = markers.get(ch.id) ?? 0;
       const unreadCount = channelUnread(db, ch.id, sinceSeq, actor);
-      out.push({ scopeId: ch.id, lastReadSeq: sinceSeq, unreadCount, groupId: ch.groupId });
+      out.push({
+        scopeId: ch.id,
+        ...withMessageId(db, ch.id, sinceSeq),
+        lastReadSeq: sinceSeq,
+        unreadCount,
+        groupId: ch.groupId,
+      });
     }
   }
 
@@ -192,7 +200,12 @@ export function getUnreadSummary(db: Db, handle: string, actor: string): UnreadE
   for (const conv of convRows) {
     const sinceSeq = markers.get(conv.dmId) ?? 0;
     const unreadCount = dmUnread(db, handle, conv.dmId, sinceSeq, actor);
-    out.push({ scopeId: conv.dmId, lastReadSeq: sinceSeq, unreadCount });
+    out.push({
+      scopeId: conv.dmId,
+      ...withMessageId(db, conv.dmId, sinceSeq),
+      lastReadSeq: sinceSeq,
+      unreadCount,
+    });
   }
 
   return out;
@@ -220,8 +233,60 @@ export function unreadEntryFor(
       .where(eq(channels.id, scopeId))
       .limit(1)
       .all()[0];
-    return { scopeId, lastReadSeq, unreadCount, groupId: chRow?.groupId };
+    return {
+      scopeId,
+      ...withMessageId(db, scopeId, lastReadSeq),
+      lastReadSeq,
+      unreadCount,
+      groupId: chRow?.groupId,
+    };
   }
   const unreadCount = dmUnread(db, handle, scopeId, lastReadSeq, actor);
-  return { scopeId, lastReadSeq, unreadCount };
+  return { scopeId, ...withMessageId(db, scopeId, lastReadSeq), lastReadSeq, unreadCount };
+}
+
+/** True for a DM scope (`dm_<hex>`); otherwise the scope is a channel id. */
+function isDmScope(scopeId: string): boolean {
+  return scopeId.startsWith("dm_");
+}
+
+/**
+ * The provider `seq` of message `messageId` within `scopeId` (a channel id or a
+ * dmId), or `null` if no such message is held here. Used to accept OFSCP read
+ * markers, which name a message rather than a provider-internal position.
+ */
+export function seqForMessage(db: Db, scopeId: string, messageId: string): number | null {
+  const row = isDmScope(scopeId)
+    ? db.drizzle
+        .select({ seq: dmMessages.seq })
+        .from(dmMessages)
+        .where(and(eq(dmMessages.dmId, scopeId), eq(dmMessages.id, messageId)))
+        .limit(1)
+        .all()[0]
+    : db.drizzle
+        .select({ seq: messages.seq })
+        .from(messages)
+        .where(and(eq(messages.channelId, scopeId), eq(messages.id, messageId)))
+        .limit(1)
+        .all()[0];
+  return row ? Number(row.seq) : null;
+}
+
+/** `{ lastReadMessageId }` for the message at `seq` in `scopeId`, or `{}`. */
+function withMessageId(db: Db, scopeId: string, seq: number): { lastReadMessageId?: string } {
+  if (seq <= 0) return {};
+  const row = isDmScope(scopeId)
+    ? db.drizzle
+        .select({ id: dmMessages.id })
+        .from(dmMessages)
+        .where(and(eq(dmMessages.dmId, scopeId), eq(dmMessages.seq, seq)))
+        .limit(1)
+        .all()[0]
+    : db.drizzle
+        .select({ id: messages.id })
+        .from(messages)
+        .where(and(eq(messages.channelId, scopeId), eq(messages.seq, seq)))
+        .limit(1)
+        .all()[0];
+  return row ? { lastReadMessageId: row.id } : {};
 }
