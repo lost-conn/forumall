@@ -44,6 +44,15 @@ export const ERROR_CODE_REGISTRY = {
     status: 403,
     meaning: "Authenticated, but not permitted (including federation policy, OFSCP §8).",
   },
+  registration_closed: {
+    status: 403,
+    meaning: "This provider does not accept self-registration (OFSCP §4.1.1).",
+  },
+  invite_required: {
+    status: 403,
+    meaning:
+      "Registration needs a valid account invite, and none was supplied or the one supplied is not usable (OFSCP §4.1.1).",
+  },
   not_found: { status: 404, meaning: "No such resource, or not visible to the caller." },
   conflict: { status: 409, meaning: "The request conflicts with current state." },
   subscription_limit: {
