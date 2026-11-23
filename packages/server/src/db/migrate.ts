@@ -884,7 +884,7 @@ export const migrations: readonly Migration[] = [
     //  - no domain is given (boot passes one only when DOMAIN is configured);
     //  - the domain is not PROVEN by stored data: proven if some row derives
     //    its dm_id under it (a SHA-256 match a wrong domain cannot produce) OR
-    //    some local user (`users.handle`) authored a stored channel/DM message
+    //    some local user (`users.handle`) authored a stored channel message
     //    as `handle@domain`. So an install whose rows are all inconsistent but
     //    whose DOMAIN is right still proceeds;
     //  - more than a handful AND more than half of the rows would fail
