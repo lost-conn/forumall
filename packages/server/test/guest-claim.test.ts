@@ -468,12 +468,21 @@ function insertRawPointer(
   counterparty: string,
   markerSeq: number,
   lastSentMessage: string | null = null,
+  lastMessageSeq = 0,
 ) {
   db.sqlite
     .query(
-      "INSERT INTO dm_conversations (owner, dm_id, counterparty, updated_at, last_message_seq, last_sent_message, last_sent_at) VALUES (?, ?, ?, ?, 0, ?, ?)",
+      "INSERT INTO dm_conversations (owner, dm_id, counterparty, updated_at, last_message_seq, last_sent_message, last_sent_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
-    .run(owner, dmId, counterparty, Date.now(), lastSentMessage, lastSentMessage ? 1 : null);
+    .run(
+      owner,
+      dmId,
+      counterparty,
+      Date.now(),
+      lastMessageSeq,
+      lastSentMessage,
+      lastSentMessage ? 1 : null,
+    );
   db.sqlite
     .query(
       "INSERT INTO read_markers (handle, scope_id, last_read_seq, updated_at) VALUES (?, ?, ?, ?)",
@@ -481,7 +490,7 @@ function insertRawPointer(
     .run(owner, dmId, markerSeq, Date.now());
 }
 
-test("claim: inconsistent (ignored) rows are deleted with their markers, never revived", async () => {
+test("claim: inconsistent (ignored) rows are never revived — pure pointers deleted, rows with messages kept", async () => {
   const { app, db } = freshApp("claim-inconsistent-rows");
   const alice = await registerUserWithKey(app, "alice");
   const group = await createGroup(app, alice, { name: "G", tier: "public", joinPolicy: "invite" });
@@ -497,14 +506,36 @@ test("claim: inconsistent (ignored) rows are deleted with their markers, never r
   // B: alice's bogus row names the guest under a dmId that is not alice↔guest.
   insertRawPointer(db, "alice", deriveDmId(alice.actor, "zed@remote.example"), guest.actor, 50);
 
+  // Inconsistent rows holding received messages are KEPT, never re-derived.
+  const dmKeepGuest = deriveDmId(guest.actor, "yan@remote.example");
+  insertRawPointer(db, guest.handle, dmKeepGuest, "erin@remote.example", 4, null, 4);
+  const dmKeepAlice = deriveDmId(alice.actor, "yan@remote.example");
+  insertRawPointer(db, "alice", dmKeepAlice, guest.actor, 6, null, 6);
+
   const res = await signedRequest(app, guest, "POST", "/api/me/claim", {
     handle: "ada",
     password: "super-secret-pw",
   });
   expect(res.status).toBe(200);
 
-  expect(db.drizzle.select().from(dmConversations).all()).toEqual([]);
-  expect(db.drizzle.select().from(readMarkers).all()).toEqual([]);
+  const convs = db.drizzle
+    .select({ owner: dmConversations.owner, dmId: dmConversations.dmId })
+    .from(dmConversations)
+    .all()
+    .sort((x, y) => x.owner.localeCompare(y.owner));
+  expect(convs).toEqual([
+    { owner: "ada", dmId: dmKeepGuest },
+    { owner: "alice", dmId: dmKeepAlice },
+  ]);
+  const markers = db.drizzle
+    .select({ handle: readMarkers.handle, scopeId: readMarkers.scopeId })
+    .from(readMarkers)
+    .all()
+    .sort((x, y) => x.handle.localeCompare(y.handle));
+  expect(markers).toEqual([
+    { handle: "ada", scopeId: dmKeepGuest },
+    { handle: "alice", scopeId: dmKeepAlice },
+  ]);
 });
 
 test("claim: a full account claiming → 409", async () => {

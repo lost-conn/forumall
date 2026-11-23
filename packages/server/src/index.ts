@@ -10,12 +10,11 @@
  */
 import dns from "node:dns";
 import { mkdirSync } from "node:fs";
-import { canonicalAuthority } from "@forumall/shared";
 import { ZodError } from "zod";
 import { createApp } from "./app.ts";
 import { type Config, loadConfig } from "./config.ts";
 import { openDb } from "./db/index.ts";
-import { migrate } from "./db/migrate.ts";
+import { migrate, migrationDomain } from "./db/migrate.ts";
 import { getProviderSigningKey } from "./provider/signing-key.ts";
 
 /**
@@ -68,7 +67,21 @@ if (config.dnsServers.length > 0) {
 }
 
 const db = openDb(config.dbPath);
-const applied = migrate(db, { domain: canonicalAuthority(config.domain) });
+// The localhost fallback is NOT trusted as the authority stored data was written
+// under (a lost DOMAIN must never drive a destructive data migration), so the
+// domain is passed only when the operator configured it.
+const applied = migrate(db, {
+  domain: migrationDomain(config),
+  onDeferred: (id, reason) => {
+    console.warn(
+      [
+        `[server]   ⚠ migration ${id} was NOT applied and will be retried on the next boot:`,
+        `[server]     ${reason}.`,
+        "[server]     Nothing was changed; the server runs normally meanwhile.",
+      ].join("\n"),
+    );
+  },
+});
 if (applied.length > 0) {
   console.log(`[server] applied migrations: ${applied.join(", ")}`);
 }

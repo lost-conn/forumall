@@ -746,8 +746,10 @@ function mergeDmMessages(
  * the guest's rows to (targetHandle, new dm_id), for a third party's to (owner,
  * new dm_id) — of two clashing markers the further-forward is kept (§4.8.1).
  * A row whose counterparty does not derive its dm_id with its owner (ignored,
- * §7.4) is deleted together with its marker instead of being re-keyed — else
- * re-deriving would turn it into a valid conversation.
+ * §7.4) is never re-keyed — re-deriving would turn it into a valid
+ * conversation. A pure pointer (`lastMessageSeq` 0) is deleted with its marker;
+ * a row holding received messages is kept (an old author spelling can fail the
+ * derivation, and deleting would orphan the messages) and stays ignored.
  */
 function mergeDmConversations(
   db: Db,
@@ -764,16 +766,31 @@ function mergeDmConversations(
     .where(eq(dmConversations.owner, guestHandle))
     .all();
   for (const r of owned) {
-    db.drizzle
-      .delete(dmConversations)
-      .where(and(eq(dmConversations.owner, r.owner), eq(dmConversations.dmId, r.dmId)))
-      .run();
-    // An inconsistent (ignored, §7.4) row is deleted with its marker, never
-    // re-derived into a valid conversation.
+    // An inconsistent (ignored, §7.4) row is never re-derived into a valid
+    // conversation: a pure pointer is deleted with its marker; one holding
+    // received messages keeps its dm_id (still ignored) and only moves to the
+    // target — unless the target already has that row, which wins.
     if (!conversationDerivesDmId(guestActor, r)) {
-      deleteReadMarker(db, guestHandle, r.dmId);
+      const targetHas = r.lastMessageSeq !== 0 && conversationRowExists(db, targetHandle, r.dmId);
+      if (r.lastMessageSeq === 0 || targetHas) {
+        deleteConversationRow(db, r.owner, r.dmId);
+        deleteReadMarker(db, guestHandle, r.dmId);
+      } else {
+        warnKeptInconsistentRow(r);
+        db.drizzle
+          .update(dmConversations)
+          .set({ owner: targetHandle })
+          .where(and(eq(dmConversations.owner, r.owner), eq(dmConversations.dmId, r.dmId)))
+          .run();
+        moveReadMarker(
+          db,
+          { handle: guestHandle, scopeId: r.dmId },
+          { handle: targetHandle, scopeId: r.dmId },
+        );
+      }
       continue;
     }
+    deleteConversationRow(db, r.owner, r.dmId);
     const counterparty = r.counterparty === guestActor ? targetActor : r.counterparty;
     const newDmId = deriveDmId(counterparty, targetActor);
     moveReadMarker(
@@ -799,14 +816,18 @@ function mergeDmConversations(
     .all();
   for (const r of pointingAtGuest) {
     const counterpartyActor = `${r.owner}@${domain}`;
-    db.drizzle
-      .delete(dmConversations)
-      .where(and(eq(dmConversations.owner, r.owner), eq(dmConversations.dmId, r.dmId)))
-      .run();
+    // Inconsistent (ignored, §7.4): a pure pointer is deleted with its marker;
+    // one holding received messages is left as is (still ignored).
     if (!conversationDerivesDmId(counterpartyActor, r)) {
-      deleteReadMarker(db, r.owner, r.dmId);
+      if (r.lastMessageSeq === 0) {
+        deleteConversationRow(db, r.owner, r.dmId);
+        deleteReadMarker(db, r.owner, r.dmId);
+      } else {
+        warnKeptInconsistentRow(r);
+      }
       continue;
     }
+    deleteConversationRow(db, r.owner, r.dmId);
     const newDmId = deriveDmId(counterpartyActor, targetActor);
     moveReadMarker(db, { handle: r.owner, scopeId: r.dmId }, { handle: r.owner, scopeId: newDmId });
     upsertMergedConversation(db, {
@@ -819,6 +840,30 @@ function mergeDmConversations(
       lastSentAt: r.lastSentAt,
     });
   }
+}
+
+function deleteConversationRow(db: Db, owner: string, dmId: string): void {
+  db.drizzle
+    .delete(dmConversations)
+    .where(and(eq(dmConversations.owner, owner), eq(dmConversations.dmId, dmId)))
+    .run();
+}
+
+function conversationRowExists(db: Db, owner: string, dmId: string): boolean {
+  return (
+    db.drizzle
+      .select({ dmId: dmConversations.dmId })
+      .from(dmConversations)
+      .where(and(eq(dmConversations.owner, owner), eq(dmConversations.dmId, dmId)))
+      .limit(1)
+      .all().length > 0
+  );
+}
+
+function warnKeptInconsistentRow(r: { owner: string; dmId: string }): void {
+  console.warn(
+    `[merge] kept inconsistent DM conversation row (${r.owner}, ${r.dmId}) holding received messages; it stays ignored (§7.4)`,
+  );
 }
 
 /**

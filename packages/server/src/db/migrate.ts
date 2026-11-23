@@ -14,19 +14,50 @@
  * one) when they introduce tables.
  */
 import type { Database } from "bun:sqlite";
-import { canonicalActor, deriveDmId } from "@forumall/shared";
+import { canonicalActor, canonicalAuthority, deriveDmId } from "@forumall/shared";
 
+import type { Config } from "../config.ts";
 import type { Db } from "./index.ts";
 
 /** Provider facts a data migration may need (see {@link migrate}). */
 export interface MigrationContext {
   /**
    * This provider's canonical authority (`canonicalAuthority(config.domain)`):
-   * a local handle `h` is the actor `h@domain`. Boot always passes it; a test
-   * migrating a fresh database may omit it.
+   * a local handle `h` is the actor `h@domain`. Boot passes it ONLY when the
+   * operator configured DOMAIN — the localhost fallback is not trusted to be the
+   * authority the stored data was written under.
    */
   readonly domain?: string;
+  /** Progress lines from data migrations (default `console.log`). */
+  readonly log?: (line: string) => void;
+  /**
+   * Called when a migration DEFERS itself (default `console.warn`): it rolled
+   * back, is not ledgered, and is retried on the next {@link migrate}.
+   */
+  readonly onDeferred?: (id: string, reason: string) => void;
 }
+
+/**
+ * The `domain` boot hands {@link migrate}: the canonical DOMAIN when the operator
+ * configured one, else `undefined` — the localhost fallback (`domainIsDefault`)
+ * is never trusted to be the authority stored data was written under.
+ */
+export function migrationDomain(
+  config: Pick<Config, "domain" | "domainIsDefault">,
+): string | undefined {
+  return config.domainIsDefault ? undefined : canonicalAuthority(config.domain);
+}
+
+/**
+ * Thrown by a DATA migration that cannot run safely yet (e.g. it needs the
+ * provider domain). {@link migrate} rolls it back, leaves it unledgered so the
+ * next boot retries it, reports it via `onDeferred`, and carries on: only a
+ * migration that later migrations do not depend on may defer.
+ */
+export class MigrationDeferred extends Error {}
+
+/** 0036 sanity guard: refuse when more than this many rows AND over half fail. */
+const DM_HYGIENE_MAX_UNGUARDED_FAILURES = 5;
 
 interface Migration {
   /** Stable, unique identifier; ledgered once applied. Never reuse/rename. */
@@ -835,29 +866,44 @@ const migrations: readonly Migration[] = [
     //    `counterparty` to `canonicalActor(...)` (lowercase handle + canonical
     //    authority; `:443` stripped). The PK is (owner, dm_id): no collision.
     //  - a pointer whose counterparty does not derive its dmId together with the
-    //    owner MUST be ignored or deleted: DELETE every row whose counterparty
-    //    cannot be made canonical, or whose canonical counterparty does not
-    //    derive `dm_id` with `owner@domain` — together with the owner's read
-    //    marker keyed by that dm_id (it belonged to no real conversation). The
-    //    owner's inbox messages are untouched (a stored message's author always
-    //    derives its dmId, so an inbox conversation row is never inconsistent).
-    // The runtime still ignores any such row (`conversationDerivesDmId`), so a
-    // row this migration cannot judge is never served. The derivation check
-    // needs the provider domain; without it (only a test migrating a fresh DB
-    // omits it) the migration refuses to run over existing rows rather than be
-    // ledgered half-done. Data-only and idempotent.
+    //    owner MUST be ignored or deleted. A failing PURE POINTER
+    //    (`last_message_seq = 0`, no received message) is DELETED with the
+    //    owner's read marker on that dm_id. A failing row that holds received
+    //    messages is KEPT (logged): an old author spelling such as
+    //    `bob@host:443` derives a different id than its canonical form, so
+    //    deleting the row would orphan those messages. The runtime ignores it.
+    // Safety: the derivation check needs the provider domain, and a wrong one
+    // makes EVERY row fail. So the migration DEFERS (rolls back, stays
+    // unledgered, retried next boot) when no domain is given — boot passes one
+    // only when DOMAIN is configured — or when more than a handful AND more than
+    // half of the rows fail (a likely wrong DOMAIN). Until it runs, the runtime
+    // ignore rule (`conversationDerivesDmId`) still applies. Data-only and
+    // idempotent; logs how many rows it canonicalized, deleted and kept.
     id: "0036_dm_conversations_canonical_counterparty",
     up: (sqlite, ctx) => {
       const rows = sqlite
-        .query<{ owner: string; dm_id: string; counterparty: string }, []>(
-          "SELECT owner, dm_id, counterparty FROM dm_conversations",
-        )
+        .query<
+          { owner: string; dm_id: string; counterparty: string; last_message_seq: number },
+          []
+        >("SELECT owner, dm_id, counterparty, last_message_seq FROM dm_conversations")
         .all();
       if (rows.length === 0) return;
       const domain = ctx.domain;
       if (domain === undefined) {
-        throw new Error("migration 0036 needs the provider domain (migrate(db, { domain }))");
+        throw new MigrationDeferred(
+          "DOMAIN is not configured; set DOMAIN to this provider's public hostname and restart",
+        );
       }
+      const failing = rows.filter((r) => {
+        const canonical = canonicalActor(r.counterparty);
+        return canonical === null || deriveDmId(`${r.owner}@${domain}`, canonical) !== r.dm_id;
+      });
+      if (failing.length > DM_HYGIENE_MAX_UNGUARDED_FAILURES && failing.length * 2 > rows.length) {
+        throw new MigrationDeferred(
+          `${failing.length} of ${rows.length} DM conversation rows do not derive their dmId under DOMAIN=${domain}; check that DOMAIN is the authority this data was written under`,
+        );
+      }
+      const failed = new Set(failing);
       const update = sqlite.prepare(
         "UPDATE dm_conversations SET counterparty = ? WHERE owner = ? AND dm_id = ?",
       );
@@ -865,15 +911,29 @@ const migrations: readonly Migration[] = [
       const removeMarker = sqlite.prepare(
         "DELETE FROM read_markers WHERE handle = ? AND scope_id = ?",
       );
+      let canonicalized = 0;
+      let deleted = 0;
+      let kept = 0;
       for (const r of rows) {
+        if (failed.has(r)) {
+          if (r.last_message_seq === 0) {
+            remove.run(r.owner, r.dm_id);
+            removeMarker.run(r.owner, r.dm_id);
+            deleted++;
+          } else {
+            kept++;
+          }
+          continue;
+        }
         const canonical = canonicalActor(r.counterparty);
-        if (canonical === null || deriveDmId(`${r.owner}@${domain}`, canonical) !== r.dm_id) {
-          remove.run(r.owner, r.dm_id);
-          removeMarker.run(r.owner, r.dm_id);
-        } else if (canonical !== r.counterparty) {
+        if (canonical !== null && canonical !== r.counterparty) {
           update.run(canonical, r.owner, r.dm_id);
+          canonicalized++;
         }
       }
+      (ctx.log ?? console.log)(
+        `[migrate] 0036 dm_conversations: ${canonicalized} counterparties canonicalized, ${deleted} inconsistent pointers deleted, ${kept} inconsistent rows with received messages kept (ignored at runtime)`,
+      );
     },
   },
 ];
@@ -889,7 +949,9 @@ const LEDGER_DDL = `
  * Apply any not-yet-applied migrations. Idempotent: safe to call on every boot.
  * Returns the ids that were applied during this call (empty if up to date).
  * `ctx.domain` is the provider's canonical authority (needed by data migrations
- * that reason about local actors, e.g. 0036).
+ * that reason about local actors, e.g. 0036). A migration that throws
+ * {@link MigrationDeferred} is rolled back, left unapplied and reported via
+ * `ctx.onDeferred`; the rest still run.
  */
 export function migrate(db: Db, ctx: MigrationContext = {}): string[] {
   const { sqlite } = db;
@@ -904,10 +966,20 @@ export function migrate(db: Db, ctx: MigrationContext = {}): string[] {
   for (const m of migrations) {
     if (applied.has(m.id)) continue;
     // Each migration is atomic: DDL + ledger insert commit together.
-    sqlite.transaction(() => {
-      m.up(sqlite, ctx);
-      record.run(m.id, Date.now());
-    })();
+    try {
+      sqlite.transaction(() => {
+        m.up(sqlite, ctx);
+        record.run(m.id, Date.now());
+      })();
+    } catch (err) {
+      if (!(err instanceof MigrationDeferred)) throw err;
+      // Rolled back and unledgered: retried on the next boot.
+      (ctx.onDeferred ?? ((id, reason) => console.warn(`[migrate] ${id} deferred: ${reason}`)))(
+        m.id,
+        err.message,
+      );
+      continue;
+    }
     newlyApplied.push(m.id);
   }
 

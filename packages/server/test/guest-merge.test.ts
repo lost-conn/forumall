@@ -884,12 +884,21 @@ function insertRawPointer(
   counterparty: string,
   markerSeq: number,
   lastSentMessage: string | null = null,
+  lastMessageSeq = 0,
 ) {
   db.sqlite
     .query(
-      "INSERT INTO dm_conversations (owner, dm_id, counterparty, updated_at, last_message_seq, last_sent_message, last_sent_at) VALUES (?, ?, ?, ?, 0, ?, ?)",
+      "INSERT INTO dm_conversations (owner, dm_id, counterparty, updated_at, last_message_seq, last_sent_message, last_sent_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
-    .run(owner, dmId, counterparty, Date.now(), lastSentMessage, lastSentMessage ? 1 : null);
+    .run(
+      owner,
+      dmId,
+      counterparty,
+      Date.now(),
+      lastMessageSeq,
+      lastSentMessage,
+      lastSentMessage ? 1 : null,
+    );
   db.sqlite
     .query(
       "INSERT INTO read_markers (handle, scope_id, last_read_seq, updated_at) VALUES (?, ?, ?, ?)",
@@ -897,7 +906,7 @@ function insertRawPointer(
     .run(owner, dmId, markerSeq, Date.now());
 }
 
-test("merge: inconsistent (ignored) rows are deleted with their markers, never revived", async () => {
+test("merge: inconsistent (ignored) rows are never revived — pure pointers deleted, rows with messages kept", async () => {
   // §7.4: a pointer whose counterparty does not derive its dmId is ignored; a
   // merge must not re-derive it into a valid conversation.
   const { app, db } = freshApp("merge-inconsistent-rows");
@@ -921,14 +930,37 @@ test("merge: inconsistent (ignored) rows are deleted with their markers, never r
     JSON.stringify(sentPreview("msg_stale", carol.actor)),
   );
 
+  // Inconsistent rows that hold received messages are KEPT (never deleted, never
+  // re-derived): the guest's moves to alice with its dmId; carol's is untouched.
+  const dmKeepGuest = deriveDmId(guest.actor, "yan@remote.example");
+  insertRawPointer(db, guest.handle, dmKeepGuest, "erin@remote.example", 4, null, 4);
+  const dmKeepCarol = deriveDmId(carol.actor, "yan@remote.example");
+  insertRawPointer(db, "carol", dmKeepCarol, guest.actor, 6, null, 6);
+
   const res = await signedRequest(app, guest, "POST", "/api/me/merge", {
     handle: "alice",
     password: PASSWORD,
   });
   expect(res.status).toBe(200);
 
-  expect(db.drizzle.select().from(dmConversations).all()).toEqual([]);
-  expect(db.drizzle.select().from(readMarkers).all()).toEqual([]);
+  const convs = db.drizzle
+    .select({ owner: dmConversations.owner, dmId: dmConversations.dmId })
+    .from(dmConversations)
+    .all()
+    .sort((x, y) => x.owner.localeCompare(y.owner));
+  expect(convs).toEqual([
+    { owner: "alice", dmId: dmKeepGuest },
+    { owner: "carol", dmId: dmKeepCarol },
+  ]);
+  const markers = db.drizzle
+    .select({ handle: readMarkers.handle, scopeId: readMarkers.scopeId })
+    .from(readMarkers)
+    .all()
+    .sort((x, y) => x.handle.localeCompare(y.handle));
+  expect(markers).toEqual([
+    { handle: "alice", scopeId: dmKeepGuest },
+    { handle: "carol", scopeId: dmKeepCarol },
+  ]);
   for (const who of [alice, carol]) {
     const list = await signedRequest(app, who, "GET", "/api/me/dms");
     expect(((await list.json()) as { items: unknown[] }).items).toEqual([]);
