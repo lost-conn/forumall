@@ -915,21 +915,26 @@ export const migrations: readonly Migration[] = [
         return canonical === null || deriveDmId(`${r.owner}@${domain}`, canonical) !== r.dm_id;
       });
       // A local user who authored a CHANNEL message as handle@DOMAIN proves
-      // DOMAIN. One indexed lookup per local user: `messages` has an author-first
-      // unique index, so `m.author = <constant>` per user is an index probe, not
-      // a scan. (`dm_messages` is not consulted: it has no author index, and a
-      // local user's DMs live in the RECIPIENT's inbox; DM ownership is already
-      // covered by the conversation-row derivation above.)
+      // DOMAIN. One pass over `messages`, stopping at the first match, with each
+      // candidate author looked up by the `users` primary key. (The author-first
+      // index on `messages` is partial — `client_message_id IS NOT NULL` — so it
+      // can't serve this query.) `dm_messages` is not consulted: a local user's
+      // DMs live in the RECIPIENT's inbox, and DM ownership is already covered by
+      // the conversation-row derivation above.
       const localChannelAuthor = () =>
         sqlite
           .query<{ one: number }, [string]>(
-            `SELECT 1 AS one FROM users u WHERE EXISTS (SELECT 1 FROM messages m WHERE m.author = u.handle || '@' || ?1) LIMIT 1`,
+            `SELECT 1 AS one FROM messages m
+              WHERE substr(m.author, -length(?1) - 1) = '@' || ?1
+                AND EXISTS (SELECT 1 FROM users u
+                             WHERE u.handle = substr(m.author, 1, length(m.author) - length(?1) - 1))
+              LIMIT 1`,
           )
           .all(domain).length > 0;
       const domainProven = failing.length < rows.length || localChannelAuthor();
       if (!domainProven) {
         throw new MigrationDeferred(
-          `DOMAIN=${domain} cannot be confirmed against stored data (none of the ${rows.length} DM conversation rows derives its id under it and no local user authored a message under it). If DOMAIN is wrong, fix it; if it is right, this resolves once a local user posts a message. Nothing was deleted`,
+          `DOMAIN=${domain} cannot be confirmed against stored data (none of the ${rows.length} DM conversation rows derives its id under it and no local user authored a message under it). If DOMAIN is wrong, fix it; if it is right, this resolves once a local user posts a channel message. Nothing was deleted`,
         );
       }
       if (failing.length > DM_HYGIENE_MAX_UNGUARDED_FAILURES && failing.length * 2 > rows.length) {
