@@ -39,6 +39,23 @@ const DENIED = "evil.example";
 /** Other spellings of the denied provider — each must be treated as `evil.example`. */
 const DENIED_SPELLINGS = [`${DENIED}.`, "EVIL.example:443", `${DENIED}:443`, `${DENIED}.:443`];
 
+/**
+ * Spellings that a URL parser resolves to (or that smuggle) some real host but
+ * are not canonical authorities (review of #23): leading-zero ports, legacy
+ * IPv4, expanded IPv6, userinfo, path/query, empty labels, junk ports.
+ */
+const ALIAS_AUTHORITIES = [
+  "a.test:0443",
+  "a.test:00443",
+  "0x01020304",
+  "[0:0:0:0:0:0:0:1]",
+  "x@a.test",
+  "a.test/x?",
+  "a..test",
+  ".a.test",
+  "a.test:abc",
+];
+
 let tmp: string;
 beforeAll(() => {
   tmp = mkdtempSync(join(tmpdir(), "forumall-canon-"));
@@ -116,6 +133,207 @@ describe("canonical helpers (§2.2)", () => {
     expect(canonicalAuthority("a.test:8443")).toBe("a.test:8443");
     expect(canonicalActor("Alice@A.test:443")).toBe("alice@a.test");
     expect(canonicalActor("alice")).toBeNull();
+  });
+});
+
+describe("aliased / junk authorities are never canonical (review of #23)", () => {
+  test("strict isCanonicalAuthority rejects every alias spelling", async () => {
+    const { isCanonicalAuthority, isCanonicalActor } = await import("@forumall/shared");
+    for (const a of ALIAS_AUTHORITIES) {
+      expect(isCanonicalAuthority(a)).toBe(false);
+      expect(isCanonicalActor(`alice@${a}`)).toBe(false);
+    }
+    expect(canonicalAuthority("a.test:0443")).toBe("a.test");
+    expect(canonicalAuthority("0x01020304")).toBe("1.2.3.4");
+    expect(canonicalAuthority("[0:0:0:0:0:0:0:1]")).toBe("[::1]");
+    for (const ok of ["a.test", "a.test:8443", "localhost:3000", "[::1]:8443", "1.2.3.4"]) {
+      expect(isCanonicalAuthority(ok)).toBe(true);
+    }
+  });
+
+  test("X-OFSCP-Actor / X-OFSCP-Provider on an alias authority → 401, no network", async () => {
+    const { app, spy } = freshApp();
+    const { privateKey } = generateKeyPair();
+    for (const a of ALIAS_AUTHORITIES) {
+      const actorReq = sign({
+        actor: `mallory@${a}`,
+        keyId: "k1",
+        privateKey,
+        authority: DOMAIN,
+        method: "GET",
+        path: "/api/auth/device-keys",
+      });
+      const r1 = await app.request("/api/auth/device-keys", {
+        method: "GET",
+        headers: actorReq.headers,
+      });
+      expect(r1.status).toBe(401);
+      const provReq = signProvider({
+        provider: a,
+        keyId: "k1",
+        privateKey,
+        authority: DOMAIN,
+        method: "POST",
+        path: "/api/test/provider-ping",
+        body: "",
+      });
+      const r2 = await app.request("/api/test/provider-ping", {
+        method: "POST",
+        headers: provReq.headers,
+      });
+      expect(r2.status).toBe(401);
+    }
+    expect(spy.calls).toEqual([]);
+  });
+
+  test("alias authorities in body `with`/`to` → 400; as follow/webhook/push hosts → 400", async () => {
+    const { app } = freshApp();
+    const alice = await registerUserWithKey(app, "alice");
+    const keys = {
+      p256dh:
+        "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4",
+      auth: "BTBZMqHH6r4Tts7J_aSIgg",
+    };
+    for (const a of [...ALIAS_AUTHORITIES, `${DOMAIN}:0443`]) {
+      const counterparty = `bob@${a}`;
+      // Any dmId: the canonical check precedes the dmId check.
+      const withRes = await signedJson(app, alice, "PUT", "/api/me/dms/dm_x", {
+        with: counterparty,
+      });
+      expect(withRes.status).toBe(400);
+      const toRes = await signedJson(app, alice, "POST", "/api/federation/dms/dm_x/messages", {
+        to: counterparty,
+        clientMessageId: "c1",
+        content: { mime: "text/plain", text: "hi" },
+      });
+      expect(toRes.status).toBe(400);
+      // `https://a.test/x?/…` is a genuine URI on host `a.test` (path `/x?/…`),
+      // not an alias, so it is only meaningful in actor/header position.
+      if (a.includes("/")) continue;
+      for (const [path, body] of [
+        ["/api/me/follows", { channel: `https://${a}/api/groups/g/channels/c` }],
+        [
+          "/api/notifications/endpoints",
+          { type: "webhook", target: `https://${a}/hook`, events: ["message.created"] },
+        ],
+        ["/api/push/subscribe", { endpoint: `https://${a}/push/1`, keys }],
+      ] as const) {
+        const res = await signedJson(app, alice, "POST", path, body);
+        expect(res.status).toBe(400);
+      }
+    }
+  });
+
+  test("alice@{our domain}:0443 cannot authenticate as a distinct actor", async () => {
+    const { app } = freshApp();
+    const alice = await registerUserWithKey(app, "alice");
+    // Correctly signed with alice's real key; only the domain spelling differs.
+    for (const actor of [`alice@${DOMAIN}:0443`, `alice@${DOMAIN}:00443`]) {
+      const { headers } = sign({
+        actor,
+        keyId: alice.keyId,
+        privateKey: alice.privateKey,
+        authority: DOMAIN,
+        method: "GET",
+        path: "/api/auth/device-keys",
+      });
+      const res = await app.request("/api/auth/device-keys", { method: "GET", headers });
+      expect(res.status).toBe(401);
+    }
+  });
+
+  test("a remote actor on an alias of its home authority is refused even when the alias would serve valid keys", async () => {
+    // A transport that would happily serve mallory's genuine keys document for
+    // ANY host — so only the canonical-form gate can stop the alias identity.
+    const { publicKey, privateKey } = generateKeyPair();
+    const calls: string[] = [];
+    const servesKeys: FederationFetch = (_d, request) => {
+      calls.push(request.url);
+      return Promise.resolve(
+        Response.json({
+          actor: "mallory@b.test",
+          keys: [
+            {
+              key_id: "k1",
+              algorithm: "Ed25519",
+              public_key: publicKey,
+              created_at: "2026-01-01T00:00:00Z",
+            },
+          ],
+          cache_until: "2099-01-01T00:00:00Z",
+        }),
+      );
+    };
+    const base = loadConfig({
+      DATA_DIR: tmp,
+      DB_PATH: join(tmp, `alias-${appSeq++}.sqlite`),
+      WEB_DIR: join(tmp, "alias-web"),
+      DOMAIN,
+    });
+    const config: Config = Object.freeze({ ...base, argon2: FAST_ARGON2 });
+    const db = openDb(config.dbPath);
+    migrate(db);
+    const app = createApp(config, { db, federationFetch: servesKeys });
+    const req = (actor: string) => {
+      const { headers } = sign({
+        actor,
+        keyId: "k1",
+        privateKey,
+        authority: DOMAIN,
+        method: "GET",
+        path: "/api/auth/device-keys",
+      });
+      return app.request("/api/auth/device-keys", { method: "GET", headers });
+    };
+    // Control: the canonical identity verifies against the served keys.
+    expect((await req("mallory@b.test")).status).not.toBe(401);
+    calls.length = 0;
+    for (const alias of ["mallory@b.test:0443", "mallory@b.test:00443"]) {
+      expect((await req(alias)).status).toBe(401);
+    }
+    expect(calls).toEqual([]);
+  });
+
+  test("known-provider scrape never records junk or aliased entries", async () => {
+    const { config, db } = freshApp();
+    const peerList: FederationFetch = () =>
+      Promise.resolve(
+        Response.json({
+          providers: [
+            { domain: "c.test", addedAt: "2026-01-01T00:00:00Z" },
+            { domain: "C.test:0443", addedAt: "2026-01-01T00:00:00Z" },
+            { domain: "a.test/x?", addedAt: "2026-01-01T00:00:00Z" },
+            { domain: "x@d.test", addedAt: "2026-01-01T00:00:00Z" },
+            { domain: "a..test", addedAt: "2026-01-01T00:00:00Z" },
+          ],
+          metadata: [],
+        }),
+      );
+    const added = await scrapeKnownProviders(db, config, "b.test", peerList);
+    expect(added.sort()).toEqual(["b.test", "c.test"]);
+  });
+});
+
+describe("privacy lists store canonical actors only (review of #23)", () => {
+  test("a user-URI entry is converted to its actor; other URI shapes → 400", async () => {
+    const { app } = freshApp();
+    const alice = await registerUserWithKey(app, "alice");
+    const ok = await signedJson(app, alice, "PUT", "/api/me/privacy", {
+      denyList: ["https://b.test/api/users/mallory"],
+    });
+    expect(ok.status).toBe(200);
+    expect(((await ok.json()) as { denyList: string[] }).denyList).toEqual(["mallory@b.test"]);
+    for (const bad of [
+      "https://b.test/api/groups/g",
+      "https://B.test/api/users/mallory",
+      "https://b.test:0443/api/users/mallory",
+      "https://b.test/api/users/mallory?x=1",
+      "https://x@b.test/api/users/mallory",
+      "https://b.test/api/users/Mallory",
+    ]) {
+      const res = await signedJson(app, alice, "PUT", "/api/me/privacy", { denyList: [bad] });
+      expect(res.status).toBe(400);
+    }
   });
 });
 

@@ -315,6 +315,16 @@ describe("WS handshake (§7.1 Authentication)", () => {
     `alice@${DOMAIN.toUpperCase()}`,
     `alice@${DOMAIN}.`,
     `Alice@${DOMAIN}`,
+    // Aliases a URL parser resolves to the real host (review of #23).
+    `alice@${DOMAIN}:0443`,
+    `alice@${DOMAIN}:00443`,
+    `alice@x@${DOMAIN}`,
+    `alice@${DOMAIN}/x?`,
+    "alice@0x01020304",
+    "alice@[0:0:0:0:0:0:0:1]",
+    "alice@a..test",
+    "alice@.a.test",
+    `alice@${DOMAIN}:abc`,
   ].entries()) {
     test(`non-canonical actor ${spelling} → error then close 4001`, async () => {
       const b = boot(`auth-noncanon-${i}`);

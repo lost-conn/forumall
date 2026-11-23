@@ -24,6 +24,7 @@ import {
   type ProviderDiscovery,
   ProviderDiscoverySchema,
   canonicalAuthority,
+  isCanonicalAuthority,
 } from "@forumall/shared";
 
 import { type FederationFetch, defaultFederationFetch, federationGet } from "./http.ts";
@@ -128,6 +129,8 @@ export class RemoteDiscoveryCache {
     opts: { forceRefresh?: boolean } = {},
   ): Promise<ProviderDiscovery | null> {
     const host = canonicalAuthority(domain);
+    // §2.2: junk that does not canonicalize to a bare host[:port] is never fetched.
+    if (!isCanonicalAuthority(host)) return null;
     if (!opts.forceRefresh) {
       const hit = this.#entries.get(host);
       if (hit && hit.expiresAt > this.#now()) return hit.doc;

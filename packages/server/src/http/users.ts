@@ -51,7 +51,7 @@ import {
 } from "../provider/presence.ts";
 import { getPrivacySettings, updatePrivacySettings } from "../provider/privacy.ts";
 import { canView } from "../provider/visibility.ts";
-import { assertCanonicalActorField } from "./canonical-fields.ts";
+import { userRefToCanonicalActor } from "./canonical-fields.ts";
 import { AppError } from "./errors.ts";
 import { requireLocalActor, requireLocalHandle, requireSignature } from "./signature.ts";
 import type { AppBindings, AuthenticatedActor } from "./types.ts";
@@ -322,18 +322,19 @@ export function createMeUserRouter() {
     // `allowList` / `denyList` are not in the shared update schema (passthrough
     // keeps them), so read them off the raw body when present.
     const body = raw as Record<string, unknown>;
+    // §2.2: entries are compared against viewer actors verbatim, so each is
+    // stored as a canonical actor: a `UserRef` user URI is converted to its actor,
+    // and a non-canonical actor (or any other URI shape) is rejected (400).
     const allowList = Array.isArray(body.allowList)
-      ? (body.allowList.filter((x) => typeof x === "string") as string[])
+      ? (body.allowList.filter((x) => typeof x === "string") as string[]).map((x) =>
+          userRefToCanonicalActor(x, "allowList"),
+        )
       : undefined;
     const denyList = Array.isArray(body.denyList)
-      ? (body.denyList.filter((x) => typeof x === "string") as string[])
+      ? (body.denyList.filter((x) => typeof x === "string") as string[]).map((x) =>
+          userRefToCanonicalActor(x, "denyList"),
+        )
       : undefined;
-    // §2.2: an actor entry is compared against viewer actors verbatim, so it must
-    // be canonical (rejected otherwise, see `canonical-fields.ts`). A `UserRef` URI
-    // entry is left as-is.
-    for (const entry of [...(allowList ?? []), ...(denyList ?? [])]) {
-      if (!entry.startsWith("https://")) assertCanonicalActorField(entry, "allowList/denyList");
-    }
 
     const settings = updatePrivacySettings(db, requireLocalHandle(c), {
       ...(parsed.data.presenceVisibility !== undefined

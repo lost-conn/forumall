@@ -90,44 +90,65 @@ export function contentDigest(bodyBytes: Uint8Array | string): string {
  * §4.4.2 `<authority>`): lowercase host, no trailing dot, internationalized
  * names in ASCII (`xn--`) form, and `:port` only when the port is present and
  * non-default (not 443). Two spellings of one provider — `A.test`, `a.test.`,
- * `a.test:443` — all canonicalize to `a.test`.
+ * `a.test:443`, `a.test:0443` — all canonicalize to `a.test`.
+ *
+ * The host is normalized by the WHATWG URL parser — the same parser that will
+ * build any outbound URL to it — so every spelling that would *reach* the same
+ * host (leading-zero ports, `0x01020304`-style IPv4, expanded IPv6, IDN,
+ * percent-encoding) collapses to one string. Input that is not a bare
+ * `host[:port]` (userinfo, a path, query or fragment, an unparsable port) is
+ * returned lowercased but unnormalized; it is never canonical (see
+ * {@link isCanonicalAuthority}).
  */
 export function canonicalAuthority(authority: string): string {
-  const lower = authority.trim().toLowerCase();
-  const colon = lower.lastIndexOf(":");
-  // No port, or an IPv6 literal without a port (e.g. `[::1]`).
-  const hasPort = colon !== -1 && !lower.endsWith("]");
-  const host = asciiHost((hasPort ? lower.slice(0, colon) : lower).replace(/\.+$/, ""));
-  const port = hasPort ? lower.slice(colon + 1) : "";
-  if (port === "443" || port === "") return host;
-  return `${host}:${port}`;
-}
-
-/** IDNA-encode a non-ASCII host (`bücher.test` → `xn--bcher-kva.test`). */
-function asciiHost(host: string): string {
-  if (/^[\x20-\x7e]*$/.test(host)) return host; // printable ASCII: nothing to encode
+  const raw = authority.trim().toLowerCase();
+  if (raw === "" || /[/?#@\\]/.test(raw)) return raw;
+  let u: URL;
   try {
-    return new URL(`http://${host}`).hostname;
+    u = new URL(`https://${raw}`);
   } catch {
-    return host; // not a valid host at all; left as-is (it is non-canonical)
+    return raw;
   }
-}
-
-/** True iff `authority` is non-empty and already in canonical form (§2.2). */
-export function isCanonicalAuthority(authority: string): boolean {
-  return authority !== "" && canonicalAuthority(authority) === authority;
+  if (u.username || u.password || u.pathname !== "/" || u.search || u.hash) return raw;
+  const host = u.hostname.replace(/\.+$/, "");
+  // `u.port` is "" for the https default (443, in any spelling) and is
+  // otherwise the decimal port without leading zeros.
+  return u.port === "" ? host : `${host}:${u.port}`;
 }
 
 /**
+ * The strict shape of a canonical authority: dot-separated LDH labels (no
+ * empty label, so no leading/trailing/double dot) or a bracketed IPv6 literal,
+ * then an optional port with no leading zero.
+ */
+const CANONICAL_AUTHORITY_RE =
+  /^(?:[a-z0-9-]+(?:\.[a-z0-9-]+)*|\[[0-9a-f:.]+\])(?::[1-9][0-9]{0,4})?$/;
+
+/**
+ * True iff `authority` is already in canonical form (§2.2): it has the strict
+ * canonical shape AND is a fixed point of {@link canonicalAuthority}. Every
+ * boundary that accepts a provider authority (or an actor's domain) without
+ * converting it uses this, so no alias of a host can pass as a distinct one.
+ */
+export function isCanonicalAuthority(authority: string): boolean {
+  return CANONICAL_AUTHORITY_RE.test(authority) && canonicalAuthority(authority) === authority;
+}
+
+/** Handle charset (§2.2.1, without the length bound): no `@`, `/`, case, … */
+const HANDLE_CHARS_RE = /^[a-z0-9_-]+$/;
+
+/**
  * The canonical form (§2.2) of an actor `handle@domain` — handle lowercased,
- * domain a {@link canonicalAuthority} — or `null` if it is not `handle@domain`.
+ * domain a {@link canonicalAuthority} — or `null` if it is not `handle@domain`
+ * or cannot be made canonical (e.g. a junk domain or a handle with `@`/`/`).
  */
 export function canonicalActor(actor: string): string | null {
   const at = actor.lastIndexOf("@");
   if (at <= 0 || at === actor.length - 1) return null;
+  const handle = actor.slice(0, at).toLowerCase();
   const domain = canonicalAuthority(actor.slice(at + 1));
-  if (domain === "") return null;
-  return `${actor.slice(0, at).toLowerCase()}@${domain}`;
+  if (!HANDLE_CHARS_RE.test(handle) || !isCanonicalAuthority(domain)) return null;
+  return `${handle}@${domain}`;
 }
 
 /**

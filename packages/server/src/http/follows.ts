@@ -126,6 +126,13 @@ export function createMeFollowsRouter() {
 
     const channel = parsed.data.channel;
     const groupId = parsed.data.groupId ?? null;
+    // §2.2: an object URI must name its provider canonically — local or remote —
+    // so the stored pointer has one spelling (`EVIL.example:443`,
+    // `a.test:0443`, `x@a.test` → 400).
+    const uriHost =
+      channel.startsWith("https://") || channel.startsWith("http://")
+        ? assertCanonicalUriAuthority(channel, "channel")
+        : null;
     const classified = classifyChannelRef(c, channel);
 
     if (classified.kind === "local") {
@@ -141,11 +148,8 @@ export function createMeFollowsRouter() {
       }
     }
     if (classified.kind === "remote") {
-      // §2.2/§8: the remote host is a provider authority — reject a
-      // non-canonical spelling (`EVIL.example:443`, `evil.example.`) so the
-      // stored pointer names exactly one provider, then apply allow/deny.
-      const remoteHost = assertCanonicalUriAuthority(channel, "channel");
-      if (!isProviderAllowed(c.var.config, remoteHost)) {
+      // §8: the remote host (canonical, checked above) must be allowed.
+      if (uriHost === null || !isProviderAllowed(c.var.config, uriHost)) {
         throw AppError.forbidden({ detail: "federation with that provider is not allowed" });
       }
     }

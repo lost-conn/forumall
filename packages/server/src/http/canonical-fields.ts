@@ -48,3 +48,29 @@ export function assertCanonicalUriAuthority(uri: string, field: string): string 
   }
   return authority;
 }
+
+/**
+ * A `UserRef` (§2.2: an actor, or a user object URI) as a canonical actor, for
+ * fields compared against actors verbatim (privacy `allowList`/`denyList`).
+ *
+ *  - `handle@domain` must already be canonical (rejected otherwise);
+ *  - the user object URI `https://{domain}/api/users/{handle}` (canonical
+ *    authority, nothing else in the URI) is converted to `handle@domain`;
+ *  - any other shape is rejected (`400`) rather than stored as a dead entry
+ *    that would never match a viewer (a deny entry failing open).
+ */
+export function userRefToCanonicalActor(ref: string, field: string): string {
+  if (!ref.startsWith("https://")) {
+    assertCanonicalActorField(ref, field);
+    return ref;
+  }
+  const authority = rawUriAuthority(ref);
+  const m = /^https:\/\/[^/?#]+\/api\/users\/([^/?#]+)$/.exec(ref);
+  const actor = m && authority !== null ? `${m[1]}@${authority}` : "";
+  if (authority === null || authority.includes("@") || !isCanonicalActor(actor)) {
+    throw AppError.badRequest({
+      detail: `\`${field}\` entries must be canonical actors or user URIs https://{domain}/api/users/{handle} (OFSCP §2.2)`,
+    });
+  }
+  return actor;
+}

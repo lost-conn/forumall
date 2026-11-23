@@ -14,6 +14,7 @@
 import { type ProblemDetails, ProblemDetailsSchema } from "@forumall/shared";
 import type { Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
+import { ZodError } from "zod";
 
 export const PROBLEM_CONTENT_TYPE = "application/problem+json";
 
@@ -153,6 +154,18 @@ export function onError(err: Error, c: Context): Response {
   if (err instanceof AppError) {
     if (err.status >= 500) console.error("[server] AppError:", err);
     return problemResponse(c, err.toProblem(), err.headers);
+  }
+
+  // A request body that failed a route's `Schema.parse(...)` is the client's
+  // fault (§7.3 400), e.g. a malformed user ref — not an internal error.
+  if (err instanceof ZodError) {
+    return problemResponse(
+      c,
+      AppError.badRequest({
+        detail: "request body failed validation",
+        extensions: { errors: err.flatten() },
+      }).toProblem(),
+    );
   }
 
   // Unknown/unexpected error: log everything, expose nothing.

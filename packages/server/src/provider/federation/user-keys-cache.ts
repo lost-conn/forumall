@@ -27,6 +27,7 @@ import {
   type UserKeysResponse,
   UserKeysResponseSchema,
   canonicalAuthority,
+  isCanonicalAuthority,
 } from "@forumall/shared";
 
 import { type FederationFetch, defaultFederationFetch, federationGet } from "./http.ts";
@@ -114,6 +115,9 @@ export class RemoteUserKeysCache {
     host: string,
     forceRefresh: boolean,
   ): Promise<UserKeysResponse | null> {
+    // §2.2: only ever build a URL from a canonical authority — an alias
+    // (`a.test:0443`, `x@a.test`, `a.test/x?`) never reaches the network.
+    if (!isCanonicalAuthority(host)) return null;
     const cacheKey = actorCacheKey(handle, host);
     if (!forceRefresh) {
       const hit = this.#entries.get(cacheKey);
