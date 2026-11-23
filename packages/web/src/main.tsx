@@ -84,12 +84,11 @@ if (!root) throw new Error("#root not found");
 };
 
 // Test/debug hook: read the live session's OWN DM conversation rows via a SIGNED
-// `GET /api/me/dms`, returning `{dmId, lastMessageText}` per row. A conversation
-// row exists ONLY for an inbox that holds messages (`dm_conversations.owner`), and
-// its `lastMessage` is that inbox's newest row — so this is the honest server-side
-// probe of the §8.3 "no sender copy" invariant: a user who has only SENT in a
-// conversation has NO row for it, and a user's row never surfaces their own sent
-// message. Signed read path only, no key material (mirrors the hooks above).
+// `GET /api/me/dms`, returning `{dmId, lastMessageText}` per row. A row exists for
+// every conversation with a message in the caller's inbox OR a conversation
+// pointer (OFSCP §7.4), so a user who has only SENT in a conversation can have one;
+// `lastMessage` is the newer of the inbox's newest message and the pointer's cached
+// sent message. Signed read path only, no key material (mirrors the hooks above).
 (
   globalThis as unknown as {
     __forumall_dmConversations?: () => Promise<{ dmId: string; lastMessageText: string }[]>;
