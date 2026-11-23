@@ -649,6 +649,28 @@ describe("DM conversation preview: newer by provider-recorded time (§7.4)", () 
     expect(await previewId(b, alice, dmId)).toBe(received);
   });
 
+  test("re-PUTting the same preview keeps its original store time", async () => {
+    const b = boot("dm-preview-replay");
+    const alice = await registerUserWithKey(b, "alice");
+    const dmId = deriveDmId(alice.actor, REMOTE);
+
+    const old = preview(alice, "msg_old", "2026-01-01T00:00:00Z");
+    await putPointer(b, alice, dmId, old);
+    const storedAt = getDmConversationRow(b.db, "alice", dmId)?.lastSentAt;
+    await tick();
+    const reply = receive(b, dmId, "newer reply");
+    await tick();
+    // A retried/replayed PUT of the same message must not re-stamp it.
+    await putPointer(b, alice, dmId, old);
+    expect(getDmConversationRow(b.db, "alice", dmId)?.lastSentAt).toBe(storedAt);
+    expect(await previewId(b, alice, dmId)).toBe(reply);
+
+    // A genuinely new message is stamped now and wins.
+    await tick();
+    await putPointer(b, alice, dmId, preview(alice, "msg_new", "2026-01-01T00:00:00Z"));
+    expect(await previewId(b, alice, dmId)).toBe("msg_new");
+  });
+
   test("on a tie the received message wins", async () => {
     const b = boot("dm-preview-tie");
     const alice = await registerUserWithKey(b, "alice");

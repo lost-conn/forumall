@@ -483,7 +483,15 @@ export function upsertDmPointer(
         updatedAt: now,
         // The preview's store time moves only with the preview itself: a PUT
         // without `lastMessage` changes no preview, so it can't reorder one.
-        ...(cached !== null ? { lastSentMessage: cached, lastSentAt: now } : {}),
+        // Re-sending the SAME message (by `id`, e.g. a retried or replayed PUT)
+        // keeps the original store time, so an old message can't be re-stamped
+        // to beat a newer received reply.
+        ...(lastSent !== undefined && cached !== null
+          ? {
+              lastSentMessage: cached,
+              lastSentAt: sql`CASE WHEN json_valid(${dmConversations.lastSentMessage}) THEN CASE WHEN json_extract(${dmConversations.lastSentMessage}, '$.id') = ${lastSent.id} THEN ${dmConversations.lastSentAt} ELSE ${now} END ELSE ${now} END`,
+            }
+          : {}),
       },
     })
     .run();

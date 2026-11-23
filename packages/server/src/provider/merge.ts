@@ -726,9 +726,9 @@ function mergeDmConversations(
 /**
  * Insert a re-keyed conversation summary, MERGING with the target's existing row
  * for (owner, dm_id) if one is present: keep the later `updatedAt` and the
- * greater `lastMessageSeq`, keeping a single row. The pointer preview (§7.4)
- * kept is the one this provider stored LATER (`lastSentAt`; a legacy NULL time
- * loses), so it stays paired with its own store time.
+ * greater `lastMessageSeq`, keeping a single row. The re-keyed pointer yields
+ * to the existing one (§4.8.1): the existing preview (§7.4) and its store time
+ * are kept, and the re-keyed row's fill in only when the existing row has none.
  */
 function upsertMergedConversation(
   db: Db,
@@ -755,10 +755,9 @@ function upsertMergedConversation(
         counterparty: row.counterparty,
         updatedAt: Math.max(existing.updatedAt, row.updatedAt),
         lastMessageSeq: Math.max(existing.lastMessageSeq, row.lastMessageSeq),
-        ...(row.lastSentMessage !== null &&
-        (existing.lastSentMessage === null ||
-          (row.lastSentAt ?? Number.NEGATIVE_INFINITY) >
-            (existing.lastSentAt ?? Number.NEGATIVE_INFINITY))
+        // §4.8.1: a re-keyed pointer yields to the existing one — its preview
+        // fills in only when the existing row has none.
+        ...(existing.lastSentMessage === null && row.lastSentMessage !== null
           ? { lastSentMessage: row.lastSentMessage, lastSentAt: row.lastSentAt }
           : {}),
       })

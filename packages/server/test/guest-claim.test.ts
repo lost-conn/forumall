@@ -378,6 +378,43 @@ test("claim: a conversation pointer keeps its preview (re-authored) and its stor
   expect(preview.author).toBe(`ada@${DOMAIN}`);
 });
 
+test("claim: a third party's pointer to the guest keeps its preview and store time", async () => {
+  const { app, db } = freshApp("claim-dm-preview-third-party");
+  const alice = await registerUserWithKey(app, "alice");
+  const group = await createGroup(app, alice, { name: "G", tier: "public", joinPolicy: "invite" });
+  const guest = await provisionGuest(app, alice, group.id);
+  // alice's pointer to the guest, caching a message alice sent.
+  upsertDmPointer(db, "alice", deriveDmId(alice.actor, guest.actor), guest.actor, {
+    id: "msg_alice",
+    author: alice.actor,
+    type: "message",
+    content: { text: "hi guest", mime: "text/plain" },
+    attachments: [],
+    createdAt: "2026-01-01T00:00:00Z",
+    metadata: [],
+  } as unknown as Parameters<typeof upsertDmPointer>[4]);
+  db.sqlite.query("UPDATE dm_conversations SET last_sent_at = 4321 WHERE owner = 'alice'").run();
+
+  const res = await signedRequest(app, guest, "POST", "/api/me/claim", {
+    handle: "ada",
+    password: "super-secret-pw",
+  });
+  expect(res.status).toBe(200);
+
+  const conv = db.drizzle
+    .select()
+    .from(dmConversations)
+    .where(eq(dmConversations.owner, "alice"))
+    .all();
+  expect(conv).toHaveLength(1);
+  expect(conv[0]?.dmId).toBe(deriveDmId(alice.actor, `ada@${DOMAIN}`));
+  expect(conv[0]?.counterparty).toBe(`ada@${DOMAIN}`);
+  expect(conv[0]?.lastSentAt).toBe(4321);
+  const preview = JSON.parse(conv[0]?.lastSentMessage ?? "null") as { id: string; author: string };
+  expect(preview.id).toBe("msg_alice");
+  expect(preview.author).toBe(alice.actor);
+});
+
 test("claim: a full account claiming → 409", async () => {
   const { app } = freshApp("claim-full");
   const alice = await registerUserWithKey(app, "alice");
