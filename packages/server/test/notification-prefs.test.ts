@@ -22,6 +22,8 @@ import { createApp } from "../src/app.ts";
 import { type Argon2Params, type Config, loadConfig } from "../src/config.ts";
 import { type Db, openDb } from "../src/db/index.ts";
 import { migrate } from "../src/db/migrate.ts";
+import { createChannel } from "../src/provider/channels.ts";
+import { createGroup } from "../src/provider/groups.ts";
 import { addMember } from "../src/provider/membership.ts";
 import { createMessage } from "../src/provider/messages.ts";
 import { getEffectiveMode, listPrefs, setPref } from "../src/provider/notification-prefs.ts";
@@ -176,10 +178,23 @@ describe("notifyForChannelMessage honors notification preferences", () => {
     dbs.push(b.db);
     await registerUser(b, "alice");
     await registerUser(b, "bob");
-    const grp = "grp_m";
-    const chn = "chn_m";
-    addMember(b.db, grp, `alice@${DOMAIN}`, "owner");
+    const grp = createGroup(b.db, `alice@${DOMAIN}`, { name: "M", tier: "private" }).id;
+    const chn = createChannel(b.db, grp, { type: "text", tier: "private" }).id;
     addMember(b.db, grp, `bob@${DOMAIN}`, "member");
+
+    // Control: before muting, the mention DOES notify bob (so the assertion
+    // below is about the mute, not about bob being unable to read).
+    const before = post(b, grp, chn, `alice@${DOMAIN}`, "first @bob");
+    expect(
+      notifyForChannelMessage(b.db, {
+        text: "first @bob",
+        author: `alice@${DOMAIN}`,
+        sourceMessageId: before,
+        channelId: chn,
+        groupId: grp,
+        localDomain: DOMAIN,
+      }),
+    ).toHaveLength(1);
 
     // bob mutes the channel.
     setPref(b.db, "bob", "channel", chn, "none");
@@ -193,9 +208,9 @@ describe("notifyForChannelMessage honors notification preferences", () => {
       groupId: grp,
       localDomain: DOMAIN,
     });
-    // No notification for the muted recipient.
+    // No notification for the muted recipient (only the pre-mute one exists).
     expect(created).toHaveLength(0);
-    expect(listNotifications(b.db, "bob").items).toHaveLength(0);
+    expect(listNotifications(b.db, "bob").items).toHaveLength(1);
   });
 
   test("`all` fans a `message` notification to opted-in members, author excluded, deduped vs mention", async () => {
@@ -204,9 +219,9 @@ describe("notifyForChannelMessage honors notification preferences", () => {
     await registerUser(b, "alice");
     await registerUser(b, "bob");
     await registerUser(b, "carol");
-    const grp = "grp_a";
-    const chn = "chn_a";
-    addMember(b.db, grp, `alice@${DOMAIN}`, "owner");
+    // Real group + channel rows: recipients must pass the channel read check (§10.1).
+    const grp = createGroup(b.db, `alice@${DOMAIN}`, { name: "A", tier: "private" }).id;
+    const chn = createChannel(b.db, grp, { type: "text", tier: "private" }).id;
     addMember(b.db, grp, `bob@${DOMAIN}`, "member");
     addMember(b.db, grp, `carol@${DOMAIN}`, "member");
 

@@ -405,4 +405,37 @@ describe("PATCH .../members/{userRef}/display-name (per-group display name)", ()
 
     watcher.close();
   });
+
+  test("a role change also fans out member.updated (spec §5.7)", async () => {
+    const b = boot("dn-role-ws");
+    const alice = await registerUserWithKey(b, "alice");
+    const bob = await registerUserWithKey(b, "bob");
+    const group = await createGroup(b, alice, { name: "G", tier: "public" });
+    seedMember(b.db, group.id, bob.actor, "member");
+    const cRes = await signedReq(b, alice, "POST", `/api/groups/${group.id}/channels`, {
+      type: "text",
+      name: "general",
+      tier: "public",
+    });
+    const channelId = ((await cRes.json()) as { id: string }).id;
+
+    const watcher = await connectAuthenticated(b, alice);
+    await subscribe(watcher, channelId);
+
+    const res = await signedReq(
+      b,
+      alice,
+      "PATCH",
+      `/api/groups/${group.id}/members/${encodeURIComponent(bob.actor)}`,
+      { role: "admin" },
+    );
+    expect(res.status).toBe(200);
+
+    const evt = await watcher.ofType("member.updated");
+    const data = evt.data as { groupId: string; member: Member };
+    expect(data.member.user).toBe(bob.actor);
+    expect(data.member.role).toBe("admin");
+
+    watcher.close();
+  });
 });

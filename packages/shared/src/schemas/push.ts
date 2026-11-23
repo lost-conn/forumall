@@ -46,3 +46,26 @@ export const PushPublicKeyResponseSchema = z
   })
   .passthrough();
 export type PushPublicKeyResponse = z.infer<typeof PushPublicKeyResponseSchema>;
+
+/**
+ * The JSON plaintext of an encrypted Web Push message (OFSCP §10.3): display
+ * fields plus structured routing `data` any client can act on.
+ */
+export const PushPayloadSchema = z
+  .object({
+    title: z.string(),
+    body: z.string(),
+    tag: z.string(),
+    data: z
+      .object({
+        type: z.string().min(1),
+        groupId: z.string().min(1).optional(),
+        channelId: z.string().min(1).optional(),
+        messageId: z.string().min(1).optional(),
+        dmId: z.string().min(1).optional(),
+        targetUrl: z.string().optional(),
+      })
+      .passthrough(),
+  })
+  .passthrough();
+export type PushPayloadWire = z.infer<typeof PushPayloadSchema>;

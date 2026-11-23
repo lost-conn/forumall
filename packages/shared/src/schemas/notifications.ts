@@ -119,3 +119,19 @@ export const NotificationCreatedEventSchema = z
   })
   .passthrough();
 export type NotificationCreatedEvent = z.infer<typeof NotificationCreatedEventSchema>;
+
+/** A per-scope notification setting (OFSCP §10.2): PUT body and GET entry. */
+export const NotificationSettingSchema = z
+  .object({
+    scopeType: z.enum(["group", "channel"]),
+    scopeId: z.string().min(1),
+    mode: z.enum(["all", "mentions", "none"]),
+  })
+  .passthrough();
+export type NotificationSetting = z.infer<typeof NotificationSettingSchema>;
+
+/** GET /api/me/notification-settings response (OFSCP §10.2). */
+export const NotificationSettingsResponseSchema = z
+  .object({ prefs: z.array(NotificationSettingSchema) })
+  .passthrough();
+export type NotificationSettingsResponse = z.infer<typeof NotificationSettingsResponseSchema>;
