@@ -365,10 +365,18 @@ export const WsSubscribedSchema = wsFrame(
 );
 export type WsSubscribed = z.infer<typeof WsSubscribedSchema>;
 
-/** `unsubscribed` event. */
+/**
+ * `unsubscribed` event. `reason` is present only on an unprompted unsubscribe
+ * (§7.1 "Losing access"), e.g. `access_revoked`.
+ */
 export const WsUnsubscribedSchema = wsFrame(
   "unsubscribed",
-  z.object({ channels: z.array(z.string().min(1)) }).passthrough(),
+  z
+    .object({
+      channels: z.array(z.string().min(1)),
+      reason: z.string().min(1).optional(),
+    })
+    .passthrough(),
 );
 export type WsUnsubscribed = z.infer<typeof WsUnsubscribedSchema>;
 

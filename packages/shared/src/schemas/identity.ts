@@ -94,6 +94,24 @@ export const DeviceKeyRegistrationSchema = z
   .passthrough();
 export type DeviceKeyRegistration = z.infer<typeof DeviceKeyRegistrationSchema>;
 
+/** One entry of `GET /api/auth/device-keys` (§4.7). */
+export const DeviceKeyListItemSchema = z
+  .object({
+    key_id: z.string().min(1),
+    algorithm: z.enum(["Ed25519"]),
+    public_key: z.string().min(1),
+    device_name: z.string(),
+    created_at: Rfc3339DateTimeSchema,
+  })
+  .passthrough();
+export type DeviceKeyListItem = z.infer<typeof DeviceKeyListItemSchema>;
+
+/** GET /api/auth/device-keys response (`device-keys-response`, §4.7). */
+export const DeviceKeysResponseSchema = z
+  .object({ keys: z.array(DeviceKeyListItemSchema) })
+  .passthrough();
+export type DeviceKeysResponse = z.infer<typeof DeviceKeysResponseSchema>;
+
 /** Device-key registration response (`device-key-response`). */
 export const DeviceKeyResponseSchema = z
   .object({
