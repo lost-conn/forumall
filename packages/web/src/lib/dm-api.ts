@@ -99,13 +99,19 @@ export async function sendDmMessage(
   opts: SendDmMessageOptions = {},
 ): Promise<SendDmResult> {
   const clientMessageId = opts.clientMessageId ?? newClientMessageId();
-  const res = await client.post<Message>(`/api/federation/dms/${dmId}/messages`, {
-    clientMessageId,
-    ...(opts.to ? { to: opts.to } : {}),
-    content,
-    ...(opts.attachments && opts.attachments.length > 0 ? { attachments: opts.attachments } : {}),
-    ...(opts.reference ? { reference: opts.reference } : {}),
-  });
+  const res = await client.post<Message>(
+    `/api/federation/dms/${dmId}/messages`,
+    {
+      clientMessageId,
+      ...(opts.to ? { to: opts.to } : {}),
+      content,
+      ...(opts.attachments && opts.attachments.length > 0 ? { attachments: opts.attachments } : {}),
+      ...(opts.reference ? { reference: opts.reference } : {}),
+    },
+    // `clientMessageId` is the idempotency key (a duplicate returns the existing
+    // message, §7.1), so a re-signed retry after a 503 cannot double-send.
+    { idempotent: true },
+  );
   return { message: res.data, clientMessageId };
 }
 
@@ -167,7 +173,12 @@ export async function editDmMessage(
   messageId: string,
   content: { mime: string; text: string },
 ): Promise<Message> {
-  const res = await client.patch<Message>(`/api/dms/${dmId}/messages/${messageId}`, { content });
+  // An edit replaces the content wholesale → safe to resend after a 503.
+  const res = await client.patch<Message>(
+    `/api/dms/${dmId}/messages/${messageId}`,
+    { content },
+    { idempotent: true },
+  );
   return res.data;
 }
 

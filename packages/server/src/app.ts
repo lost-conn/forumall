@@ -26,12 +26,14 @@ import { Hono } from "hono";
  */
 import { createBunWebSocket } from "hono/bun";
 
+import { canonicalAuthority } from "@forumall/shared";
 import type { Config } from "./config.ts";
 import type { Db } from "./db/index.ts";
 import { createApiRouter } from "./http/api.ts";
 import { cors } from "./http/cors.ts";
 import { createDiscoveryRouter } from "./http/discovery.ts";
-import { notFound, onError } from "./http/errors.ts";
+import { createProblemHandlers } from "./http/errors.ts";
+import { createProblemsRouter } from "./http/problems.ts";
 import { createStaticHandler } from "./http/static.ts";
 import type { AppBindings } from "./http/types.ts";
 import { createUserKeysRouter } from "./http/user-keys.ts";
@@ -81,6 +83,22 @@ export interface AppDeps {
    * handshake — see the module doc on `provider/nonce-store.ts`.
    */
   readonly nonceStore?: NonceStore;
+  /**
+   * **TEST-ONLY.** Skip the §4.5 "Restarts" replay-store warm-up. The default
+   * in-memory replay store forgets every nonce on restart, so for the first
+   * skew window (300s) after boot the provider answers every signed request
+   * whose timestamp is earlier than T₀ + skew with `503` + `Retry-After` — which
+   * a test that boots a server and signs immediately would trip. When `true`,
+   * the default store is created with T₀ = the Unix epoch, i.e. as if it had
+   * been accepting entries forever, so there is no warm-up.
+   *
+   * Only test harnesses set this (the unit/integration suites, the two-provider
+   * helper, and `e2e/harness/boot-server.ts`). The production entry point
+   * (`src/index.ts`) never does, and it is deliberately NOT reachable from env
+   * or config, so a deployment cannot switch the warm-up off. Ignored when
+   * `nonceStore` is injected (that store's own `startedAt` governs).
+   */
+  readonly testOnlySkipReplayWarmup?: boolean;
   /**
    * Auth rate limiters (§4.1.5, reconciliation #26); built from `config.rateLimit`
    * if not injected. Tests that want to trip a limit deliberately (or bypass it
@@ -136,7 +154,11 @@ export function createApp(config: Config, deps: AppDeps): AppWithWebSocket {
   // `requireSignature()`/`optionalSignature()`/`requireProviderSignature()`,
   // which now default to `c.var.nonceStore` instead of minting their own) and
   // the WS handshake. See the module doc on `provider/nonce-store.ts`.
-  const nonceStore = deps.nonceStore ?? new InMemoryNonceStore();
+  // T₀ (§4.5 "Restarts") is the moment this store is constructed, unless a
+  // test harness opted out of the warm-up (see `testOnlySkipReplayWarmup`).
+  const nonceStore =
+    deps.nonceStore ??
+    new InMemoryNonceStore(deps.testOnlySkipReplayWarmup === true ? { startedAt: 0 } : {});
   // Auth rate limiters (§4.1.5, reconciliation #26): built from `config.rateLimit`
   // unless a caller injects its own (tests that want a deliberate trip or bypass).
   const rateLimits = deps.rateLimits ?? createRateLimits(config);
@@ -171,6 +193,10 @@ export function createApp(config: Config, deps: AppDeps): AppWithWebSocket {
   // Root-level public key discovery (§4.6): `/.well-known/ofscp/users/{handle}/keys`.
   // Also mounted before the static handler so it isn't shadowed by the SPA.
   app.route("/", createUserKeysRouter());
+
+  // Problem-type descriptions (§2.6): `GET /problems/{errorCode}` — the URL every
+  // problem `type` this provider emits points at. Before the SPA fallback.
+  app.route("/", createProblemsRouter());
 
   // Real-time WebSocket endpoint (§7.1): the signed-challenge handshake,
   // subscribe/unsubscribe, and heartbeat. Mounted before the SPA static handler
@@ -221,8 +247,11 @@ export function createApp(config: Config, deps: AppDeps): AppWithWebSocket {
     });
   }
 
-  app.notFound(notFound);
-  app.onError(onError);
+  // Problem `type` URIs are minted under THIS provider's canonical authority
+  // (§2.6/§2.2): `https://{authority}/problems/{errorCode}`.
+  const problems = createProblemHandlers(canonicalAuthority(config.domain));
+  app.notFound(problems.notFound);
+  app.onError(problems.onError);
 
   // Attach the Bun WS handler object + hub + registry for the entry/test harness.
   return Object.assign(app, {

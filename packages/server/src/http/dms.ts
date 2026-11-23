@@ -50,6 +50,7 @@ import {
 } from "@forumall/shared";
 import { eq } from "drizzle-orm";
 import { type Context, Hono } from "hono";
+import type { ContentfulStatusCode } from "hono/utils/http-status";
 
 import type { Config } from "../config.ts";
 import type { Db } from "../db/index.ts";
@@ -76,7 +77,7 @@ import {
   upsertDmPointer,
 } from "../provider/dms.ts";
 import type { FederationFetch } from "../provider/federation/http.ts";
-import { signedProviderFetch } from "../provider/federation/http.ts";
+import { INLINE_RETRY, signedProviderFetch } from "../provider/federation/http.ts";
 import { isProviderAllowed } from "../provider/federation/policy.ts";
 import { getUserRow } from "../provider/guests.ts";
 import { previewText, sendPushToRecipient } from "../provider/push-send.ts";
@@ -249,6 +250,21 @@ function fanOutDmReaction(
 }
 
 /**
+ * Relay a peer's answer to a forwarded DM operation back to the caller: status,
+ * body, `content-type`, and — so the caller's client can back off and re-sign
+ * (§4.5 warm-up) — `Retry-After`.
+ */
+async function relayPeerResponse(c: Context, res: Response): Promise<Response> {
+  if (res.status === 204) return c.body(null, 204);
+  const headers: Record<string, string> = {};
+  for (const name of ["content-type", "retry-after"]) {
+    const v = res.headers.get(name);
+    if (v !== null) headers[name] = v;
+  }
+  return c.body(await res.text(), res.status as ContentfulStatusCode, headers);
+}
+
+/**
  * Forward a DM reaction add/remove to the counterparty's home provider via a
  * provider-signed request (§8.1), mirroring the DM-send delivery path: the
  * reaction targets a message stored only in the remote recipient's inbox
@@ -280,6 +296,8 @@ async function forwardDmReaction(
       url,
       body,
       headers: { "content-type": "application/json" },
+      // PUT/DELETE of a reaction is idempotent → safe to retry a warm-up 503.
+      retry: INLINE_RETRY,
     },
     federationFetch,
   );
@@ -311,7 +329,14 @@ async function forwardDmEdit(
   return signedProviderFetch(
     db,
     config,
-    { method: "PATCH", url, body, headers: { "content-type": "application/json" } },
+    {
+      method: "PATCH",
+      url,
+      body,
+      headers: { "content-type": "application/json" },
+      // The edit REPLACES the content (same body → same result): idempotent.
+      retry: INLINE_RETRY,
+    },
     federationFetch,
   );
 }
@@ -338,7 +363,13 @@ async function forwardDmDelete(
   return signedProviderFetch(
     db,
     config,
-    { method: "DELETE", url, body, headers: { "content-type": "application/json" } },
+    {
+      method: "DELETE",
+      url,
+      body,
+      headers: { "content-type": "application/json" },
+      retry: INLINE_RETRY, // tombstoning twice is a no-op: idempotent
+    },
     federationFetch,
   );
 }
@@ -994,7 +1025,7 @@ export function createDmsRouter() {
         counterpartyDomain: cpDomain,
         actor: actor.actor,
       });
-      return c.body(await res.text(), res.status as 200 | 201 | 400 | 404);
+      return relayPeerResponse(c, res);
     }
 
     // (d) Not stored here.
@@ -1067,7 +1098,7 @@ export function createDmsRouter() {
         counterpartyDomain: cpDomain,
         actor: actor.actor,
       });
-      return c.body(null, res.status === 204 ? 204 : (res.status as 400 | 404));
+      return relayPeerResponse(c, res);
     }
 
     // (d) Not stored here.
@@ -1165,7 +1196,7 @@ export function createDmsRouter() {
         actor: actor.actor,
         content,
       });
-      return c.body(await res.text(), res.status as 200 | 400 | 403 | 404);
+      return relayPeerResponse(c, res);
     }
 
     // (d) Not stored here.
@@ -1236,8 +1267,7 @@ export function createDmsRouter() {
         counterpartyDomain: cpDomain,
         actor: actor.actor,
       });
-      if (res.status === 204) return c.body(null, 204);
-      return c.body(await res.text(), res.status as 400 | 403 | 404);
+      return relayPeerResponse(c, res);
     }
 
     // (d) Not stored here.

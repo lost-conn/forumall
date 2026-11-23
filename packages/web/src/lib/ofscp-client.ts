@@ -25,6 +25,7 @@ import {
   type DeviceKeyResponse,
   contentDigest,
   generateNonce,
+  parseRetryAfterMs,
   rfc3339Timestamp,
   sign,
 } from "@forumall/shared";
@@ -52,6 +53,50 @@ export interface OfscpClientConfig {
   privateKey?: string;
   /** Injectable fetch (defaults to global `fetch`); set for tests. */
   fetch?: typeof fetch;
+  /**
+   * Cap on the total time spent waiting out `503` + `Retry-After` answers before
+   * giving up (ms). Default {@link DEFAULT_RETRY_MAX_WAIT_MS}. See
+   * {@link OfscpClient.request} for the retry policy.
+   */
+  retryMaxWaitMs?: number;
+  /**
+   * Injectable sleep (tests). Defaults to a real timer. Receives the request's
+   * `AbortSignal`, and must reject when it aborts.
+   */
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+}
+
+/**
+ * Default cap on 503/`Retry-After` waits. Short on purpose: a person is waiting.
+ * A provider in its §4.5 replay-store warm-up after a restart (300s on its
+ * clock, longer if ours lags) that asks for longer gets surfaced as a clear
+ * {@link OfscpHttpError} instead.
+ */
+export const DEFAULT_RETRY_MAX_WAIT_MS = 15_000;
+
+/** Methods that are safe to resend (RFC 9110 idempotent methods). */
+const IDEMPOTENT_METHODS = new Set(["GET", "HEAD", "PUT", "DELETE", "OPTIONS"]);
+
+/** Re-exported: the strict shared parser (positive delta-seconds or future IMF-fixdate, ≥1s). */
+export { parseRetryAfterMs };
+
+/** A real timer that rejects with the signal's reason if it aborts first. */
+function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal?.reason);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 /** Per-request options. */
@@ -64,6 +109,12 @@ export interface RequestOptions {
   bearer?: string;
   /** AbortSignal forwarded to fetch. */
   signal?: AbortSignal;
+  /**
+   * Mark a POST/PATCH as safe to resend — its body carries an idempotency key
+   * the server dedupes on (e.g. a message/DM `clientMessageId`) or it replaces
+   * state wholesale (an edit). GET/HEAD/PUT/DELETE are always retryable.
+   */
+  idempotent?: boolean;
 }
 
 /** A typed HTTP response wrapper. */
@@ -81,17 +132,37 @@ export class OfscpHttpError extends Error {
   readonly status: number;
   readonly body: unknown;
   readonly response: Response;
+  /** Seconds the server asked us to wait (`Retry-After`), when it said. */
+  readonly retryAfterSeconds?: number;
   constructor(status: number, body: unknown, response: Response) {
     const detail =
       body && typeof body === "object" && "detail" in body
         ? String((body as { detail: unknown }).detail)
         : response.statusText;
-    super(`OFSCP request failed (${status}): ${detail}`);
+    const retryMs = parseRetryAfterMs(response.headers.get("retry-after"));
+    const retryAfterSeconds = retryMs === null ? undefined : Math.ceil(retryMs / 1000);
+    super(
+      status === 503
+        ? // A neutral user-facing message for any 503 (a §4.5 warm-up after a
+          // restart, a full replay store, or an upstream outage).
+          `The provider is temporarily unavailable. Please try again${
+            retryAfterSeconds !== undefined
+              ? ` in about ${formatWait(retryAfterSeconds)}`
+              : " shortly"
+          }.`
+        : `OFSCP request failed (${status}): ${detail}`,
+    );
     this.name = "OfscpHttpError";
     this.status = status;
     this.body = body;
     this.response = response;
+    if (retryAfterSeconds !== undefined) this.retryAfterSeconds = retryAfterSeconds;
   }
+}
+
+function formatWait(seconds: number): string {
+  if (seconds < 90) return `${seconds} second${seconds === 1 ? "" : "s"}`;
+  return `${Math.ceil(seconds / 60)} minutes`;
 }
 
 /**
@@ -231,6 +302,7 @@ export class OfscpClient {
       body,
       ...(opts.signal ? { signal: opts.signal } : {}),
     });
+    // Not retried: an upload is a non-idempotent POST with no idempotency key.
     return parseResponse<T>(res);
   }
 
@@ -244,16 +316,41 @@ export class OfscpClient {
     body?: unknown,
     opts: RequestOptions = {},
   ): Promise<OfscpResponse<T>> {
-    const { url, headers } = this.buildRequest(method, path, body, opts);
     const { text } = serializeBody(body);
-    const res = await this.doFetch(url.toString(), {
-      method,
-      headers,
-      // Only send a body for methods that carry one.
-      ...(method !== "GET" && method !== "HEAD" && text !== "" ? { body: text } : {}),
-      ...(opts.signal ? { signal: opts.signal } : {}),
-    });
-    return parseResponse<T>(res);
+    const send = (): Promise<Response> => {
+      // Re-built (and so RE-SIGNED, with a fresh timestamp + nonce) per attempt:
+      // a resent signed request can never pass the server's replay check (§4.5).
+      const { url, headers } = this.buildRequest(method, path, body, opts);
+      return this.doFetch(url.toString(), {
+        method,
+        headers,
+        // Only send a body for methods that carry one.
+        ...(method !== "GET" && method !== "HEAD" && text !== "" ? { body: text } : {}),
+        ...(opts.signal ? { signal: opts.signal } : {}),
+      });
+    };
+
+    // Retry policy: a `503` carrying `Retry-After` (e.g. the provider's §4.5
+    // replay-store warm-up after a restart) is retried — re-signed — after the
+    // requested wait, but only for idempotent requests (GET/HEAD/PUT/DELETE, or
+    // a POST/PATCH the caller marks `idempotent`), at most 4 attempts, and only
+    // while the summed waits stay within `retryMaxWaitMs` (default 15s). Past
+    // that the 503 surfaces as an OfscpHttpError with a user-facing message and
+    // `retryAfterSeconds`.
+    const retryable = IDEMPOTENT_METHODS.has(method.toUpperCase()) || opts.idempotent === true;
+    const maxWait = this.config.retryMaxWaitMs ?? DEFAULT_RETRY_MAX_WAIT_MS;
+    const sleep = this.config.sleep ?? abortableSleep;
+    let waited = 0;
+    for (let attempt = 1; ; attempt++) {
+      const res = await send();
+      if (res.status !== 503 || !retryable || attempt >= 4) return parseResponse<T>(res);
+      const waitMs = parseRetryAfterMs(res.headers.get("retry-after"));
+      if (waitMs === null || waited + waitMs > maxWait) return parseResponse<T>(res);
+      await res.body?.cancel();
+      // Abort-aware: an aborted request stops waiting and rejects at once.
+      await sleep(waitMs, opts.signal);
+      waited += waitMs;
+    }
   }
 
   /**

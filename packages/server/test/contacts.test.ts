@@ -55,7 +55,7 @@ function boot(name: string, env: Record<string, string> = {}): Booted {
   const config: Config = Object.freeze({ ...base, argon2: FAST_ARGON2 });
   const db = openDb(config.dbPath);
   migrate(db);
-  const app = createApp(config, { db });
+  const app = createApp(config, { testOnlySkipReplayWarmup: true, db });
   const server = Bun.serve({ port: 0, fetch: app.fetch, websocket: app.__websocket });
   const b: Booted = { app, db, config, server };
   booted.push(b);

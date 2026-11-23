@@ -95,7 +95,7 @@ function freshApp() {
   const db = openDb(config.dbPath);
   migrate(db);
   const spy = spyFetch();
-  const app = createApp(config, { db, federationFetch: spy.fetch });
+  const app = createApp(config, { testOnlySkipReplayWarmup: true, db, federationFetch: spy.fetch });
   app.post("/api/test/provider-ping", requireProviderSignature(), (c) => c.json({ ok: true }));
   return { app, config, db, spy };
 }
@@ -278,7 +278,11 @@ describe("aliased / junk authorities are never canonical (review of #23)", () =>
     const config: Config = Object.freeze({ ...base, argon2: FAST_ARGON2 });
     const db = openDb(config.dbPath);
     migrate(db);
-    const app = createApp(config, { db, federationFetch: servesKeys });
+    const app = createApp(config, {
+      testOnlySkipReplayWarmup: true,
+      db,
+      federationFetch: servesKeys,
+    });
     const req = (actor: string) => {
       const { headers } = sign({
         actor,

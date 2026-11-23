@@ -112,6 +112,7 @@ export function startFederation(dir: string, opts: StartFederationOptions = {}):
     const db = openDb(config.dbPath);
     migrate(db);
     const app = createApp(config, {
+      testOnlySkipReplayWarmup: true,
       db,
       federationFetch,
       ...(opts.wsTimings !== undefined ? { wsTimings: opts.wsTimings } : {}),

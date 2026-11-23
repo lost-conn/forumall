@@ -63,9 +63,9 @@ import type { RemoteDiscoveryCache } from "../provider/federation/discovery-cach
 import { isProviderAllowed } from "../provider/federation/policy.ts";
 import type { RemoteUserKeysCache } from "../provider/federation/user-keys-cache.ts";
 import {
-  DEFAULT_NONCE_RETENTION_MS,
   type NonceStore,
   nonceKeyId,
+  nonceRetentionMs as retentionForSkew,
 } from "../provider/nonce-store.ts";
 import { getProviderSigningKeyById } from "../provider/signing-key.ts";
 import { AppError } from "./errors.ts";
@@ -88,7 +88,7 @@ export interface RequireSignatureOptions {
   nonceStore?: NonceStore;
   /** Allowed ±skew for `X-OFSCP-Timestamp`, seconds. Default 300 (§4.5 step 3). */
   skewSeconds?: number;
-  /** Nonce retention window, ms. Default 600_000 (≥600s, §4.5 step 4). */
+  /** Nonce retention window, ms. Default `2 · skewSeconds` (600s; §4.5 step 4). */
   nonceRetentionMs?: number;
 }
 
@@ -319,7 +319,7 @@ export function requireSignature(
 ): MiddlewareHandler<AppBindings> {
   const mode: SignatureMode = opts.mode ?? "actor";
   const skewSeconds = opts.skewSeconds ?? DEFAULT_TIMESTAMP_SKEW_SECONDS;
-  const nonceRetentionMs = opts.nonceRetentionMs ?? DEFAULT_NONCE_RETENTION_MS;
+  const nonceRetentionMs = opts.nonceRetentionMs ?? retentionForSkew(skewSeconds);
   const identityHeader = mode === "provider" ? HEADER.PROVIDER : HEADER.ACTOR;
 
   return async (c, next) => {
@@ -394,10 +394,41 @@ async function verifyAndSetActor(c: Context, vctx: VerifyContext): Promise<void>
         detail: "X-OFSCP-Timestamp is not a valid RFC 3339 timestamp",
       });
     }
-    if (Math.abs(Date.now() - tsMillis) > skewSeconds * 1000) {
+    // Skew, warm-up and nonce expiry are all measured on the replay store's
+    // clock (§4.5: one clock); for the default store that is `Date.now`.
+    const now = nonceStore.now();
+    if (Math.abs(now - tsMillis) > skewSeconds * 1000) {
       throw AppError.unauthorized({
         detail: `X-OFSCP-Timestamp is outside the allowed ±${skewSeconds}s window`,
       });
+    }
+
+    // --- §4.5 "Restarts": replay-store warm-up → 503 + Retry-After ----------
+    // A replay store that does not survive a restart (ours is in-memory) has
+    // forgotten nonces that are still replayable: one recorded just before the
+    // restart may carry a timestamp up to `skew` ahead of that moment. So every
+    // signature timestamped earlier than T₀ + skew is rejected, where T₀ is when
+    // the current store began accepting entries. This is "try again later", not
+    // "bad credentials", hence 503 (never 401), with a Retry-After of at least
+    // the time left until T₀ + skew; the client must re-sign with a fresh
+    // timestamp and nonce. (The WS `authenticate` handshake is exempt — its
+    // challenge nonce is server-issued per connection — and does not come here.)
+    const t0 = nonceStore.startedAt;
+    if (t0 !== null) {
+      const warmupEnd = t0 + skewSeconds * 1000;
+      if (tsMillis < warmupEnd) {
+        // At least the time until T₀ + skew on OUR clock — and, for a client
+        // whose clock lags ours, until ITS clock reaches T₀ + skew (its next
+        // timestamp is ≈ tsMillis + elapsed): so the larger of the two gaps.
+        // Rounded up, and ≥1s.
+        const remainingMs = Math.max(warmupEnd - now, warmupEnd - tsMillis);
+        const retryAfter = Math.max(1, Math.ceil(remainingMs / 1000));
+        throw AppError.serviceUnavailable({
+          detail:
+            "replay store is warming up after a restart; re-sign the request with a fresh timestamp and nonce after Retry-After",
+          headers: { "Retry-After": String(retryAfter) },
+        });
+      }
     }
 
     // --- §4.5 step 4: (Key-ID, Nonce) not already seen → 401 ----------------
@@ -478,7 +509,13 @@ async function verifyAndSetActor(c: Context, vctx: VerifyContext): Promise<void>
       throw AppError.unauthorized({ detail: "replayed (key id, nonce): nonce already used" });
     }
     if (!nonceStore.remember(nsKeyId, nonce, nonceRetentionMs)) {
-      throw AppError.serviceUnavailable({ detail: "replay store is full; retry later" });
+      // §4.5: fail closed with 503 + Retry-After rather than evict a live entry.
+      // Entries expire continuously and the store re-sweeps at least every
+      // 60s, so a minute is a sensible back-off.
+      throw AppError.serviceUnavailable({
+        detail: "replay store is full; retry later",
+        headers: { "Retry-After": "60" },
+      });
     }
 
     // Authenticated. Authorization (membership/tier) is applied separately.
@@ -515,7 +552,7 @@ export function optionalSignature(
 ): MiddlewareHandler<AppBindings> {
   const mode: SignatureMode = opts.mode ?? "actor";
   const skewSeconds = opts.skewSeconds ?? DEFAULT_TIMESTAMP_SKEW_SECONDS;
-  const nonceRetentionMs = opts.nonceRetentionMs ?? DEFAULT_NONCE_RETENTION_MS;
+  const nonceRetentionMs = opts.nonceRetentionMs ?? retentionForSkew(skewSeconds);
   const identityHeader = mode === "provider" ? HEADER.PROVIDER : HEADER.ACTOR;
 
   // A request is "signing" if it carries ANY of the X-OFSCP signing headers; if
@@ -570,7 +607,7 @@ export function requireActorOrProviderSignature(
   opts: Omit<RequireSignatureOptions, "mode"> = {},
 ): MiddlewareHandler<AppBindings> {
   const skewSeconds = opts.skewSeconds ?? DEFAULT_TIMESTAMP_SKEW_SECONDS;
-  const nonceRetentionMs = opts.nonceRetentionMs ?? DEFAULT_NONCE_RETENTION_MS;
+  const nonceRetentionMs = opts.nonceRetentionMs ?? retentionForSkew(skewSeconds);
 
   return async (c, next) => {
     const mode: SignatureMode = c.req.header(HEADER.PROVIDER) !== undefined ? "provider" : "actor";

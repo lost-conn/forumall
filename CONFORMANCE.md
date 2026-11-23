@@ -73,7 +73,7 @@ for these protocol tests, or the feature is optional.
 | 1 | Password-based registration and login | `auth.test.ts` | covered |
 | 2 | Scoped, short-lived bootstrap tokens (§4.2) | `auth.test.ts` | covered |
 | 3 | Device key registration + revocation | `device-keys.test.ts` | covered |
-| 4 | Validate Ed25519 request signatures over §4.4.2 canonical string (authority binding, nonce replay) | `shared/conformance.test.ts`, `shared/signing.test.ts`, `signature.test.ts`, `nonce-store.test.ts`, `canonical-authority.test.ts` (§2.2 canonical actors/authorities) | covered |
+| 4 | Validate Ed25519 request signatures over §4.4.2 canonical string (authority binding, nonce replay) | `shared/conformance.test.ts`, `shared/signing.test.ts`, `signature.test.ts`, `nonce-store.test.ts`, `replay-warmup.test.ts` (§4.5 Restarts: 503 + `Retry-After` warm-up of the in-memory replay store; WS handshake exempt), `canonical-authority.test.ts` (§2.2 canonical actors/authorities) | covered |
 | 5 | Signed WS `auth.challenge`/`authenticate` handshake (§7.1) | `shared/conformance.test.ts`, `shared/ws-auth.test.ts`, `ws.test.ts` | covered |
 | 6 | Serve user public keys at `/.well-known/ofscp/users/{handle}/keys` | `conformance.test.ts`, `device-keys.test.ts` | covered |
 | 7 | Group + channel CRUD with permission model (§5.5) | `groups.test.ts`, `channels.test.ts`, `conformance.test.ts` | covered |
