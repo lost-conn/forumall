@@ -10,9 +10,10 @@
  *    event is fanned to the actor's OTHER devices via `hub.publishToActor` for
  *    multi-device sync. Returns the touched markers with recomputed unread counts.
  *
- * Read state is private + per-account; a scope the user can't see is harmless
- * (markers are private state) so an unknown/unseen scope is accepted, never 404'd
- * — the PATCH is idempotent.
+ * Read state is private + per-account. A marker on a scope the caller can't
+ * currently read (or a DM not in its inbox) is silently ignored, exactly like an
+ * unknown scope — never 403/404'd, so the response can't confirm a scope or
+ * message exists. The PATCH is idempotent.
  */
 import {
   ReadMarkersResponseSchema,
@@ -23,6 +24,7 @@ import { Hono } from "hono";
 
 import { getUserRow } from "../provider/guests.ts";
 import {
+  canHoldMarker,
   getUnreadSummary,
   seqForMessage,
   setReadMarkers,
@@ -77,9 +79,11 @@ export function createMeReadMarkersRouter() {
     // Resolve each marker to a provider seq: OFSCP names the newest-read
     // MESSAGE (`lastReadMessageId`); Forumall's own client may send the `seq`
     // directly (extension). A marker naming a message this provider does not
-    // hold in that scope is ignored, like an unknown scope.
+    // hold in that scope is ignored, like an unknown scope — as is any scope the
+    // caller can't read, so neither form becomes an existence/activity oracle.
     const entries: { scopeId: string; lastReadSeq: number }[] = [];
     for (const m of parsed.data.markers) {
+      if (!canHoldMarker(db, handle, canonicalActor, m.scopeId)) continue;
       const seq =
         m.lastReadMessageId !== undefined
           ? seqForMessage(db, m.scopeId, m.lastReadMessageId)
