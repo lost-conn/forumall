@@ -407,7 +407,9 @@ describe("remote WS key re-check — key unconfirmed → 4001 at expiry (§7.1)"
     const alice = await connectAlice(h);
     const fetchesAtAuth = h.fetches;
 
-    await Bun.sleep(2_100); // past the handshake entry's real-time expiry
+    // A full second past the handshake entry's real-time expiry: were the refresh
+    // timer broken, the 4001 at 2 s would have long arrived by now.
+    await Bun.sleep(3_000);
     expect(h.fetches).toBeGreaterThan(fetchesAtAuth);
     expect(alice.closed).toBe(false);
     h.advance(1_000);

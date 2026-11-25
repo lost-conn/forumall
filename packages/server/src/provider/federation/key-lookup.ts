@@ -27,6 +27,12 @@
  *                     ({@link RefetchLimiter}) suppressed it, and no unexpired
  *                     cached key matches → `503` + `Retry-After` (§4.6, §8.1).
  *
+ * Body size: a key document is read only up to its cache's `maxBodyBytes`
+ * (default {@link DEFAULT_MAX_KEY_DOCUMENT_BYTES}); a larger body — declared by
+ * `Content-Length` or found while reading — is abandoned unread and is a
+ * `fetch_failed` like any other invalid body. The peer chooses the body, and
+ * caches hold up to thousands of documents, so each one must be bounded.
+ *
  * Federation-policy denial (§8 Authorization → `403`) is NOT an outcome here:
  * the verifier decides it from the claimed domain before calling a cache.
  *
@@ -39,6 +45,13 @@
 import { EgressBlockedError } from "./egress-guard.ts";
 import { type FederationFetch, federationGet } from "./http.ts";
 import type { RateLimited, RefetchLimiter } from "./refetch-limiter.ts";
+
+/**
+ * Default cap on a key document's body (64 KiB). A user's keys response or a
+ * provider's discovery document is a handful of keys; this leaves room for
+ * hundreds of devices while keeping a cache full of documents small.
+ */
+export const DEFAULT_MAX_KEY_DOCUMENT_BYTES = 65_536;
 
 /** Why (or whether) a remote signing key resolved. See the module docs. */
 export type KeyLookup<K> =
@@ -74,6 +87,8 @@ export interface DocumentFetchSpec<D> {
   readonly url: string;
   /** True when a `404` means "no keys" (user keys, §4.6); false makes it a fetch failure (§8.1). */
   readonly notFoundMeansNoKeys: boolean;
+  /** Largest body read, in bytes; a larger one is a fetch failure. */
+  readonly maxBodyBytes: number;
   /**
    * Validate a parsed JSON body: the document, or a reason it is invalid
    * (schema mismatch, or a document naming a different actor/provider).
@@ -108,7 +123,14 @@ export async function fetchKeyDocument<D>(
   }
   let body: unknown;
   try {
-    body = await res.json();
+    const text = await readBodyLimited(res, spec.maxBodyBytes);
+    if (text === null) {
+      return {
+        kind: "fetch_failed",
+        reason: `${spec.url} body exceeds ${spec.maxBodyBytes} bytes`,
+      };
+    }
+    body = JSON.parse(text);
   } catch (err) {
     // Not JSON — or the deadline expired while reading the body.
     const why = err instanceof Error ? err.message : String(err);
@@ -117,6 +139,42 @@ export async function fetchKeyDocument<D>(
   const checked = spec.validate(body);
   if (!checked.ok) return { kind: "fetch_failed", reason: checked.reason };
   return { kind: "ok", doc: checked.doc, response: res };
+}
+
+/**
+ * Read `res`'s body as UTF-8 text, or `null` (the body cancelled) once it is
+ * known to exceed `maxBytes`: up front from `Content-Length`, else while
+ * reading. Read errors (including the egress deadline) propagate. The count
+ * is checked per chunk, so at most one transport chunk past `maxBytes` is
+ * ever held before the body is abandoned.
+ */
+async function readBodyLimited(res: Response, maxBytes: number): Promise<string | null> {
+  const declared = Number(res.headers.get("content-length") ?? Number.NaN);
+  if (declared > maxBytes) {
+    await res.body?.cancel();
+    return null;
+  }
+  if (!res.body) return "";
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel();
+      return null;
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
 }
 
 /**

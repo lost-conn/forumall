@@ -39,6 +39,12 @@
  *    defaults `DEFAULT_HOST_FETCH_LIMITS`); a fetch it refuses is
  *    `rate_limited` with the host's wait, exactly like the per-actor case.
  *
+ *  - Memory is bounded: cached documents by {@link ExpiringEntries} (expired
+ *    ones removed, at most `maxCachedDocuments`, least recently used evicted),
+ *    each document's body by `maxDocumentBytes`, and the record of last
+ *    completed fetches by `maxRememberedFetches`. Actors are named by
+ *    requesters, so none of these may grow with them.
+ *
  * The cache is per-app (constructed in `createApp`) and exposed on
  * `c.var.userKeysCache`. It carries no secrets — only public device keys.
  */
@@ -49,10 +55,16 @@ import {
   isCanonicalActor,
 } from "@forumall/shared";
 
+import {
+  DEFAULT_MAX_CACHED_DOCUMENTS,
+  ExpiringEntries,
+  requireCountAtLeastOne,
+} from "./expiring-entries.ts";
 import { HostFetchLimiter, type HostFetchLimits } from "./host-fetch-limiter.ts";
 import { type FederationFetch, defaultFederationFetch } from "./http.ts";
 import {
   type CachedDocument,
+  DEFAULT_MAX_KEY_DOCUMENT_BYTES,
   type DocumentFetch,
   type KeyLookup,
   fetchKeyDocument,
@@ -89,9 +101,20 @@ export interface UserKeysCacheOptions {
   /**
    * How many actors' last completed fetch ({@link RemoteUserKeysCache.lastCompletedFetch})
    * are remembered; the least recently fetched is forgotten first. Default
-   * {@link DEFAULT_MAX_REMEMBERED_FETCHES}.
+   * {@link DEFAULT_MAX_REMEMBERED_FETCHES}. Integer ≥ 1.
    */
   readonly maxRememberedFetches?: number;
+  /**
+   * How many documents are cached at most; past it the least recently used is
+   * evicted (it is simply fetched again when next needed). Expired entries are
+   * removed too. Default {@link DEFAULT_MAX_CACHED_DOCUMENTS}. Integer ≥ 1.
+   */
+  readonly maxCachedDocuments?: number;
+  /**
+   * Largest response body read, in bytes; a larger one is a fetch failure.
+   * Default {@link DEFAULT_MAX_KEY_DOCUMENT_BYTES}. Integer ≥ 1.
+   */
+  readonly maxDocumentBytes?: number;
   /** Injected transport (default: the egress-guarded {@link defaultFederationFetch}). */
   readonly federationFetch?: FederationFetch;
   /** Clock, overridable in tests. Default `Date.now`. */
@@ -110,7 +133,9 @@ export const DEFAULT_MAX_REMEMBERED_FETCHES = 10_000;
 const MAX_TTL_MS = 3_600_000;
 
 export class RemoteUserKeysCache {
-  readonly #entries = new Map<string, CachedDocument<UserKeysResponse>>();
+  /** Unexpired documents per actor, bounded (see {@link ExpiringEntries}). */
+  readonly #entries: ExpiringEntries<UserKeysResponse>;
+  readonly #maxDocumentBytes: number;
   /**
    * Per actor, what the most recent COMPLETED fetch showed: its document, or
    * `null` for a `404`. Kept even when the document was not cacheable, because
@@ -136,6 +161,12 @@ export class RemoteUserKeysCache {
     this.#maxTtlMs = opts.maxTtlMs ?? MAX_TTL_MS;
     this.#now = opts.now ?? Date.now;
     this.#maxRememberedFetches = opts.maxRememberedFetches ?? DEFAULT_MAX_REMEMBERED_FETCHES;
+    requireCountAtLeastOne("maxRememberedFetches", this.#maxRememberedFetches);
+    this.#maxDocumentBytes = opts.maxDocumentBytes ?? DEFAULT_MAX_KEY_DOCUMENT_BYTES;
+    requireCountAtLeastOne("maxDocumentBytes", this.#maxDocumentBytes);
+    const maxCachedDocuments = opts.maxCachedDocuments ?? DEFAULT_MAX_CACHED_DOCUMENTS;
+    requireCountAtLeastOne("maxCachedDocuments", maxCachedDocuments);
+    this.#entries = new ExpiringEntries({ maxEntries: maxCachedDocuments, now: this.#now });
     this.#limiter = new RefetchLimiter({
       intervalMs: opts.refetchIntervalMs ?? DEFAULT_REFETCH_INTERVAL_MS,
       now: this.#now,
@@ -171,8 +202,7 @@ export class RemoteUserKeysCache {
 
   /** The unexpired cache entry for `actor`, if any. */
   #cached(actor: string): CachedDocument<UserKeysResponse> | null {
-    const hit = this.#entries.get(actor);
-    return hit && hit.expiresAt > this.#now() ? hit : null;
+    return this.#entries.get(actor);
   }
 
   /** Record `actor`'s latest completed fetch, forgetting the oldest beyond the cap. */
@@ -196,6 +226,7 @@ export class RemoteUserKeysCache {
       host,
       url: `https://${host}/.well-known/ofscp/users/${encodeURIComponent(handle)}/keys`,
       notFoundMeansNoKeys: true,
+      maxBodyBytes: this.#maxDocumentBytes,
       validate: (body) => {
         const parsed = UserKeysResponseSchema.safeParse(body);
         if (!parsed.success) return { ok: false, reason: `invalid keys response for ${actor}` };
@@ -211,7 +242,7 @@ export class RemoteUserKeysCache {
       this.#rememberFetch(actor, fetched.doc);
       const ttl = this.#ttlMs(fetched.doc);
       if (ttl > 0) {
-        this.#entries.set(actor, { doc: fetched.doc, expiresAt: this.#now() + ttl });
+        this.#entries.set(actor, fetched.doc, this.#now() + ttl);
       } else {
         this.#entries.delete(actor);
       }
