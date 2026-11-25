@@ -30,6 +30,10 @@
  *    one discovery fetch in flight and one start per interval per host); the
  *    user-keys cache, whose identities a requester can multiply on one host,
  *    adds a separate `HostFetchLimiter`.
+ *  - Memory is bounded: cached documents by {@link ExpiringEntries} (expired
+ *    ones removed, at most `maxCachedDocuments`, least recently used evicted)
+ *    and each document's body by `maxDocumentBytes`. The authority is named by
+ *    the requester, so neither may grow with the number of peers claimed.
  *
  * The cache is per-app (constructed in `createApp`) and exposed on
  * `c.var.discoveryCache`. It carries no secrets — only public discovery docs.
@@ -41,9 +45,15 @@ import {
   isCanonicalAuthority,
 } from "@forumall/shared";
 
+import {
+  DEFAULT_MAX_CACHED_DOCUMENTS,
+  ExpiringEntries,
+  requireCountAtLeastOne,
+} from "./expiring-entries.ts";
 import { type FederationFetch, defaultFederationFetch } from "./http.ts";
 import {
   type CachedDocument,
+  DEFAULT_MAX_KEY_DOCUMENT_BYTES,
   type DocumentFetch,
   type KeyLookup,
   fetchKeyDocument,
@@ -75,6 +85,17 @@ export interface DiscoveryCacheOptions {
    * (concurrent lookups still share one fetch).
    */
   readonly refetchIntervalMs?: number;
+  /**
+   * How many documents are cached at most; past it the least recently used is
+   * evicted (it is simply fetched again when next needed). Expired entries are
+   * removed too. Default {@link DEFAULT_MAX_CACHED_DOCUMENTS}. Integer ≥ 1.
+   */
+  readonly maxCachedDocuments?: number;
+  /**
+   * Largest response body read, in bytes; a larger one is a fetch failure.
+   * Default {@link DEFAULT_MAX_KEY_DOCUMENT_BYTES}. Integer ≥ 1.
+   */
+  readonly maxDocumentBytes?: number;
   /** Injected transport (default: the egress-guarded {@link defaultFederationFetch}). */
   readonly federationFetch?: FederationFetch;
   /** Clock, overridable in tests. Default `Date.now`. */
@@ -111,7 +132,9 @@ function deriveTtlMs(
 }
 
 export class RemoteDiscoveryCache {
-  readonly #entries = new Map<string, CachedDocument<ProviderDiscovery>>();
+  /** Unexpired documents per authority, bounded (see {@link ExpiringEntries}). */
+  readonly #entries: ExpiringEntries<ProviderDiscovery>;
+  readonly #maxDocumentBytes: number;
   readonly #fetch: FederationFetch;
   readonly #defaultTtlMs: number;
   readonly #maxTtlMs: number;
@@ -125,6 +148,12 @@ export class RemoteDiscoveryCache {
     this.#defaultTtlMs = opts.defaultTtlMs ?? DEFAULT_TTL_MS;
     this.#maxTtlMs = opts.maxTtlMs ?? MAX_TTL_MS;
     this.#now = opts.now ?? Date.now;
+    this.#maxDocumentBytes = opts.maxDocumentBytes ?? DEFAULT_MAX_KEY_DOCUMENT_BYTES;
+    requireCountAtLeastOne("maxDocumentBytes", this.#maxDocumentBytes);
+    this.#entries = new ExpiringEntries({
+      maxEntries: opts.maxCachedDocuments ?? DEFAULT_MAX_CACHED_DOCUMENTS,
+      now: this.#now,
+    });
     this.#limiter = new RefetchLimiter({
       intervalMs: opts.refetchIntervalMs ?? DEFAULT_REFETCH_INTERVAL_MS,
       now: this.#now,
@@ -138,8 +167,7 @@ export class RemoteDiscoveryCache {
 
   /** The unexpired cache entry for `host`, if any. */
   #cached(host: string): CachedDocument<ProviderDiscovery> | null {
-    const hit = this.#entries.get(host);
-    return hit && hit.expiresAt > this.#now() ? hit : null;
+    return this.#entries.get(host);
   }
 
   /** Fetch `host`'s discovery document once; cache it on success. */
@@ -148,6 +176,7 @@ export class RemoteDiscoveryCache {
       host,
       url: `https://${host}${DISCOVERY_PATH}`,
       notFoundMeansNoKeys: false,
+      maxBodyBytes: this.#maxDocumentBytes,
       validate: (body) => {
         const parsed = ProviderDiscoverySchema.safeParse(body);
         if (!parsed.success) return { ok: false, reason: `invalid discovery document for ${host}` };
@@ -169,7 +198,7 @@ export class RemoteDiscoveryCache {
         now: this.#now,
       });
       if (ttl > 0) {
-        this.#entries.set(host, { doc: fetched.doc, expiresAt: this.#now() + ttl });
+        this.#entries.set(host, fetched.doc, this.#now() + ttl);
       } else {
         this.#entries.delete(host);
       }
