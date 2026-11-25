@@ -51,7 +51,13 @@ import {
 
 import { HostFetchLimiter, type HostFetchLimits } from "./host-fetch-limiter.ts";
 import { type FederationFetch, defaultFederationFetch } from "./http.ts";
-import { type DocumentFetch, type KeyLookup, fetchKeyDocument, lookupKey } from "./key-lookup.ts";
+import {
+  type CachedDocument,
+  type DocumentFetch,
+  type KeyLookup,
+  fetchKeyDocument,
+  lookupKey,
+} from "./key-lookup.ts";
 import { DEFAULT_REFETCH_INTERVAL_MS, RefetchLimiter } from "./refetch-limiter.ts";
 
 /** A resolved remote actor device key (the verify target). */
@@ -80,6 +86,12 @@ export interface UserKeysCacheOptions {
    * `refillPerSecond`; at most `maxInFlight` at once; `maxHosts` tracked.
    */
   readonly hostFetchLimits?: Partial<HostFetchLimits>;
+  /**
+   * How many actors' last completed fetch ({@link RemoteUserKeysCache.lastCompletedFetch})
+   * are remembered; the least recently fetched is forgotten first. Default
+   * {@link DEFAULT_MAX_REMEMBERED_FETCHES}.
+   */
+  readonly maxRememberedFetches?: number;
   /** Injected transport (default: the egress-guarded {@link defaultFederationFetch}). */
   readonly federationFetch?: FederationFetch;
   /** Clock, overridable in tests. Default `Date.now`. */
@@ -87,16 +99,28 @@ export interface UserKeysCacheOptions {
 }
 
 const DEFAULT_TTL_MS = 300_000;
+
+/**
+ * Default cap on remembered last fetches. Actors are named by requesters, so
+ * the record must be bounded; forgetting one only loses evidence (§7.1 then
+ * falls back to the connection's own lookups and its entry's expiry — it never
+ * keeps a key alive longer).
+ */
+export const DEFAULT_MAX_REMEMBERED_FETCHES = 10_000;
 const MAX_TTL_MS = 3_600_000;
 
-interface CacheEntry {
-  readonly response: UserKeysResponse;
-  /** Epoch ms after which the entry is stale. */
-  readonly expiresAt: number;
-}
-
 export class RemoteUserKeysCache {
-  readonly #entries = new Map<string, CacheEntry>();
+  readonly #entries = new Map<string, CachedDocument<UserKeysResponse>>();
+  /**
+   * Per actor, what the most recent COMPLETED fetch showed: its document, or
+   * `null` for a `404`. Kept even when the document was not cacheable, because
+   * it is still evidence (§7.1: "a completed fetch shows the key is no longer
+   * published"). See {@link lastCompletedFetch}. Bounded by
+   * `#maxRememberedFetches`, oldest fetch forgotten first (Map insertion order;
+   * {@link #rememberFetch} re-inserts on every fetch).
+   */
+  readonly #lastFetch = new Map<string, UserKeysResponse | null>();
+  readonly #maxRememberedFetches: number;
   readonly #fetch: FederationFetch;
   readonly #defaultTtlMs: number;
   readonly #maxTtlMs: number;
@@ -111,6 +135,7 @@ export class RemoteUserKeysCache {
     this.#defaultTtlMs = opts.defaultTtlMs ?? DEFAULT_TTL_MS;
     this.#maxTtlMs = opts.maxTtlMs ?? MAX_TTL_MS;
     this.#now = opts.now ?? Date.now;
+    this.#maxRememberedFetches = opts.maxRememberedFetches ?? DEFAULT_MAX_REMEMBERED_FETCHES;
     this.#limiter = new RefetchLimiter({
       intervalMs: opts.refetchIntervalMs ?? DEFAULT_REFETCH_INTERVAL_MS,
       now: this.#now,
@@ -127,6 +152,14 @@ export class RemoteUserKeysCache {
   }
 
   /**
+   * The cache's clock (epoch ms) — the clock a `found` lookup's `expiresAt` is
+   * on. §7.1 re-resolution compares a connection's key expiry against it.
+   */
+  now(): number {
+    return this.#now();
+  }
+
+  /**
    * How long (ms) a response may be cached: until its `cache_until` (or the
    * default when unparseable), never beyond `maxTtlMs`. ≤ 0 means "do not cache".
    */
@@ -136,10 +169,21 @@ export class RemoteUserKeysCache {
     return Math.min(ttl, this.#maxTtlMs);
   }
 
-  /** The unexpired cached document for `actor`, if any. */
-  #cached(actor: string): UserKeysResponse | null {
+  /** The unexpired cache entry for `actor`, if any. */
+  #cached(actor: string): CachedDocument<UserKeysResponse> | null {
     const hit = this.#entries.get(actor);
-    return hit && hit.expiresAt > this.#now() ? hit.response : null;
+    return hit && hit.expiresAt > this.#now() ? hit : null;
+  }
+
+  /** Record `actor`'s latest completed fetch, forgetting the oldest beyond the cap. */
+  #rememberFetch(actor: string, doc: UserKeysResponse | null): void {
+    this.#lastFetch.delete(actor);
+    this.#lastFetch.set(actor, doc);
+    while (this.#lastFetch.size > this.#maxRememberedFetches) {
+      const oldest = this.#lastFetch.keys().next().value;
+      if (oldest === undefined) break;
+      this.#lastFetch.delete(oldest);
+    }
   }
 
   /** Fetch `actor`'s keys document once; cache it on success. */
@@ -164,15 +208,17 @@ export class RemoteUserKeysCache {
     });
     if (fetched.kind === "ok") {
       this.#fetchCount += 1;
+      this.#rememberFetch(actor, fetched.doc);
       const ttl = this.#ttlMs(fetched.doc);
       if (ttl > 0) {
-        this.#entries.set(actor, { response: fetched.doc, expiresAt: this.#now() + ttl });
+        this.#entries.set(actor, { doc: fetched.doc, expiresAt: this.#now() + ttl });
       } else {
         this.#entries.delete(actor);
       }
     } else if (fetched.kind === "not_found") {
       // An authoritative "no keys": nothing cached for this actor stays usable.
       this.#entries.delete(actor);
+      this.#rememberFetch(actor, null);
     }
     return fetched;
   }
@@ -217,9 +263,33 @@ export class RemoteUserKeysCache {
     });
   }
 
-  /** Drop a cached actor entry (e.g. on explicit invalidation). */
+  /**
+   * What the most recent completed fetch of `actor`'s keys (by anyone: a REST
+   * verify, a handshake, a WS re-check) showed for `keyId`, without fetching:
+   * the key (`null` when that fetch did not publish it, including a `404`) and,
+   * when that fetch's document is still the unexpired cache entry, the entry's
+   * expiry (cache clock); otherwise `expiresAt` is `null`. `null` overall when
+   * no fetch of the actor has completed. §7.1 re-resolution uses it so that a
+   * fetch made for another reason refreshes — or ends — a connection's key.
+   */
+  lastCompletedFetch(
+    actor: string,
+    keyId: string,
+  ): { readonly key: RemoteActorKey | null; readonly expiresAt: number | null } | null {
+    const doc = this.#lastFetch.get(actor);
+    if (doc === undefined) return null;
+    const entry = this.#cached(actor);
+    return {
+      key: doc ? selectKey(doc, keyId) : null,
+      expiresAt: entry && entry.doc === doc ? entry.expiresAt : null,
+    };
+  }
+
+  /** Drop what is known about an actor's keys (e.g. on explicit invalidation). */
   invalidate(actor: string): void {
-    this.#entries.delete(canonicalActor(actor) ?? actor);
+    const key = canonicalActor(actor) ?? actor;
+    this.#entries.delete(key);
+    this.#lastFetch.delete(key);
   }
 }
 

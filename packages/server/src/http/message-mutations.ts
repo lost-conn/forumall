@@ -1,6 +1,6 @@
 /**
  * Shared authorization for message edit / delete (spec §7.1 "Editing & deleting
- * messages"), used identically by the WS commands (`http/ws.ts`) and the REST
+ * messages"), used identically by the WS commands (`http/ws/messages.ts`) and the REST
  * equivalents (`http/messages.ts`):
  *
  *  - **edit** (`message.update` / `PATCH …/messages/{id}`): author-only, and only

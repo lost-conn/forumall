@@ -42,7 +42,13 @@ import {
 } from "@forumall/shared";
 
 import { type FederationFetch, defaultFederationFetch } from "./http.ts";
-import { type DocumentFetch, type KeyLookup, fetchKeyDocument, lookupKey } from "./key-lookup.ts";
+import {
+  type CachedDocument,
+  type DocumentFetch,
+  type KeyLookup,
+  fetchKeyDocument,
+  lookupKey,
+} from "./key-lookup.ts";
 import { DEFAULT_REFETCH_INTERVAL_MS, RefetchLimiter } from "./refetch-limiter.ts";
 
 /** The well-known discovery path (§3.1). */
@@ -78,12 +84,6 @@ export interface DiscoveryCacheOptions {
 const DEFAULT_TTL_MS = 300_000;
 const MAX_TTL_MS = 3_600_000;
 
-interface CacheEntry {
-  readonly doc: ProviderDiscovery;
-  /** Epoch ms after which the entry is stale. */
-  readonly expiresAt: number;
-}
-
 /**
  * How long (ms) a discovery response may be used without revalidation, per its
  * HTTP caching headers: `Cache-Control: no-store`/`no-cache` → 0, else
@@ -111,7 +111,7 @@ function deriveTtlMs(
 }
 
 export class RemoteDiscoveryCache {
-  readonly #entries = new Map<string, CacheEntry>();
+  readonly #entries = new Map<string, CachedDocument<ProviderDiscovery>>();
   readonly #fetch: FederationFetch;
   readonly #defaultTtlMs: number;
   readonly #maxTtlMs: number;
@@ -136,10 +136,10 @@ export class RemoteDiscoveryCache {
     return this.#fetchCount;
   }
 
-  /** The unexpired cached document for `host`, if any. */
-  #cached(host: string): ProviderDiscovery | null {
+  /** The unexpired cache entry for `host`, if any. */
+  #cached(host: string): CachedDocument<ProviderDiscovery> | null {
     const hit = this.#entries.get(host);
-    return hit && hit.expiresAt > this.#now() ? hit.doc : null;
+    return hit && hit.expiresAt > this.#now() ? hit : null;
   }
 
   /** Fetch `host`'s discovery document once; cache it on success. */

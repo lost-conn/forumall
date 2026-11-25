@@ -30,8 +30,10 @@
  *  3. **Credential revocation** ({@link terminateKeySessions},
  *     {@link terminateHandleSessions}): device-key revocation, and guest
  *     claim/merge (which re-bind the key to a different actor), close the
- *     affected sockets with {@link WS_CLOSE_CREDENTIALS_REVOKED}. Remote actors'
- *     keys are re-validated periodically by the WS handler (`http/ws.ts`).
+ *     affected sockets with {@link WS_CLOSE_CREDENTIALS_REVOKED}. A remote
+ *     actor's key is kept confirmed by the WS handler under the §4.6 cache
+ *     rules (`http/ws/remote-key-watch.ts`): `4003` when a completed fetch
+ *     shows it gone, `4001` when it can no longer be confirmed.
  */
 import type { Db } from "../db/index.ts";
 import type { ChannelRow } from "../db/schema.ts";

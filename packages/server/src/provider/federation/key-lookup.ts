@@ -7,7 +7,13 @@
  * classified as follows", §8.1 last paragraph):
  *
  *  - `found`        — a key with the requested `key_id`, from an UNEXPIRED cache
- *                     entry or a fetch just made (`fresh`).
+ *                     entry or a fetch just made (`fresh`). `expiresAt` is
+ *                     when the cache entry it came from lapses (the cache's
+ *                     clock, epoch ms), or `null` when the key came from a
+ *                     fetch whose document was not cached (`cache_until`
+ *                     already past) — then nothing vouches for the key beyond
+ *                     that fetch. §7.1 uses it to decide when a remote WS
+ *                     connection's key is no longer confirmed.
  *  - `no_key`       — a completed fetch shows there is no such key: a valid
  *                     `200` document without it (or, for user keys, a `404`)
  *                     → `401`.
@@ -36,7 +42,12 @@ import type { RateLimited, RefetchLimiter } from "./refetch-limiter.ts";
 
 /** Why (or whether) a remote signing key resolved. See the module docs. */
 export type KeyLookup<K> =
-  | { readonly kind: "found"; readonly key: K; readonly fresh: boolean }
+  | {
+      readonly kind: "found";
+      readonly key: K;
+      readonly fresh: boolean;
+      readonly expiresAt: number | null;
+    }
   | { readonly kind: "no_key" }
   | { readonly kind: "fetch_failed"; readonly reason: string }
   | { readonly kind: "refused"; readonly reason: string }
@@ -49,6 +60,12 @@ export type DocumentFetch<D> =
   | { readonly kind: "not_found" }
   | { readonly kind: "fetch_failed"; readonly reason: string }
   | { readonly kind: "refused"; readonly reason: string };
+
+/** An unexpired cache entry: the document and when it lapses (cache clock, epoch ms). */
+export interface CachedDocument<D> {
+  readonly doc: D;
+  readonly expiresAt: number;
+}
 
 /** How to fetch and validate one kind of key document. */
 export interface DocumentFetchSpec<D> {
@@ -111,23 +128,28 @@ export async function fetchKeyDocument<D>(
  * so it may instead join a fetch already in flight or be `rate_limited`.
  */
 export async function lookupKey<D, K>(args: {
-  /** The unexpired cached document, if any. */
-  readonly cached: () => D | null;
+  /** The unexpired cache entry, if any. */
+  readonly cached: () => CachedDocument<D> | null;
   /** Fetch (and, on success, cache) the document, subject to the limiter. */
   readonly refresh: () => Promise<DocumentFetch<D> | RateLimited>;
   readonly select: (doc: D) => K | null;
   readonly forceRefresh: boolean;
 }): Promise<KeyLookup<K>> {
   if (!args.forceRefresh) {
-    const doc = args.cached();
-    const key = doc ? args.select(doc) : null;
-    if (key) return { kind: "found", key, fresh: false };
+    const entry = args.cached();
+    const key = entry ? args.select(entry.doc) : null;
+    if (entry && key) return { kind: "found", key, fresh: false, expiresAt: entry.expiresAt };
   }
   const fetched = await args.refresh();
   switch (fetched.kind) {
     case "ok": {
       const key = args.select(fetched.doc);
-      return key ? { kind: "found", key, fresh: true } : { kind: "no_key" };
+      if (!key) return { kind: "no_key" };
+      // The entry this fetch stored, if it stored one (a document whose
+      // `cache_until` is already past is not cached at all).
+      const entry = args.cached();
+      const expiresAt = entry?.doc === fetched.doc ? entry.expiresAt : null;
+      return { kind: "found", key, fresh: true, expiresAt };
     }
     case "not_found":
       return { kind: "no_key" };
