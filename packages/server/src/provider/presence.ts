@@ -5,7 +5,7 @@
  *
  * This module is the single source of truth shared by BOTH presence surfaces —
  * the WebSocket (`presence.subscribe` / `presence.set` / connection-derived
- * online/offline, in `http/ws.ts`) and the REST endpoints
+ * online/offline, in `http/ws/presence.ts` and `http/ws.ts`) and the REST endpoints
  * (`GET /api/users/{ref}/presence`, `PUT /api/me/presence`, in `http/users.ts`).
  * Routing the two surfaces through the same {@link effectivePresence} +
  * {@link filterPresenceFor} guarantees the spec's hard requirement that they

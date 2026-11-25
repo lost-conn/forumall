@@ -51,7 +51,13 @@ import {
 
 import { HostFetchLimiter, type HostFetchLimits } from "./host-fetch-limiter.ts";
 import { type FederationFetch, defaultFederationFetch } from "./http.ts";
-import { type DocumentFetch, type KeyLookup, fetchKeyDocument, lookupKey } from "./key-lookup.ts";
+import {
+  type CachedDocument,
+  type DocumentFetch,
+  type KeyLookup,
+  fetchKeyDocument,
+  lookupKey,
+} from "./key-lookup.ts";
 import { DEFAULT_REFETCH_INTERVAL_MS, RefetchLimiter } from "./refetch-limiter.ts";
 
 /** A resolved remote actor device key (the verify target). */
@@ -89,14 +95,8 @@ export interface UserKeysCacheOptions {
 const DEFAULT_TTL_MS = 300_000;
 const MAX_TTL_MS = 3_600_000;
 
-interface CacheEntry {
-  readonly response: UserKeysResponse;
-  /** Epoch ms after which the entry is stale. */
-  readonly expiresAt: number;
-}
-
 export class RemoteUserKeysCache {
-  readonly #entries = new Map<string, CacheEntry>();
+  readonly #entries = new Map<string, CachedDocument<UserKeysResponse>>();
   readonly #fetch: FederationFetch;
   readonly #defaultTtlMs: number;
   readonly #maxTtlMs: number;
@@ -127,6 +127,14 @@ export class RemoteUserKeysCache {
   }
 
   /**
+   * The cache's clock (epoch ms) — the clock a `found` lookup's `expiresAt` is
+   * on. §7.1 re-resolution compares a connection's key expiry against it.
+   */
+  now(): number {
+    return this.#now();
+  }
+
+  /**
    * How long (ms) a response may be cached: until its `cache_until` (or the
    * default when unparseable), never beyond `maxTtlMs`. ≤ 0 means "do not cache".
    */
@@ -136,10 +144,10 @@ export class RemoteUserKeysCache {
     return Math.min(ttl, this.#maxTtlMs);
   }
 
-  /** The unexpired cached document for `actor`, if any. */
-  #cached(actor: string): UserKeysResponse | null {
+  /** The unexpired cache entry for `actor`, if any. */
+  #cached(actor: string): CachedDocument<UserKeysResponse> | null {
     const hit = this.#entries.get(actor);
-    return hit && hit.expiresAt > this.#now() ? hit.response : null;
+    return hit && hit.expiresAt > this.#now() ? hit : null;
   }
 
   /** Fetch `actor`'s keys document once; cache it on success. */
@@ -166,7 +174,7 @@ export class RemoteUserKeysCache {
       this.#fetchCount += 1;
       const ttl = this.#ttlMs(fetched.doc);
       if (ttl > 0) {
-        this.#entries.set(actor, { response: fetched.doc, expiresAt: this.#now() + ttl });
+        this.#entries.set(actor, { doc: fetched.doc, expiresAt: this.#now() + ttl });
       } else {
         this.#entries.delete(actor);
       }
