@@ -1,21 +1,25 @@
 /**
  * Remote provider discovery cache (spec §8.1, §3.1) — resolves another
  * provider's published signing keys so we can verify its provider-signed
- * requests (§8.1) and, later, route federation calls.
+ * requests (§8.1).
  *
  * Behavior:
- *  - {@link RemoteDiscoveryCache.getDocument} fetches
- *    `GET https://{domain}/.well-known/ofscp-provider` through the injected
- *    {@link FederationFetch}, validates it against `ProviderDiscoverySchema`, and
- *    caches it. Subsequent calls reuse the cached copy until its TTL lapses.
- *  - TTL honors the response's HTTP caching headers (`Cache-Control: max-age`,
- *    else `Expires`), bounded by a sane floor/ceiling; falls back to a default
- *    when the peer sets none.
- *  - {@link RemoteDiscoveryCache.getProviderKey} returns the
- *    `provider.publicKeys` entry matching a `key_id` (or `null`). On a cache hit
- *    where the key is **absent**, it re-fetches once (`forceRefresh`) before
- *    giving up — §8.1: "MUST re-fetch on a verification failure for a key_id they
- *    believe should be valid" so key rotation is picked up promptly.
+ *  - Fetches `GET https://{domain}/.well-known/ofscp-provider` through the
+ *    injected {@link FederationFetch}. Only a `200` whose body matches
+ *    `ProviderDiscoverySchema` AND whose `provider.domain`, canonicalized
+ *    (§2.2), equals the authority it was fetched from is valid (§3.1, §8.1);
+ *    anything else — including a `404` — is a fetch failure.
+ *  - An entry is valid for as long as the response's HTTP caching headers
+ *    allow it to be used without revalidation (`Cache-Control: max-age`, else
+ *    `Expires`; `no-store`/`no-cache` → not at all), capped at `maxTtlMs`, or
+ *    for a default when the peer sets none. An expired entry is never used —
+ *    not even when a re-fetch fails (§8.1, `key-lookup.ts`).
+ *  - {@link RemoteDiscoveryCache.lookupProviderKey} reports a
+ *    {@link KeyLookup}: an unexpired entry holding the key answers without a
+ *    fetch; otherwise (no entry, key absent — §8.1 "MUST re-fetch on a
+ *    verification failure for a key_id they believe should be valid" — or
+ *    `forceRefresh`) it fetches once and reports why the key did or did not
+ *    resolve.
  *
  * The cache is per-app (constructed in `createApp`) and exposed on
  * `c.var.discoveryCache`. It carries no secrets — only public discovery docs.
@@ -27,7 +31,8 @@ import {
   isCanonicalAuthority,
 } from "@forumall/shared";
 
-import { type FederationFetch, defaultFederationFetch, federationGet } from "./http.ts";
+import { type FederationFetch, defaultFederationFetch } from "./http.ts";
+import { type DocumentFetch, type KeyLookup, fetchKeyDocument, lookupKey } from "./key-lookup.ts";
 
 /** The well-known discovery path (§3.1). */
 const DISCOVERY_PATH = "/.well-known/ofscp-provider";
@@ -44,18 +49,15 @@ export interface RemoteProviderKey {
 export interface DiscoveryCacheOptions {
   /** TTL when the peer sets no usable cache header. Default 300_000 (5 min). */
   readonly defaultTtlMs?: number;
-  /** Lower bound applied to any derived TTL. Default 1_000. */
-  readonly minTtlMs?: number;
   /** Upper bound applied to any derived TTL. Default 3_600_000 (1 h). */
   readonly maxTtlMs?: number;
-  /** Injected fetch (default: global `fetch`). */
+  /** Injected transport (default: the egress-guarded {@link defaultFederationFetch}). */
   readonly federationFetch?: FederationFetch;
   /** Clock, overridable in tests. Default `Date.now`. */
   readonly now?: () => number;
 }
 
 const DEFAULT_TTL_MS = 300_000;
-const MIN_TTL_MS = 1_000;
 const MAX_TTL_MS = 3_600_000;
 
 interface CacheEntry {
@@ -65,40 +67,35 @@ interface CacheEntry {
 }
 
 /**
- * Derive a cache TTL (ms) from a discovery response's caching headers, bounded
- * to `[minTtlMs, maxTtlMs]`. Honors `Cache-Control: max-age` first, then
- * `Expires`; otherwise the configured default.
+ * How long (ms) a discovery response may be used without revalidation, per its
+ * HTTP caching headers: `Cache-Control: no-store`/`no-cache` → 0, else
+ * `max-age`, else `Expires`, else the configured default — capped at
+ * `maxTtlMs`. ≤ 0 means "do not cache" (§8.1: an entry the headers no longer
+ * allow to be used without revalidation is expired).
  */
 function deriveTtlMs(
   res: Response,
-  opts: Required<Pick<DiscoveryCacheOptions, "defaultTtlMs" | "minTtlMs" | "maxTtlMs" | "now">>,
+  opts: { defaultTtlMs: number; maxTtlMs: number; now: () => number },
 ): number {
   const cc = res.headers.get("cache-control");
   if (cc) {
-    // `no-store`/`no-cache` → do not reuse (clamp to the floor so we re-fetch).
-    if (/\bno-store\b|\bno-cache\b/i.test(cc)) return opts.minTtlMs;
+    if (/\bno-store\b|\bno-cache\b/i.test(cc)) return 0;
     const m = /max-age\s*=\s*(\d+)/i.exec(cc);
-    if (m?.[1]) {
-      return clamp(Number(m[1]) * 1000, opts.minTtlMs, opts.maxTtlMs);
-    }
+    if (m?.[1]) return Math.min(Number(m[1]) * 1000, opts.maxTtlMs);
   }
   const expires = res.headers.get("expires");
   if (expires) {
     const at = Date.parse(expires);
-    if (!Number.isNaN(at)) return clamp(at - opts.now(), opts.minTtlMs, opts.maxTtlMs);
+    // RFC 9111: an invalid Expires (e.g. "0") means already expired.
+    return Number.isNaN(at) ? 0 : Math.min(at - opts.now(), opts.maxTtlMs);
   }
-  return clamp(opts.defaultTtlMs, opts.minTtlMs, opts.maxTtlMs);
-}
-
-function clamp(n: number, lo: number, hi: number): number {
-  return Math.max(lo, Math.min(hi, n));
+  return Math.min(opts.defaultTtlMs, opts.maxTtlMs);
 }
 
 export class RemoteDiscoveryCache {
   readonly #entries = new Map<string, CacheEntry>();
   readonly #fetch: FederationFetch;
   readonly #defaultTtlMs: number;
-  readonly #minTtlMs: number;
   readonly #maxTtlMs: number;
   readonly #now: () => number;
   /** Total successful network fetches — exposed for tests (cache-hit assertions). */
@@ -107,84 +104,81 @@ export class RemoteDiscoveryCache {
   constructor(opts: DiscoveryCacheOptions = {}) {
     this.#fetch = opts.federationFetch ?? defaultFederationFetch;
     this.#defaultTtlMs = opts.defaultTtlMs ?? DEFAULT_TTL_MS;
-    this.#minTtlMs = opts.minTtlMs ?? MIN_TTL_MS;
     this.#maxTtlMs = opts.maxTtlMs ?? MAX_TTL_MS;
     this.#now = opts.now ?? Date.now;
   }
 
-  /** Network fetches performed so far (cache misses + forced refetches). */
+  /** Successful network fetches so far (cache misses + forced refetches). */
   get fetchCount(): number {
     return this.#fetchCount;
   }
 
-  /**
-   * Fetch (or return cached) the discovery document for `domain`. With
-   * `forceRefresh` the cache entry is ignored and the network is hit.
-   *
-   * Returns `null` if the document can't be fetched or fails schema validation;
-   * any cached copy is left intact on a failed forced refresh.
-   */
-  async getDocument(
-    domain: string,
-    opts: { forceRefresh?: boolean } = {},
-  ): Promise<ProviderDiscovery | null> {
-    const host = canonicalAuthority(domain);
-    // §2.2: junk that does not canonicalize to a bare host[:port] is never fetched.
-    if (!isCanonicalAuthority(host)) return null;
-    if (!opts.forceRefresh) {
-      const hit = this.#entries.get(host);
-      if (hit && hit.expiresAt > this.#now()) return hit.doc;
-    }
+  /** The unexpired cached document for `host`, if any. */
+  #cached(host: string): ProviderDiscovery | null {
+    const hit = this.#entries.get(host);
+    return hit && hit.expiresAt > this.#now() ? hit.doc : null;
+  }
 
-    const url = `https://${host}${DISCOVERY_PATH}`;
-    let res: Response;
-    try {
-      res = await federationGet(host, url, {}, this.#fetch);
-    } catch {
-      return this.#entries.get(host)?.doc ?? null;
-    }
-    if (!res.ok) return this.#entries.get(host)?.doc ?? null;
-
-    let parsed: unknown;
-    try {
-      parsed = await res.json();
-    } catch {
-      return this.#entries.get(host)?.doc ?? null;
-    }
-    const result = ProviderDiscoverySchema.safeParse(parsed);
-    if (!result.success) return this.#entries.get(host)?.doc ?? null;
-
-    this.#fetchCount += 1;
-    const ttl = deriveTtlMs(res, {
-      defaultTtlMs: this.#defaultTtlMs,
-      minTtlMs: this.#minTtlMs,
-      maxTtlMs: this.#maxTtlMs,
-      now: this.#now,
+  /** Fetch `host`'s discovery document once; cache it on success. */
+  async #refresh(host: string): Promise<DocumentFetch<ProviderDiscovery>> {
+    const fetched = await fetchKeyDocument<ProviderDiscovery>(this.#fetch, {
+      host,
+      url: `https://${host}${DISCOVERY_PATH}`,
+      notFoundMeansNoKeys: false,
+      validate: (body) => {
+        const parsed = ProviderDiscoverySchema.safeParse(body);
+        if (!parsed.success) return { ok: false, reason: `invalid discovery document for ${host}` };
+        // §3.1/§8.1: a document for another provider is not a valid document.
+        if (canonicalAuthority(parsed.data.provider.domain) !== host) {
+          return {
+            ok: false,
+            reason: `discovery document from ${host} names ${parsed.data.provider.domain}`,
+          };
+        }
+        return { ok: true, doc: parsed.data };
+      },
     });
-    this.#entries.set(host, { doc: result.data, expiresAt: this.#now() + ttl });
-    return result.data;
+    if (fetched.kind === "ok") {
+      this.#fetchCount += 1;
+      const ttl = deriveTtlMs(fetched.response, {
+        defaultTtlMs: this.#defaultTtlMs,
+        maxTtlMs: this.#maxTtlMs,
+        now: this.#now,
+      });
+      if (ttl > 0) {
+        this.#entries.set(host, { doc: fetched.doc, expiresAt: this.#now() + ttl });
+      } else {
+        this.#entries.delete(host);
+      }
+    }
+    return fetched;
   }
 
   /**
-   * Resolve `domain`'s `provider.publicKeys` entry for `keyId`, or `null`.
+   * Resolve `domain`'s `provider.publicKeys` entry for `keyId`, saying why when
+   * it does not resolve (see {@link KeyLookup}).
    *
-   * On a cache hit whose document lacks `keyId`, re-fetches once before giving
-   * up (§8.1 rotation rule), unless `forceRefresh` already forced the network.
+   * An unexpired cached document holding `keyId` answers without a fetch. With
+   * no usable entry, or one lacking `keyId` (the peer may have rotated, §8.1),
+   * it fetches once. `forceRefresh` always fetches (the middleware does this
+   * when a cached key fails to verify). A domain that does not canonicalize to
+   * a bare host[:port] (§2.2) is `refused` and never fetched.
    */
-  async getProviderKey(
+  async lookupProviderKey(
     domain: string,
     keyId: string,
     opts: { forceRefresh?: boolean } = {},
-  ): Promise<RemoteProviderKey | null> {
-    const forced = opts.forceRefresh ?? false;
-    const doc = await this.getDocument(domain, { forceRefresh: forced });
-    const found = doc ? selectKey(doc, keyId) : null;
-    if (found || forced) return found;
-
-    // Key absent from the (possibly cached) document → re-fetch once in case the
-    // peer rotated keys since we cached, then look again.
-    const refreshed = await this.getDocument(domain, { forceRefresh: true });
-    return refreshed ? selectKey(refreshed, keyId) : null;
+  ): Promise<KeyLookup<RemoteProviderKey>> {
+    const host = canonicalAuthority(domain);
+    if (!isCanonicalAuthority(host)) {
+      return { kind: "refused", reason: `${domain} is not a canonical authority (§2.2)` };
+    }
+    return lookupKey({
+      cached: () => this.#cached(host),
+      refresh: () => this.#refresh(host),
+      select: (doc) => selectKey(doc, keyId),
+      forceRefresh: opts.forceRefresh ?? false,
+    });
   }
 
   /** Drop a cached entry (e.g. on shutdown or explicit invalidation). */

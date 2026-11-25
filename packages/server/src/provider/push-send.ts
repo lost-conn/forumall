@@ -103,10 +103,12 @@ export async function sendPushToRecipient(
         if (config.pushProxy) reqInit.proxy = config.pushProxy;
         // Push endpoints are supplied by browsers via /api/push/subscribe, so
         // vet them like any federation target: public https host, no redirect
-        // following, bounded time (egress-guard.ts).
-        await assertPublicHttpsUrl(url);
+        // following, and ONE deadline covering DNS and the request
+        // (egress-guard.ts).
+        const signal = AbortSignal.timeout(DEFAULT_EGRESS_TIMEOUT_MS);
+        await assertPublicHttpsUrl(url, { signal });
         reqInit.redirect = "manual";
-        reqInit.signal = AbortSignal.timeout(DEFAULT_EGRESS_TIMEOUT_MS);
+        reqInit.signal = signal;
         const res = await fetch(url, reqInit);
         return { status: res.status };
       });

@@ -510,8 +510,10 @@ describe("§8: no outbound request of any kind to a denied provider", () => {
   test("key (§4.6) and discovery (§3.1) fetches via the app's caches never reach a denied host", async () => {
     const { app, spy } = freshApp();
     for (const host of DENIED_SPELLINGS) {
-      expect(await app.__userKeysCache.getActorKey(`mallory@${host}`, "k1")).toBeNull();
-      expect(await app.__discoveryCache.getProviderKey(host, "k1")).toBeNull();
+      const actorKey = await app.__userKeysCache.lookupActorKey(`mallory@${host}`, "k1");
+      expect(actorKey.kind).not.toBe("found");
+      const providerKey = await app.__discoveryCache.lookupProviderKey(host, "k1");
+      expect(providerKey.kind).not.toBe("found");
     }
     expect(spy.calls).toEqual([]);
   });

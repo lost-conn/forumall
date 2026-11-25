@@ -209,10 +209,11 @@ describe("provider-signed federation (§8.1)", () => {
     expect(fed.b.discoveryCache.fetchCount).toBeGreaterThan(beforeRotate);
   });
 
-  test("unknown / un-resolvable provider domain → 401", async () => {
+  test("un-resolvable provider domain → 503 + Retry-After (a fetch failure, §8.1)", async () => {
     const fed = bootGuarded();
     // Sign a request that claims provider `c.test` (not mapped in the harness).
-    // B cannot fetch c.test's discovery (the injected fetch rejects it) → 401.
+    // B cannot fetch c.test's discovery (the injected fetch rejects it, like a
+    // DNS failure): the signature was never checked, so 503, not 401.
     const aKey = getProviderSigningKey(fed.a.db);
     const headers = await buildSignedHeadersWithKey(fed, {
       keyId: aKey.keyId,
@@ -224,7 +225,8 @@ describe("provider-signed federation (§8.1)", () => {
       headers: { ...headers, host: fed.b.domain, "content-type": "application/json" },
       body: JSON.stringify({ original: true }),
     });
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(503);
+    expect(res.headers.get("retry-after")).not.toBeNull();
   });
 });
 

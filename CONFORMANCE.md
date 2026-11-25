@@ -82,7 +82,7 @@ for these protocol tests, or the feature is optional.
 | 10 | Direct messages: dmId, inbox-only storage, delivery verification, listing/reading, `dm.message` realtime (§7.4) | `shared/conformance.test.ts`, `shared/dm.test.ts`, `dms.test.ts`, `conformance.test.ts` | covered |
 | 11 | Explicit contacts model (request/accept/remove, local + federated) (§6.7) | `contacts.test.ts` | covered |
 | 12 | Publish provider signing keys + sign provider-to-provider requests (§8.1) | `shared/signing.test.ts`, `federation.test.ts`, `conformance.test.ts` | covered |
-| 13 | Accept remote direct-WS, resolve remote keys (§4.6), enforce membership+tier, advertise `realtimeDelivery` (§8.5) | `federation-realtime.test.ts`, `federation-actor.test.ts`, `canonical-authority.test.ts` (§8 deny list on all outbound requests) | covered |
+| 13 | Accept remote direct-WS, resolve remote keys (§4.6), enforce membership+tier, advertise `realtimeDelivery` (§8.5) | `federation-realtime.test.ts`, `federation-actor.test.ts`, `canonical-authority.test.ts` (§8 deny list on all outbound requests), `signer-resolution.test.ts` (§4.6 fetch outcomes: 401 / 503 / outbound-rules 401 / policy 403, unexpired-cache rule) | covered |
 | 14 | Follow list as pointers only — no server feed (§7.6) | `follows.test.ts`, `conformance.test.ts` | covered |
 | 15 | WS resume (`since` replay, per-message cursors) + ping/pong (§7.1) | `ws.test.ts` | covered |
 | 16 | Real-time presence over WS + §6.1 visibility, consistent with REST (§7.5) | `presence.test.ts`, `conformance.test.ts` | covered |
