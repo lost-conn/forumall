@@ -144,7 +144,9 @@ export async function fetchKeyDocument<D>(
 /**
  * Read `res`'s body as UTF-8 text, or `null` (the body cancelled) once it is
  * known to exceed `maxBytes`: up front from `Content-Length`, else while
- * reading. Read errors (including the egress deadline) propagate.
+ * reading. Read errors (including the egress deadline) propagate. The count
+ * is checked per chunk, so at most one transport chunk past `maxBytes` is
+ * ever held before the body is abandoned.
  */
 async function readBodyLimited(res: Response, maxBytes: number): Promise<string | null> {
   const declared = Number(res.headers.get("content-length") ?? Number.NaN);

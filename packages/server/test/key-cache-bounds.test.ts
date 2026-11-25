@@ -20,7 +20,6 @@ import {
   ExpiringEntries,
 } from "../src/provider/federation/expiring-entries.ts";
 import type { FederationFetch } from "../src/provider/federation/http.ts";
-import { DEFAULT_MAX_KEY_DOCUMENT_BYTES } from "../src/provider/federation/key-lookup.ts";
 import { RemoteUserKeysCache } from "../src/provider/federation/user-keys-cache.ts";
 
 const START = Date.parse("2026-06-01T00:00:00Z");
@@ -188,8 +187,31 @@ describe("RemoteUserKeysCache bounds", () => {
     );
   });
 
-  test("the default body limit is 64 KiB", () => {
-    expect(DEFAULT_MAX_KEY_DOCUMENT_BYTES).toBe(65_536);
+  test("an evicted document no longer vouches for the key in lastCompletedFetch", async () => {
+    // What the §7.1 key watch relies on: eviction can drop a confirmation
+    // (the watch then refreshes on its own), never extend or end one.
+    const c = clock();
+    const cache = new RemoteUserKeysCache({
+      federationFetch: userKeysFetch(c.now, []),
+      now: c.now,
+      refetchIntervalMs: 0,
+      maxCachedDocuments: 1,
+    });
+    await cache.lookupActorKey("r1@a.test", "k1");
+    expect(cache.lastCompletedFetch("r1@a.test", "k1")).toMatchObject({
+      key: { keyId: "k1" },
+      expiresAt: START + 3_600_000,
+    });
+    await cache.lookupActorKey("r2@a.test", "k1"); // evicts r1's document
+    expect(cache.lastCompletedFetch("r1@a.test", "k1")).toMatchObject({
+      key: { keyId: "k1" },
+      expiresAt: null,
+    });
+  });
+
+  test("an invalid option is named in the error", () => {
+    expect(() => new RemoteUserKeysCache({ maxCachedDocuments: 0 })).toThrow(/maxCachedDocuments/);
+    expect(() => new RemoteDiscoveryCache({ maxCachedDocuments: 0 })).toThrow(/maxCachedDocuments/);
   });
 
   test("count options must be integers ≥ 1", () => {

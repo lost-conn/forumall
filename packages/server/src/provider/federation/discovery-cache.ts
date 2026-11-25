@@ -150,10 +150,9 @@ export class RemoteDiscoveryCache {
     this.#now = opts.now ?? Date.now;
     this.#maxDocumentBytes = opts.maxDocumentBytes ?? DEFAULT_MAX_KEY_DOCUMENT_BYTES;
     requireCountAtLeastOne("maxDocumentBytes", this.#maxDocumentBytes);
-    this.#entries = new ExpiringEntries({
-      maxEntries: opts.maxCachedDocuments ?? DEFAULT_MAX_CACHED_DOCUMENTS,
-      now: this.#now,
-    });
+    const maxCachedDocuments = opts.maxCachedDocuments ?? DEFAULT_MAX_CACHED_DOCUMENTS;
+    requireCountAtLeastOne("maxCachedDocuments", maxCachedDocuments);
+    this.#entries = new ExpiringEntries({ maxEntries: maxCachedDocuments, now: this.#now });
     this.#limiter = new RefetchLimiter({
       intervalMs: opts.refetchIntervalMs ?? DEFAULT_REFETCH_INTERVAL_MS,
       now: this.#now,
