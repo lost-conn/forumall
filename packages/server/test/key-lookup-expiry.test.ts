@@ -130,3 +130,22 @@ describe("RemoteUserKeysCache.lastCompletedFetch", () => {
     expect(cache.lastCompletedFetch(ACTOR, "k1")).toBeNull();
   });
 });
+
+describe("RemoteUserKeysCache remembered fetches are bounded", () => {
+  test("beyond maxRememberedFetches the least recently fetched actor is forgotten", async () => {
+    // Every actor is unknown (404): a completed fetch, recorded as "no key".
+    const federationFetch: FederationFetch = async () => new Response(null, { status: 404 });
+    const cache = new RemoteUserKeysCache({
+      federationFetch,
+      refetchIntervalMs: 0,
+      maxRememberedFetches: 2,
+    });
+    for (const handle of ["r1", "r2", "r1", "r3"]) {
+      await cache.lookupActorKey(`${handle}@a.test`, "k1");
+    }
+    // r1 was fetched again after r2, so r2 is the oldest and goes first.
+    expect(cache.lastCompletedFetch("r2@a.test", "k1")).toBeNull();
+    expect(cache.lastCompletedFetch("r1@a.test", "k1")).not.toBeNull();
+    expect(cache.lastCompletedFetch("r3@a.test", "k1")).not.toBeNull();
+  });
+});

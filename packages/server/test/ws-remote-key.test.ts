@@ -400,13 +400,14 @@ describe("remote WS key re-check — key unconfirmed → 4001 at expiry (§7.1)"
   test("a handshake on a nearly expired cached entry re-fetches before it lapses", async () => {
     // No heartbeat during the test: only the watch's own timer can refresh.
     const h = boot({ timings: { pingIntervalMs: 100_000, remoteKeyRevalidateMs: 3_600_000 } });
-    // Another request cached alice's keys 59.5 s ago; 500 ms of the entry remain.
+    // Another request cached alice's keys 58 s ago; 2 s of the entry remain (the
+    // watch's refresh wakes at ~1 s, leaving ~1 s for the fetch even on a slow runner).
     await h.cache.lookupActorKey(ACTOR, KEY_ID);
-    h.advance(TTL_MS - 500);
+    h.advance(TTL_MS - 2_000);
     const alice = await connectAlice(h);
     const fetchesAtAuth = h.fetches;
 
-    await Bun.sleep(600); // past the handshake entry's real-time expiry
+    await Bun.sleep(2_100); // past the handshake entry's real-time expiry
     expect(h.fetches).toBeGreaterThan(fetchesAtAuth);
     expect(alice.closed).toBe(false);
     h.advance(1_000);

@@ -86,6 +86,12 @@ export interface UserKeysCacheOptions {
    * `refillPerSecond`; at most `maxInFlight` at once; `maxHosts` tracked.
    */
   readonly hostFetchLimits?: Partial<HostFetchLimits>;
+  /**
+   * How many actors' last completed fetch ({@link RemoteUserKeysCache.lastCompletedFetch})
+   * are remembered; the least recently fetched is forgotten first. Default
+   * {@link DEFAULT_MAX_REMEMBERED_FETCHES}.
+   */
+  readonly maxRememberedFetches?: number;
   /** Injected transport (default: the egress-guarded {@link defaultFederationFetch}). */
   readonly federationFetch?: FederationFetch;
   /** Clock, overridable in tests. Default `Date.now`. */
@@ -93,6 +99,14 @@ export interface UserKeysCacheOptions {
 }
 
 const DEFAULT_TTL_MS = 300_000;
+
+/**
+ * Default cap on remembered last fetches. Actors are named by requesters, so
+ * the record must be bounded; forgetting one only loses evidence (§7.1 then
+ * falls back to the connection's own lookups and its entry's expiry — it never
+ * keeps a key alive longer).
+ */
+export const DEFAULT_MAX_REMEMBERED_FETCHES = 10_000;
 const MAX_TTL_MS = 3_600_000;
 
 export class RemoteUserKeysCache {
@@ -101,9 +115,12 @@ export class RemoteUserKeysCache {
    * Per actor, what the most recent COMPLETED fetch showed: its document, or
    * `null` for a `404`. Kept even when the document was not cacheable, because
    * it is still evidence (§7.1: "a completed fetch shows the key is no longer
-   * published"). See {@link lastCompletedFetch}.
+   * published"). See {@link lastCompletedFetch}. Bounded by
+   * `#maxRememberedFetches`, oldest fetch forgotten first (Map insertion order;
+   * {@link #rememberFetch} re-inserts on every fetch).
    */
   readonly #lastFetch = new Map<string, UserKeysResponse | null>();
+  readonly #maxRememberedFetches: number;
   readonly #fetch: FederationFetch;
   readonly #defaultTtlMs: number;
   readonly #maxTtlMs: number;
@@ -118,6 +135,7 @@ export class RemoteUserKeysCache {
     this.#defaultTtlMs = opts.defaultTtlMs ?? DEFAULT_TTL_MS;
     this.#maxTtlMs = opts.maxTtlMs ?? MAX_TTL_MS;
     this.#now = opts.now ?? Date.now;
+    this.#maxRememberedFetches = opts.maxRememberedFetches ?? DEFAULT_MAX_REMEMBERED_FETCHES;
     this.#limiter = new RefetchLimiter({
       intervalMs: opts.refetchIntervalMs ?? DEFAULT_REFETCH_INTERVAL_MS,
       now: this.#now,
@@ -157,6 +175,17 @@ export class RemoteUserKeysCache {
     return hit && hit.expiresAt > this.#now() ? hit : null;
   }
 
+  /** Record `actor`'s latest completed fetch, forgetting the oldest beyond the cap. */
+  #rememberFetch(actor: string, doc: UserKeysResponse | null): void {
+    this.#lastFetch.delete(actor);
+    this.#lastFetch.set(actor, doc);
+    while (this.#lastFetch.size > this.#maxRememberedFetches) {
+      const oldest = this.#lastFetch.keys().next().value;
+      if (oldest === undefined) break;
+      this.#lastFetch.delete(oldest);
+    }
+  }
+
   /** Fetch `actor`'s keys document once; cache it on success. */
   async #refresh(
     actor: string,
@@ -179,7 +208,7 @@ export class RemoteUserKeysCache {
     });
     if (fetched.kind === "ok") {
       this.#fetchCount += 1;
-      this.#lastFetch.set(actor, fetched.doc);
+      this.#rememberFetch(actor, fetched.doc);
       const ttl = this.#ttlMs(fetched.doc);
       if (ttl > 0) {
         this.#entries.set(actor, { doc: fetched.doc, expiresAt: this.#now() + ttl });
@@ -189,7 +218,7 @@ export class RemoteUserKeysCache {
     } else if (fetched.kind === "not_found") {
       // An authoritative "no keys": nothing cached for this actor stays usable.
       this.#entries.delete(actor);
-      this.#lastFetch.set(actor, null);
+      this.#rememberFetch(actor, null);
     }
     return fetched;
   }
