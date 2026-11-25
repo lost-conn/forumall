@@ -114,6 +114,12 @@ export interface ConnState {
    * Set before the close so no further command from it is processed.
    */
   terminated: boolean;
+  /**
+   * The socket has closed and its state was torn down. An async step that
+   * resumes afterwards (the remote key lookup in `authenticate`) must not
+   * register the connection.
+   */
+  closed: boolean;
   /** The hub registration for this connection (after auth). */
   hubConn?: HubConnection;
   /** Last time we saw inbound traffic (any frame), epoch ms — liveness basis. */

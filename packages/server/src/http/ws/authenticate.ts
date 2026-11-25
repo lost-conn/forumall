@@ -184,9 +184,10 @@ export async function handleAuthenticate(
     remoteKey = lookup;
   }
 
-  // A late frame may have raced the async key resolution and already closed /
-  // re-authenticated this connection; bail if so (don't double-register).
-  if (state.authenticated || state.challengeUsed) {
+  // The async key resolution may have been overtaken: the socket closed (its
+  // state is torn down — registering now would leave a dead hub entry), or a
+  // late frame already re-authenticated it. Bail if so (don't register).
+  if (state.closed || state.authenticated || state.challengeUsed) {
     return;
   }
 

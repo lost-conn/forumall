@@ -81,3 +81,52 @@ describe("KeyLookup found.expiresAt", () => {
     expect(h.calls()).toBe(2);
   });
 });
+
+describe("RemoteUserKeysCache.lastCompletedFetch", () => {
+  test("reports the last completed fetch, cached or not, and forgets it on invalidate", async () => {
+    let status = 200;
+    let ttlMs = 60_000;
+    let now = Date.parse("2026-06-01T00:00:00Z");
+    const federationFetch: FederationFetch = async () =>
+      status === 404
+        ? new Response("no", { status: 404 })
+        : Response.json({
+            actor: ACTOR,
+            keys: [KEY],
+            cache_until: new Date(now + ttlMs).toISOString(),
+          });
+    const cache = new RemoteUserKeysCache({
+      federationFetch,
+      now: () => now,
+      refetchIntervalMs: 0,
+    });
+
+    expect(cache.lastCompletedFetch(ACTOR, "k1")).toBeNull();
+
+    await cache.lookupActorKey(ACTOR, "k1");
+    expect(cache.lastCompletedFetch(ACTOR, "k1")).toMatchObject({
+      key: { keyId: "k1", publicKey: "pk" },
+      expiresAt: now + 60_000,
+    });
+    expect(cache.lastCompletedFetch(ACTOR, "other")).toMatchObject({ key: null });
+
+    // Expired entry: the fetch is still the last evidence, but vouches for nothing.
+    now += 61_000;
+    expect(cache.lastCompletedFetch(ACTOR, "k1")).toMatchObject({ expiresAt: null });
+
+    // An uncacheable document is still recorded.
+    ttlMs = -1_000;
+    await cache.lookupActorKey(ACTOR, "k1");
+    expect(cache.lastCompletedFetch(ACTOR, "k1")).toMatchObject({
+      key: { keyId: "k1" },
+      expiresAt: null,
+    });
+
+    status = 404;
+    await cache.lookupActorKey(ACTOR, "k1");
+    expect(cache.lastCompletedFetch(ACTOR, "k1")).toEqual({ key: null, expiresAt: null });
+
+    cache.invalidate(ACTOR);
+    expect(cache.lastCompletedFetch(ACTOR, "k1")).toBeNull();
+  });
+});

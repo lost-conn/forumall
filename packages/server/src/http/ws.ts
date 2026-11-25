@@ -186,6 +186,7 @@ export function createWsHandlers(deps: WsHandlerDeps) {
   /** Tear down timers + hub registration for a connection. Idempotent. */
   function teardown(state: ConnState | undefined): void {
     if (!state) return;
+    state.closed = true;
     if (state.authTimer) clearTimeout(state.authTimer);
     if (state.heartbeatTimer) clearInterval(state.heartbeatTimer);
     // Emit a `stop` for every channel this connection was typing in BEFORE we
@@ -232,6 +233,7 @@ export function createWsHandlers(deps: WsHandlerDeps) {
         challengeUsed: false,
         lastSeen: now,
         terminated: false,
+        closed: false,
         typingTimers: new Map(),
         dmTypingTimers: new Map(),
       };

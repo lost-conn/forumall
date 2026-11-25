@@ -35,6 +35,7 @@ import { migrate } from "../src/db/migrate.ts";
 import type { WsTimings } from "../src/http/ws.ts";
 import { EgressBlockedError } from "../src/provider/federation/egress-guard.ts";
 import { RemoteUserKeysCache } from "../src/provider/federation/user-keys-cache.ts";
+import type { Hub } from "../src/provider/ws-hub.ts";
 
 const FAST_ARGON2: Argon2Params = { memoryKib: 1024, iterations: 1, parallelism: 1 };
 const DOMAIN = "b.test";
@@ -47,6 +48,11 @@ const TICK_MS = 20;
 const QUIET_MS = 150;
 /** The keys document's lifetime unless a case says otherwise. */
 const TTL_MS = 60_000;
+/**
+ * Into the forced-refresh window of a fresh `TTL_MS` entry. The default lead
+ * (120 s) exceeds half the entry's life, so the refresh point is halfway.
+ */
+const INTO_REFRESH_WINDOW_MS = TTL_MS / 2 + 1_000;
 
 /** What the fake `a.test` answers to the next keys fetch. */
 type Script =
@@ -68,6 +74,9 @@ interface Harness {
   ttlMs: number;
   /** Move the cache clock forward. */
   advance(ms: number): void;
+  /** Hold every fetch until the returned release is called. */
+  hold(): () => void;
+  readonly hub: Hub;
   readonly url: string;
 }
 
@@ -105,6 +114,7 @@ function boot(
   const config: Config = { ...base, argon2: FAST_ARGON2, federationDeny: [] };
   let clockOffset = 0;
   const now = () => Date.now() + clockOffset;
+  let gate: Promise<void> | null = null;
 
   const h: Harness = {
     config,
@@ -115,6 +125,17 @@ function boot(
     advance(ms) {
       clockOffset += ms;
     },
+    hold() {
+      let release!: () => void;
+      gate = new Promise<void>((r) => {
+        release = r;
+      });
+      return () => {
+        gate = null;
+        release();
+      };
+    },
+    hub: undefined as unknown as Hub,
     url: "",
   };
   const keysDoc = (keys: { key_id: string; public_key: string }[]) =>
@@ -129,6 +150,7 @@ function boot(
     federationFetch: async (domain) => {
       expect(domain).toBe(REMOTE);
       h.fetches += 1;
+      if (gate) await gate;
       switch (h.script) {
         case "ok":
           return keysDoc([{ key_id: KEY_ID, public_key: keypair.publicKey }]);
@@ -168,7 +190,7 @@ function boot(
     server.stop(true);
     db.sqlite.close();
   });
-  Object.assign(h, { url: `ws://${server.hostname}:${server.port}/api/ws` });
+  Object.assign(h, { hub: app.__hub, url: `ws://${server.hostname}:${server.port}/api/ws` });
   return h;
 }
 
@@ -232,6 +254,13 @@ class WsClient {
 
 /** Connect to `h` as `alice@a.test` and complete the handshake. */
 async function connectAlice(h: Harness): Promise<WsClient> {
+  const client = await sendAliceAuthenticate(h);
+  await client.ofType("authenticated");
+  return client;
+}
+
+/** Connect to `h` and send alice's `authenticate`, without awaiting the answer. */
+async function sendAliceAuthenticate(h: Harness): Promise<WsClient> {
   const client = new WsClient(h.url);
   clients.push(client);
   const challenge = await client.ofType("auth.challenge");
@@ -250,7 +279,6 @@ async function connectAlice(h: Harness): Promise<WsClient> {
       data: { actor: ACTOR, keyId: KEY_ID, timestamp, signature },
     }),
   );
-  await client.ofType("authenticated");
   return client;
 }
 
@@ -288,10 +316,10 @@ describe("remote WS key re-check — key gone → 4003 (§7.1)", () => {
   }
 
   test("a re-fetch before expiry that shows the key gone closes with 4003", async () => {
-    // Cached for 60 s, refresh lead 120 s: every tick forces a re-fetch.
     const h = boot();
     const alice = await connectAlice(h);
     h.script = "without_key";
+    h.advance(INTO_REFRESH_WINDOW_MS); // every check now forces a re-fetch
     await expectClosedWith(alice, 4003);
   });
 });
@@ -299,15 +327,15 @@ describe("remote WS key re-check — key gone → 4003 (§7.1)", () => {
 describe("remote WS key re-check — key unconfirmed → 4001 at expiry (§7.1)", () => {
   for (const script of ["server_error", "network_error", "refused"] as const) {
     test(`a ${script.replace("_", " ")} re-fetch keeps the connection until the entry expires`, async () => {
-      // Cached for 60 s, refresh lead 120 s: every tick tries a forced re-fetch.
       const h = boot();
       const alice = await connectAlice(h);
       h.script = script;
       const before = h.fetches;
+      h.advance(INTO_REFRESH_WINDOW_MS); // every check now forces a re-fetch
       await expectStaysOpen(alice);
       expect(h.fetches).toBeGreaterThan(before); // it did try
 
-      h.advance(TTL_MS);
+      h.advance(TTL_MS - INTO_REFRESH_WINDOW_MS);
       await expectClosedWith(alice, 4001);
     });
   }
@@ -317,10 +345,11 @@ describe("remote WS key re-check — key unconfirmed → 4001 at expiry (§7.1)"
     const h = boot({ refetchIntervalMs: 3_600_000 });
     const alice = await connectAlice(h);
     const fetchesAtAuth = h.fetches;
+    h.advance(INTO_REFRESH_WINDOW_MS); // forced re-fetches are due, and suppressed
     await expectStaysOpen(alice);
     expect(h.fetches).toBe(fetchesAtAuth);
 
-    h.advance(TTL_MS);
+    h.advance(TTL_MS - INTO_REFRESH_WINDOW_MS);
     await expectClosedWith(alice, 4001);
   });
 
@@ -353,18 +382,91 @@ describe("remote WS key re-check — key unconfirmed → 4001 at expiry (§7.1)"
     await expectClosedWith(alice, 4001);
   });
 
+  test("an entry lapsing while a re-fetch is still in flight closes with 4001", async () => {
+    const h = boot();
+    const alice = await connectAlice(h);
+    const release = h.hold(); // the next forced re-fetch never answers in time
+    const before = h.fetches;
+    h.advance(INTO_REFRESH_WINDOW_MS);
+    await Bun.sleep(QUIET_MS);
+    expect(h.fetches).toBe(before + 1); // started, still in flight
+    expect(alice.closed).toBe(false);
+
+    h.advance(TTL_MS - INTO_REFRESH_WINDOW_MS);
+    await expectClosedWith(alice, 4001);
+    release();
+  });
+
+  test("a handshake on a nearly expired cached entry re-fetches before it lapses", async () => {
+    // No heartbeat during the test: only the watch's own timer can refresh.
+    const h = boot({ timings: { pingIntervalMs: 100_000, remoteKeyRevalidateMs: 3_600_000 } });
+    // Another request cached alice's keys 59.5 s ago; 500 ms of the entry remain.
+    await h.cache.lookupActorKey(ACTOR, KEY_ID);
+    h.advance(TTL_MS - 500);
+    const alice = await connectAlice(h);
+    const fetchesAtAuth = h.fetches;
+
+    await Bun.sleep(600); // past the handshake entry's real-time expiry
+    expect(h.fetches).toBeGreaterThan(fetchesAtAuth);
+    expect(alice.closed).toBe(false);
+    h.advance(1_000);
+    await expectStaysOpen(alice);
+  });
+
   test("a successful re-fetch before expiry keeps the connection past it", async () => {
     const h = boot();
     const alice = await connectAlice(h);
     const fetchesAtAuth = h.fetches;
+    h.advance(INTO_REFRESH_WINDOW_MS);
     await Bun.sleep(QUIET_MS);
     expect(h.fetches).toBeGreaterThan(fetchesAtAuth); // refreshed ahead of expiry
 
-    // Past the handshake's entry: a later re-fetch has extended it.
-    h.advance(TTL_MS - 1000);
+    // Past the handshake's entry: the re-fetch has extended it, and so on.
+    h.advance(INTO_REFRESH_WINDOW_MS);
     await expectStaysOpen(alice);
-    h.advance(TTL_MS - 1000);
+    h.advance(INTO_REFRESH_WINDOW_MS);
     await expectStaysOpen(alice);
+  });
+});
+
+describe("remote WS key re-check — fetches made for another reason count (§7.1)", () => {
+  // The watch makes no lookups of its own in these cases: no refresh lead and a
+  // re-check interval longer than the test.
+  const passive = { remoteKeyRevalidateMs: 3_600_000, remoteKeyRefreshLeadMs: 0 };
+
+  test("another request's completed fetch without the key closes with 4003", async () => {
+    const h = boot({ timings: passive });
+    const alice = await connectAlice(h);
+    const fetchesAtAuth = h.fetches;
+
+    // A REST request signed with alice's other key makes the cache fetch her
+    // keys; the response no longer publishes this connection's key.
+    h.script = "without_key";
+    expect((await h.cache.lookupActorKey(ACTOR, "dk_alice_2")).kind).toBe("no_key");
+    await expectClosedWith(alice, 4003);
+    expect(h.fetches).toBe(fetchesAtAuth + 1);
+  });
+
+  test("another request's 404 closes with 4003", async () => {
+    const h = boot({ timings: passive });
+    const alice = await connectAlice(h);
+    h.script = "not_found";
+    await h.cache.lookupActorKey(ACTOR, KEY_ID, { forceRefresh: true });
+    await expectClosedWith(alice, 4003);
+  });
+
+  test("another request's refresh of the entry keeps the connection past the original expiry", async () => {
+    const h = boot({ timings: passive });
+    const alice = await connectAlice(h);
+    h.advance(TTL_MS - 10_000);
+    // Someone else's fetch refreshes the entry (another 60 s).
+    expect((await h.cache.lookupActorKey(ACTOR, KEY_ID, { forceRefresh: true })).kind).toBe(
+      "found",
+    );
+    h.advance(20_000); // past the handshake's entry, inside the refreshed one
+    await expectStaysOpen(alice);
+    h.advance(TTL_MS);
+    await expectClosedWith(alice, 4001);
   });
 });
 
@@ -401,5 +503,20 @@ describe("remote WS key re-check — federation policy (§7.1)", () => {
     (h.config.federationDeny as string[]).push(REMOTE);
     await expectClosedWith(alice, 4001);
     expect(h.fetches).toBe(fetchesAtAuth);
+  });
+});
+
+describe("remote WS handshake overtaken by a disconnect", () => {
+  test("a client that disconnects while its key is being fetched is never registered", async () => {
+    const h = boot();
+    const release = h.hold();
+    const alice = await sendAliceAuthenticate(h);
+    await Bun.sleep(50); // the handshake is now waiting on the key fetch
+    alice.close();
+    await alice.waitClosed();
+
+    release();
+    await Bun.sleep(QUIET_MS);
+    expect(h.hub.liveConnectionCount(ACTOR)).toBe(0);
   });
 });

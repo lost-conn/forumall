@@ -97,6 +97,13 @@ const MAX_TTL_MS = 3_600_000;
 
 export class RemoteUserKeysCache {
   readonly #entries = new Map<string, CachedDocument<UserKeysResponse>>();
+  /**
+   * Per actor, what the most recent COMPLETED fetch showed: its document, or
+   * `null` for a `404`. Kept even when the document was not cacheable, because
+   * it is still evidence (§7.1: "a completed fetch shows the key is no longer
+   * published"). See {@link lastCompletedFetch}.
+   */
+  readonly #lastFetch = new Map<string, UserKeysResponse | null>();
   readonly #fetch: FederationFetch;
   readonly #defaultTtlMs: number;
   readonly #maxTtlMs: number;
@@ -172,6 +179,7 @@ export class RemoteUserKeysCache {
     });
     if (fetched.kind === "ok") {
       this.#fetchCount += 1;
+      this.#lastFetch.set(actor, fetched.doc);
       const ttl = this.#ttlMs(fetched.doc);
       if (ttl > 0) {
         this.#entries.set(actor, { doc: fetched.doc, expiresAt: this.#now() + ttl });
@@ -181,6 +189,7 @@ export class RemoteUserKeysCache {
     } else if (fetched.kind === "not_found") {
       // An authoritative "no keys": nothing cached for this actor stays usable.
       this.#entries.delete(actor);
+      this.#lastFetch.set(actor, null);
     }
     return fetched;
   }
@@ -225,9 +234,33 @@ export class RemoteUserKeysCache {
     });
   }
 
-  /** Drop a cached actor entry (e.g. on explicit invalidation). */
+  /**
+   * What the most recent completed fetch of `actor`'s keys (by anyone: a REST
+   * verify, a handshake, a WS re-check) showed for `keyId`, without fetching:
+   * the key (`null` when that fetch did not publish it, including a `404`) and,
+   * when that fetch's document is still the unexpired cache entry, the entry's
+   * expiry (cache clock); otherwise `expiresAt` is `null`. `null` overall when
+   * no fetch of the actor has completed. §7.1 re-resolution uses it so that a
+   * fetch made for another reason refreshes — or ends — a connection's key.
+   */
+  lastCompletedFetch(
+    actor: string,
+    keyId: string,
+  ): { readonly key: RemoteActorKey | null; readonly expiresAt: number | null } | null {
+    const doc = this.#lastFetch.get(actor);
+    if (doc === undefined) return null;
+    const entry = this.#cached(actor);
+    return {
+      key: doc ? selectKey(doc, keyId) : null,
+      expiresAt: entry && entry.doc === doc ? entry.expiresAt : null,
+    };
+  }
+
+  /** Drop what is known about an actor's keys (e.g. on explicit invalidation). */
   invalidate(actor: string): void {
-    this.#entries.delete(canonicalActor(actor) ?? actor);
+    const key = canonicalActor(actor) ?? actor;
+    this.#entries.delete(key);
+    this.#lastFetch.delete(key);
   }
 }
 
