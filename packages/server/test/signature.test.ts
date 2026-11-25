@@ -24,6 +24,7 @@ import { createApp } from "../src/app.ts";
 import { type Argon2Params, type Config, loadConfig } from "../src/config.ts";
 import { openDb } from "../src/db/index.ts";
 import { migrate } from "../src/db/migrate.ts";
+import type { FederationFetch } from "../src/provider/federation/http.ts";
 import { getProviderSigningKey } from "../src/provider/signing-key.ts";
 
 const PROBLEM_CT = "application/problem+json";
@@ -38,7 +39,11 @@ afterAll(() => {
   rmSync(tmp, { recursive: true, force: true });
 });
 
-function freshApp(name: string, overrides: Partial<Config> = {}) {
+function freshApp(
+  name: string,
+  overrides: Partial<Config> = {},
+  deps: { federationFetch?: FederationFetch } = {},
+) {
   const base = loadConfig({
     DATA_DIR: tmp,
     DB_PATH: join(tmp, `${name}.sqlite`),
@@ -48,7 +53,7 @@ function freshApp(name: string, overrides: Partial<Config> = {}) {
   const config: Config = Object.freeze({ ...base, argon2: FAST_ARGON2, ...overrides });
   const db = openDb(config.dbPath);
   migrate(db);
-  const app = createApp(config, { testOnlySkipReplayWarmup: true, db });
+  const app = createApp(config, { testOnlySkipReplayWarmup: true, db, ...deps });
   return { app, config, db };
 }
 
@@ -476,20 +481,41 @@ describe("requireProviderSignature (§8.1)", () => {
     expect(body.domain).toBe(DOMAIN);
   });
 
-  test("provider-signed for a remote provider → 401 (P7 fails closed)", async () => {
-    const { app, db } = freshApp("provider-remote");
-    const pk = getProviderSigningKey(db);
+  test("provider-signed for a remote provider whose discovery lacks the key → 401", async () => {
+    const signer = generateKeyPair();
+    // remote.example's discovery document (served by the injected transport)
+    // publishes a DIFFERENT key, so no published key matches X-OFSCP-Key-ID.
+    const other = generateKeyPair();
+    const remoteDoc = await (async () => {
+      const { app: self } = freshApp("provider-remote-doc");
+      const doc = (await (await self.request("/.well-known/ofscp-provider")).json()) as {
+        provider: Record<string, unknown>;
+      };
+      return {
+        ...doc,
+        provider: {
+          ...doc.provider,
+          domain: "remote.example",
+          publicKeys: [{ key_id: "pk_other", algorithm: "Ed25519", public_key: other.publicKey }],
+        },
+      };
+    })();
+    const { app } = freshApp(
+      "provider-remote",
+      {},
+      {
+        federationFetch: async () => Response.json(remoteDoc),
+      },
+    );
 
     const { requireProviderSignature } = await import("../src/http/signature.ts");
     app.get("/api/provider-only2", requireProviderSignature(), (c) => c.json({ ok: true }));
 
     const path = "/api/provider-only2";
-    // Claim a remote provider domain; authority binding + remote resolution
-    // (P7) is not implemented → fail closed.
     const { headers } = signProvider({
       provider: "remote.example",
-      keyId: pk.keyId,
-      privateKey: pk.privateKey,
+      keyId: "pk_signer",
+      privateKey: signer.privateKey,
       authority: DOMAIN,
       method: "GET",
       path,

@@ -13,6 +13,11 @@
  * shape: register more domains in the map, or grab `a.discoveryCache` /
  * `b.federationFetch` for their own assertions.
  *
+ * Both providers' key caches run on a harness clock ({@link Federation.advanceCacheClock})
+ * so a test can step past the per-identity re-fetch interval
+ * (`federation/refetch-limiter.ts`) — e.g. "the peer rotated its key a while
+ * later" — without sleeping.
+ *
  * Servers + sockets are stopped in {@link Federation.stop} so suites exit clean.
  */
 import { type AppWithWebSocket, createApp } from "../../src/app.ts";
@@ -20,9 +25,9 @@ import { type Argon2Params, type Config, loadConfig } from "../../src/config.ts"
 import { openDb } from "../../src/db/index.ts";
 import { migrate } from "../../src/db/migrate.ts";
 import type { WsTimings } from "../../src/http/ws.ts";
-import type { RemoteDiscoveryCache } from "../../src/provider/federation/discovery-cache.ts";
+import { RemoteDiscoveryCache } from "../../src/provider/federation/discovery-cache.ts";
 import type { FederationFetch } from "../../src/provider/federation/http.ts";
-import type { RemoteUserKeysCache } from "../../src/provider/federation/user-keys-cache.ts";
+import { RemoteUserKeysCache } from "../../src/provider/federation/user-keys-cache.ts";
 
 const FAST_ARGON2: Argon2Params = { memoryKib: 1024, iterations: 1, parallelism: 1 };
 
@@ -45,6 +50,11 @@ export interface Provider {
 export interface Federation {
   readonly a: Provider;
   readonly b: Provider;
+  /**
+   * Move both providers' key-cache clocks forward by `ms` (TTLs and the
+   * re-fetch interval); everything else keeps real time.
+   */
+  advanceCacheClock(ms: number): void;
   /** Stop both servers + close both sqlite handles. */
   stop(): void;
 }
@@ -99,6 +109,8 @@ export function startFederation(dir: string, opts: StartFederationOptions = {}):
   const domainB = opts.domainB ?? "b.test";
   const ports = new Map<string, number>();
   const federationFetch = mappedFederationFetch(ports);
+  let cacheClockOffsetMs = 0;
+  const cacheNow = () => Date.now() + cacheClockOffsetMs;
 
   const boot = (domain: string, name: string, env: Record<string, string>): Provider => {
     const base = loadConfig({
@@ -115,6 +127,8 @@ export function startFederation(dir: string, opts: StartFederationOptions = {}):
       testOnlySkipReplayWarmup: true,
       db,
       federationFetch,
+      discoveryCache: new RemoteDiscoveryCache({ federationFetch, now: cacheNow }),
+      userKeysCache: new RemoteUserKeysCache({ federationFetch, now: cacheNow }),
       ...(opts.wsTimings !== undefined ? { wsTimings: opts.wsTimings } : {}),
     });
     const server = Bun.serve({ port: 0, fetch: app.fetch, websocket: app.__websocket });
@@ -138,6 +152,9 @@ export function startFederation(dir: string, opts: StartFederationOptions = {}):
   return {
     a,
     b,
+    advanceCacheClock(ms) {
+      cacheClockOffsetMs += ms;
+    },
     stop() {
       a.server.stop(true);
       b.server.stop(true);

@@ -626,9 +626,9 @@ export function createWsHandlers(deps: WsHandlerDeps) {
    * home provider, which cannot tell us. Every
    * {@link WsTimings.remoteKeyRevalidateMs} re-resolve it through the user-keys
    * cache — honouring `cache_until`, so the revocation is seen within the
-   * cache window — and end the session (`4003`) if the key is gone or now has a
-   * different public key. An unreachable home provider does not end it: the
-   * cache falls back to the last good document.
+   * cache window — and end the session (`4003`) if a completed fetch shows the
+   * key gone or now with a different public key. A fetch failure is not
+   * evidence of revocation (§7.1), so it keeps the session.
    */
   function maybeRevalidateRemoteKey(ws: WsContext, state: ConnState): void {
     const { actor, keyId, remotePublicKey } = state;
@@ -637,10 +637,16 @@ export function createWsHandlers(deps: WsHandlerDeps) {
     if (Date.now() - state.lastKeyCheck < timings.remoteKeyRevalidateMs) return;
     state.keyCheckInFlight = true;
     void userKeysCache
-      .getActorKey(actor, keyId)
-      .then((key) => {
+      .lookupActorKey(actor, keyId)
+      .then((lookup) => {
         state.lastKeyCheck = Date.now();
-        if (key == null || key.publicKey !== remotePublicKey) {
+        // Transient (a failed or rate-limited fetch): keep the session, try
+        // again next interval.
+        if (lookup.kind === "fetch_failed" || lookup.kind === "rate_limited") return;
+        // `no_key`, `refused` (outbound rules forbid the fetch and no
+        // unexpired cached key matches) or a changed key end the session.
+        // (§7.1 asks for 4001 rather than 4003 in the `refused` case.)
+        if (lookup.kind !== "found" || lookup.key.publicKey !== remotePublicKey) {
           terminate(ws, state, WS_CLOSE_CREDENTIALS_REVOKED, "device key revoked");
         }
       })
@@ -790,20 +796,22 @@ export function createWsHandlers(deps: WsHandlerDeps) {
       }
 
       // Resolve the actor's published device key from its home provider (§4.6),
-      // verifying against it; on a miss (unknown key id *or* a key that fails to
-      // verify) force one keys-endpoint re-fetch and retry, mirroring the HTTP
-      // signature path so rotation/revocation is picked up promptly.
-      const cached = await userKeysCache.getActorKey(actor, keyId);
-      let resolved = cached != null && verifyWith(cached.publicKey) ? cached : null;
-      if (!resolved) {
-        const fresh = await userKeysCache.getActorKey(actor, keyId, { forceRefresh: true });
-        resolved = fresh != null && verifyWith(fresh.publicKey) ? fresh : null;
+      // verifying against it. The cache re-fetches when the key id is absent;
+      // a CACHED key that fails to verify forces one re-fetch (rotation),
+      // mirroring the HTTP signature path (signer-resolution.ts).
+      let lookup = await userKeysCache.lookupActorKey(actor, keyId);
+      if (lookup.kind === "found" && !lookup.fresh && !verifyWith(lookup.key.publicKey)) {
+        lookup = await userKeysCache.lookupActorKey(actor, keyId, { forceRefresh: true });
       }
-      if (!resolved) {
-        fail("no active remote device key matches actor/keyId, or invalid signature");
+      if (lookup.kind !== "found") {
+        fail(`remote device key not resolved (${lookup.kind.replace("_", " ")})`);
         return;
       }
-      state.remotePublicKey = resolved.publicKey;
+      if (!verifyWith(lookup.key.publicKey)) {
+        fail("invalid authenticate signature");
+        return;
+      }
+      state.remotePublicKey = lookup.key.publicKey;
     }
 
     // A late frame may have raced the async key resolution and already closed /

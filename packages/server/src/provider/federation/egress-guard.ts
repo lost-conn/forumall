@@ -16,7 +16,17 @@
  *
  * {@link guardedFetch} applies that check, refuses to follow redirects (a 3xx
  * from a public host could otherwise bounce the request inward), and bounds
- * every request with a timeout.
+ * the WHOLE operation — name resolution, connect, and reading the response —
+ * with one deadline ({@link DEFAULT_EGRESS_TIMEOUT_MS}).
+ *
+ * ## Two kinds of failure (§4.6 "No fetch is allowed" vs fetch failure)
+ *  - {@link EgressBlockedError} — **policy**: a non-https URL, or a literal IP /
+ *    resolved address that is not public. Retrying cannot help.
+ *  - {@link EgressResolutionError} — **transient**: the name did not resolve
+ *    (NXDOMAIN, SERVFAIL, no addresses) or resolution did not finish before the
+ *    deadline. The spec counts this as a network error, i.e. a fetch failure.
+ * Any other rejection from {@link guardedFetch} (connection refused, TLS, the
+ * deadline expiring mid-fetch) is likewise a transient network error.
  *
  * Known gap: the check resolves the name, then `fetch` resolves it again, so a
  * DNS-rebinding peer could answer differently the second time. Closing that
@@ -27,15 +37,36 @@
 import { lookup } from "node:dns/promises";
 import { isIPv4, isIPv6 } from "node:net";
 
-/** Default per-request timeout for outbound federation/push calls. */
-export const DEFAULT_EGRESS_TIMEOUT_MS = 10_000;
+/**
+ * Default deadline for ONE outbound federation/push operation, DNS included.
+ *
+ * §8 recommends ≤10 s per request. Inbound requests can wait on an outbound
+ * one (a §4.6 key fetch while a remote actor's request is held open), and a
+ * typical reverse proxy gives up on an upstream after ~10 s (502). 5 s keeps
+ * the whole egress — resolution, connect, response — comfortably inside that
+ * window, with room left for the inbound request's own work.
+ */
+export const DEFAULT_EGRESS_TIMEOUT_MS = 5_000;
 
-/** Thrown when an outbound request targets a forbidden scheme or address. */
+/** Policy refusal: the URL's scheme or (resolved) address is not allowed. */
 export class EgressBlockedError extends Error {
   readonly code = "EGRESS_BLOCKED";
   constructor(message: string) {
     super(message);
     this.name = "EgressBlockedError";
+  }
+}
+
+/**
+ * Transient failure: the host name could not be resolved (NXDOMAIN, SERVFAIL,
+ * no addresses, or the deadline passed first). Not a policy decision — a later
+ * attempt may succeed — so it is deliberately NOT an {@link EgressBlockedError}.
+ */
+export class EgressResolutionError extends Error {
+  readonly code = "EGRESS_RESOLUTION_FAILED";
+  constructor(message: string) {
+    super(message);
+    this.name = "EgressResolutionError";
   }
 }
 
@@ -136,13 +167,60 @@ export type Resolver = (hostname: string) => Promise<string[]>;
 const defaultResolver: Resolver = async (hostname) =>
   (await lookup(hostname, { all: true, verbatim: true })).map((r) => r.address);
 
+/** Options shared by {@link assertPublicHttpsUrl} and {@link guardedFetch}. */
+export interface EgressGuardOptions {
+  /** Name resolver (default: the system resolver via `dns.lookup`). */
+  readonly resolve?: Resolver;
+  /**
+   * Deadline for the operation. Pass the same signal to the `fetch` that
+   * follows so one deadline covers resolution and the request. Default: a
+   * fresh {@link DEFAULT_EGRESS_TIMEOUT_MS} timeout, so a check is never
+   * unbounded.
+   */
+  readonly signal?: AbortSignal;
+}
+
+/**
+ * Resolve `host`, giving up when `signal` aborts. The system resolver cannot
+ * be cancelled, so a lookup still pending at the deadline is abandoned (its
+ * eventual result is ignored) rather than awaited.
+ */
+function resolveBefore(host: string, resolve: Resolver, signal: AbortSignal): Promise<string[]> {
+  const timedOut = () =>
+    new EgressResolutionError(`resolving egress host ${host} did not finish before the deadline`);
+  if (signal.aborted) return Promise.reject(timedOut());
+  return new Promise<string[]>((fulfil, reject) => {
+    const onAbort = () => reject(timedOut());
+    signal.addEventListener("abort", onAbort, { once: true });
+    let pending: Promise<string[]>;
+    try {
+      pending = resolve(host);
+    } catch (err) {
+      pending = Promise.reject(err);
+    }
+    pending.then(
+      (addrs) => {
+        signal.removeEventListener("abort", onAbort);
+        fulfil(addrs);
+      },
+      (err: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        const why = err instanceof Error ? err.message : String(err);
+        reject(new EgressResolutionError(`cannot resolve egress host ${host}: ${why}`));
+      },
+    );
+  });
+}
+
 /**
  * Throw {@link EgressBlockedError} unless `url` is `https:` and its host — or
- * every address it resolves to — is publicly routable.
+ * every address it resolves to — is publicly routable. Throw
+ * {@link EgressResolutionError} if the name does not resolve to any address
+ * before the deadline.
  */
 export async function assertPublicHttpsUrl(
   url: string | URL,
-  resolve: Resolver = defaultResolver,
+  opts: EgressGuardOptions = {},
 ): Promise<void> {
   const u = typeof url === "string" ? new URL(url) : url;
   if (u.protocol !== "https:") {
@@ -153,28 +231,41 @@ export async function assertPublicHttpsUrl(
   if (isIPv4(host) || isIPv6(host)) {
     addrs = [host];
   } else {
-    try {
-      addrs = await resolve(host);
-    } catch {
-      throw new EgressBlockedError(`cannot resolve egress host ${host}`);
+    const signal = opts.signal ?? AbortSignal.timeout(DEFAULT_EGRESS_TIMEOUT_MS);
+    addrs = await resolveBefore(host, opts.resolve ?? defaultResolver, signal);
+    if (addrs.length === 0) {
+      throw new EgressResolutionError(`egress host ${host} resolved to no addresses`);
     }
   }
-  if (addrs.length === 0 || addrs.some(isBlockedAddress)) {
+  if (addrs.some(isBlockedAddress)) {
     throw new EgressBlockedError(`refusing egress to non-public address for ${host}`);
   }
 }
 
+/** Options for {@link guardedFetch}. */
+export interface GuardedFetchOptions {
+  /** Deadline for the whole operation, DNS included. Default {@link DEFAULT_EGRESS_TIMEOUT_MS}. */
+  readonly timeoutMs?: number;
+  /** Name resolver (tests). */
+  readonly resolve?: Resolver;
+  /** The underlying fetch (tests). Default: the global `fetch`. */
+  readonly fetch?: (request: Request, init: RequestInit) => Promise<Response>;
+}
+
 /**
  * `fetch` with the egress guard applied: public https targets only, redirects
- * returned (never followed), and a hard timeout.
+ * returned (never followed), and ONE deadline covering name resolution, the
+ * request and the response body.
  */
 export async function guardedFetch(
   request: Request,
-  opts: { timeoutMs?: number; resolve?: Resolver } = {},
+  opts: GuardedFetchOptions = {},
 ): Promise<Response> {
-  await assertPublicHttpsUrl(request.url, opts.resolve);
-  return fetch(request, {
-    redirect: "manual",
-    signal: AbortSignal.timeout(opts.timeoutMs ?? DEFAULT_EGRESS_TIMEOUT_MS),
-  });
+  const signal = AbortSignal.timeout(opts.timeoutMs ?? DEFAULT_EGRESS_TIMEOUT_MS);
+  await assertPublicHttpsUrl(
+    request.url,
+    opts.resolve ? { resolve: opts.resolve, signal } : { signal },
+  );
+  const doFetch = opts.fetch ?? fetch;
+  return doFetch(request, { redirect: "manual", signal });
 }
