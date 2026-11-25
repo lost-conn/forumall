@@ -31,8 +31,8 @@
  * first sweeps hosts that have been idle for at least the full-refill time
  * (`burst / refillPerSecond`) with nothing in flight: such a host's bucket is
  * full again, so forgetting it is lossless. A sweep stops at the first host
- * touched more recently than that (skipping, not stopping at, idle hosts that
- * still have a fetch in flight). On top of that, at most `maxHosts` hosts are
+ * touched more recently than that (skipping, not stopping at, hosts untouched
+ * that long that still have a fetch in flight). On top of that, at most `maxHosts` hosts are
  * tracked; a NEW host beyond the cap evicts the least recently used host that
  * has nothing in flight. A busy host is never evicted (that would reset its
  * in-flight count and let its cap be exceeded); if every tracked host is busy,
@@ -40,6 +40,12 @@
  * idle host is lossy only for its bucket (it next starts full), so it can only
  * be forced by naming more than `maxHosts` distinct hosts — each costing the
  * requester a fetch of its own — within one full-refill window.
+ *
+ * Trade-off: a requester who can keep `maxHosts` fetches in flight at once (e.g.
+ * many hosts under a wildcard DNS name that answer slowly) makes every NEW host
+ * wait — `rate_limited` — for up to one fetch deadline while that lasts. This is
+ * chosen over the alternative, evicting a busy host, which would let a named
+ * victim's cap be exceeded; hosts already tracked are unaffected.
  *
  * Scope: this bounds load per host, not total egress. Requests naming many
  * DIFFERENT hosts cost each of them at most `burst` fetches; distinct ports
@@ -110,8 +116,11 @@ export class HostFetchLimiter {
   }
 
   /**
-   * Ask to start one fetch to `host`. When admitted, a token and an in-flight
-   * slot are taken; the caller MUST call `release` once when the fetch settles
+   * Ask to start one fetch to `host`. It is refused (`rate_limited`) when the
+   * host's bucket is empty, its in-flight cap is reached, or it is a new host and
+   * the table is full of busy hosts (wait: one fetch deadline, an upper bound —
+   * a slot may free sooner). When admitted, a token and an in-flight slot are
+   * taken; the caller MUST call `release` once when the fetch settles
    * (later calls are ignored).
    */
   tryStart(host: string): FetchAdmission {
