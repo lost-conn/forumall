@@ -31,6 +31,13 @@
  *    `refetchIntervalMs` (default {@link DEFAULT_REFETCH_INTERVAL_MS}). A
  *    lookup that needs a fetch inside the interval is `rate_limited`, with the
  *    time until one is allowed (→ `503` + `Retry-After`).
+ *  - The actor is chosen by the requester, so the per-actor limit alone does
+ *    not protect the actor's home provider from a stream of random handles
+ *    (`r1@victim.example`, `r2@victim.example`, …). Every NEW fetch is also
+ *    admitted by a per-host {@link HostFetchLimiter} keyed by the canonical
+ *    authority contacted (token bucket + in-flight cap, `hostFetchLimits`,
+ *    defaults `DEFAULT_HOST_FETCH_LIMITS`); a fetch it refuses is
+ *    `rate_limited` with the host's wait, exactly like the per-actor case.
  *
  * The cache is per-app (constructed in `createApp`) and exposed on
  * `c.var.userKeysCache`. It carries no secrets — only public device keys.
@@ -42,6 +49,7 @@ import {
   isCanonicalActor,
 } from "@forumall/shared";
 
+import { HostFetchLimiter, type HostFetchLimits } from "./host-fetch-limiter.ts";
 import { type FederationFetch, defaultFederationFetch } from "./http.ts";
 import { type DocumentFetch, type KeyLookup, fetchKeyDocument, lookupKey } from "./key-lookup.ts";
 import { DEFAULT_REFETCH_INTERVAL_MS, RefetchLimiter } from "./refetch-limiter.ts";
@@ -66,6 +74,12 @@ export interface UserKeysCacheOptions {
    * (1 s); `0` disables the limit (concurrent lookups still share one fetch).
    */
   readonly refetchIntervalMs?: number;
+  /**
+   * Per-host bound on the fetches above (§8 Outbound requests), overriding any
+   * of `DEFAULT_HOST_FETCH_LIMITS`: `burst` back to back, then
+   * `refillPerSecond`; at most `maxInFlight` at once; `maxHosts` tracked.
+   */
+  readonly hostFetchLimits?: Partial<HostFetchLimits>;
   /** Injected transport (default: the egress-guarded {@link defaultFederationFetch}). */
   readonly federationFetch?: FederationFetch;
   /** Clock, overridable in tests. Default `Date.now`. */
@@ -88,6 +102,7 @@ export class RemoteUserKeysCache {
   readonly #maxTtlMs: number;
   readonly #now: () => number;
   readonly #limiter: RefetchLimiter<DocumentFetch<UserKeysResponse>>;
+  readonly #hostLimiter: HostFetchLimiter;
   /** Total successful network fetches — exposed for tests (cache-hit assertions). */
   #fetchCount = 0;
 
@@ -98,6 +113,10 @@ export class RemoteUserKeysCache {
     this.#now = opts.now ?? Date.now;
     this.#limiter = new RefetchLimiter({
       intervalMs: opts.refetchIntervalMs ?? DEFAULT_REFETCH_INTERVAL_MS,
+      now: this.#now,
+    });
+    this.#hostLimiter = new HostFetchLimiter({
+      ...(opts.hostFetchLimits ? { limits: opts.hostFetchLimits } : {}),
       now: this.#now,
     });
   }
@@ -167,7 +186,8 @@ export class RemoteUserKeysCache {
    * device, §4.6), it fetches once. `forceRefresh` always fetches (the
    * middleware does this when a cached key fails to verify). Every fetch goes
    * through the per-actor limiter: it may join one already in flight, or be
-   * reported `rate_limited` when the actor was fetched within the interval.
+   * reported `rate_limited` when the actor was fetched within the interval or
+   * when the actor's host has used up its per-host allowance.
    *
    * An actor that is not canonical `handle@domain` is `refused`: §2.2 — an
    * alias (`a.test:0443`, `Alice@a.test`) never reaches the network.
@@ -186,7 +206,12 @@ export class RemoteUserKeysCache {
     const host = actor.slice(at + 1);
     return lookupKey({
       cached: () => this.#cached(actor),
-      refresh: () => this.#limiter.run(actor, () => this.#refresh(actor, handle, host)),
+      refresh: () =>
+        this.#limiter.run(
+          actor,
+          () => this.#refresh(actor, handle, host),
+          () => this.#hostLimiter.tryStart(host),
+        ),
       select: (doc) => selectKey(doc, keyId),
       forceRefresh: opts.forceRefresh ?? false,
     });

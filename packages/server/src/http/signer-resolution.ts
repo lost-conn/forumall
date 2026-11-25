@@ -9,8 +9,8 @@
  * | `bad_signature`  | the key resolved but the signature does not verify against it  | `401`  |
  * | `refused`        | the outbound-request rules (§8) forbid fetching the keys       | `401`  |
  * | `fetch_failed`   | the keys could not be fetched (network/DNS/timeout/non-200/…)  | `503`  |
- * | `rate_limited`   | a fetch was needed but the per-identity re-fetch limit         | `503`  |
- * |                  | suppressed it (`Retry-After` = time until one is allowed)      |        |
+ * | `rate_limited`   | a fetch was needed but a fetch limit (per identity, or per     | `503`  |
+ * |                  | host for user keys) suppressed it (`Retry-After` = the wait)   |        |
  *
  * Federation-policy denial (`403`, §8 Authorization) is decided by the
  * verifier from the claimed domain BEFORE anything here runs, so a denied
@@ -25,7 +25,9 @@
  * causes at most one key fetch, and therefore waits at most one egress
  * deadline (`DEFAULT_EGRESS_TIMEOUT_MS`). Across requests, the caches allow at
  * most one fetch per identity per interval and share in-flight fetches
- * (`federation/refetch-limiter.ts`, §4.6 / §8 Outbound requests).
+ * (`federation/refetch-limiter.ts`, §4.6 / §8 Outbound requests); user-key
+ * fetches are also bounded per host contacted, since the requester picks the
+ * actor (`federation/host-fetch-limiter.ts`).
  *
  * ## Identity shape (security-critical)
  * Only the LOCAL actor branch sets `localHandle` — the bare handle is a key

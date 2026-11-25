@@ -25,7 +25,11 @@
  *    concurrent lookups share one in-flight fetch, and at most one fetch
  *    starts per `refetchIntervalMs` (default {@link DEFAULT_REFETCH_INTERVAL_MS}).
  *    A lookup that needs a fetch inside the interval is `rate_limited`, with
- *    the time until one is allowed (→ `503` + `Retry-After`).
+ *    the time until one is allowed (→ `503` + `Retry-After`). The identity
+ *    here IS the host contacted, so this is already a per-host bound (at most
+ *    one discovery fetch in flight and one start per interval per host); the
+ *    user-keys cache, whose identities a requester can multiply on one host,
+ *    adds a separate `HostFetchLimiter`.
  *
  * The cache is per-app (constructed in `createApp`) and exposed on
  * `c.var.discoveryCache`. It carries no secrets — only public discovery docs.

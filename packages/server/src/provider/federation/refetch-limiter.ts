@@ -1,13 +1,12 @@
 /**
- * Bounds the key fetches that inbound requests can trigger (spec §4.6 "MAY
- * limit these re-fetches per actor", §8.1 "per provider", §8 Outbound
- * requests "SHOULD rate-limit lookups triggered by inbound requests").
+ * Bounds the key fetches that inbound requests can trigger, PER IDENTITY (spec
+ * §4.6 "MAY limit these re-fetches per actor", §8.1 "per provider", §8
+ * Outbound requests "SHOULD rate-limit lookups triggered by inbound requests").
  *
  * Without a bound, any request can make this provider fetch from the domain it
  * names: an unknown `key_id`, a garbage signature over a real `key_id` (which
  * forces a re-fetch of a cached key), or a peer whose `cache_until` is already
- * past (nothing is cached, so every request fetches). A stream of such
- * requests would turn this provider into a tool for hammering a third party.
+ * past (nothing is cached, so every request fetches).
  *
  * Per identity (an actor for user keys, a provider authority for discovery):
  *  - **Single flight.** While a fetch is in progress, every other lookup for the
@@ -18,13 +17,24 @@
  *    {@link RateLimited}, carrying the time until a fetch is allowed again, so
  *    the verifier can answer `503` + `Retry-After` (§4.6) rather than `401`.
  *
+ * What this does NOT bound on its own: the identities themselves are chosen by
+ * the requester. For discovery the identity IS the host contacted, so the
+ * limit is per host. For user keys it is not: `r1@victim.example`,
+ * `r2@victim.example`, … are distinct actors on one host, and each would start
+ * its own fetch. The user-keys cache therefore also passes an `admit` gate
+ * ({@link FetchAdmission}, implemented per host by `HostFetchLimiter` in
+ * `host-fetch-limiter.ts`) that is consulted only when a NEW fetch would start
+ * (never for a lookup joining one in flight). A gate refusal is reported as is
+ * and does not start this identity's interval, so the caller's `Retry-After`
+ * is the gate's wait and nothing longer.
+ *
  * The limiter never serves data itself: the caches consult their UNEXPIRED
  * entries before asking it for a fetch, so a suppressed fetch never means an
  * expired entry gets used (§4.6).
  *
- * Memory: an identity is remembered only while its interval runs (plus until
- * the next sweep), so requests naming random identities cannot grow it beyond
- * what one interval's worth of traffic produces.
+ * Memory: an identity is remembered only while its fetch is in flight or its
+ * interval runs (it is swept on the next call after that), so this map holds
+ * at most one interval's worth of distinct identities.
  */
 
 /** Default minimum time (ms) between two network fetches for one identity. */
@@ -36,6 +46,15 @@ export interface RateLimited {
   /** Milliseconds until a fetch for this identity is allowed again (> 0). */
   readonly retryAfterMs: number;
 }
+
+/**
+ * A second limit consulted just before a new fetch would start: either the
+ * fetch may start (call `release` exactly once when it settles) or it is
+ * {@link RateLimited}.
+ */
+export type FetchAdmission =
+  | { readonly kind: "admitted"; readonly release: () => void }
+  | RateLimited;
 
 export class RefetchLimiter<R> {
   readonly #intervalMs: number;
@@ -59,8 +78,10 @@ export class RefetchLimiter<R> {
   /**
    * Run `fetch` for `id` unless one is already in flight (join it) or the
    * previous one started less than the interval ago ({@link RateLimited}).
+   * When a new fetch would start, `admit` (if given) is asked first; its
+   * refusal is returned unchanged and leaves this identity's interval unstarted.
    */
-  run(id: string, fetch: () => Promise<R>): Promise<R | RateLimited> {
+  run(id: string, fetch: () => Promise<R>, admit?: () => FetchAdmission): Promise<R | RateLimited> {
     const pending = this.#inFlight.get(id);
     if (pending) return pending;
 
@@ -76,10 +97,21 @@ export class RefetchLimiter<R> {
       }
     }
 
+    const admission = admit?.();
+    if (admission?.kind === "rate_limited") return Promise.resolve(admission);
+
     this.#lastStart.delete(id);
     this.#lastStart.set(id, now);
-    const started = fetch().finally(() => {
+    // A synchronous throw must still release the admission (below).
+    let attempt: Promise<R>;
+    try {
+      attempt = fetch();
+    } catch (err) {
+      attempt = Promise.reject(err);
+    }
+    const started = attempt.finally(() => {
       this.#inFlight.delete(id);
+      admission?.release();
     });
     this.#inFlight.set(id, started);
     return started;

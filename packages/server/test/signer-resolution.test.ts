@@ -13,7 +13,9 @@
  *  - key fetches are bounded per actor / provider (§4.6, §8.1, §8 Outbound
  *    requests): concurrent requests share one fetch, at most one fetch per
  *    interval, and a request whose fetch is suppressed with no matching cached
- *    key → 503 + `Retry-After` (the wait, rounded up to whole seconds).
+ *    key → 503 + `Retry-After` (the wait, rounded up to whole seconds);
+ *  - user-key fetches are also bounded per host contacted, so a stream of
+ *    random handles on one domain cannot make B hammer it (§8).
  *
  * Provider B (`b.test`, this app) verifies requests from `alice@a.test` (and
  * provider `a.test`) whose home provider is simulated by an injected transport.
@@ -417,6 +419,53 @@ describe("remote actor: re-fetches are bounded per actor (§4.6, §8 Outbound re
     env.advance(500); // 1 s after the first fetch
     expect((await aliceGet(env.app, env.path)).status).toBe(200);
     expect(env.calls).toHaveLength(2);
+  });
+});
+
+describe("remote actor: key fetches are bounded per host (§8 Outbound requests)", () => {
+  /** A user-signed GET from `actor` (any key: resolution decides the answer first). */
+  function signedGet(app: App, path: string, actor: string): Promise<Response> {
+    const { headers } = sign({
+      actor,
+      keyId: "dk_random",
+      privateKey: generateKeyPair().privateKey,
+      authority: LOCAL,
+      method: "GET",
+      path,
+    });
+    return Promise.resolve(app.request(path, { method: "GET", headers }));
+  }
+
+  test("random handles on one domain → a burst of fetches, then 503 + Retry-After; other hosts unaffected", async () => {
+    let now = Date.now();
+    const t = transport(() => new Response(null, { status: 404 }));
+    const userKeysCache = new RemoteUserKeysCache({
+      federationFetch: t.fetch,
+      now: () => now,
+      hostFetchLimits: { burst: 5, refillPerSecond: 2 },
+    });
+    const { app, path } = boot({ userKeysCache });
+    const statuses: number[] = [];
+    for (let i = 0; i < 30; i += 1) {
+      const res = await signedGet(app, path, `r${i}@victim.test`);
+      statuses.push(res.status);
+      if (res.status === 503) {
+        await expectProblem(res, 503, "service_unavailable");
+        expect(res.headers.get("retry-after")).toBe("1"); // 500 ms to the next token → 1 s
+      } else {
+        await expectProblem(res, 401, "unauthorized");
+      }
+    }
+    expect(statuses.filter((s) => s === 401)).toHaveLength(5);
+    expect(statuses.filter((s) => s === 503)).toHaveLength(25);
+    expect(t.calls).toHaveLength(5); // not 30
+
+    // Another domain is not throttled by victim.test's exhaustion.
+    await expectProblem(await signedGet(app, path, "bob@other.test"), 401, "unauthorized");
+    // After Retry-After, a new handle on victim.test is fetched again.
+    now += 1_000;
+    await expectProblem(await signedGet(app, path, "r99@victim.test"), 401, "unauthorized");
+    expect(t.calls).toHaveLength(7);
   });
 });
 
