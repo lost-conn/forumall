@@ -33,12 +33,13 @@
  * full again, so forgetting it is lossless. A sweep stops at the first host
  * touched more recently than that (skipping, not stopping at, idle hosts that
  * still have a fetch in flight). On top of that, at most `maxHosts` hosts are
- * tracked; a NEW host beyond the cap evicts the least recently used one. That
- * eviction is lossy (the evicted host next gets a full bucket and an empty
- * in-flight count, though its earlier fetches are still bounded by the egress
- * deadline), so it can
- * only be forced by naming more than `maxHosts` distinct hosts — each costing
- * the requester a fetch of its own — within one full-refill window.
+ * tracked; a NEW host beyond the cap evicts the least recently used host that
+ * has nothing in flight. A busy host is never evicted (that would reset its
+ * in-flight count and let its cap be exceeded); if every tracked host is busy,
+ * the new host is refused (`rate_limited`) until a fetch settles. Evicting an
+ * idle host is lossy only for its bucket (it next starts full), so it can only
+ * be forced by naming more than `maxHosts` distinct hosts — each costing the
+ * requester a fetch of its own — within one full-refill window.
  *
  * Scope: this bounds load per host, not total egress. Requests naming many
  * DIFFERENT hosts cost each of them at most `burst` fetches; distinct ports
@@ -55,7 +56,7 @@ export interface HostFetchLimits {
   readonly refillPerSecond: number;
   /** Fetches to one host allowed in flight at once (integer ≥ 1). */
   readonly maxInFlight: number;
-  /** Hosts tracked at most; the least recently used is evicted beyond it (integer ≥ 1). */
+  /** Hosts tracked at most; beyond it the least recently used idle host is evicted (integer ≥ 1). */
   readonly maxHosts: number;
   /** Longest a fetch can run (ms, > 0): bounds the wait reported for a full in-flight cap. */
   readonly fetchDeadlineMs: number;
@@ -116,8 +117,12 @@ export class HostFetchLimiter {
   tryStart(host: string): FetchAdmission {
     const now = this.#now();
     this.#sweep(now);
-    const state = this.#touch(host, now);
     const { maxInFlight, refillPerSecond, fetchDeadlineMs } = this.#limits;
+    const state = this.#touch(host, now);
+    // Every tracked host has a fetch in flight and the table is full: admitting a
+    // new host would mean forgetting a busy one (resetting its cap), so refuse
+    // until one settles — at the latest, one fetch deadline from now.
+    if (state === null) return { kind: "rate_limited", retryAfterMs: fetchDeadlineMs };
 
     let wait = 0;
     if (state.tokens < 1) {
@@ -138,14 +143,17 @@ export class HostFetchLimiter {
       release: () => {
         if (released) return;
         released = true;
-        // The record may have been evicted meanwhile; updating it is then harmless.
+        // A host with a fetch in flight is never evicted or swept, so `state` is live.
         state.inFlight.splice(state.inFlight.indexOf(now), 1);
       },
     };
   }
 
-  /** The host's state, refilled to `now` and moved to the most-recent end. */
-  #touch(host: string, now: number): HostState {
+  /**
+   * The host's state, refilled to `now` and moved to the most-recent end; `null`
+   * when the host is new, the table is full, and every tracked host is busy.
+   */
+  #touch(host: string, now: number): HostState | null {
     let state = this.#hosts.get(host);
     if (state) {
       this.#hosts.delete(host);
@@ -155,14 +163,26 @@ export class HostFetchLimiter {
       state.tokens = Math.min(this.#limits.burst, state.tokens + refill);
       state.touchedAt = now;
     } else {
-      if (this.#hosts.size >= this.#limits.maxHosts) {
-        const lru = this.#hosts.keys().next();
-        if (!lru.done) this.#hosts.delete(lru.value);
-      }
+      if (this.#hosts.size >= this.#limits.maxHosts && !this.#evictIdle()) return null;
       state = { tokens: this.#limits.burst, touchedAt: now, inFlight: [] };
     }
     this.#hosts.set(host, state);
     return state;
+  }
+
+  /**
+   * Evict the least recently touched host with nothing in flight. Never evicts a
+   * busy host: that would reset its in-flight count and let its cap be exceeded.
+   * Returns false when every tracked host is busy.
+   */
+  #evictIdle(): boolean {
+    for (const [host, state] of this.#hosts) {
+      if (state.inFlight.length === 0) {
+        this.#hosts.delete(host);
+        return true;
+      }
+    }
+    return false;
   }
 
   /** Forget hosts idle for a full refill with nothing in flight (lossless). */

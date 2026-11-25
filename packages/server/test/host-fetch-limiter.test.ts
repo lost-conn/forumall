@@ -143,6 +143,35 @@ describe("HostFetchLimiter", () => {
     admitN(limiter, "b.test", 1); // b starts over with a full bucket
   });
 
+  test("a full table never evicts a host with a fetch in flight", () => {
+    const c = clock();
+    const limiter = new HostFetchLimiter({
+      limits: { burst: 5, maxInFlight: 1, maxHosts: 2 },
+      now: c.now,
+    });
+    const [releaseVictim] = admitN(limiter, "victim.test", 1); // busy, and the LRU
+    admitN(limiter, "b.test", 1)[0]?.(); // idle
+    admitN(limiter, "c.test", 1)[0]?.(); // table full: evicts idle b, not busy victim
+    expect(limiter.trackedHosts).toBe(2);
+    // victim's in-flight count survived, so its cap still holds.
+    expect(limiter.tryStart("victim.test").kind).toBe("rate_limited");
+    releaseVictim?.();
+    expect(limiter.tryStart("victim.test").kind).toBe("admitted");
+  });
+
+  test("a new host is refused when every tracked host is busy", () => {
+    const c = clock();
+    const limiter = new HostFetchLimiter({ limits: { maxHosts: 2 }, now: c.now });
+    const [releaseA] = admitN(limiter, "a.test", 1);
+    admitN(limiter, "b.test", 1);
+    const refused = limiter.tryStart("c.test");
+    expect(refused.kind).toBe("rate_limited");
+    if (refused.kind === "rate_limited") expect(refused.retryAfterMs).toBeGreaterThan(0);
+    expect(limiter.trackedHosts).toBe(2);
+    releaseA?.();
+    expect(limiter.tryStart("c.test").kind).toBe("admitted"); // evicts the now-idle a
+  });
+
   test("invalid limits are rejected", () => {
     const now = Date.now;
     for (const limits of [
