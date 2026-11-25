@@ -136,20 +136,32 @@ describe("guardedFetch", () => {
   });
 
   test("the same deadline bounds the request after a slow resolution", async () => {
+    // DNS takes half the deadline; the request then hangs until aborted. With
+    // ONE deadline the whole call ends at ~DEADLINE_MS. A fresh timeout started
+    // after DNS would end no earlier than RESOLVE_MS + DEADLINE_MS, which is
+    // the bound — leaving RESOLVE_MS (750 ms, ~5x the old margin) of headroom
+    // for a loaded machine, and as much again for the resolver to win its race.
+    const DEADLINE_MS = 1_500;
+    const RESOLVE_MS = 750;
+    let fetched = false;
     const started = performance.now();
     const err = await guardedFetch(new Request("https://slow.example/x"), {
-      timeoutMs: 300,
-      resolve: () => new Promise<string[]>((r) => setTimeout(() => r(["93.184.216.34"]), 200)),
+      timeoutMs: DEADLINE_MS,
+      resolve: () =>
+        new Promise<string[]>((r) => setTimeout(() => r(["93.184.216.34"]), RESOLVE_MS)),
       // A fetch that only ends when its signal aborts.
-      fetch: (_req, init) =>
-        new Promise<Response>((_, reject) => {
+      fetch: (_req, init) => {
+        fetched = true;
+        return new Promise<Response>((_, reject) => {
           init.signal?.addEventListener("abort", () => reject(init.signal?.reason));
-        }),
+        });
+      },
     }).catch((e: unknown) => e);
     const elapsed = performance.now() - started;
     expect(err).toBeInstanceOf(Error);
-    // Aborted by the ONE 300ms deadline — not a fresh full timeout after DNS.
-    expect(elapsed).toBeLessThan(450);
+    expect(fetched).toBe(true); // DNS finished in time: the REQUEST was what the deadline cut
+    // Aborted by the ONE deadline — not a fresh full timeout after DNS.
+    expect(elapsed).toBeLessThan(RESOLVE_MS + DEADLINE_MS);
   });
 
   test("passes redirect: manual and returns the response for a public host", async () => {

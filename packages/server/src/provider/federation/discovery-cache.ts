@@ -20,6 +20,12 @@
  *    verification failure for a key_id they believe should be valid" — or
  *    `forceRefresh`) it fetches once and reports why the key did or did not
  *    resolve.
+ *  - Fetches are bounded per provider by a {@link RefetchLimiter} (§8.1 "MAY
+ *    rate-limit these re-fetches per provider", §8 Outbound requests):
+ *    concurrent lookups share one in-flight fetch, and at most one fetch
+ *    starts per `refetchIntervalMs` (default {@link DEFAULT_REFETCH_INTERVAL_MS}).
+ *    A lookup that needs a fetch inside the interval is `rate_limited`, with
+ *    the time until one is allowed (→ `503` + `Retry-After`).
  *
  * The cache is per-app (constructed in `createApp`) and exposed on
  * `c.var.discoveryCache`. It carries no secrets — only public discovery docs.
@@ -33,6 +39,7 @@ import {
 
 import { type FederationFetch, defaultFederationFetch } from "./http.ts";
 import { type DocumentFetch, type KeyLookup, fetchKeyDocument, lookupKey } from "./key-lookup.ts";
+import { DEFAULT_REFETCH_INTERVAL_MS, RefetchLimiter } from "./refetch-limiter.ts";
 
 /** The well-known discovery path (§3.1). */
 const DISCOVERY_PATH = "/.well-known/ofscp-provider";
@@ -51,6 +58,13 @@ export interface DiscoveryCacheOptions {
   readonly defaultTtlMs?: number;
   /** Upper bound applied to any derived TTL. Default 3_600_000 (1 h). */
   readonly maxTtlMs?: number;
+  /**
+   * Minimum time between two network fetches of one provider's discovery
+   * document (§8.1 "MAY rate-limit these re-fetches per provider"). Default
+   * {@link DEFAULT_REFETCH_INTERVAL_MS} (1 s); `0` disables the limit
+   * (concurrent lookups still share one fetch).
+   */
+  readonly refetchIntervalMs?: number;
   /** Injected transport (default: the egress-guarded {@link defaultFederationFetch}). */
   readonly federationFetch?: FederationFetch;
   /** Clock, overridable in tests. Default `Date.now`. */
@@ -98,6 +112,7 @@ export class RemoteDiscoveryCache {
   readonly #defaultTtlMs: number;
   readonly #maxTtlMs: number;
   readonly #now: () => number;
+  readonly #limiter: RefetchLimiter<DocumentFetch<ProviderDiscovery>>;
   /** Total successful network fetches — exposed for tests (cache-hit assertions). */
   #fetchCount = 0;
 
@@ -106,6 +121,10 @@ export class RemoteDiscoveryCache {
     this.#defaultTtlMs = opts.defaultTtlMs ?? DEFAULT_TTL_MS;
     this.#maxTtlMs = opts.maxTtlMs ?? MAX_TTL_MS;
     this.#now = opts.now ?? Date.now;
+    this.#limiter = new RefetchLimiter({
+      intervalMs: opts.refetchIntervalMs ?? DEFAULT_REFETCH_INTERVAL_MS,
+      now: this.#now,
+    });
   }
 
   /** Successful network fetches so far (cache misses + forced refetches). */
@@ -161,8 +180,11 @@ export class RemoteDiscoveryCache {
    * An unexpired cached document holding `keyId` answers without a fetch. With
    * no usable entry, or one lacking `keyId` (the peer may have rotated, §8.1),
    * it fetches once. `forceRefresh` always fetches (the middleware does this
-   * when a cached key fails to verify). A domain that does not canonicalize to
-   * a bare host[:port] (§2.2) is `refused` and never fetched.
+   * when a cached key fails to verify). Every fetch goes through the
+   * per-provider limiter: it may join one already in flight, or be reported
+   * `rate_limited` when the provider was fetched within the interval. A domain
+   * that does not canonicalize to a bare host[:port] (§2.2) is `refused` and
+   * never fetched.
    */
   async lookupProviderKey(
     domain: string,
@@ -175,7 +197,7 @@ export class RemoteDiscoveryCache {
     }
     return lookupKey({
       cached: () => this.#cached(host),
-      refresh: () => this.#refresh(host),
+      refresh: () => this.#limiter.run(host, () => this.#refresh(host)),
       select: (doc) => selectKey(doc, keyId),
       forceRefresh: opts.forceRefresh ?? false,
     });

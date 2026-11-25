@@ -190,6 +190,8 @@ describe("provider-signed federation (§8.1)", () => {
       .run();
     // Sanity: A now signs with the rotated key.
     expect(getProviderSigningKey(fed.a.db).keyId).toBe("psk-rotated");
+    // The rotation lands after B's per-provider re-fetch interval (1 s).
+    fed.advanceCacheClock(1_000);
 
     // B's cache still holds the OLD discovery (old key id). The new request's
     // key id is unknown there → verify miss → forced re-fetch → new key verifies.

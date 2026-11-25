@@ -9,7 +9,11 @@
  *  - the outbound-request rules refuse the fetch (a private address) → 401;
  *  - federation policy denies the signer's provider → 403, before any fetch;
  *  - only an UNEXPIRED cache entry counts: expired + fetch failure → 503,
- *    unexpired + fetch failure → still accepted.
+ *    unexpired + fetch failure → still accepted;
+ *  - key fetches are bounded per actor / provider (§4.6, §8.1, §8 Outbound
+ *    requests): concurrent requests share one fetch, at most one fetch per
+ *    interval, and a request whose fetch is suppressed with no matching cached
+ *    key → 503 + `Retry-After` (the wait, rounded up to whole seconds).
  *
  * Provider B (`b.test`, this app) verifies requests from `alice@a.test` (and
  * provider `a.test`) whose home provider is simulated by an injected transport.
@@ -293,8 +297,125 @@ describe("remote actor: only an unexpired cache entry counts (§4.6)", () => {
     const env = clockedApp();
     expect((await aliceGet(env.app, env.path)).status).toBe(200);
     env.failWith(() => new Response(null, { status: 500 }));
+    env.advance(1_000); // past the per-actor re-fetch interval
     const rotated = generateKeyPair();
     await expect503(await aliceGet(env.app, env.path, rotated.privateKey));
+    expect(env.calls).toHaveLength(2);
+  });
+});
+
+describe("remote actor: re-fetches are bounded per actor (§4.6, §8 Outbound requests)", () => {
+  /** B with a clocked user-keys cache over a switchable transport. */
+  function limitedApp(opts: { refetchIntervalMs?: number; respond?: () => Response } = {}) {
+    let now = Date.now();
+    let respond = opts.respond ?? aliceKeys;
+    let gate: Promise<void> = Promise.resolve();
+    const t = transport(async () => {
+      await gate;
+      return respond();
+    });
+    const userKeysCache = new RemoteUserKeysCache({
+      federationFetch: t.fetch,
+      now: () => now,
+      ...(opts.refetchIntervalMs !== undefined
+        ? { refetchIntervalMs: opts.refetchIntervalMs }
+        : {}),
+    });
+    const { app, path } = boot({ userKeysCache });
+    return {
+      app,
+      path,
+      calls: t.calls,
+      now: () => now,
+      advance: (ms: number) => {
+        now += ms;
+      },
+      respondWith: (r: () => Response) => {
+        respond = r;
+      },
+      /** Hold every fetch until the returned function is called. */
+      hold: () => {
+        let release!: () => void;
+        gate = new Promise<void>((r) => {
+          release = r;
+        });
+        return release;
+      },
+    };
+  }
+
+  const noKeys = () => keysDoc([]);
+
+  test("two requests within the interval → one fetch; the second (no matching key) → 503 + Retry-After", async () => {
+    const env = limitedApp({ respond: noKeys });
+    await expectProblem(await aliceGet(env.app, env.path), 401, "unauthorized");
+    env.advance(400);
+    const res = await aliceGet(env.app, env.path);
+    await expectProblem(res, 503, "service_unavailable");
+    expect(res.headers.get("retry-after")).toBe("1"); // 600 ms left → 1 s
+    expect(env.calls).toHaveLength(1);
+  });
+
+  test("Retry-After is the remaining wait rounded UP to whole seconds", async () => {
+    const env = limitedApp({ respond: noKeys, refetchIntervalMs: 2_500 });
+    await expectProblem(await aliceGet(env.app, env.path), 401, "unauthorized");
+    env.advance(100);
+    const res = await aliceGet(env.app, env.path);
+    await expectProblem(res, 503, "service_unavailable");
+    expect(res.headers.get("retry-after")).toBe("3"); // 2400 ms → 3 s
+    expect(env.calls).toHaveLength(1);
+  });
+
+  test("after the interval a re-fetch happens and picks up a newly registered key", async () => {
+    const env = limitedApp({ respond: noKeys });
+    await expectProblem(await aliceGet(env.app, env.path), 401, "unauthorized");
+    env.respondWith(aliceKeys); // alice registers the device key
+    env.advance(1_000);
+    expect((await aliceGet(env.app, env.path)).status).toBe(200);
+    expect(env.calls).toHaveLength(2);
+  });
+
+  test("concurrent requests share one fetch (none is rate-limited)", async () => {
+    const env = limitedApp();
+    const release = env.hold();
+    const pending = Array.from({ length: 5 }, () => aliceGet(env.app, env.path));
+    setTimeout(release, 50); // let every request reach the in-flight fetch
+    const statuses = (await Promise.all(pending)).map((r) => r.status);
+    expect(statuses).toEqual([200, 200, 200, 200, 200]);
+    expect(env.calls).toHaveLength(1);
+  });
+
+  test("a garbage signature over a real key_id → its forced re-fetch is limited too", async () => {
+    const env = limitedApp();
+    expect((await aliceGet(env.app, env.path)).status).toBe(200);
+    const forged = generateKeyPair();
+    for (let i = 0; i < 5; i += 1) {
+      env.advance(100);
+      await expectProblem(
+        await aliceGet(env.app, env.path, forged.privateKey),
+        503,
+        "service_unavailable",
+      );
+    }
+    expect(env.calls).toHaveLength(1);
+    // The genuine key still verifies from the unexpired cache meanwhile.
+    expect((await aliceGet(env.app, env.path)).status).toBe(200);
+    expect(env.calls).toHaveLength(1);
+  });
+
+  test("a cache_until already past does not cause one fetch per request", async () => {
+    const env = limitedApp();
+    env.respondWith(() =>
+      keysDoc([{ keyId: KEY_ID, publicKey: alice.publicKey }], { cacheUntilMs: env.now() - 1_000 }),
+    );
+    expect((await aliceGet(env.app, env.path)).status).toBe(200); // fetched, not cached
+    for (let i = 0; i < 5; i += 1) {
+      env.advance(100);
+      await expect503(await aliceGet(env.app, env.path));
+    }
+    expect(env.calls).toHaveLength(1);
+    env.advance(500); // 1 s after the first fetch
+    expect((await aliceGet(env.app, env.path)).status).toBe(200);
     expect(env.calls).toHaveLength(2);
   });
 });
@@ -329,8 +450,8 @@ describe("remote provider (§8.1) discovery outcomes", () => {
     return { doc, key };
   }
 
-  async function bootProviderRoute(federationFetch: FederationFetch) {
-    const discoveryCache = new RemoteDiscoveryCache({ federationFetch });
+  async function bootProviderRoute(federationFetch: FederationFetch, now: () => number = Date.now) {
+    const discoveryCache = new RemoteDiscoveryCache({ federationFetch, now });
     const { app } = boot({ discoveryCache });
     app.get("/api/provider-probe", requireProviderSignature(), (c) => c.json({ ok: true }));
     return app;
@@ -380,5 +501,24 @@ describe("remote provider (§8.1) discovery outcomes", () => {
     const { key } = await remoteProvider();
     const app = await bootProviderRoute(guardedTransport(async () => ["127.0.0.1"]));
     await expectProblem(await providerGet(app, key), 401, "unauthorized");
+  });
+
+  test("re-fetches are bounded per provider (§8.1): unknown key_id twice → one fetch, then 503 + Retry-After", async () => {
+    const { doc, key } = await remoteProvider();
+    let now = Date.now();
+    const t = transport(() => Response.json(doc));
+    const app = await bootProviderRoute(t.fetch, () => now);
+    const unknown = { keyId: "psk-not-published", privateKey: generateKeyPair().privateKey };
+    await expectProblem(await providerGet(app, unknown), 401, "unauthorized");
+    now += 250;
+    const res = await providerGet(app, unknown);
+    await expectProblem(res, 503, "service_unavailable");
+    expect(res.headers.get("retry-after")).toBe("1");
+    expect(t.calls).toHaveLength(1);
+    // The genuine key still verifies from the cache; after the interval a re-fetch runs.
+    expect((await providerGet(app, key)).status).toBe(200);
+    now += 750;
+    await expectProblem(await providerGet(app, unknown), 401, "unauthorized");
+    expect(t.calls).toHaveLength(2);
   });
 });

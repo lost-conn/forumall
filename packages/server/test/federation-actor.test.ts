@@ -200,6 +200,8 @@ describe("remote user-signed federation (§4.6)", () => {
 
     // Revoke alice's key on A: A's keys endpoint now omits it.
     expect(revokeDeviceKey(fed.a.db, "alice", keyId)).toBe(true);
+    // The next request comes after B's per-actor re-fetch interval (1 s).
+    fed.advanceCacheClock(1_000);
 
     // B still holds the cached key. The (now still-valid signature, but) revoked
     // key id must be re-checked: B's cache hit verifies against the stale key, so

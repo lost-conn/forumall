@@ -25,6 +25,12 @@
  *    the key did or did not resolve. The signature middleware forces a refresh
  *    when a CACHED key fails to verify (§4.6 "fails verification against a key
  *    they believe should be valid").
+ *  - Fetches are bounded per actor by a {@link RefetchLimiter} (§4.6 "MAY
+ *    limit these re-fetches per actor", §8 Outbound requests): concurrent
+ *    lookups share one in-flight fetch, and at most one fetch starts per
+ *    `refetchIntervalMs` (default {@link DEFAULT_REFETCH_INTERVAL_MS}). A
+ *    lookup that needs a fetch inside the interval is `rate_limited`, with the
+ *    time until one is allowed (→ `503` + `Retry-After`).
  *
  * The cache is per-app (constructed in `createApp`) and exposed on
  * `c.var.userKeysCache`. It carries no secrets — only public device keys.
@@ -38,6 +44,7 @@ import {
 
 import { type FederationFetch, defaultFederationFetch } from "./http.ts";
 import { type DocumentFetch, type KeyLookup, fetchKeyDocument, lookupKey } from "./key-lookup.ts";
+import { DEFAULT_REFETCH_INTERVAL_MS, RefetchLimiter } from "./refetch-limiter.ts";
 
 /** A resolved remote actor device key (the verify target). */
 export interface RemoteActorKey {
@@ -53,6 +60,12 @@ export interface UserKeysCacheOptions {
   readonly defaultTtlMs?: number;
   /** Upper bound applied to any derived TTL. Default 3_600_000 (1 h, §4.7.1). */
   readonly maxTtlMs?: number;
+  /**
+   * Minimum time between two network fetches of one actor's keys (§4.6 "MAY
+   * limit these re-fetches per actor"). Default {@link DEFAULT_REFETCH_INTERVAL_MS}
+   * (1 s); `0` disables the limit (concurrent lookups still share one fetch).
+   */
+  readonly refetchIntervalMs?: number;
   /** Injected transport (default: the egress-guarded {@link defaultFederationFetch}). */
   readonly federationFetch?: FederationFetch;
   /** Clock, overridable in tests. Default `Date.now`. */
@@ -74,6 +87,7 @@ export class RemoteUserKeysCache {
   readonly #defaultTtlMs: number;
   readonly #maxTtlMs: number;
   readonly #now: () => number;
+  readonly #limiter: RefetchLimiter<DocumentFetch<UserKeysResponse>>;
   /** Total successful network fetches — exposed for tests (cache-hit assertions). */
   #fetchCount = 0;
 
@@ -82,6 +96,10 @@ export class RemoteUserKeysCache {
     this.#defaultTtlMs = opts.defaultTtlMs ?? DEFAULT_TTL_MS;
     this.#maxTtlMs = opts.maxTtlMs ?? MAX_TTL_MS;
     this.#now = opts.now ?? Date.now;
+    this.#limiter = new RefetchLimiter({
+      intervalMs: opts.refetchIntervalMs ?? DEFAULT_REFETCH_INTERVAL_MS,
+      now: this.#now,
+    });
   }
 
   /** Successful network fetches so far (cache misses + forced refetches). */
@@ -147,7 +165,9 @@ export class RemoteUserKeysCache {
    * An unexpired cached entry holding `keyId` answers without a fetch. With no
    * usable entry, or one lacking `keyId` (the actor may have registered a new
    * device, §4.6), it fetches once. `forceRefresh` always fetches (the
-   * middleware does this when a cached key fails to verify).
+   * middleware does this when a cached key fails to verify). Every fetch goes
+   * through the per-actor limiter: it may join one already in flight, or be
+   * reported `rate_limited` when the actor was fetched within the interval.
    *
    * An actor that is not canonical `handle@domain` is `refused`: §2.2 — an
    * alias (`a.test:0443`, `Alice@a.test`) never reaches the network.
@@ -166,7 +186,7 @@ export class RemoteUserKeysCache {
     const host = actor.slice(at + 1);
     return lookupKey({
       cached: () => this.#cached(actor),
-      refresh: () => this.#refresh(actor, handle, host),
+      refresh: () => this.#limiter.run(actor, () => this.#refresh(actor, handle, host)),
       select: (doc) => selectKey(doc, keyId),
       forceRefresh: opts.forceRefresh ?? false,
     });

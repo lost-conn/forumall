@@ -17,6 +17,9 @@
  *  - `refused`      — the outbound-request rules (§8 "Outbound requests")
  *                     forbid the fetch → `401` (never `503`: retrying cannot
  *                     help).
+ *  - `rate_limited` — a fetch was needed but the per-identity limit
+ *                     ({@link RefetchLimiter}) suppressed it, and no unexpired
+ *                     cached key matches → `503` + `Retry-After` (§4.6, §8.1).
  *
  * Federation-policy denial (§8 Authorization → `403`) is NOT an outcome here:
  * the verifier decides it from the claimed domain before calling a cache.
@@ -29,13 +32,15 @@
  */
 import { EgressBlockedError } from "./egress-guard.ts";
 import { type FederationFetch, federationGet } from "./http.ts";
+import type { RateLimited, RefetchLimiter } from "./refetch-limiter.ts";
 
 /** Why (or whether) a remote signing key resolved. See the module docs. */
 export type KeyLookup<K> =
   | { readonly kind: "found"; readonly key: K; readonly fresh: boolean }
   | { readonly kind: "no_key" }
   | { readonly kind: "fetch_failed"; readonly reason: string }
-  | { readonly kind: "refused"; readonly reason: string };
+  | { readonly kind: "refused"; readonly reason: string }
+  | RateLimited;
 
 /** The result of one network fetch of a key document. */
 export type DocumentFetch<D> =
@@ -102,13 +107,14 @@ export async function fetchKeyDocument<D>(
  * cached document that holds the key answers without a fetch; otherwise (no
  * entry, an expired one, the key absent — §4.6 "re-fetch before finally
  * rejecting" — or a forced refresh) `refresh` fetches once and its outcome is
- * reported as is.
+ * reported as is. `refresh` goes through the cache's {@link RefetchLimiter},
+ * so it may instead join a fetch already in flight or be `rate_limited`.
  */
 export async function lookupKey<D, K>(args: {
   /** The unexpired cached document, if any. */
   readonly cached: () => D | null;
-  /** Fetch (and, on success, cache) the document. */
-  readonly refresh: () => Promise<DocumentFetch<D>>;
+  /** Fetch (and, on success, cache) the document, subject to the limiter. */
+  readonly refresh: () => Promise<DocumentFetch<D> | RateLimited>;
   readonly select: (doc: D) => K | null;
   readonly forceRefresh: boolean;
 }): Promise<KeyLookup<K>> {

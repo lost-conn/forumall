@@ -640,8 +640,9 @@ export function createWsHandlers(deps: WsHandlerDeps) {
       .lookupActorKey(actor, keyId)
       .then((lookup) => {
         state.lastKeyCheck = Date.now();
-        // Transient: keep the session, try again next interval.
-        if (lookup.kind === "fetch_failed") return;
+        // Transient (a failed or rate-limited fetch): keep the session, try
+        // again next interval.
+        if (lookup.kind === "fetch_failed" || lookup.kind === "rate_limited") return;
         // `no_key`, `refused` (outbound rules forbid the fetch and no
         // unexpired cached key matches) or a changed key end the session.
         // (§7.1 asks for 4001 rather than 4003 in the `refused` case.)

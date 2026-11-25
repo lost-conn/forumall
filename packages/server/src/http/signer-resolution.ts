@@ -9,6 +9,8 @@
  * | `bad_signature`  | the key resolved but the signature does not verify against it  | `401`  |
  * | `refused`        | the outbound-request rules (§8) forbid fetching the keys       | `401`  |
  * | `fetch_failed`   | the keys could not be fetched (network/DNS/timeout/non-200/…)  | `503`  |
+ * | `rate_limited`   | a fetch was needed but the per-identity re-fetch limit         | `503`  |
+ * |                  | suppressed it (`Retry-After` = time until one is allowed)      |        |
  *
  * Federation-policy denial (`403`, §8 Authorization) is decided by the
  * verifier from the claimed domain BEFORE anything here runs, so a denied
@@ -21,7 +23,9 @@
  * just fetched is not fetched again. The cache itself re-fetches when the
  * requested `key_id` is absent from an unexpired entry. So one inbound request
  * causes at most one key fetch, and therefore waits at most one egress
- * deadline (`DEFAULT_EGRESS_TIMEOUT_MS`).
+ * deadline (`DEFAULT_EGRESS_TIMEOUT_MS`). Across requests, the caches allow at
+ * most one fetch per identity per interval and share in-flight fetches
+ * (`federation/refetch-limiter.ts`, §4.6 / §8 Outbound requests).
  *
  * ## Identity shape (security-critical)
  * Only the LOCAL actor branch sets `localHandle` — the bare handle is a key
@@ -74,12 +78,34 @@ export interface VerifyTarget {
 }
 
 /** Why no signer resolved (see the module table). */
-export type SignerFailure = "no_key" | "bad_signature" | "refused" | "fetch_failed";
+export type SignerFailure =
+  | "no_key"
+  | "bad_signature"
+  | "refused"
+  | "fetch_failed"
+  | "rate_limited";
+
+/** Why no signer resolved, with what the answer needs. */
+export type SignerRejection =
+  | { readonly failure: Exclude<SignerFailure, "rate_limited">; readonly reason?: string }
+  | {
+      readonly failure: "rate_limited";
+      /** Ms until a key fetch for this signer is allowed again. */
+      readonly retryAfterMs: number;
+    };
 
 /** A resolved signer, or the reason there is none. */
 export type SignerResolution =
   | { readonly ok: true; readonly signer: ResolvedSigner }
-  | { readonly ok: false; readonly failure: SignerFailure; readonly reason?: string };
+  | ({ readonly ok: false } & SignerRejection);
+
+/**
+ * `Retry-After` delta-seconds for a suppressed re-fetch: the wait rounded UP
+ * to whole seconds (retrying earlier would be suppressed again), at least 1.
+ */
+export function retryAfterSeconds(ms: number): number {
+  return Math.max(1, Math.ceil(ms / 1000));
+}
 
 /** Resolve the signer for `mode` (user device key §4.6, or provider key §8.1). */
 export function resolveSigner(
@@ -119,18 +145,24 @@ export function resolveSigner(
  * The problem to answer with when no signer resolved (§4.5 step 6, §4.6
  * "The outcome of a fetch is classified as follows", §8.1).
  */
-export function signerFailureError(
-  mode: SignatureMode,
-  result: { readonly failure: SignerFailure; readonly reason?: string },
-): AppError {
+export function signerFailureError(mode: SignatureMode, result: SignerRejection): AppError {
   const who = mode === "provider" ? "provider signing key" : "device key";
-  const because = result.reason ? ` (${result.reason})` : "";
+  const because = "reason" in result && result.reason ? ` (${result.reason})` : "";
   switch (result.failure) {
     case "fetch_failed":
       // The signature was never checked: "try again later", not "bad credentials".
       return AppError.serviceUnavailable({
         detail: `the signer's ${who}s could not be fetched from its home provider${because}; retry later`,
         headers: { "Retry-After": String(KEY_FETCH_RETRY_AFTER_SECONDS) },
+      });
+    case "rate_limited":
+      // §4.6/§8.1: a suppressed re-fetch is "retry shortly", not "bad
+      // credentials" — the signer's key may have been registered just now.
+      return AppError.serviceUnavailable({
+        detail: `the signer's ${who}s were fetched moments ago and may not be re-fetched yet; retry later`,
+        headers: {
+          "Retry-After": String(retryAfterSeconds(result.retryAfterMs)),
+        },
       });
     case "refused":
       return AppError.unauthorized({
@@ -254,7 +286,8 @@ async function resolveProviderSigner(
  * Resolve + verify a remote signer's key. A cached key that fails to verify
  * forces one re-fetch (§4.6/§8.1 "re-fetch before finally rejecting"); a key
  * that was just fetched and fails is a bad signature. When the re-fetch
- * fails, the request cannot be finally rejected either: `fetch_failed` (503).
+ * fails or is suppressed by the re-fetch limit, the request cannot be finally
+ * rejected either: `fetch_failed` / `rate_limited` (503).
  */
 async function resolveRemote(
   lookup: (forceRefresh: boolean) => Promise<KeyLookup<{ readonly publicKey: string }>>,
@@ -287,5 +320,7 @@ function lookupFailure(outcome: Exclude<KeyLookup<unknown>, { kind: "found" }>):
       return { ok: false, failure: "refused", reason: outcome.reason };
     case "fetch_failed":
       return { ok: false, failure: "fetch_failed", reason: outcome.reason };
+    case "rate_limited":
+      return { ok: false, failure: "rate_limited", retryAfterMs: outcome.retryAfterMs };
   }
 }
