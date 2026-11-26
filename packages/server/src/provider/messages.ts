@@ -111,9 +111,14 @@ export function rowToMessage(row: MessageRow): Message {
   const content = JSON.parse(row.content) as Content;
   const attachments = JSON.parse(row.attachments) as Attachment[];
   const tags = JSON.parse(row.tags) as string[];
+  const metadata = JSON.parse(row.metadata) as MetadataList;
   const reference = row.reference ? (JSON.parse(row.reference) as MessageReference) : undefined;
   return MessageSchema.parse({
     id: row.id,
+    // Echo of the create's idempotency key (§7.1): MUST be on the author's
+    // `message.created` and every create response; history and other copies
+    // MAY carry it, so the canonical mapping always does.
+    ...(row.clientMessageId != null ? { clientMessageId: row.clientMessageId } : {}),
     author: row.author,
     type: row.type,
     content,
@@ -124,9 +129,7 @@ export function rowToMessage(row: MessageRow): Message {
     ...(row.editedAt != null ? { editedAt: rfc3339Timestamp(new Date(row.editedAt)) } : {}),
     ...(row.deletedAt != null ? { deletedAt: rfc3339Timestamp(new Date(row.deletedAt)) } : {}),
     permissions: { editUntil: rfc3339Timestamp(new Date(row.editUntil)) },
-    // Messages carry no first-class metadata field on the wire model yet; an
-    // empty list keeps the canonical shape valid + forward-compatible.
-    metadata: [] as MetadataList,
+    metadata,
   });
 }
 
@@ -190,10 +193,12 @@ export interface CreateMessageInput {
   readonly attachments?: Attachment[];
   readonly reference?: MessageReference;
   readonly tags?: string[];
+  /** Metadata objects (§5.4); omitted means `[]`. */
+  readonly metadata?: MetadataList;
   /**
-   * WS-create idempotency key (§7.1). Stored on a nullable column for the WS
-   * create card to enforce `(author, channelId, clientMessageId)` uniqueness;
-   * unused by the REST read path.
+   * Create idempotency key (§7.1), shared by the WS and REST creates. Stored on
+   * a nullable column whose unique index enforces `(author, channelId,
+   * clientMessageId)`; echoed as `clientMessageId` on the canonical message.
    */
   readonly clientMessageId?: string;
 }
@@ -247,6 +252,7 @@ export function createMessage(db: Db, config: Config, input: CreateMessageInput)
       deletedAt: null,
       editUntil,
       clientMessageId: input.clientMessageId ?? null,
+      metadata: JSON.stringify(input.metadata ?? []),
     };
     db.drizzle.insert(messages).values(row).run();
   })();

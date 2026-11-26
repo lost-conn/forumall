@@ -88,8 +88,41 @@ const PROVIDER_MUST: readonly ChecklistItem[] = [
     status: "covered",
   },
   {
+    item: 'Support message creation of every type (message, memo, article) with attachments, reference, tags and metadata, over both message.create and POST …/messages, gated by post:<type> and by replyOnly / replyOnlyTo (which only a valid reply, reference.type "reply" naming an existing message in the channel, satisfies), answering 404 for a channel the actor cannot read (§5.2.1, §7.1)',
+    covers: [
+      "packages/server/test/message-create.test.ts",
+      "packages/server/test/ws-correlation.test.ts",
+      "packages/server/test/channel-permissions.test.ts",
+      "packages/server/test/conformance.test.ts",
+      "packages/shared/test/message-create-schema.test.ts",
+    ],
+    status: "covered",
+  },
+  {
+    item: "Treat (author, channelId, clientMessageId) as idempotent, running only authentication, visibility and the actor's permission checks before the duplicate lookup and returning the existing message on a duplicate (over WebSocket as a message.created with no cursor); echo clientMessageId on the author's message.created, live or replayed, and on every create response (§7.1, §7.4)",
+    covers: [
+      "packages/server/test/message-create.test.ts",
+      "packages/server/test/dms.test.ts",
+      "packages/server/test/conformance.test.ts",
+    ],
+    status: "covered",
+  },
+  {
+    item: "Carry the full canonical Message in message.created, message.updated and dm.message (§7.1, §7.4)",
+    covers: [
+      "packages/server/test/message-create.test.ts",
+      "packages/server/test/conformance.test.ts",
+      "packages/shared/test/message-create-schema.test.ts",
+      "packages/shared/test/schemas.test.ts",
+    ],
+    status: "covered",
+  },
+  {
     item: "Support message edit (author-only, editUntil) and tombstone delete (§7.1)",
-    covers: ["packages/server/test/message-edit-delete.test.ts"],
+    covers: [
+      "packages/server/test/message-edit-delete.test.ts",
+      "packages/server/test/ws-correlation.test.ts",
+    ],
     status: "covered",
   },
   {
@@ -205,6 +238,16 @@ const CLIENT_MUST: readonly ChecklistItem[] = [
     note: "The provider guarantee (follows are pointers only; no server feed) is tested; the client's live feed composition is a web-UI concern.",
   },
   {
+    item: "Treat the message.created that answers a duplicate create (no cursor) as the result of the pending send, not as a new message, and never store it as a resume point (§7.1)",
+    covers: [
+      "packages/server/test/message-create.test.ts",
+      "packages/shared/test/message-create-schema.test.ts",
+      "packages/web/test/chat-store.test.ts",
+    ],
+    status: "partial",
+    note: "The provider's cursor-less, correlated duplicate answer is tested, and so is the web chat store's match of a pending send by clientMessageId and author; the chat controller's end-to-end handling of the duplicate frame is web-UI behaviour not exercised here.",
+  },
+  {
     item: "Support all message types or graceful fallback",
     covers: ["packages/shared/test/schemas.test.ts"],
     status: "covered",
@@ -218,8 +261,8 @@ describe("§12 Compliance Checklist coverage map", () => {
   // These counts pin the map to the spec; bump them when §12 changes (and update
   // CONFORMANCE.md). A mismatch means an item was added/removed upstream.
   test("item counts match the spec's §12 MUST lists", () => {
-    expect(PROVIDER_MUST.length).toBe(21);
-    expect(CLIENT_MUST.length).toBe(6);
+    expect(PROVIDER_MUST.length).toBe(24);
+    expect(CLIENT_MUST.length).toBe(7);
   });
 
   test("every MUST item has a non-empty mapping", () => {
@@ -251,6 +294,6 @@ describe("§12 Compliance Checklist coverage map", () => {
       `\n§12 coverage: ${ALL.length} MUST items mapped (${PROVIDER_MUST.length} Provider, ${CLIENT_MUST.length} Client); ` +
         `${ALL.length - partials.length} fully covered, ${partials.length} partial.\n`,
     );
-    expect(ALL.length).toBe(27);
+    expect(ALL.length).toBe(31);
   });
 });

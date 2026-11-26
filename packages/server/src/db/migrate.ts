@@ -10,32 +10,67 @@
  *
  * This is deliberately simple and self-host-friendly: migrations run on startup
  * with no separate command, and the SQL is plain create-if-not-exists DDL.
- * Later cards append a new entry to {@link migrations} (never edit a shipped
- * one) when they introduce tables.
+ * A new migration is defined with its domain in `migrations/*.ts` and appended
+ * to {@link migrations} (never edit or reorder a shipped one).
  */
-import type { Database } from "bun:sqlite";
-import { canonicalActor, canonicalAuthority, deriveDmId } from "@forumall/shared";
+import { canonicalAuthority } from "@forumall/shared";
 
 import type { Config } from "../config.ts";
 import type { Db } from "./index.ts";
+import type { Migration, MigrationContext } from "./migration-types.ts";
+import { MigrationDeferred } from "./migration-types.ts";
+import { m0021KnownProviders, m0033DiscoverFeatures } from "./migrations/discovery.ts";
+import {
+  m0014DirectMessages,
+  m0026DmReactions,
+  m0034DmConversationsLastSent,
+  m0035DmConversationsLastSentAt,
+  m0036DmConversationsCanonicalCounterparty,
+} from "./migrations/dms.ts";
+import {
+  m0005GroupsAndMembers,
+  m0006Channels,
+  m0007JoinRequests,
+  m0009Invites,
+  m0022ChannelPermissions,
+  m0024GroupRoles,
+  m0025GroupMembersDisplayNameOverride,
+  m0027GroupsAvatar,
+} from "./migrations/groups.ts";
+import {
+  m0001AppMeta,
+  m0002ProviderKeys,
+  m0003UsersAndBootstrapTokens,
+  m0004DeviceKeys,
+  m0008UsersGuestColumns,
+  m0016UsersProfileColumns,
+  m0032ProviderAdmin,
+} from "./migrations/identity.ts";
+import {
+  m0010Messages,
+  m0011MessagesClientMessageIdUnique,
+  m0012Reactions,
+  m0013Media,
+  m0023MessagesReplyTo,
+  m0028ReadMarkers,
+  m0037MessagesMetadata,
+  m0038MediaDurationMs,
+} from "./migrations/messages.ts";
+import {
+  m0020NotificationEndpoints,
+  m0029Notifications,
+  m0030Push,
+  m0031NotificationPreferences,
+} from "./migrations/notifications.ts";
+import {
+  m0015Contacts,
+  m0017PrivacySettings,
+  m0018Presence,
+  m0019Follows,
+} from "./migrations/social.ts";
 
-/** Provider facts a data migration may need (see {@link migrate}). */
-export interface MigrationContext {
-  /**
-   * This provider's canonical authority (`canonicalAuthority(config.domain)`):
-   * a local handle `h` is the actor `h@domain`. Boot passes it ONLY when the
-   * operator configured DOMAIN — the localhost fallback is not trusted to be the
-   * authority the stored data was written under.
-   */
-  readonly domain?: string;
-  /** Progress lines from data migrations (default `console.log`). */
-  readonly log?: (line: string) => void;
-  /**
-   * Called when a migration DEFERS itself (default `console.warn`): it rolled
-   * back, is not ledgered, and is retried on the next {@link migrate}.
-   */
-  readonly onDeferred?: (id: string, reason: string) => void;
-}
+export { MigrationDeferred } from "./migration-types.ts";
+export type { Migration, MigrationContext } from "./migration-types.ts";
 
 /**
  * The `domain` boot hands {@link migrate}: the canonical DOMAIN when the operator
@@ -49,932 +84,49 @@ export function migrationDomain(
 }
 
 /**
- * Thrown by a DATA migration that cannot run safely yet (e.g. it needs the
- * provider domain). {@link runMigrations} rolls it back, leaves it unledgered
- * so the next boot retries it, and reports it via `onDeferred`; it continues
- * past an `independent` migration and stops at any other.
- */
-export class MigrationDeferred extends Error {}
-
-/** 0036 sanity guard: refuse when more than this many rows AND over half fail. */
-const DM_HYGIENE_MAX_UNGUARDED_FAILURES = 5;
-
-export interface Migration {
-  /** Stable, unique identifier; ledgered once applied. Never reuse/rename. */
-  readonly id: string;
-  /** Idempotent-friendly DDL. Runs inside a transaction. */
-  readonly up: (sqlite: Database, ctx: MigrationContext) => void;
-  /**
-   * A data-only migration that no later migration depends on. Only such a
-   * migration may be SKIPPED when it defers: the runner continues past it (and
-   * retries it next boot). A deferred migration without this flag stops the run.
-   */
-  readonly independent?: boolean;
-}
-
-/**
  * Ordered, forward-only migration list. Append new migrations; do not edit or
- * reorder existing ones once shipped.
+ * reorder existing ones once shipped. Each one lives with its domain in
+ * `migrations/*.ts`.
  */
 export const migrations: readonly Migration[] = [
-  {
-    id: "0001_app_meta",
-    up: (sqlite) => {
-      sqlite.exec(`
-        CREATE TABLE IF NOT EXISTS app_meta (
-          key        TEXT PRIMARY KEY,
-          value      TEXT NOT NULL,
-          updated_at INTEGER NOT NULL
-        ) STRICT;
-      `);
-    },
-  },
-  {
-    id: "0002_provider_keys",
-    up: (sqlite) => {
-      sqlite.exec(`
-        CREATE TABLE IF NOT EXISTS provider_keys (
-          key_id      TEXT PRIMARY KEY,
-          public_key  TEXT NOT NULL,
-          private_key TEXT NOT NULL,
-          algorithm   TEXT NOT NULL,
-          created_at  INTEGER NOT NULL
-        ) STRICT;
-      `);
-    },
-  },
-  {
-    id: "0003_users_and_bootstrap_tokens",
-    up: (sqlite) => {
-      sqlite.exec(`
-        CREATE TABLE IF NOT EXISTS users (
-          handle         TEXT PRIMARY KEY,
-          password_hash  TEXT NOT NULL,
-          recovery_email TEXT,
-          created_at     INTEGER NOT NULL
-        ) STRICT;
-      `);
-      sqlite.exec(`
-        CREATE TABLE IF NOT EXISTS bootstrap_tokens (
-          token_hash TEXT PRIMARY KEY,
-          handle     TEXT NOT NULL,
-          expires_at INTEGER NOT NULL,
-          created_at INTEGER NOT NULL,
-          used_at    INTEGER
-        ) STRICT;
-      `);
-      sqlite.exec(
-        "CREATE INDEX IF NOT EXISTS idx_bootstrap_tokens_handle ON bootstrap_tokens (handle);",
-      );
-    },
-  },
-  {
-    id: "0004_device_keys",
-    up: (sqlite) => {
-      sqlite.exec(`
-        CREATE TABLE IF NOT EXISTS device_keys (
-          key_id      TEXT PRIMARY KEY,
-          user_handle TEXT NOT NULL,
-          public_key  TEXT NOT NULL,
-          algorithm   TEXT NOT NULL,
-          device_name TEXT NOT NULL,
-          created_at  INTEGER NOT NULL,
-          revoked     INTEGER NOT NULL DEFAULT 0
-        ) STRICT;
-      `);
-      sqlite.exec(
-        "CREATE INDEX IF NOT EXISTS idx_device_keys_user_handle ON device_keys (user_handle);",
-      );
-    },
-  },
-  {
-    id: "0005_groups_and_members",
-    up: (sqlite) => {
-      sqlite.exec(`
-        CREATE TABLE IF NOT EXISTS groups (
-          id          TEXT PRIMARY KEY,
-          name        TEXT NOT NULL,
-          description TEXT,
-          owner       TEXT NOT NULL,
-          join_policy TEXT NOT NULL,
-          tier        TEXT NOT NULL,
-          permissions TEXT NOT NULL,
-          metadata    TEXT NOT NULL,
-          created_at  INTEGER NOT NULL,
-          updated_at  INTEGER NOT NULL
-        ) STRICT;
-      `);
-      sqlite.exec(`
-        CREATE TABLE IF NOT EXISTS group_members (
-          group_id  TEXT NOT NULL,
-          user      TEXT NOT NULL,
-          role      TEXT NOT NULL,
-          joined_at INTEGER NOT NULL,
-          PRIMARY KEY (group_id, user)
-        ) STRICT;
-      `);
-      sqlite.exec("CREATE INDEX IF NOT EXISTS idx_group_members_user ON group_members (user);");
-    },
-  },
-  {
-    id: "0006_channels",
-    up: (sqlite) => {
-      sqlite.exec(`
-        CREATE TABLE IF NOT EXISTS channels (
-          id         TEXT PRIMARY KEY,
-          group_id   TEXT NOT NULL,
-          name       TEXT,
-          type       TEXT NOT NULL,
-          tier       TEXT NOT NULL,
-          topic      TEXT,
-          tags       TEXT NOT NULL,
-          metadata   TEXT NOT NULL,
-          created_at INTEGER NOT NULL,
-          updated_at INTEGER NOT NULL
-        ) STRICT;
-      `);
-      sqlite.exec("CREATE INDEX IF NOT EXISTS idx_channels_group_id ON channels (group_id);");
-    },
-  },
-  {
-    id: "0007_join_requests",
-    up: (sqlite) => {
-      sqlite.exec(`
-        CREATE TABLE IF NOT EXISTS join_requests (
-          id           TEXT PRIMARY KEY,
-          group_id     TEXT NOT NULL,
-          user         TEXT NOT NULL,
-          state        TEXT NOT NULL,
-          message      TEXT,
-          requested_at INTEGER NOT NULL
-        ) STRICT;
-      `);
-      sqlite.exec(
-        "CREATE INDEX IF NOT EXISTS idx_join_requests_group_id ON join_requests (group_id);",
-      );
-    },
-  },
-  {
-    // Guest accounts (§4.8): make `password_hash` nullable and add the
-    // `guest` / `display_name` / `expires_at` columns to `users`.
-    //
-    // SQLite cannot ALTER a NOT NULL constraint off an existing column, so we
-    // rebuild the table (create new → copy → drop → rename) inside the
-    // migration's transaction. The DB is greenfield, but the copy preserves any
-    // rows that exist (full accounts default to guest=0, the others NULL). The
-    // table-rebuild recipe disables foreign-key enforcement; `users` has no FKs
-    // pointing at it via SQLite constraints (references are by `handle` string),
-    // so a plain rebuild is safe.
-    id: "0008_users_guest_columns",
-    up: (sqlite) => {
-      sqlite.exec(`
-        CREATE TABLE users_new (
-          handle         TEXT PRIMARY KEY,
-          password_hash  TEXT,
-          recovery_email TEXT,
-          guest          INTEGER NOT NULL DEFAULT 0,
-          display_name   TEXT,
-          expires_at     INTEGER,
-          created_at     INTEGER NOT NULL
-        ) STRICT;
-      `);
-      sqlite.exec(`
-        INSERT INTO users_new (handle, password_hash, recovery_email, guest, display_name, expires_at, created_at)
-        SELECT handle, password_hash, recovery_email, 0, NULL, NULL, created_at
-        FROM users;
-      `);
-      sqlite.exec("DROP TABLE users;");
-      sqlite.exec("ALTER TABLE users_new RENAME TO users;");
-    },
-  },
-  {
-    id: "0009_invites",
-    up: (sqlite) => {
-      sqlite.exec(`
-        CREATE TABLE IF NOT EXISTS invites (
-          id           TEXT PRIMARY KEY,
-          group_id     TEXT NOT NULL,
-          token        TEXT NOT NULL UNIQUE,
-          channel_id   TEXT,
-          role         TEXT NOT NULL DEFAULT 'member',
-          grants_guest INTEGER NOT NULL DEFAULT 0,
-          max_uses     INTEGER,
-          uses         INTEGER NOT NULL DEFAULT 0,
-          expires_at   INTEGER,
-          created_by   TEXT NOT NULL,
-          created_at   INTEGER NOT NULL
-        ) STRICT;
-      `);
-      sqlite.exec("CREATE INDEX IF NOT EXISTS idx_invites_token ON invites (token);");
-      sqlite.exec("CREATE INDEX IF NOT EXISTS idx_invites_group_id ON invites (group_id);");
-    },
-  },
-  {
-    // Messages (§5.3, §7.2). `seq` is the globally-monotonic timeline position
-    // and basis of the §7.2 opaque cursor (shared with §7.1 WS resume). The
-    // (channel_id, seq) index backs per-channel keyset paging; the unique seq
-    // index keeps the cursor globally unambiguous.
-    id: "0010_messages",
-    up: (sqlite) => {
-      sqlite.exec(`
-        CREATE TABLE IF NOT EXISTS messages (
-          id                TEXT PRIMARY KEY,
-          channel_id        TEXT NOT NULL,
-          group_id          TEXT NOT NULL,
-          author            TEXT NOT NULL,
-          type              TEXT NOT NULL,
-          content           TEXT NOT NULL,
-          attachments       TEXT NOT NULL,
-          reference         TEXT,
-          tags              TEXT NOT NULL,
-          seq               INTEGER NOT NULL,
-          created_at        INTEGER NOT NULL,
-          edited_at         INTEGER,
-          deleted_at        INTEGER,
-          edit_until        INTEGER NOT NULL,
-          client_message_id TEXT
-        ) STRICT;
-      `);
-      sqlite.exec(
-        "CREATE INDEX IF NOT EXISTS idx_messages_channel_seq ON messages (channel_id, seq);",
-      );
-      sqlite.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_seq ON messages (seq);");
-    },
-  },
-  {
-    // WS create idempotency (§7.1): `(author, channelId, clientMessageId)` is
-    // idempotent. A PARTIAL unique index (only where client_message_id is not
-    // null) enforces "at most one message per (author, channel, key)" while
-    // still permitting unlimited rows that carry no idempotency key.
-    id: "0011_messages_client_message_id_unique",
-    up: (sqlite) => {
-      sqlite.exec(
-        `CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_author_channel_client_msg
-           ON messages (author, channel_id, client_message_id)
-           WHERE client_message_id IS NOT NULL;`,
-      );
-    },
-  },
-  {
-    // Reactions (§5.3, §7.1). At most one reaction per (message, author, key)
-    // enforced by the unique index (idempotent add). The message_id index backs
-    // the paginated listing endpoint. No server-aggregated count column —
-    // clients aggregate from these rows / the reaction.* events.
-    id: "0012_reactions",
-    up: (sqlite) => {
-      sqlite.exec(`
-        CREATE TABLE IF NOT EXISTS reactions (
-          id         TEXT PRIMARY KEY,
-          message_id TEXT NOT NULL,
-          channel_id TEXT NOT NULL,
-          group_id   TEXT NOT NULL,
-          author     TEXT NOT NULL,
-          key        TEXT NOT NULL,
-          unicode    TEXT,
-          image      TEXT,
-          created_at INTEGER NOT NULL
-        ) STRICT;
-      `);
-      sqlite.exec(
-        `CREATE UNIQUE INDEX IF NOT EXISTS idx_reactions_message_author_key
-           ON reactions (message_id, author, key);`,
-      );
-      sqlite.exec("CREATE INDEX IF NOT EXISTS idx_reactions_message_id ON reactions (message_id);");
-    },
-  },
-  {
-    // Media / attachments (§5.8). Metadata for uploaded blobs; the raw bytes
-    // live in the storage backend (filesystem by default), keyed by `id`. The
-    // owner index backs per-user media listings.
-    id: "0013_media",
-    up: (sqlite) => {
-      sqlite.exec(`
-        CREATE TABLE IF NOT EXISTS media (
-          id         TEXT PRIMARY KEY,
-          mime       TEXT NOT NULL,
-          size       INTEGER NOT NULL,
-          filename   TEXT,
-          hash       TEXT NOT NULL,
-          width      INTEGER,
-          height     INTEGER,
-          owner      TEXT NOT NULL,
-          created_at INTEGER NOT NULL
-        ) STRICT;
-      `);
-      sqlite.exec("CREATE INDEX IF NOT EXISTS idx_media_owner ON media (owner);");
-    },
-  },
-  {
-    // Direct messages (§7.4, §8.3). `dm_messages` is the recipient's inbox (no
-    // sender copy); `seq` shares the global timeline space with `messages` so
-    // the §7.2 cursor/`dm.message` cursor is one space. `dm_conversations` is the
-    // per-inbox summary that backs listing AND participation checks. The
-    // partial unique index enforces (owner, dm_id, author, client_message_id)
-    // idempotency only for keyed rows.
-    id: "0014_direct_messages",
-    up: (sqlite) => {
-      sqlite.exec(`
-        CREATE TABLE IF NOT EXISTS dm_messages (
-          id                TEXT PRIMARY KEY,
-          dm_id             TEXT NOT NULL,
-          owner             TEXT NOT NULL,
-          author            TEXT NOT NULL,
-          content           TEXT NOT NULL,
-          attachments       TEXT NOT NULL,
-          reference         TEXT,
-          seq               INTEGER NOT NULL,
-          created_at        INTEGER NOT NULL,
-          edited_at         INTEGER,
-          deleted_at        INTEGER,
-          edit_until        INTEGER NOT NULL,
-          client_message_id TEXT
-        ) STRICT;
-      `);
-      sqlite.exec(
-        "CREATE INDEX IF NOT EXISTS idx_dm_messages_owner_dm_seq ON dm_messages (owner, dm_id, seq);",
-      );
-      sqlite.exec(
-        `CREATE UNIQUE INDEX IF NOT EXISTS idx_dm_messages_owner_dm_author_client_msg
-           ON dm_messages (owner, dm_id, author, client_message_id)
-           WHERE client_message_id IS NOT NULL;`,
-      );
-      sqlite.exec(`
-        CREATE TABLE IF NOT EXISTS dm_conversations (
-          owner             TEXT NOT NULL,
-          dm_id             TEXT NOT NULL,
-          counterparty      TEXT NOT NULL,
-          updated_at        INTEGER NOT NULL,
-          last_message_seq  INTEGER NOT NULL,
-          PRIMARY KEY (owner, dm_id)
-        ) STRICT;
-      `);
-      sqlite.exec(
-        "CREATE INDEX IF NOT EXISTS idx_dm_conversations_owner_updated ON dm_conversations (owner, updated_at);",
-      );
-    },
-  },
-  {
-    // Contacts (§6.7). A mutually-consented relationship backing the `contacts`
-    // visibility tier (§6.1). One row per (owner, user) from the local owner's
-    // perspective; `direction` is meaningful while `state` is `pending`. The
-    // owner index backs the contact listing (`GET /api/me/contacts`).
-    id: "0015_contacts",
-    up: (sqlite) => {
-      sqlite.exec(`
-        CREATE TABLE IF NOT EXISTS contacts (
-          owner      TEXT NOT NULL,
-          user       TEXT NOT NULL,
-          state      TEXT NOT NULL,
-          direction  TEXT NOT NULL,
-          created_at INTEGER NOT NULL,
-          updated_at INTEGER NOT NULL,
-          PRIMARY KEY (owner, user)
-        ) STRICT;
-      `);
-      sqlite.exec("CREATE INDEX IF NOT EXISTS idx_contacts_owner ON contacts (owner);");
-    },
-  },
-  {
-    // Profile extras (§5.1, §6.2): add `avatar`, `bio`, `metadata`, and
-    // `updated_at` to `users`. All nullable, so a plain ADD COLUMN suffices (no
-    // table rebuild). `metadata` holds a JSON `MetadataList`; `updated_at` is the
-    // profile-update timestamp surfaced as `UserProfile.updatedAt` once set
-    // (otherwise the read path falls back to `created_at`).
-    id: "0016_users_profile_columns",
-    up: (sqlite) => {
-      sqlite.exec("ALTER TABLE users ADD COLUMN avatar TEXT;");
-      sqlite.exec("ALTER TABLE users ADD COLUMN bio TEXT;");
-      sqlite.exec("ALTER TABLE users ADD COLUMN metadata TEXT;");
-      sqlite.exec("ALTER TABLE users ADD COLUMN updated_at INTEGER;");
-    },
-  },
-  {
-    // Privacy settings (§6.6). One row per local user; each `*_visibility`
-    // column is a §6.1 `VisibilityPolicy` enum string. `allow_list` / `deny_list`
-    // are JSON arrays of actors. A missing row means "use the documented
-    // defaults" (resolved in `provider/privacy.ts`), so rows are only written on
-    // an explicit `PUT /api/me/privacy`.
-    id: "0017_privacy_settings",
-    up: (sqlite) => {
-      sqlite.exec(`
-        CREATE TABLE IF NOT EXISTS privacy_settings (
-          handle                TEXT PRIMARY KEY,
-          presence_visibility   TEXT NOT NULL,
-          profile_visibility    TEXT NOT NULL,
-          membership_visibility TEXT NOT NULL,
-          allow_list            TEXT NOT NULL,
-          deny_list             TEXT NOT NULL,
-          updated_at            INTEGER NOT NULL
-        ) STRICT;
-      `);
-    },
-  },
-  {
-    // Presence (§6.4, §7.5). One row per local user holding the EXPLICIT
-    // presence the user last set (`online|away|dnd`, never `offline`). The
-    // effective `offline` state is derived from WS connection liveness at read
-    // time, not stored. `last_seen` is stamped when the user's last live
-    // connection drops. A missing row means "explicitly online" (resolved in
-    // `provider/presence.ts`), so rows are only written on an explicit set.
-    id: "0018_presence",
-    up: (sqlite) => {
-      sqlite.exec(`
-        CREATE TABLE IF NOT EXISTS presence (
-          handle       TEXT PRIMARY KEY,
-          availability TEXT NOT NULL DEFAULT 'online',
-          status       TEXT,
-          last_seen    INTEGER,
-          updated_at   INTEGER NOT NULL
-        ) STRICT;
-      `);
-    },
-  },
-  {
-    // Follows (§7.6). A follow is a POINTER only: one row per (owner, channel)
-    // recording which channels a local user follows. The provider MUST NOT
-    // compile or store a feed — there is intentionally no feed table here. The
-    // owner index backs the follow listing (`GET /api/me/follows`).
-    id: "0019_follows",
-    up: (sqlite) => {
-      sqlite.exec(`
-        CREATE TABLE IF NOT EXISTS follows (
-          owner      TEXT NOT NULL,
-          channel    TEXT NOT NULL,
-          group_id   TEXT,
-          created_at INTEGER NOT NULL,
-          metadata   TEXT NOT NULL,
-          PRIMARY KEY (owner, channel)
-        ) STRICT;
-      `);
-      sqlite.exec("CREATE INDEX IF NOT EXISTS idx_follows_owner ON follows (owner);");
-    },
-  },
-  {
-    // Notification webhook endpoints (§10). One row per registered webhook: a
-    // local owner asks this provider to deliver a provider-signed webhook to
-    // `target` for each subscribed event. `events` is a JSON `string[]`. The
-    // owner index backs per-owner listing and the membership-scoped fan-out.
-    id: "0020_notification_endpoints",
-    up: (sqlite) => {
-      sqlite.exec(`
-        CREATE TABLE IF NOT EXISTS notification_endpoints (
-          id         TEXT PRIMARY KEY,
-          owner      TEXT NOT NULL,
-          type       TEXT NOT NULL,
-          target     TEXT NOT NULL,
-          events     TEXT NOT NULL,
-          created_at INTEGER NOT NULL
-        ) STRICT;
-      `);
-      sqlite.exec(
-        "CREATE INDEX IF NOT EXISTS idx_notification_endpoints_owner ON notification_endpoints (owner);",
-      );
-    },
-  },
-  {
-    // Known providers / peers (§8.6, OPTIONAL). A flat list of peer domains used
-    // to support discovery (§11.2) without a central registry. `domain` is the
-    // canonicalized peer authority and primary key, so re-adding is idempotent.
-    // This is the only table for §8.6; the discovery feed (§11.2) stores nothing
-    // (its items are compiled at read time).
-    id: "0021_known_providers",
-    up: (sqlite) => {
-      sqlite.exec(`
-        CREATE TABLE IF NOT EXISTS known_providers (
-          domain   TEXT PRIMARY KEY,
-          name     TEXT,
-          added_at INTEGER NOT NULL
-        ) STRICT;
-      `);
-    },
-  },
-  {
-    // Per-channel permission overrides (§5.2.1). Nullable JSON column holding a
-    // `ChannelPermissions` object; null/absent means the channel inherits the
-    // group's permissions and tier. ADD COLUMN is safe on a STRICT table because
-    // the column is nullable with no default.
-    id: "0022_channel_permissions",
-    up: (sqlite) => {
-      const cols = sqlite
-        .query<{ name: string }, []>("PRAGMA table_info(channels)")
-        .all()
-        .map((c) => c.name);
-      if (!cols.includes("permissions")) {
-        sqlite.exec("ALTER TABLE channels ADD COLUMN permissions TEXT;");
-      }
-    },
-  },
-  {
-    // Reply listing (§7.2): denormalize the reply parent id out of the
-    // `reference` JSON into its own nullable column so it can be indexed +
-    // queried directly. Backfill existing rows via json_extract, then index
-    // (channel_id, reply_to, seq) for cursor-ordered reply pages.
-    id: "0023_messages_reply_to",
-    up: (sqlite) => {
-      const cols = sqlite
-        .query<{ name: string }, []>("PRAGMA table_info(messages)")
-        .all()
-        .map((c) => c.name);
-      if (!cols.includes("reply_to")) {
-        sqlite.exec("ALTER TABLE messages ADD COLUMN reply_to TEXT;");
-        // Backfill: a reply has reference.type === "reply"; pull reference.id.
-        sqlite.exec(`
-          UPDATE messages
-             SET reply_to = json_extract(reference, '$.id')
-           WHERE reference IS NOT NULL
-             AND json_valid(reference)
-             AND json_extract(reference, '$.type') = 'reply';
-        `);
-      }
-      sqlite.exec(
-        "CREATE INDEX IF NOT EXISTS idx_messages_channel_reply_to ON messages (channel_id, reply_to, seq);",
-      );
-    },
-  },
-  {
-    // Custom role catalogue (§5.2): a per-group `roles` JSON list backing custom
-    // roles. ADD COLUMN with a default, then backfill existing groups with the
-    // canonical catalogue so their member dropdowns offer roles to assign.
-    id: "0024_group_roles",
-    up: (sqlite) => {
-      const cols = sqlite
-        .query<{ name: string }, []>("PRAGMA table_info(groups)")
-        .all()
-        .map((c) => c.name);
-      if (!cols.includes("roles")) {
-        sqlite.exec("ALTER TABLE groups ADD COLUMN roles TEXT NOT NULL DEFAULT '[]';");
-        sqlite.exec(
-          `UPDATE groups SET roles = '[{"name":"admin","color":"#9837be"},{"name":"member","color":"#37a8be"},{"name":"guest","color":"#8a8f98"}]' WHERE roles = '[]';`,
-        );
-      }
-    },
-  },
-  {
-    // Per-group display name (Overboard "Per-group display name"): a nullable
-    // `display_name_override` on `group_members`. When set it overrides the
-    // member's GLOBAL `UserProfile.displayName` within THIS group only
-    // (Discord-server-nickname style); NULL/absent → use the global name.
-    // ADD COLUMN is safe on a STRICT table because the column is nullable with
-    // no default. Guarded so a re-run is a no-op.
-    id: "0025_group_members_display_name_override",
-    up: (sqlite) => {
-      const cols = sqlite
-        .query<{ name: string }, []>("PRAGMA table_info(group_members)")
-        .all()
-        .map((c) => c.name);
-      if (!cols.includes("display_name_override")) {
-        sqlite.exec("ALTER TABLE group_members ADD COLUMN display_name_override TEXT;");
-      }
-    },
-  },
-  {
-    // DM reactions (Overboard "DMs need replies/reactions/all chat
-    // functionality"): one row per (dm_id, message_id, author, key), mirroring
-    // the channel `reactions` table. Stored at the provider where the target DM
-    // message lives (storage-follows-message, §8.3). Create-if-not-exists DDL +
-    // the unique/aggregation indexes; guarded so a re-run is a no-op.
-    id: "0026_dm_reactions",
-    up: (sqlite) => {
-      sqlite.exec(`
-        CREATE TABLE IF NOT EXISTS dm_reactions (
-          id         TEXT PRIMARY KEY,
-          dm_id      TEXT NOT NULL,
-          message_id TEXT NOT NULL,
-          author     TEXT NOT NULL,
-          key        TEXT NOT NULL,
-          created_at INTEGER NOT NULL
-        ) STRICT;
-      `);
-      sqlite.exec(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_dm_reactions_dm_message_author_key ON dm_reactions (dm_id, message_id, author, key);",
-      );
-      sqlite.exec(
-        "CREATE INDEX IF NOT EXISTS idx_dm_reactions_dm_message ON dm_reactions (dm_id, message_id);",
-      );
-    },
-  },
-  {
-    // Group avatars (Overboard "Group avatars"): a nullable `avatar` image URL
-    // on `groups`, mirroring the per-user `users.avatar` column. Set via the
-    // existing PATCH /api/groups/{id} (no new endpoint); the image is uploaded
-    // through POST /api/media and the returned https url stored here.
-    // ADD COLUMN is safe on a STRICT table because the column is nullable with
-    // no default. Guarded so a re-run is a no-op.
-    id: "0027_groups_avatar",
-    up: (sqlite) => {
-      const cols = sqlite
-        .query<{ name: string }, []>("PRAGMA table_info(groups)")
-        .all()
-        .map((c) => c.name);
-      if (!cols.includes("avatar")) {
-        sqlite.exec("ALTER TABLE groups ADD COLUMN avatar TEXT;");
-      }
-    },
-  },
-  {
-    // Read markers (Overboard "Read/new messages history"): per-user last-read
-    // position per channel + per DM, backing unread counts and the "New
-    // messages" divider. One unified table keyed (handle, scope_id) — the global
-    // `seq` space already spans channel `messages` + `dm_messages`, so one
-    // `last_read_seq` works for both. The handle index backs the per-user unread
-    // summary. Create-if-not-exists DDL; guarded so a re-run is a no-op.
-    id: "0028_read_markers",
-    up: (sqlite) => {
-      sqlite.exec(`
-        CREATE TABLE IF NOT EXISTS read_markers (
-          handle        TEXT NOT NULL,
-          scope_id      TEXT NOT NULL,
-          last_read_seq INTEGER NOT NULL,
-          updated_at    INTEGER NOT NULL,
-          PRIMARY KEY (handle, scope_id)
-        ) STRICT;
-      `);
-      sqlite.exec("CREATE INDEX IF NOT EXISTS idx_read_markers_handle ON read_markers (handle);");
-    },
-  },
-  {
-    // Inbound notifications feed (provider-local) — @mentions + thread-replies on
-    // a group CHANNEL, one row per (local recipient, triggering message). Two
-    // independent nullable timestamps (`seen_at`, `read_at`). The unique
-    // (recipient, type, source_message_id) index dedupes; the recipient indexes
-    // back the newest-first feed + the unseen counts. Distinct from the §10
-    // outbound webhook `notification_endpoints` table. Guarded for re-run.
-    id: "0029_notifications",
-    up: (sqlite) => {
-      sqlite.exec(`
-        CREATE TABLE IF NOT EXISTS notifications (
-          id                TEXT PRIMARY KEY,
-          recipient         TEXT NOT NULL,
-          type              TEXT NOT NULL,
-          source_message_id TEXT NOT NULL,
-          channel_id        TEXT NOT NULL,
-          group_id          TEXT NOT NULL,
-          author            TEXT NOT NULL,
-          created_at        INTEGER NOT NULL,
-          seen_at           INTEGER,
-          read_at           INTEGER
-        ) STRICT;
-      `);
-      sqlite.exec(
-        "CREATE INDEX IF NOT EXISTS idx_notifications_recipient_created ON notifications (recipient, created_at);",
-      );
-      sqlite.exec(
-        "CREATE INDEX IF NOT EXISTS idx_notifications_recipient_seen ON notifications (recipient, seen_at);",
-      );
-      sqlite.exec(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_recipient_type_source ON notifications (recipient, type, source_message_id);",
-      );
-    },
-  },
-  {
-    // Web Push (provider-local): the provider's own VAPID P-256 key pair
-    // (generate-once, mirrors `provider_keys`) + per-recipient browser push
-    // subscriptions. The unique `endpoint` index makes re-subscribe idempotent
-    // and backs the 410-cleanup delete; the recipient index backs fan-out.
-    // Guarded for re-run.
-    id: "0030_push",
-    up: (sqlite) => {
-      sqlite.exec(`
-        CREATE TABLE IF NOT EXISTS push_keys (
-          key_id      TEXT PRIMARY KEY,
-          public_key  TEXT NOT NULL,
-          private_key TEXT NOT NULL,
-          algorithm   TEXT NOT NULL,
-          created_at  INTEGER NOT NULL
-        ) STRICT;
-      `);
-      sqlite.exec(`
-        CREATE TABLE IF NOT EXISTS push_subscriptions (
-          id                TEXT PRIMARY KEY,
-          recipient         TEXT NOT NULL,
-          endpoint          TEXT NOT NULL,
-          p256dh            TEXT NOT NULL,
-          auth              TEXT NOT NULL,
-          created_at        INTEGER NOT NULL,
-          last_delivered_at INTEGER
-        ) STRICT;
-      `);
-      sqlite.exec(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_push_subscriptions_endpoint ON push_subscriptions (endpoint);",
-      );
-      sqlite.exec(
-        "CREATE INDEX IF NOT EXISTS idx_push_subscriptions_recipient ON push_subscriptions (recipient);",
-      );
-    },
-  },
-  {
-    // Per-channel / per-group notification preferences (provider-local). One row
-    // per (owner, scope_type, scope_id) holding the recipient's chosen mode
-    // (`all` | `mentions` | `none`). A missing row means "inherit": the effective
-    // mode resolves channel pref → group pref → default `mentions`. The unique
-    // (owner, scope_type, scope_id) index makes the upsert idempotent; the owner
-    // index backs the per-owner listing + the `all`-fan-out membership scan.
-    // Guarded for re-run.
-    id: "0031_notification_preferences",
-    up: (sqlite) => {
-      sqlite.exec(`
-        CREATE TABLE IF NOT EXISTS notification_preferences (
-          id         TEXT PRIMARY KEY,
-          owner      TEXT NOT NULL,
-          scope_type TEXT NOT NULL,
-          scope_id   TEXT NOT NULL,
-          mode       TEXT NOT NULL,
-          updated_at INTEGER NOT NULL
-        ) STRICT;
-      `);
-      sqlite.exec(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_notification_preferences_owner_scope ON notification_preferences (owner, scope_type, scope_id);",
-      );
-      sqlite.exec(
-        "CREATE INDEX IF NOT EXISTS idx_notification_preferences_owner ON notification_preferences (owner);",
-      );
-    },
-  },
-  {
-    // Provider admin (Forumall extension, not OFSCP): a nullable-free `is_admin`
-    // integer-boolean on `users`, mirroring the `guest` column style. Set on the
-    // first registration (instance owner) and for `config.adminHandles`. ADD
-    // COLUMN with a default is safe on a STRICT table; guarded so a re-run is a
-    // no-op.
-    id: "0032_provider_admin",
-    up: (sqlite) => {
-      const cols = sqlite
-        .query<{ name: string }, []>("PRAGMA table_info(users)")
-        .all()
-        .map((c) => c.name);
-      if (!cols.includes("is_admin")) {
-        sqlite.exec("ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0;");
-      }
-    },
-  },
-  {
-    // Admin-curated discover allowlist (Forumall extension, not OFSCP). One row
-    // per GROUP the provider admin has explicitly featured in the discovery feed
-    // (§11.2). The discover compile query intersects this allowlist with the
-    // existing `tier='discoverable'` channel filter, so a discoverable channel is
-    // only surfaced if its owning group is featured. The UNIQUE `group_id` index
-    // makes featuring idempotent (upsert). Create-if-not-exists DDL; guarded for
-    // re-run.
-    id: "0033_discover_features",
-    up: (sqlite) => {
-      sqlite.exec(`
-        CREATE TABLE IF NOT EXISTS discover_features (
-          id         TEXT PRIMARY KEY,
-          group_id   TEXT NOT NULL,
-          added_by   TEXT NOT NULL,
-          created_at INTEGER NOT NULL
-        ) STRICT;
-      `);
-      sqlite.exec(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_discover_features_group ON discover_features (group_id);",
-      );
-    },
-  },
-  {
-    // DM conversation pointers (OFSCP §7.4): a nullable cached copy of the
-    // newest message the owner SENT, so a conversation the owner started (no
-    // inbox message yet) lists with a preview and syncs to their other
-    // devices. ADD COLUMN is safe on a STRICT table (nullable, no default).
-    // Guarded so a re-run is a no-op.
-    id: "0034_dm_conversations_last_sent",
-    up: (sqlite) => {
-      const cols = sqlite
-        .query<{ name: string }, []>("PRAGMA table_info(dm_conversations)")
-        .all()
-        .map((c) => c.name);
-      if (!cols.includes("last_sent_message")) {
-        sqlite.exec("ALTER TABLE dm_conversations ADD COLUMN last_sent_message TEXT;");
-      }
-    },
-  },
-  {
-    // When the provider stored a pointer's cached `last_sent_message` (OFSCP
-    // §7.4): the conversation preview picks the newer of received vs. sent by
-    // provider-recorded times, not the client-supplied preview `createdAt`.
-    // Nullable, no backfill: a legacy preview has no trustworthy store time,
-    // so it loses to any received message (see `conversationItem`). Guarded so
-    // a re-run is a no-op.
-    id: "0035_dm_conversations_last_sent_at",
-    up: (sqlite) => {
-      const cols = sqlite
-        .query<{ name: string }, []>("PRAGMA table_info(dm_conversations)")
-        .all()
-        .map((c) => c.name);
-      if (!cols.includes("last_sent_at")) {
-        sqlite.exec("ALTER TABLE dm_conversations ADD COLUMN last_sent_at INTEGER;");
-      }
-    },
-  },
-  {
-    // OFSCP §7.4 pointer hygiene for rows stored before the rules existed:
-    //  - a provider MUST serve a pointer's counterparty in canonical actor form,
-    //    normalizing values stored before: rewrite each non-canonical
-    //    `counterparty` to `canonicalActor(...)` (lowercase handle + canonical
-    //    authority; `:443` stripped). The PK is (owner, dm_id): no collision.
-    //  - a pointer whose counterparty does not derive its dmId together with the
-    //    owner MUST be ignored or deleted. A failing row whose owner's inbox
-    //    holds NO message under its dm_id (a pure pointer) is DELETED with the
-    //    owner's read marker on that dm_id. A failing row that holds received
-    //    messages is KEPT (logged): an old author spelling such as
-    //    `bob@host:443` derives a different id than its canonical form, so
-    //    deleting the row would orphan those messages. The runtime ignores it.
-    // Safety: the derivation check needs the RIGHT provider domain — under a
-    // wrong one no row derives its dmId. So the migration DEFERS (rolls back,
-    // stays unledgered, retried next boot) when:
-    //  - no domain is given (boot passes one only when DOMAIN is configured);
-    //  - the domain is not PROVEN by stored data: proven if some row derives
-    //    its dm_id under it (a SHA-256 match a wrong domain cannot produce) OR
-    //    some local user (`users.handle`) authored a stored channel message
-    //    as `handle@domain`. So an install whose rows are all inconsistent but
-    //    whose DOMAIN is right still proceeds;
-    //  - more than a handful AND more than half of the rows would fail
-    //    (left for manual review rather than mass-deleted).
-    // It is `independent` (data-only; nothing later depends on it), so a
-    // deferral never holds back later migrations. Until it runs, the runtime
-    // ignore rule (`conversationDerivesDmId`) applies. Data-only and
-    // idempotent; logs how many rows it canonicalized, deleted and kept.
-    id: "0036_dm_conversations_canonical_counterparty",
-    independent: true,
-    up: (sqlite, ctx) => {
-      const rows = sqlite
-        .query<{ owner: string; dm_id: string; counterparty: string; has_messages: number }, []>(
-          `SELECT c.owner, c.dm_id, c.counterparty,
-                  EXISTS (SELECT 1 FROM dm_messages m WHERE m.owner = c.owner AND m.dm_id = c.dm_id) AS has_messages
-             FROM dm_conversations c`,
-        )
-        .all();
-      if (rows.length === 0) return;
-      const domain = ctx.domain;
-      if (domain === undefined) {
-        throw new MigrationDeferred(
-          "DOMAIN is not configured, so stored DM conversations cannot be checked. Set DOMAIN to this provider's public hostname (a localhost-only install can ignore this); inconsistent DM pointers stay ignored meanwhile",
-        );
-      }
-      const failing = rows.filter((r) => {
-        const canonical = canonicalActor(r.counterparty);
-        return canonical === null || deriveDmId(`${r.owner}@${domain}`, canonical) !== r.dm_id;
-      });
-      // A local user who authored a CHANNEL message as handle@DOMAIN proves
-      // DOMAIN. One pass over `messages`, stopping at the first match, with each
-      // candidate author looked up by the `users` primary key. (The author-first
-      // index on `messages` is partial — `client_message_id IS NOT NULL` — so it
-      // can't serve this query.) `dm_messages` is not consulted: a local user's
-      // DMs live in the RECIPIENT's inbox, and DM ownership is already covered by
-      // the conversation-row derivation above.
-      const localChannelAuthor = () =>
-        sqlite
-          .query<{ one: number }, [string]>(
-            `SELECT 1 AS one FROM messages m
-              WHERE substr(m.author, -length(?1) - 1) = '@' || ?1
-                AND EXISTS (SELECT 1 FROM users u
-                             WHERE u.handle = substr(m.author, 1, length(m.author) - length(?1) - 1))
-              LIMIT 1`,
-          )
-          .all(domain).length > 0;
-      const domainProven = failing.length < rows.length || localChannelAuthor();
-      if (!domainProven) {
-        throw new MigrationDeferred(
-          `DOMAIN=${domain} cannot be confirmed against stored data (none of the ${rows.length} DM conversation rows derives its id under it and no local user authored a message under it). If DOMAIN is wrong, fix it; if it is right, this resolves once a local user posts a channel message. Nothing was deleted`,
-        );
-      }
-      if (failing.length > DM_HYGIENE_MAX_UNGUARDED_FAILURES && failing.length * 2 > rows.length) {
-        throw new MigrationDeferred(
-          `${failing.length} of ${rows.length} DM conversation rows are inconsistent under DOMAIN=${domain}, more than half; left for manual review instead of being deleted (they stay ignored at runtime)`,
-        );
-      }
-      const failed = new Set(failing);
-      const update = sqlite.prepare(
-        "UPDATE dm_conversations SET counterparty = ? WHERE owner = ? AND dm_id = ?",
-      );
-      const remove = sqlite.prepare("DELETE FROM dm_conversations WHERE owner = ? AND dm_id = ?");
-      const removeMarker = sqlite.prepare(
-        "DELETE FROM read_markers WHERE handle = ? AND scope_id = ?",
-      );
-      let canonicalized = 0;
-      let deleted = 0;
-      let kept = 0;
-      for (const r of rows) {
-        if (failed.has(r)) {
-          if (!r.has_messages) {
-            remove.run(r.owner, r.dm_id);
-            removeMarker.run(r.owner, r.dm_id);
-            deleted++;
-          } else {
-            kept++;
-          }
-          continue;
-        }
-        const canonical = canonicalActor(r.counterparty);
-        if (canonical !== null && canonical !== r.counterparty) {
-          update.run(canonical, r.owner, r.dm_id);
-          canonicalized++;
-        }
-      }
-      (ctx.log ?? console.log)(
-        `[migrate] 0036 dm_conversations: ${canonicalized} counterparties canonicalized, ${deleted} inconsistent pointers deleted, ${kept} inconsistent rows with received messages kept (ignored at runtime)`,
-      );
-    },
-  },
+  m0001AppMeta,
+  m0002ProviderKeys,
+  m0003UsersAndBootstrapTokens,
+  m0004DeviceKeys,
+  m0005GroupsAndMembers,
+  m0006Channels,
+  m0007JoinRequests,
+  m0008UsersGuestColumns,
+  m0009Invites,
+  m0010Messages,
+  m0011MessagesClientMessageIdUnique,
+  m0012Reactions,
+  m0013Media,
+  m0014DirectMessages,
+  m0015Contacts,
+  m0016UsersProfileColumns,
+  m0017PrivacySettings,
+  m0018Presence,
+  m0019Follows,
+  m0020NotificationEndpoints,
+  m0021KnownProviders,
+  m0022ChannelPermissions,
+  m0023MessagesReplyTo,
+  m0024GroupRoles,
+  m0025GroupMembersDisplayNameOverride,
+  m0026DmReactions,
+  m0027GroupsAvatar,
+  m0028ReadMarkers,
+  m0029Notifications,
+  m0030Push,
+  m0031NotificationPreferences,
+  m0032ProviderAdmin,
+  m0033DiscoverFeatures,
+  m0034DmConversationsLastSent,
+  m0035DmConversationsLastSentAt,
+  m0036DmConversationsCanonicalCounterparty,
+  m0037MessagesMetadata,
+  m0038MediaDurationMs,
 ];
 
 const LEDGER_DDL = `

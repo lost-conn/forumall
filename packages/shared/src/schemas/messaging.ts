@@ -53,10 +53,15 @@ export type MessagePermissions = z.infer<typeof MessagePermissionsSchema>;
 export const MessageKindSchema = z.enum(["message", "memo", "article"]);
 export type MessageKind = z.infer<typeof MessageKindSchema>;
 
-/** A chat/memo/article message (`BaseMessage`). */
+/**
+ * A chat/memo/article message (`BaseMessage`). `clientMessageId` echoes the
+ * idempotency key the create carried (§7.1, §7.4): present on the author's
+ * `message.created` and on every create response, optional elsewhere.
+ */
 export const MessageSchema = z
   .object({
     id: z.string().min(1),
+    clientMessageId: z.string().min(1).optional(),
     author: UserRefSchema,
     type: MessageKindSchema,
     content: ContentSchema,
@@ -125,6 +130,27 @@ export const MessagesPageSchema = z
   })
   .passthrough();
 export type MessagesPage = z.infer<typeof MessagesPageSchema>;
+
+/**
+ * Body that creates a channel message (`MessageCreate`, §7.1): the body of
+ * `POST /api/groups/{groupId}/channels/{channelId}/messages`
+ * (`message-create-request`) and, plus `groupId`/`channelId`, the `data` of the
+ * WS `message.create` command. The provider sets `id`, `author`, `createdAt`
+ * and `permissions`; omitted `type` means `message`, omitted `attachments` /
+ * `metadata` mean `[]`.
+ */
+export const MessageCreateRequestSchema = z
+  .object({
+    clientMessageId: z.string().min(1).optional(),
+    type: MessageKindSchema.optional(),
+    content: ContentSchema,
+    attachments: z.array(AttachmentSchema).optional(),
+    reference: MessageReferenceSchema.optional(),
+    tags: z.array(z.string()).optional(),
+    metadata: MetadataListSchema.optional(),
+  })
+  .passthrough();
+export type MessageCreateRequest = z.infer<typeof MessageCreateRequestSchema>;
 
 /** PATCH .../messages/{messageId} body (`message-update-request`). */
 export const MessageUpdateRequestSchema = z

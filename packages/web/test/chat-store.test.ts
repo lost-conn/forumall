@@ -86,6 +86,27 @@ describe("optimistic echo reconciliation", () => {
     upsertMessage(CH, { id: "m_other", author: "other@h", content: { text: "b" } });
     expect(messagesFor(CH)).toHaveLength(2);
   });
+
+  test("another author's message with the same clientMessageId does not consume the echo", () => {
+    addOptimistic(CH, {
+      id: "optimistic:cmid_1",
+      author: "me@h",
+      content: { text: "mine" },
+      clientMessageId: "cmid_1",
+    });
+    // The key is per author (§7.1): someone else may legitimately reuse it.
+    upsertMessage(CH, {
+      id: "m_theirs",
+      author: "other@h",
+      content: { text: "theirs" },
+      clientMessageId: "cmid_1",
+    });
+    const list = messagesFor(CH);
+    expect(list).toHaveLength(2);
+    expect(list[0]?.id).toBe("optimistic:cmid_1");
+    expect(list[0]?.pending).toBe(true);
+    expect(list[1]?.id).toBe("m_theirs");
+  });
 });
 
 describe("tombstone in place", () => {

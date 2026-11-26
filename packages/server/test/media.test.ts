@@ -29,7 +29,7 @@ import {
 import { createApp } from "../src/app.ts";
 import { type Argon2Params, type Config, loadConfig } from "../src/config.ts";
 import { openDb } from "../src/db/index.ts";
-import { migrate } from "../src/db/migrate.ts";
+import { migrate, migrations, runMigrations } from "../src/db/migrate.ts";
 import { createMessage } from "../src/provider/messages.ts";
 
 const FAST_ARGON2: Argon2Params = { memoryKib: 1024, iterations: 1, parallelism: 1 };
@@ -90,17 +90,32 @@ async function registerUserWithKey(app: App, handle: string): Promise<Signer> {
 
 const BOUNDARY = "----forumalltestboundary7MA4YWxkTrZu0gW";
 
+/** Extra text form parts sent beside `file` (`[name, value]`, repeats allowed). */
+type FormFields = readonly (readonly [string, string])[];
+
 /**
- * Hand-build a `multipart/form-data` body with a single `file` part. Returns the
- * exact bytes (so the signed digest matches) and the content-type header.
+ * Hand-build a `multipart/form-data` body with a `file` part, preceded by any
+ * extra text `fields`. Returns the exact bytes (so the signed digest matches)
+ * and the content-type header.
  */
-function buildMultipart(fileBytes: Uint8Array, filename: string, mime: string) {
+function buildMultipart(
+  fileBytes: Uint8Array,
+  filename: string,
+  mime: string,
+  fields: FormFields = [],
+) {
   const enc = new TextEncoder();
-  const head = enc.encode(
+  const fieldParts = fields
+    .map(
+      ([name, value]) =>
+        `--${BOUNDARY}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`,
+    )
+    .join("");
+  const filePart =
     `--${BOUNDARY}\r\n` +
-      `Content-Disposition: form-data; name="file"; filename="${filename}"\r\n` +
-      `Content-Type: ${mime}\r\n\r\n`,
-  );
+    `Content-Disposition: form-data; name="file"; filename="${filename}"\r\n` +
+    `Content-Type: ${mime}\r\n\r\n`;
+  const head = enc.encode(`${fieldParts}${filePart}`);
   const tail = enc.encode(`\r\n--${BOUNDARY}--\r\n`);
   const body = new Uint8Array(head.length + fileBytes.length + tail.length);
   body.set(head, 0);
@@ -116,9 +131,10 @@ async function uploadMedia(
   fileBytes: Uint8Array,
   filename: string,
   mime: string,
+  fields: FormFields = [],
 ): Promise<Response> {
   const path = "/api/media";
-  const { body, contentType } = buildMultipart(fileBytes, filename, mime);
+  const { body, contentType } = buildMultipart(fileBytes, filename, mime, fields);
   const { headers } = sign({
     actor: signer.actor,
     keyId: signer.keyId,
@@ -301,3 +317,175 @@ function signGet(signer: Signer, path: string) {
   });
   return { method: "GET", headers };
 }
+
+// ---------------------------------------------------------------------------
+
+describe("POST /api/media dimensions and duration (§5.8)", () => {
+  test("form parts supply what the file cannot: video width/height and durationMs", async () => {
+    const { app } = freshApp("hints-video");
+    const alice = await registerUserWithKey(app, "alice");
+    const res = await uploadMedia(
+      app,
+      alice,
+      new Uint8Array([0, 1, 2, 3]),
+      "clip.mp4",
+      "video/mp4",
+      [
+        ["width", "1920"],
+        ["height", "1080"],
+        ["durationMs", "4500"],
+      ],
+    );
+    expect(res.status).toBe(201);
+    const att = AttachmentSchema.parse(await res.json());
+    expect(att).toMatchObject({ width: 1920, height: 1080, durationMs: 4500 });
+  });
+
+  test("dimensions read from the image header win over supplied parts", async () => {
+    const { app } = freshApp("hints-png");
+    const alice = await registerUserWithKey(app, "alice");
+    const res = await uploadMedia(app, alice, fakePng(640, 480), "pic.png", "image/png", [
+      ["width", "1"],
+      ["height", "2"],
+      ["durationMs", "0"],
+    ]);
+    expect(res.status).toBe(201);
+    const att = AttachmentSchema.parse(await res.json());
+    expect(att.width).toBe(640);
+    expect(att.height).toBe(480);
+    // The provider cannot read a duration, so the supplied one is kept.
+    expect(att.durationMs).toBe(0);
+  });
+
+  test("a value neither side supplied is omitted", async () => {
+    const { app } = freshApp("hints-none");
+    const alice = await registerUserWithKey(app, "alice");
+    const res = await uploadMedia(app, alice, new Uint8Array([9, 9]), "a.ogg", "audio/ogg", [
+      ["durationMs", "1200"],
+    ]);
+    const att = AttachmentSchema.parse(await res.json());
+    expect(att.durationMs).toBe(1200);
+    expect(att.width).toBeUndefined();
+    expect(att.height).toBeUndefined();
+  });
+
+  test("a supplied value that is not a non-negative decimal integer is 400", async () => {
+    const { app } = freshApp("hints-400");
+    const alice = await registerUserWithKey(app, "alice");
+    const bad: FormFields[] = [
+      [["width", "-1"]],
+      [["height", "1.5"]],
+      [["durationMs", "1e3"]],
+      [["width", "abc"]],
+      [["width", ""]],
+      [["height", " 3"]],
+      [["width", "0x10"]],
+      [["durationMs", "99999999999999999999"]],
+      [
+        ["width", "1"],
+        ["width", "2"],
+      ],
+    ];
+    for (const fields of bad) {
+      const res = await uploadMedia(app, alice, new Uint8Array([1]), "x.bin", "video/mp4", fields);
+      expect({ fields, status: res.status }).toEqual({ fields, status: 400 });
+    }
+  });
+});
+
+describe("PATCH /api/me/profile avatar (§6.3)", () => {
+  const profilePath = "/api/me/profile";
+  const patchProfile = (app: App, who: Signer, body: unknown) =>
+    app.request(profilePath, signMethod(who, "PATCH", profilePath, body));
+
+  test("a hosted image is accepted; null removes it", async () => {
+    const { app } = freshApp("avatar-hosted");
+    const alice = await registerUserWithKey(app, "alice");
+    const up = await uploadMedia(app, alice, fakePng(64, 64), "me.png", "image/png");
+    const att = (await up.json()) as Attachment;
+
+    const set = await patchProfile(app, alice, { avatar: att.url });
+    expect(set.status).toBe(200);
+    expect(((await set.json()) as { avatar?: string }).avatar).toBe(att.url);
+
+    // Absent leaves it unchanged…
+    const other = await patchProfile(app, alice, { displayName: "Alice" });
+    expect(((await other.json()) as { avatar?: string }).avatar).toBe(att.url);
+
+    // …and null removes it: the updated profile has no `avatar`.
+    const cleared = await patchProfile(app, alice, { avatar: null });
+    expect(cleared.status).toBe(200);
+    expect("avatar" in ((await cleared.json()) as object)).toBe(false);
+    const me = await app.request(
+      "/api/users/alice/profile",
+      signGet(alice, "/api/users/alice/profile"),
+    );
+    expect("avatar" in ((await me.json()) as object)).toBe(false);
+  });
+
+  test("400 for a URL this provider does not host, an unknown id, or a non-image", async () => {
+    const { app } = freshApp("avatar-refused");
+    const alice = await registerUserWithKey(app, "alice");
+    const up = await uploadMedia(app, alice, new TextEncoder().encode("hi"), "a.txt", "text/plain");
+    const text = (await up.json()) as Attachment;
+    const png = (await (
+      await uploadMedia(app, alice, fakePng(8, 8), "p.png", "image/png")
+    ).json()) as Attachment;
+
+    for (const avatar of [
+      "https://cdn.example/a.png",
+      `https://elsewhere.test/api/media/${png.id}`,
+      `https://${DOMAIN}/api/media/att_unknown`,
+      `${png.url}?size=64`,
+      `${png.url}/extra`,
+      text.url,
+      "http://cdn.example/a.png",
+    ]) {
+      const res = await patchProfile(app, alice, { avatar });
+      expect({ avatar, status: res.status }).toEqual({ avatar, status: 400 });
+    }
+  });
+
+  test("re-sending the stored avatar is grandfathered, even one this provider does not host", async () => {
+    const { app, db } = freshApp("avatar-grandfathered");
+    const alice = await registerUserWithKey(app, "alice");
+    // An external avatar stored before the hosted-media check existed.
+    const legacy = "https://cdn.example/old.png";
+    db.sqlite.query("UPDATE users SET avatar = ? WHERE handle = 'alice'").run(legacy);
+
+    // Saving a bio edit with the unchanged avatar succeeds and keeps it.
+    const same = await patchProfile(app, alice, { avatar: legacy, bio: "hi" });
+    expect(same.status).toBe(200);
+    const body = (await same.json()) as { avatar?: string; bio?: string };
+    expect(body.avatar).toBe(legacy);
+    expect(body.bio).toBe("hi");
+
+    // Changing it to another external URL is still a 400.
+    const changed = await patchProfile(app, alice, { avatar: "https://cdn.example/new.png" });
+    expect(changed.status).toBe(400);
+  });
+});
+
+describe("migration 0038_media_duration_ms", () => {
+  test("adds a nullable media.duration_ms; existing rows keep none", () => {
+    const db = openDb(join(tmp, "m0038.sqlite"));
+    const id = "0038_media_duration_ms";
+    runMigrations(
+      db,
+      migrations.filter((m) => m.id !== id),
+    );
+    db.sqlite.exec(`
+      INSERT INTO media (id, mime, size, filename, hash, width, height, owner, created_at)
+      VALUES ('att_old', 'video/mp4', 4, NULL, 'sha-256:x', NULL, NULL, 'alice@providera.test', 1);
+    `);
+    expect(migrate(db)).toEqual([id]);
+    const row = db.sqlite
+      .query<{ duration_ms: number | null }, []>(
+        "SELECT duration_ms FROM media WHERE id = 'att_old'",
+      )
+      .get();
+    expect(row?.duration_ms).toBeNull();
+    expect(migrate(db)).toEqual([]);
+    db.sqlite.close();
+  });
+});

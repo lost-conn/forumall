@@ -427,9 +427,38 @@ describe("live schema validation: groups, channels, messaging (§5, §7)", () =>
       },
     });
 
-    // WS `message.created` envelope (§7.1)
+    // WS `message.created` envelope (§7.1): the full Message, echoing the
+    // create's clientMessageId on the author's copy.
     const created = await aConn.ofType("message.created");
     await expectValid("ws/message-created.json", created);
+    const wsMessage = (created.data as { message: { id: string; clientMessageId?: string } })
+      .message;
+    expect(wsMessage.clientMessageId).toBe("cmsg_1");
+
+    // REST create (§7.1): a reply carrying every optional field → 201 + the
+    // Message; a duplicate clientMessageId → 200 + the same Message. The fan-out
+    // reaches the WS subscriber as a schema-valid `message.created`.
+    const restBody = {
+      clientMessageId: "cmsg_rest_1",
+      type: "memo",
+      content: { mime: "text/plain", text: "a reply over REST" },
+      attachments: [],
+      reference: { type: "reply", id: wsMessage.id },
+      tags: ["#intro"],
+      metadata: [],
+    };
+    const restPath = `/api/groups/${group.id}/channels/${channel.id}/messages`;
+    const restRes = await signedReq(alice, "POST", restPath, restBody);
+    expect(restRes.status).toBe(201);
+    const restMessage = (await restRes.json()) as { id: string; clientMessageId?: string };
+    await expectValid("message.json", restMessage);
+    expect(restMessage.clientMessageId).toBe("cmsg_rest_1");
+    await expectValid("ws/message-created.json", await aConn.ofType("message.created"));
+    const dupRes = await signedReq(alice, "POST", restPath, restBody);
+    expect(dupRes.status).toBe(200);
+    const dupMessage = (await dupRes.json()) as { id: string };
+    await expectValid("message.json", dupMessage);
+    expect(dupMessage.id).toBe(restMessage.id);
     aConn.close();
 
     // Message history (§7.2): messages-page + each Message

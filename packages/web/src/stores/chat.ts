@@ -107,6 +107,9 @@ export function upsertChannel(channel: ChannelSummary): void {
  * Append or replace a message in a channel timeline. De-dupes by `id`, and — when
  * the message carries a `clientMessageId` — reconciles a matching optimistic echo
  * (replacing it in place so the local copy becomes canonical, no duplicate).
+ * The echo matches only when both the `clientMessageId` and the `author` are the
+ * same: the key is idempotent per author (§7.1), so another author's message may
+ * reuse it and must not consume our pending send.
  */
 export function upsertMessage(channelId: string, message: ChatMessage): void {
   setChat(
@@ -117,7 +120,10 @@ export function upsertMessage(channelId: string, message: ChatMessage): void {
       // 1) Reconcile an optimistic echo by clientMessageId.
       if (message.clientMessageId) {
         const echoIdx = list.findIndex(
-          (m) => m.pending && m.clientMessageId === message.clientMessageId,
+          (m) =>
+            m.pending &&
+            m.clientMessageId === message.clientMessageId &&
+            m.author === message.author,
         );
         if (echoIdx !== -1) {
           list[echoIdx] = { ...list[echoIdx], ...message, pending: false, failed: false };

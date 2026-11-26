@@ -41,6 +41,7 @@ import { terminateHandleSessions } from "../provider/access-revocation.ts";
 import { isProviderAdmin } from "../provider/admin.ts";
 import { claimGuestAccount } from "../provider/claim.ts";
 import { buildUserProfile, getUserRow, updateUserProfile } from "../provider/guests.ts";
+import { hostedMediaRowForUrl } from "../provider/media.ts";
 import { groupIdsOf } from "../provider/membership.ts";
 import { mergeGuestIntoAccount } from "../provider/merge.ts";
 import {
@@ -250,7 +251,8 @@ export function createMeUserRouter() {
     const actor = c.var.actor;
     if (!actor) throw AppError.unauthorized();
     const handle = requireLocalHandle(c);
-    if (!getUserRow(db, handle)) throw AppError.notFound({ detail: "no such user" });
+    const current = getUserRow(db, handle);
+    if (!current) throw AppError.notFound({ detail: "no such user" });
 
     const raw = await c.req.json().catch(() => {
       throw AppError.badRequest({ detail: "request body must be valid JSON" });
@@ -261,6 +263,24 @@ export function createMeUserRouter() {
         detail: "invalid profile update request",
         extensions: { errors: parsed.error.flatten() },
       });
+    }
+
+    // §6.3: `null` removes the avatar; a NEW URL must be an image this provider
+    // hosts (one its own `POST /api/media` returned) — anything else is a 400.
+    // Re-sending the avatar already stored is not a change: it is grandfathered,
+    // so an avatar set before this check existed (e.g. an external URL) does not
+    // block saving the rest of the profile.
+    const { avatar } = parsed.data;
+    if (typeof avatar === "string" && avatar !== current.avatar) {
+      const hosted = hostedMediaRowForUrl(db, config, avatar);
+      if (!hosted) {
+        throw AppError.badRequest({
+          detail: "avatar must be a URL this provider hosts (upload it with POST /api/media)",
+        });
+      }
+      if (!hosted.mime.startsWith("image/")) {
+        throw AppError.badRequest({ detail: "avatar must be an image (image/*)" });
+      }
     }
 
     updateUserProfile(db, handle, parsed.data);

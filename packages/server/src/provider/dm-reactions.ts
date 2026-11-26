@@ -35,7 +35,8 @@ import { and, eq, or, sql } from "drizzle-orm";
 
 import type { Db } from "../db/index.ts";
 import { type DmMessageRow, type DmReactionRow, dmMessages, dmReactions } from "../db/schema.ts";
-import type { DmViewer, ListDmMessagesOptions } from "./dms.ts";
+import type { ListDmMessagesOptions } from "./dm-history.ts";
+import type { DmViewer } from "./dms.ts";
 import { type PageDirection, encodeMessageCursor } from "./messages.ts";
 
 /** `id` prefix per the §5.3 wire examples (`rct_…`). */

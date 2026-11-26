@@ -193,11 +193,14 @@ export const UserPublicProfileResponseSchema = z
   .passthrough();
 export type UserPublicProfileResponse = z.infer<typeof UserPublicProfileResponseSchema>;
 
-/** PATCH /api/me/profile body (`user-update-profile-request`). */
+/**
+ * PATCH /api/me/profile body (`user-update-profile-request`). `avatar: null`
+ * removes the avatar; an absent `avatar` leaves it unchanged (§6.3).
+ */
 export const UserUpdateProfileRequestSchema = z
   .object({
     displayName: z.string().optional(),
-    avatar: HttpsUriSchema.optional(),
+    avatar: HttpsUriSchema.nullable().optional(),
     bio: z.string().optional(),
     metadata: MetadataListSchema.optional(),
   })

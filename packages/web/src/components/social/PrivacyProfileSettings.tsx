@@ -15,6 +15,7 @@ import { type VisibilityPolicy, canonicalActor } from "@forumall/shared";
 import { type Component, For, Show, createEffect, createResource, createSignal } from "solid-js";
 import { resolveAttachmentUrl, uploadMedia } from "../../lib/chat-api.ts";
 import { OfscpHttpError } from "../../lib/ofscp-client.ts";
+import { profileUpdateBody } from "../../lib/profile-form.ts";
 import { fetchPrivacy, fetchProfile, updatePrivacy, updateProfile } from "../../lib/social-api.ts";
 import { session, sessionClient } from "../../stores/session.ts";
 import { SettingsSection } from "../shared/SettingsSection.tsx";
@@ -73,6 +74,9 @@ export const ProfileSettings: Component = () => {
   const [displayName, setDisplayName] = createSignal("");
   const [avatar, setAvatar] = createSignal("");
   const [bio, setBio] = createSignal("");
+  // The avatar the server holds (as loaded, then as last saved): the save sends
+  // `avatar` only when the field differs from it (see `profileUpdateBody`).
+  let storedAvatar: string | null = null;
   const [loaded, setLoaded] = createSignal(false);
   const [saving, setSaving] = createSignal(false);
   const [saved, setSaved] = createSignal(false);
@@ -89,6 +93,7 @@ export const ProfileSettings: Component = () => {
     if (!p) return;
     setDisplayName(p.displayName ?? "");
     setAvatar(p.avatar ?? "");
+    storedAvatar = p.avatar ?? null;
     setBio(p.bio ?? "");
     setLoaded(true);
   });
@@ -120,19 +125,18 @@ export const ProfileSettings: Component = () => {
     setSaved(false);
     setError(null);
     try {
-      // `avatar` is constrained to an https:// URI server-side, so an empty
-      // field must be omitted (not sent as "") or the update is rejected. Catch a
-      // malformed URL here with a clear message instead of the generic 400.
-      const avatarUrl = avatar().trim();
-      if (avatarUrl && !/^https:\/\//.test(avatarUrl)) {
-        setError("Avatar must be an https:// URL.");
+      const built = profileUpdateBody(
+        { displayName: displayName(), avatar: avatar(), bio: bio() },
+        storedAvatar,
+      );
+      if ("error" in built) {
+        setError(built.error);
         return;
       }
-      await updateProfile(clientOrThrow(), {
-        displayName: displayName().trim(),
-        bio: bio().trim(),
-        ...(avatarUrl ? { avatar: avatarUrl } : {}),
-      });
+      // The server answers 400 for a new avatar URL it does not host, shown like
+      // any other save error.
+      const updated = await updateProfile(clientOrThrow(), built.body);
+      storedAvatar = updated.avatar ?? null;
       setSaved(true);
     } catch (err) {
       setError(errorOf(err, "Could not save profile."));

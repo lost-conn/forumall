@@ -67,10 +67,11 @@ function frameId(prefix: string): string {
 }
 
 /**
- * Pending `message.create` sends, keyed by the command frame id. The server's
- * canonical `message.created` payload does NOT echo our `clientMessageId`, but
- * the author's own copy carries `correlationId` = the request frame id (§7.1).
- * We map that back to the `clientMessageId` to reconcile the optimistic echo.
+ * Pending `message.create` sends, keyed by the command frame id. The author's
+ * own `message.created` carries `correlationId` = the request frame id (§7.1);
+ * we map that back to the `clientMessageId` to reconcile the optimistic echo.
+ * (The message itself also echoes `clientMessageId` since ofscp#23, but the
+ * correlation is per command, so a retried send still resolves its own entry.)
  * (Module-level so a channel re-open's fresh listeners still resolve in-flight
  * sends; entries are short-lived and removed on first match.)
  */
@@ -99,8 +100,13 @@ function sendCommand(ws: OfscpWsClient, type: string, data: Record<string, unkno
 /** History page size for the initial + "load older" loads. */
 export const HISTORY_PAGE_SIZE = 50;
 
-/** Map a REST history item to the store's message shape (§7.2 page → timeline). */
-function historyItemToMessage(m: Message): ChatMessage {
+/**
+ * Map a canonical `Message` (§5.3) — a REST history item, or the full message a
+ * `message.created` / `message.updated` event carries (ofscp#23) — to the
+ * store's shape. `cursor` is the event's timeline cursor; a history item carries
+ * its own (passthrough) `cursor`.
+ */
+function toChatMessage(m: Message, cursor?: string): ChatMessage {
   return {
     id: m.id,
     author: m.author,
@@ -108,12 +114,13 @@ function historyItemToMessage(m: Message): ChatMessage {
     content: m.content,
     attachments: m.attachments,
     reference: m.reference,
-    replyCount: (m as { replyCount?: number }).replyCount,
+    replyCount: m.replyCount,
     tags: m.tags,
     createdAt: m.createdAt,
     editedAt: m.editedAt,
     deletedAt: m.deletedAt,
-    cursor: (m as { cursor?: string }).cursor,
+    cursor: cursor ?? (m as { cursor?: string }).cursor,
+    ...(m.clientMessageId !== undefined ? { clientMessageId: m.clientMessageId } : {}),
   };
 }
 
@@ -151,23 +158,11 @@ export async function openChannel(deps: OpenChannelDeps): Promise<ChannelHandle>
   const offCreated = ws.on("message.created", (e: WsEnvelope) => {
     const data = (e as WsMessageCreated).data;
     if (data.channelId !== channelId) return;
-    const m = data.message;
-    const canonical = {
-      id: m.id,
-      author: m.author,
-      type: (m as { type?: string }).type,
-      content: m.content,
-      attachments: (m as { attachments?: never }).attachments,
-      reference: (m as { reference?: { type: string; id: string } }).reference,
-      replyCount: (m as { replyCount?: number }).replyCount,
-      tags: (m as { tags?: string[] }).tags,
-      createdAt: m.createdAt,
-      editedAt: m.editedAt,
-      cursor: data.cursor,
-    };
+    const canonical = toChatMessage(data.message, data.cursor);
     // Author's own copy: correlate back to the pending send to reconcile the
-    // optimistic echo (the server doesn't echo `clientMessageId`, so we match on
-    // the request `correlationId` it echoes per §7.1).
+    // optimistic echo, matching on the request `correlationId` the provider
+    // echoes per §7.1. (A duplicate-create answer has no `cursor`, so it never
+    // advances the resume point.)
     const correlationId = (e as { correlationId?: string }).correlationId;
     const pending = correlationId ? pendingSends.get(correlationId) : undefined;
     if (pending && pending.channelId === channelId) {
@@ -175,27 +170,13 @@ export async function openChannel(deps: OpenChannelDeps): Promise<ChannelHandle>
       reconcileOptimistic(channelId, pending.clientMessageId, canonical);
       return;
     }
-    upsertMessage(channelId, {
-      ...canonical,
-      ...(m.clientMessageId ? { clientMessageId: m.clientMessageId } : {}),
-    });
+    upsertMessage(channelId, canonical);
   });
 
   const offUpdated = ws.on("message.updated", (e: WsEnvelope) => {
     const data = (e as WsMessageUpdated).data;
     if (data.channelId !== channelId) return;
-    const m = data.message;
-    applyEdit(channelId, {
-      id: m.id,
-      author: m.author,
-      type: (m as { type?: string }).type,
-      content: m.content,
-      reference: (m as { reference?: { type: string; id: string } }).reference,
-      tags: (m as { tags?: string[] }).tags,
-      createdAt: m.createdAt,
-      editedAt: m.editedAt,
-      cursor: data.cursor,
-    });
+    applyEdit(channelId, toChatMessage(data.message, data.cursor));
   });
 
   const offDeleted = ws.on("message.deleted", (e: WsEnvelope) => {
@@ -240,7 +221,7 @@ export async function openChannel(deps: OpenChannelDeps): Promise<ChannelHandle>
   // of truth; the store copy is purely what the view renders off.
   setOlderCursor(channelId, olderCursor);
   for (const m of [...page.messages].reverse()) {
-    upsertMessage(channelId, historyItemToMessage(m));
+    upsertMessage(channelId, toChatMessage(m));
   }
   for (const r of page.reactions) addReactionAgg(channelId, r);
 
@@ -267,7 +248,10 @@ export async function openChannel(deps: OpenChannelDeps): Promise<ChannelHandle>
       });
       // A backward page arrives NEWEST-first; reverse it so the block lands at
       // the front of the timeline in chronological order.
-      prependHistory(channelId, [...older.messages].reverse().map(historyItemToMessage));
+      prependHistory(
+        channelId,
+        [...older.messages].reverse().map((m) => toChatMessage(m)),
+      );
       for (const r of older.reactions) addReactionAgg(channelId, r);
       olderCursor = older.nextCursor;
       setOlderCursor(channelId, olderCursor);
@@ -360,7 +344,7 @@ export async function loadReplies(deps: {
   const page = await fetchReplies(client, groupId, channelId, messageId, {
     limit: HISTORY_PAGE_SIZE,
   });
-  for (const m of page.messages) upsertMessage(channelId, historyItemToMessage(m));
+  for (const m of page.messages) upsertMessage(channelId, toChatMessage(m));
   for (const r of page.reactions) addReactionAgg(channelId, r);
 }
 

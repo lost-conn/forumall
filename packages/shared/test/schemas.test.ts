@@ -42,6 +42,7 @@ import {
   InviteSchema,
   JoinRequestSchema,
   MemberSchema,
+  MessageCreateRequestSchema,
   MessageSchema,
   MessageUpdateRequestSchema,
   MessagesPageSchema,
@@ -187,6 +188,7 @@ const SAMPLE_SCHEMAS: Record<string, z.ZodTypeAny> = {
 
   // Messaging
   message: MessageSchema,
+  "message-create-request": MessageCreateRequestSchema,
   "message-update-request": MessageUpdateRequestSchema,
   "messages-page": MessagesPageSchema,
   reaction: ReactionSchema,
