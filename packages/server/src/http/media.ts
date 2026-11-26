@@ -4,6 +4,9 @@
  *  - `POST /api/media` (signed, §4.4): single-step `multipart/form-data` upload.
  *    Stores the blob via the injected {@link StorageBackend} and returns the
  *    hosted `Attachment`. → 201. Enforces `config.maxUploadBytes` → 413.
+ *    `width` / `height` come from the image header when it can be read;
+ *    otherwise, like `durationMs`, from optional form parts of the same names
+ *    beside `file` (a malformed one → 400).
  *  - `GET /api/media/:id`: serve the stored bytes with the stored content type.
  *    → 200, or 404 if unknown.
  *
@@ -29,6 +32,8 @@ import {
   insertMediaRow,
   mintMediaId,
   parseImageDimensions,
+  parseUploaderHints,
+  resolveMediaDimensions,
   rowToAttachment,
 } from "../provider/media.ts";
 import { FsStorage, type StorageBackend } from "../provider/storage.ts";
@@ -92,6 +97,8 @@ export function createMediaRouter(opts: MediaRouterOptions = {}): Hono<AppBindin
     if (!(file instanceof File)) {
       throw AppError.badRequest({ detail: "multipart body must include a `file` part" });
     }
+    const hinted = parseUploaderHints(form);
+    if ("error" in hinted) throw AppError.badRequest({ detail: hinted.error });
 
     const bytes = new Uint8Array(await file.arrayBuffer());
 
@@ -111,7 +118,7 @@ export function createMediaRouter(opts: MediaRouterOptions = {}): Hono<AppBindin
     const rawMime = (file.type ?? "").split(";")[0]?.trim() ?? "";
     const mime = rawMime.length > 0 ? rawMime : "application/octet-stream";
     const hash = contentHash(bytes);
-    const dims = parseImageDimensions(bytes);
+    const dims = resolveMediaDimensions(parseImageDimensions(bytes), hinted.hints);
     const filename = typeof file.name === "string" && file.name.length > 0 ? file.name : undefined;
 
     await storageFor(config.mediaDir).put(id, bytes, mime);
@@ -122,8 +129,9 @@ export function createMediaRouter(opts: MediaRouterOptions = {}): Hono<AppBindin
       size: bytes.byteLength,
       filename,
       hash,
-      width: dims?.width,
-      height: dims?.height,
+      width: dims.width,
+      height: dims.height,
+      durationMs: dims.durationMs,
       owner: actor.actor,
     });
 

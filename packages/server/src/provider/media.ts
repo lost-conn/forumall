@@ -1,6 +1,7 @@
 /**
  * Media store helpers (spec §5.8): id minting, content hashing, best-effort
- * image dimension parsing, and the `media` row ↔ hosted `Attachment` mapping.
+ * image dimension parsing, the uploader's `width` / `height` / `durationMs`
+ * hint parts, and the `media` row ↔ hosted `Attachment` mapping.
  *
  * The HTTP layer (`http/media.ts`) owns request parsing, signing, and the
  * storage-backend call; this module is the pure-ish provider logic so it can be
@@ -151,6 +152,69 @@ export function parseImageDimensions(bytes: Uint8Array): ImageDimensions | null 
   return null;
 }
 
+/**
+ * The `width` / `height` / `durationMs` an uploader may send as extra form
+ * parts beside `file` (§5.8), for values the provider cannot read itself.
+ */
+export interface UploaderHints {
+  readonly width?: number;
+  readonly height?: number;
+  readonly durationMs?: number;
+}
+
+/** The form parts {@link parseUploaderHints} reads, in wire spelling. */
+const HINT_PARTS = ["width", "height", "durationMs"] as const;
+
+/** A non-negative decimal integer, as §5.8 requires of a hint part. */
+const NON_NEGATIVE_DECIMAL = /^[0-9]+$/;
+
+/**
+ * Read and validate the optional §5.8 hint parts of an upload. Each part, when
+ * present, must appear once and hold a non-negative decimal integer (no sign,
+ * fraction, exponent or whitespace); anything else is an `error` the caller
+ * answers with `400`. A value beyond `Number.MAX_SAFE_INTEGER` cannot be kept
+ * exactly and is refused the same way.
+ */
+export function parseUploaderHints(
+  form: FormData,
+): { readonly hints: UploaderHints } | { readonly error: string } {
+  const hints: { width?: number; height?: number; durationMs?: number } = {};
+  for (const name of HINT_PARTS) {
+    const values = form.getAll(name);
+    if (values.length === 0) continue;
+    const [value] = values;
+    if (values.length > 1 || typeof value !== "string" || !NON_NEGATIVE_DECIMAL.test(value)) {
+      return { error: `\`${name}\` must be a single non-negative decimal integer` };
+    }
+    const n = Number(value);
+    if (!Number.isSafeInteger(n)) {
+      return { error: `\`${name}\` is too large` };
+    }
+    hints[name] = n;
+  }
+  return { hints };
+}
+
+/**
+ * Combine what the provider read from the file with the uploader's hints
+ * (§5.8): a value the provider determined wins, a hint fills only a value it
+ * could not, and a value neither side has is omitted. The provider reads
+ * dimensions from image headers ({@link parseImageDimensions}) and never reads
+ * a duration, so `durationMs` always comes from the hint when there is one.
+ */
+export function resolveMediaDimensions(
+  fromFile: ImageDimensions | null,
+  hints: UploaderHints,
+): UploaderHints {
+  const width = fromFile?.width ?? hints.width;
+  const height = fromFile?.height ?? hints.height;
+  return {
+    ...(width !== undefined ? { width } : {}),
+    ...(height !== undefined ? { height } : {}),
+    ...(hints.durationMs !== undefined ? { durationMs: hints.durationMs } : {}),
+  };
+}
+
 /** Build the hosted attachment URL for a stored blob id. */
 export function mediaUrl(config: Config, id: string): string {
   return `https://${config.domain}/api/media/${id}`;
@@ -165,6 +229,7 @@ export interface StoreMediaInput {
   readonly hash: string;
   readonly width?: number | undefined;
   readonly height?: number | undefined;
+  readonly durationMs?: number | undefined;
   /** Owning actor (`handle@domain`). */
   readonly owner: string;
 }
@@ -179,11 +244,27 @@ export function insertMediaRow(db: Db, input: StoreMediaInput): MediaRow {
     hash: input.hash,
     width: input.width ?? null,
     height: input.height ?? null,
+    durationMs: input.durationMs ?? null,
     owner: input.owner,
     createdAt: Date.now(),
   };
   db.drizzle.insert(media).values(row).run();
   return row;
+}
+
+/**
+ * The `media` row behind `url` when `url` is exactly a URL this provider hosts
+ * (the `url` its own `POST /api/media` returned, {@link mediaUrl}); `null` for
+ * any other URL, including one on another host or an unknown id. Backs the
+ * §6.3 avatar check.
+ */
+export function hostedMediaRowForUrl(db: Db, config: Config, url: string): MediaRow | null {
+  const prefix = mediaUrl(config, "");
+  if (!url.startsWith(prefix)) return null;
+  const id = url.slice(prefix.length);
+  // A bare id only: no further path, query or fragment.
+  if (id.length === 0 || /[/?#]/.test(id)) return null;
+  return getMediaRow(db, id);
 }
 
 /** The raw `media` row for `id`, or `null` if unknown. */
@@ -202,5 +283,6 @@ export function rowToAttachment(config: Config, row: MediaRow): Attachment {
     ...(row.filename != null ? { filename: row.filename } : {}),
     ...(row.width != null ? { width: row.width } : {}),
     ...(row.height != null ? { height: row.height } : {}),
+    ...(row.durationMs != null ? { durationMs: row.durationMs } : {}),
   });
 }

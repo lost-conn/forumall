@@ -76,10 +76,13 @@ export async function updatePrivacy(
   return res.data;
 }
 
-/** Update the caller's profile (`PATCH /api/me/profile`, §6.3). */
+/**
+ * Update the caller's profile (`PATCH /api/me/profile`, §6.3). `avatar: null`
+ * removes the avatar; an absent `avatar` leaves it unchanged.
+ */
 export async function updateProfile(
   client: OfscpClient,
-  body: { displayName?: string; avatar?: string; bio?: string },
+  body: { displayName?: string; avatar?: string | null; bio?: string },
 ): Promise<UserPublicProfileResponse> {
   const res = await client.patch<UserPublicProfileResponse>("/api/me/profile", body);
   return res.data;

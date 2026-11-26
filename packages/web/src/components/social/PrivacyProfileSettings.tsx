@@ -120,9 +120,10 @@ export const ProfileSettings: Component = () => {
     setSaved(false);
     setError(null);
     try {
-      // `avatar` is constrained to an https:// URI server-side, so an empty
-      // field must be omitted (not sent as "") or the update is rejected. Catch a
-      // malformed URL here with a clear message instead of the generic 400.
+      // `avatar` is an https:// URI the server hosts (§6.3), so an empty field
+      // is sent as `null` (remove the avatar), never as "". Catch a malformed URL
+      // here with a clear message; the server answers 400 for a URL it does not
+      // host, shown like any other save error.
       const avatarUrl = avatar().trim();
       if (avatarUrl && !/^https:\/\//.test(avatarUrl)) {
         setError("Avatar must be an https:// URL.");
@@ -131,7 +132,7 @@ export const ProfileSettings: Component = () => {
       await updateProfile(clientOrThrow(), {
         displayName: displayName().trim(),
         bio: bio().trim(),
-        ...(avatarUrl ? { avatar: avatarUrl } : {}),
+        avatar: avatarUrl || null,
       });
       setSaved(true);
     } catch (err) {

@@ -337,7 +337,7 @@ describe("profile + bio gating (§6.2/6.3)", () => {
     expect(body.bio).toBe("Hello!");
   });
 
-  test("avatar must be an https URI: empty string → 400, omitted → 200, valid → 200", async () => {
+  test("avatar must be an https URI: empty string → 400, omitted → 200", async () => {
     const b = boot("profile-avatar");
     const alice = await registerUserWithKey(b, "alice");
 
@@ -356,14 +356,12 @@ describe("profile + bio gating (§6.2/6.3)", () => {
     });
     expect(omitted.status).toBe(200);
 
-    // A valid https avatar is accepted and surfaced.
-    const valid = await signedReq(b, alice, "PATCH", "/api/me/profile", {
+    // A well-formed https URL this provider does not host is refused too; the
+    // accepted (hosted) avatar and `null` are covered in media.test.ts (§6.3).
+    const foreign = await signedReq(b, alice, "PATCH", "/api/me/profile", {
       avatar: "https://cdn.example/a.png",
     });
-    expect(valid.status).toBe(200);
-    expect(((await valid.json()) as Record<string, unknown>).avatar).toBe(
-      "https://cdn.example/a.png",
-    );
+    expect(foreign.status).toBe(400);
   });
 
   test("bio hidden under nobody, base profile still returned", async () => {

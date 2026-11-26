@@ -31,7 +31,8 @@ const CreateTargetSchema = z.object({
  * §7.1 Sending messages: `data` is the `MessageCreate` body plus `groupId` and
  * `channelId`. The shared {@link createChannelMessage} runs the ordered checks,
  * idempotency, storage and fan-out (to every subscriber, the author's
- * connections included, correlated to this command). A rejection is an `error`
+ * connections included; only this connection's copy is correlated to the
+ * command). A rejection is an `error`
  * frame correlated to the command; a duplicate `clientMessageId` answers only
  * this connection with the existing message (no `cursor`, no re-fan-out).
  *
@@ -60,7 +61,7 @@ export function handleMessageCreate(
     channelId,
     author,
     body: target.data.data,
-    correlationId: frameId,
+    reply: { conn: state.hubConn, correlationId: frameId },
   });
   if (outcome.kind === "rejected") {
     hub.send(ws, errorEvent(outcome.error.code, outcome.error.message, frameId));
@@ -73,8 +74,8 @@ export function handleMessageCreate(
  * §7.1 Editing messages: replace a message's `content`. Only the **author** may
  * edit, and only while `permissions.editUntil` is in the future; otherwise
  * reject with 403. On success stamp `edited_at` and fan out `message.updated`
- * to every channel subscriber (the author's own copy correlates to the request
- * id). Missing message / wrong channel/group → 404; not author or window passed
+ * to every channel subscriber (only the editing connection's copy correlates
+ * to the request id). Missing message / wrong channel/group → 404; not author or window passed
  * → 403.
  */
 export function handleMessageUpdate(
@@ -91,7 +92,8 @@ export function handleMessageUpdate(
     return;
   }
   const actor = state.actor;
-  if (!actor) return; // unreachable: only authenticated connections reach here
+  const hubConn = state.hubConn;
+  if (!actor || !hubConn) return; // unreachable: only authenticated connections reach here
 
   const { groupId, channelId, messageId, content } = parsed.data.data;
   const outcome = authorizeMessageEdit(db, groupId, channelId, messageId, actor);
@@ -101,7 +103,10 @@ export function handleMessageUpdate(
   }
 
   const record = updateMessageContent(db, channelId, messageId, content);
-  hub.publishToChannel(channelId, updatedEvent(groupId, channelId, record, frameId));
+  hub.publishToChannel(channelId, updatedEvent(groupId, channelId, record), {
+    conn: hubConn,
+    correlationId: frameId,
+  });
 }
 
 /**
@@ -148,17 +153,12 @@ export function handleMessageDelete(
 }
 /**
  * Build a validated `message.updated` event for an edited `record` (§7.1). Mirrors
- * {@link createdEvent}: the editor's own copy correlates to the request id, the
- * event carries the message's resume `cursor` (so clients can advance their
+ * {@link createdEvent}: uncorrelated here — the caller's fan-out correlates only
+ * the editing connection's copy to the request id. The event carries the message's resume `cursor` (so clients can advance their
  * resume position off edits), and the payload is re-validated against the shared
  * `WsMessageUpdated` schema.
  */
-function updatedEvent(
-  groupId: string,
-  channelId: string,
-  record: MessageRecord,
-  correlationId: string,
-): OutboundEvent {
+function updatedEvent(groupId: string, channelId: string, record: MessageRecord): OutboundEvent {
   const message = record.message satisfies Message;
   const data = WsMessageUpdatedSchema.shape.data.parse({
     groupId,
@@ -166,5 +166,5 @@ function updatedEvent(
     cursor: record.cursor,
     message,
   });
-  return { type: "message.updated", correlationId, data };
+  return { type: "message.updated", data };
 }

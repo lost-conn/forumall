@@ -90,7 +90,8 @@ export function buildUserProfile(db: Db, domain: string, handle: string): UserPr
 /** Fields settable via `PATCH /api/me/profile` (§6.3). All optional. */
 export interface ProfileUpdate {
   readonly displayName?: string | undefined;
-  readonly avatar?: string | undefined;
+  /** A new avatar URL, or `null` to remove the avatar (§6.3). */
+  readonly avatar?: string | null | undefined;
   readonly bio?: string | undefined;
   readonly metadata?: MetadataList | undefined;
 }

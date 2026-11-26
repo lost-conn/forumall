@@ -33,7 +33,7 @@ import type { FederationFetch } from "../provider/federation/http.ts";
 import { fireMessageNotifications } from "../provider/message-notifications.ts";
 import { type MessageRecord, createMessage, getMessageByClientId } from "../provider/messages.ts";
 import { deliverNotification, groupMemberActors } from "../provider/notifications.ts";
-import type { Hub, OutboundEvent } from "../provider/ws-hub.ts";
+import type { CorrelatedReply, Hub, OutboundEvent } from "../provider/ws-hub.ts";
 import {
   type MutationError,
   authorizePostAccess,
@@ -57,10 +57,12 @@ export interface MessageCreateInput {
   /** The `MessageCreate` body as received (WS `data` may also carry the ids). */
   readonly body: unknown;
   /**
-   * The WS command id, echoed as `correlationId` on the fan-out; absent for a
-   * REST create, whose `message.created` has no `correlationId` (§7.1).
+   * The WS command that asked for the create: the requesting connection gets
+   * its `message.created` with the command id in `correlationId`, every other
+   * subscriber an uncorrelated copy. Absent for a REST create, whose
+   * `message.created` has no `correlationId` at all (§7.1).
    */
-  readonly correlationId?: string;
+  readonly reply?: CorrelatedReply;
 }
 
 /**
@@ -145,8 +147,9 @@ export function createChannelMessage(
     throw err;
   }
 
-  // Fan out to every subscriber, the author's connections included (§7.1).
-  hub.publishToChannel(channelId, createdEvent(groupId, channelId, record, input.correlationId));
+  // Fan out to every subscriber, the author's connections included; only the
+  // requesting connection's copy is correlated to its command (§7.1).
+  hub.publishToChannel(channelId, createdEvent(groupId, channelId, record), input.reply);
   fireMessageCreatedNotifications(deps, groupId, channelId, record, author);
   fireMessageNotifications(db, config, hub, {
     text: body.content.text,
@@ -162,8 +165,10 @@ export function createChannelMessage(
 /**
  * Build a validated `message.created` timeline event for `record`: the full
  * canonical message (§5.3) plus its opaque `cursor` on `data` (§7.1 resume /
- * §7.2 history share one cursor space). `correlationId` is the WS command id on
- * a live create; resume replays and REST creates pass `undefined`.
+ * §7.2 history share one cursor space). `correlationId` is for a frame sent to
+ * one connection only (a resume replay carries its `subscribe` command id); the
+ * live fan-out passes none and lets {@link Hub.publishToChannel} correlate the
+ * requesting connection's copy.
  */
 export function createdEvent(
   groupId: string,

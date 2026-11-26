@@ -31,15 +31,18 @@ import {
  * never collides across channels.
  *
  * `edit_until` is the absolute time (epoch millis) after which the message may
- * no longer be edited (§5.3 `permissions.editUntil`); the WS edit card enforces
+ * no longer be edited (§5.3 `permissions.editUntil`); `message.update` enforces
  * it. `deleted_at` (nullable) is the tombstone marker (§7.1): a tombstoned
  * message is retained and still returned by history so reply references and
- * resume cursors stay valid — delete itself is a later card.
+ * resume cursors stay valid.
  *
- * `client_message_id` is reserved for the WS create card's idempotency
- * (`(author, channel_id, client_message_id)` uniqueness); it is nullable and
- * unused by the REST read path. Deleting the owning group/channel cascades to
- * its messages.
+ * `client_message_id` (nullable) is the §7.1 idempotency key of a create, over
+ * WS and REST alike: `(author, channel_id, client_message_id)` is unique, and a
+ * create that matches it answers with the stored row. It is stored with the
+ * message so every copy the author receives echoes it — the create response,
+ * live `message.created` and `subscribe.since` replays — and history includes
+ * it too (§7.1 lets a provider show it in other copies). Deleting the owning
+ * group/channel cascades to its messages.
  */
 export const messages = sqliteTable(
   "messages",
@@ -156,9 +159,11 @@ export type NewReactionRow = typeof reactions.$inferInsert;
  * in the {@link StorageBackend} (filesystem by default) keyed by `id`, this table
  * holds the metadata that builds the hosted `Attachment` (§5.3, §5.8). `hash` is
  * the content-integrity digest in `<algo>:<base64>` form (`sha-256:…`) so
- * recipients can verify integrity. `width`/`height` are best-effort image
- * dimensions (nullable; absent for non-images). `owner` is the authenticated
- * actor (`handle@domain`) that uploaded the file.
+ * recipients can verify integrity. `width`/`height` (pixels) and `durationMs`
+ * are set once at upload (§5.8): from the file's own header when the provider
+ * can read it, otherwise from the uploader's validated form parts; each is
+ * nullable (absent when neither side supplied it). `owner` is the
+ * authenticated actor (`handle@domain`) that uploaded the file.
  */
 export const media = sqliteTable(
   "media",
@@ -173,10 +178,12 @@ export const media = sqliteTable(
     filename: text("filename"),
     /** Content-integrity digest in `<algo>:<base64>` form (`sha-256:…`). */
     hash: text("hash").notNull(),
-    /** Best-effort image width in pixels; null for non-images. */
+    /** Width in pixels (from the file, else the uploader); null when unknown. */
     width: integer("width", { mode: "number" }),
-    /** Best-effort image height in pixels; null for non-images. */
+    /** Height in pixels (from the file, else the uploader); null when unknown. */
     height: integer("height", { mode: "number" }),
+    /** Audio/video duration in ms (from the uploader); null when unknown. Added in 0038. */
+    durationMs: integer("duration_ms", { mode: "number" }),
     /** Uploading actor (`handle@domain`). */
     owner: text("owner").notNull(),
     /** Creation time (epoch millis); rendered as RFC 3339 when needed. */

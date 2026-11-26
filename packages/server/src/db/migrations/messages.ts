@@ -168,3 +168,20 @@ export const m0037MessagesMetadata: Migration = {
     }
   },
 };
+
+export const m0038MediaDurationMs: Migration = {
+  // Attachment duration (§5.8): `durationMs` for audio/video, taken from the
+  // uploader's `durationMs` form part when the provider cannot read it from the
+  // file. Nullable (absent for most uploads); existing rows had none. Guarded
+  // so a re-run is a no-op.
+  id: "0038_media_duration_ms",
+  up: (sqlite) => {
+    const cols = sqlite
+      .query<{ name: string }, []>("PRAGMA table_info(media)")
+      .all()
+      .map((c) => c.name);
+    if (!cols.includes("duration_ms")) {
+      sqlite.exec("ALTER TABLE media ADD COLUMN duration_ms INTEGER;");
+    }
+  },
+};

@@ -91,6 +91,7 @@ const PROVIDER_MUST: readonly ChecklistItem[] = [
     item: 'Support message creation of every type (message, memo, article) with attachments, reference, tags and metadata, over both message.create and POST …/messages, gated by post:<type> and by replyOnly / replyOnlyTo (which only a valid reply, reference.type "reply" naming an existing message in the channel, satisfies), answering 404 for a channel the actor cannot read (§5.2.1, §7.1)',
     covers: [
       "packages/server/test/message-create.test.ts",
+      "packages/server/test/ws-correlation.test.ts",
       "packages/server/test/channel-permissions.test.ts",
       "packages/server/test/conformance.test.ts",
       "packages/shared/test/message-create-schema.test.ts",
@@ -118,7 +119,10 @@ const PROVIDER_MUST: readonly ChecklistItem[] = [
   },
   {
     item: "Support message edit (author-only, editUntil) and tombstone delete (§7.1)",
-    covers: ["packages/server/test/message-edit-delete.test.ts"],
+    covers: [
+      "packages/server/test/message-edit-delete.test.ts",
+      "packages/server/test/ws-correlation.test.ts",
+    ],
     status: "covered",
   },
   {
@@ -238,9 +242,10 @@ const CLIENT_MUST: readonly ChecklistItem[] = [
     covers: [
       "packages/server/test/message-create.test.ts",
       "packages/shared/test/message-create-schema.test.ts",
+      "packages/web/test/chat-store.test.ts",
     ],
     status: "partial",
-    note: "The provider's cursor-less, correlated duplicate answer is tested; the web chat controller reconciles it by correlationId, which is web-UI behaviour not exercised here.",
+    note: "The provider's cursor-less, correlated duplicate answer is tested, and so is the web chat store's match of a pending send by clientMessageId and author; the chat controller's end-to-end handling of the duplicate frame is web-UI behaviour not exercised here.",
   },
   {
     item: "Support all message types or graceful fallback",

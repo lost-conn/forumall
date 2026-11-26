@@ -4,7 +4,9 @@
  * checks and one idempotency rule. Covers the REST create (201 / 200), the
  * `clientMessageId` echo (response, author's `message.created`, resume replay),
  * the duplicate answer (no fan-out; on WS no cursor), the 400 / 403 / 404
- * rejections, full-`Message` `dm.message` events, and migration 0037.
+ * rejections and their order (step-1 400 before the 404; visibility and
+ * post:<type> before the duplicate lookup), full-`Message` `dm.message`
+ * events, and migration 0037.
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -18,9 +20,11 @@ import {
   deriveDmId,
   rfc3339Timestamp,
 } from "@forumall/shared";
+import { and, eq } from "drizzle-orm";
 
 import { openDb } from "../src/db/index.ts";
 import { migrate, migrations, runMigrations } from "../src/db/migrate.ts";
+import { groupMembers } from "../src/db/schema.ts";
 import {
   type Booted,
   type Signer,
@@ -260,6 +264,71 @@ describe("REST POST …/messages (§7.1)", () => {
       reference: { type: "reply", id: memo.id },
     });
     expect(reply.reference?.id).toBe(memo.id);
+  });
+});
+
+describe("order of checks (§7.1)", () => {
+  // A retry of a successful create still passes steps 2–3 as sent: the
+  // duplicate lookup (step 4) never answers before visibility and post:<type>.
+  test("a retry after the actor loses the channel is 404, not the stored message", async () => {
+    const b = boot("order-404");
+    const owner = await registerUserWithKey(b, "owner");
+    const member = await registerUserWithKey(b, "member");
+    const ids = await makeGroupChannel(b, owner, "group");
+    addMember(b, ids.groupId, member, "member");
+    const body = { clientMessageId: "k_vis", content: text("hi") };
+    await created(b, member, ids, body);
+
+    b.db.drizzle
+      .delete(groupMembers)
+      .where(and(eq(groupMembers.groupId, ids.groupId), eq(groupMembers.user, member.actor)))
+      .run();
+    expect(await problem(await post(b, member, ids, body))).toEqual({
+      status: 404,
+      errorCode: "not_found",
+    });
+  });
+
+  test("a retry after post:<type> is revoked is 403, not the stored message", async () => {
+    const b = boot("order-403");
+    const owner = await registerUserWithKey(b, "owner");
+    const member = await registerUserWithKey(b, "member");
+    const ids = await makeGroupChannel(b, owner, "group", { "post:memo": ["member"] });
+    addMember(b, ids.groupId, member, "member");
+    const body = { clientMessageId: "k_perm", type: "memo", content: text("memo") };
+    await created(b, member, ids, body);
+
+    const patch = await signedReq(
+      b,
+      owner,
+      "PATCH",
+      `/api/groups/${ids.groupId}/channels/${ids.channelId}`,
+      { permissions: { "post:memo": ["admin"] } },
+    );
+    expect(patch.status).toBe(200);
+    expect(await problem(await post(b, member, ids, body))).toEqual({
+      status: 403,
+      errorCode: "forbidden",
+    });
+  });
+
+  test("step 1's 400 comes before visibility's 404", async () => {
+    const b = boot("order-400");
+    const owner = await registerUserWithKey(b, "owner");
+    const stranger = await registerUserWithKey(b, "stranger");
+    const ids = await makeGroupChannel(b, owner, "group");
+    // Control: a well-formed create by the stranger is the visibility 404.
+    expect((await post(b, stranger, ids, { content: text("x") })).status).toBe(404);
+    for (const body of [
+      { content: text("x"), type: "poll" },
+      { content: text("x"), clientMessageId: "" },
+    ]) {
+      expect({ body, ...(await problem(await post(b, stranger, ids, body))) }).toEqual({
+        body,
+        status: 400,
+        errorCode: "bad_request",
+      });
+    }
   });
 });
 

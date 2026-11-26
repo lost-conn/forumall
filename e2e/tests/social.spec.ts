@@ -212,7 +212,7 @@ test("`nobody` hides presence: visible viewer flips to offline", async ({
   await b.page.context().close();
 });
 
-test("profile save: blank avatar saves; non-https avatar shows a clear error", async ({
+test("profile save: blank avatar saves; refused avatars show a clear error; uploads save", async ({
   page,
   appServer,
 }) => {
@@ -233,8 +233,22 @@ test("profile save: blank avatar saves; non-https avatar shows a clear error", a
   await page.getByTestId("profile-save").click();
   await expect(page.getByTestId("profile-error")).toBeVisible({ timeout: 10_000 });
 
-  // A valid https avatar saves.
+  // An https URL the provider does not host is refused (§6.3) and shown.
   await page.getByTestId("profile-avatar").fill("https://cdn.example/a.png");
+  await page.getByTestId("profile-save").click();
+  await expect(page.getByTestId("profile-error")).toBeVisible({ timeout: 10_000 });
+
+  // An uploaded image (hosted by the provider via POST /api/media) saves.
+  const png = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+    "base64",
+  );
+  await page
+    .getByTestId("profile-avatar-file")
+    .setInputFiles({ name: "me.png", mimeType: "image/png", buffer: png });
+  await expect(page.getByTestId("profile-avatar")).toHaveValue(/\/api\/media\/att_/, {
+    timeout: 10_000,
+  });
   await page.getByTestId("profile-save").click();
   await expect(page.getByTestId("profile-saved")).toBeVisible({ timeout: 10_000 });
 });

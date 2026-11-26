@@ -80,8 +80,8 @@ for these protocol tests, or the feature is optional.
 | 6 | Serve user public keys at `/.well-known/ofscp/users/{handle}/keys` | `conformance.test.ts`, `device-keys.test.ts` | covered |
 | 7 | Group + channel CRUD with permission model (§5.5) | `groups.test.ts`, `channels.test.ts`, `conformance.test.ts` | covered |
 | 8 | Group membership: join/leave, listing, roles, request approval (§5.7) | `membership.test.ts`, `conformance.test.ts` | covered |
-| 9 | Message edit (author-only, `editUntil`) + tombstone delete (§7.1) | `message-edit-delete.test.ts` | covered |
-| 22 | Message creation of every type with attachments / reference / tags / metadata over `message.create` and `POST …/messages`; `post:<type>`, `replyOnly` / `replyOnlyTo` (valid reply only); 404 for an unreadable channel (§5.2.1, §7.1) | `message-create.test.ts`, `channel-permissions.test.ts`, `conformance.test.ts`, `shared/message-create-schema.test.ts` | covered |
+| 9 | Message edit (author-only, `editUntil`) + tombstone delete (§7.1) | `message-edit-delete.test.ts`, `ws-correlation.test.ts` (only the editing connection's `message.updated` is correlated) | covered |
+| 22 | Message creation of every type with attachments / reference / tags / metadata over `message.create` and `POST …/messages`; `post:<type>`, `replyOnly` / `replyOnlyTo` (valid reply only); 404 for an unreadable channel (§5.2.1, §7.1) | `message-create.test.ts` (incl. the order of checks: step-1 400 before 404, steps 2–3 before the duplicate lookup), `ws-correlation.test.ts` (only the requesting connection's `message.created` is correlated), `channel-permissions.test.ts`, `conformance.test.ts`, `shared/message-create-schema.test.ts` | covered |
 | 23 | `(author, channelId, clientMessageId)` idempotency after only auth / visibility / permission checks; WS duplicate answer without `cursor`; `clientMessageId` echoed live, replayed and on every create response (§7.1, §7.4) | `message-create.test.ts`, `dms.test.ts`, `conformance.test.ts` | covered |
 | 24 | Full canonical `Message` in `message.created`, `message.updated`, `dm.message` (§7.1, §7.4) | `message-create.test.ts`, `conformance.test.ts`, `shared/message-create-schema.test.ts`, `shared/schemas.test.ts` | covered |
 | 10 | Direct messages: dmId, inbox-only storage, delivery verification, listing/reading, `dm.message` realtime (§7.4) | `shared/conformance.test.ts`, `shared/dm.test.ts`, `dms.test.ts`, `conformance.test.ts` | covered |
@@ -113,12 +113,14 @@ pure web-UI behavior outside the scope of these tests.
 | 4 | For remote channels, open WS to the channel's home provider + handshake there (§8.5) | `federation-realtime.test.ts` | **partial** — provider side (accept remote direct-WS + handshake) tested; the web client's home-provider WS routing is not exercised here. |
 | 5 | Compose the home feed client-side from each followed channel's source (§7.6) | `follows.test.ts` | **partial** — provider guarantee (follows are pointers, no server feed) tested; client feed composition is a web-UI concern. |
 | 6 | Support all message types or graceful fallback | `shared/schemas.test.ts` | covered — forward-compat parsing (§2.3): unknown message/WS types survive without throwing. |
-| 7 | Treat the cursor-less `message.created` answering a duplicate create as the pending send's result, never a resume point (§7.1) | `message-create.test.ts`, `shared/message-create-schema.test.ts` | **partial** — the provider's correlated, cursor-less duplicate answer is tested; the web chat controller's reconciliation by `correlationId` is web-UI behaviour. |
+| 7 | Treat the cursor-less `message.created` answering a duplicate create as the pending send's result, never a resume point (§7.1) | `message-create.test.ts`, `shared/message-create-schema.test.ts`, `web/chat-store.test.ts` | **partial** — the provider's correlated, cursor-less duplicate answer is tested, and so is the web chat store's match of a pending send by `clientMessageId` and author; the chat controller's end-to-end handling of the duplicate frame is web-UI behaviour. |
 
 ### SHOULD / MAY (tracked, not asserted)
 
 - **Provider MAY** — Known-providers list at `GET /api/providers` + `sharesKnownProviders` (§8.6): **implemented & schema-validated** (`conformance.test.ts`, `discovery-feed.test.ts`).
 - **Provider MAY** — Discovery feed at `GET /api/discover` + `discoverFeed` (§11.2): **implemented & schema-validated** (`conformance.test.ts`, `discovery-feed.test.ts`).
+- **Provider SHOULD** — Attachment `width` / `height` from the stored bytes (§5.8): **implemented** for PNG, GIF, JPEG and WebP headers; values the provider cannot read (and `durationMs`, which it never reads) are taken from the uploader's `width` / `height` / `durationMs` form parts (MAY), a malformed part is `400` (`media.test.ts`).
+- **Provider SHOULD** — Refuse an avatar it does not host, or a hosted non-image (§6.3): **implemented**, `400`; `"avatar": null` removes the avatar (`media.test.ts`, `privacy.test.ts`).
 - **Client SHOULD** — Render metadata extensions when schemas known: web-UI concern, not covered by protocol tests.
 - **Client SHOULD** — UX for tiers (access + discoverability): web-UI concern.
 - **Client SHOULD** — Handle federation latency + retries: partially exercised by federation tests on the provider side.

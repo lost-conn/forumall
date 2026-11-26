@@ -41,6 +41,7 @@ import { terminateHandleSessions } from "../provider/access-revocation.ts";
 import { isProviderAdmin } from "../provider/admin.ts";
 import { claimGuestAccount } from "../provider/claim.ts";
 import { buildUserProfile, getUserRow, updateUserProfile } from "../provider/guests.ts";
+import { hostedMediaRowForUrl } from "../provider/media.ts";
 import { groupIdsOf } from "../provider/membership.ts";
 import { mergeGuestIntoAccount } from "../provider/merge.ts";
 import {
@@ -261,6 +262,21 @@ export function createMeUserRouter() {
         detail: "invalid profile update request",
         extensions: { errors: parsed.error.flatten() },
       });
+    }
+
+    // §6.3: `null` removes the avatar; a URL must be an image this provider
+    // hosts (one its own `POST /api/media` returned) — anything else is a 400.
+    const { avatar } = parsed.data;
+    if (typeof avatar === "string") {
+      const hosted = hostedMediaRowForUrl(db, config, avatar);
+      if (!hosted) {
+        throw AppError.badRequest({
+          detail: "avatar must be a URL this provider hosts (upload it with POST /api/media)",
+        });
+      }
+      if (!hosted.mime.startsWith("image/")) {
+        throw AppError.badRequest({ detail: "avatar must be an image (image/*)" });
+      }
     }
 
     updateUserProfile(db, handle, parsed.data);

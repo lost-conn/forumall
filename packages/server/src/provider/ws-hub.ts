@@ -125,6 +125,15 @@ export interface HubConnection {
   readonly terminate?: (code: number, reason: string) => void;
 }
 
+/**
+ * The command a fanned-out event answers (see {@link Hub.publishToChannel}):
+ * the requesting connection and the command's frame `id`.
+ */
+export interface CorrelatedReply {
+  readonly conn: HubConnection;
+  readonly correlationId: string;
+}
+
 /** Selects the connections {@link Hub.terminateSessions} closes. */
 export interface SessionMatch {
   /** Local handle the connection authenticated as. */
@@ -212,14 +221,30 @@ export class Hub {
   /**
    * Fan out `event` to every connection subscribed to `channelId`. No-op if the
    * channel has no subscribers. Used by message/reaction/typing/call cards.
+   *
+   * `reply` names the connection whose command caused the event: only that
+   * connection's copy carries `reply.correlationId` (§7.1 — "the requesting
+   * connection's copy carries the command's `id`"); every other subscriber,
+   * the same actor's other connections included, gets the event uncorrelated.
+   * Both copies share one frame `id` and `ts`. `event.correlationId` itself is
+   * ignored when `reply` is given.
    */
-  publishToChannel(channelId: string, event: OutboundEvent): void {
+  publishToChannel(channelId: string, event: OutboundEvent, reply?: CorrelatedReply): void {
     const subs = this.byChannel.get(channelId);
     if (!subs) return;
-    const frame = this.frame(event);
+    const { correlationId: _ignored, ...base } = event;
+    const stamped: OutboundEvent = reply
+      ? { ...base, id: event.id ?? mintEventId(), ts: event.ts ?? rfc3339Timestamp() }
+      : event;
+    const frame = this.frame(stamped);
+    const replyFrame = reply
+      ? this.frame({ ...stamped, correlationId: reply.correlationId })
+      : null;
+    const frameFor = (conn: HubConnection): string =>
+      replyFrame !== null && conn === reply?.conn ? replyFrame : frame;
     const mayRead = this.gate?.(channelId) ?? null;
     if (!mayRead) {
-      for (const conn of subs) this.write(conn.socket, frame);
+      for (const conn of subs) this.write(conn.socket, frameFor(conn));
       return;
     }
     // Defence in depth: re-check readability per subscriber (memoised per actor
@@ -233,7 +258,7 @@ export class Hub {
         ok = mayRead(conn.actor);
         verdicts.set(conn.actor, ok);
       }
-      if (ok) this.write(conn.socket, frame);
+      if (ok) this.write(conn.socket, frameFor(conn));
       else denied.push(conn);
     }
     for (const conn of denied) this.revoke(conn, [channelId]);
