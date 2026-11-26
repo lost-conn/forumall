@@ -4,7 +4,7 @@
  * (§7.1 rules).
  */
 import {
-  type Content,
+  type Attachment,
   type DmConversation,
   DmConversationSchema,
   type Message,
@@ -13,15 +13,14 @@ import {
   WsDmReactionSchema,
   rfc3339Timestamp,
 } from "@forumall/shared";
+import type { Config } from "../config.ts";
 import type { Db } from "../db/index.ts";
-import {
-  getDmConversationItem,
-  tombstoneDmMessage,
-  updateDmMessageContent,
-} from "../provider/dms.ts";
+import { tombstoneDmMessage, updateDmMessageFields } from "../provider/dm-edits.ts";
+import { getDmConversationItem } from "../provider/dms.ts";
 import type { Hub } from "../provider/ws-hub.ts";
 import { domainOf } from "./dm-request.ts";
 import { AppError } from "./errors.ts";
+import { resolveMessageEdit } from "./message-edit.ts";
 
 /**
  * Build the `data` payload of a `dm.message` event for a stored record (§7.4),
@@ -87,14 +86,17 @@ export function fanOutDmReaction(
 }
 
 /**
- * Apply an edit to a stored inbox DM after the author + edit-window checks pass,
- * then fan `dm.message` to the inbox owner. Shared by the local PATCH path and
- * the federation ingest so both enforce identical §7.1 rules. `row` is the
- * pre-fetched stored row (already asserted to exist). Throws 403 if the acting
- * actor is not the author or the edit window has passed.
+ * Apply an edit to a stored inbox DM, then fan `dm.message` to the inbox owner.
+ * Shared by the local PATCH path and the federation ingest so both enforce
+ * identical §7.1 rules, in order: `row` is the pre-fetched stored row (already
+ * asserted to exist, else the caller's 404); a 403 if the acting actor is not
+ * the author or the edit window has passed; only then the `MessageUpdate`
+ * `body` ({@link resolveMessageEdit}: 400 when it breaks a rule). A DM is never
+ * an `article`, so article fields alone are a 400 and otherwise ignored.
  */
 export function applyDmEdit(
   db: Db,
+  config: Config,
   hub: DmHub,
   args: {
     owner: string;
@@ -102,8 +104,9 @@ export function applyDmEdit(
     dmId: string;
     messageId: string;
     actor: string;
-    content: Content;
-    row: { author: string; editUntil: number };
+    /** The `MessageUpdate` body as received; checked after authorization. */
+    body: unknown;
+    row: { author: string; editUntil: number; attachments: string };
   },
 ): Message {
   if (args.row.author !== args.actor) {
@@ -112,7 +115,14 @@ export function applyDmEdit(
   if (Date.now() > args.row.editUntil) {
     throw AppError.forbidden({ detail: "the edit window for this message has passed" });
   }
-  const record = updateDmMessageContent(db, args.owner, args.dmId, args.messageId, args.content);
+  const target = {
+    type: "message" as const,
+    attachments: JSON.parse(args.row.attachments) as Attachment[],
+    cover: null,
+  };
+  const edit = resolveMessageEdit(db, config, args.actor, target, args.body);
+  if (edit.error) throw AppError.badRequest({ detail: edit.error.message });
+  const record = updateDmMessageFields(db, args.owner, args.dmId, args.messageId, edit.patch);
   hub.publishToActor(args.ownerActor, {
     type: "dm.message",
     data: dmMessageEventData(args.dmId, record.cursor, record.message),

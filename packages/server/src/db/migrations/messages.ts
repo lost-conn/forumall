@@ -185,3 +185,21 @@ export const m0038MediaDurationMs: Migration = {
     }
   },
 };
+
+export const m0039MessagesMentionsArticle: Migration = {
+  // Mentions and article fields (§5.3, §7.1): `mentions` is the JSON actor list
+  // a create or edit carried (null = never set, so mentions are parsed from the
+  // text); `title`, `summary` and `cover` are an article's fields (null =
+  // absent; an edit's `null` removes one). All nullable: existing rows had
+  // none. Guarded per column so a re-run is a no-op.
+  id: "0039_messages_mentions_article",
+  up: (sqlite) => {
+    const cols = sqlite
+      .query<{ name: string }, []>("PRAGMA table_info(messages)")
+      .all()
+      .map((c) => c.name);
+    for (const col of ["mentions", "title", "summary", "cover"]) {
+      if (!cols.includes(col)) sqlite.exec(`ALTER TABLE messages ADD COLUMN ${col} TEXT;`);
+    }
+  },
+};

@@ -6,7 +6,6 @@
 import {
   DmMessageCreateRequestSchema,
   MessageSchema,
-  MessageUpdateRequestSchema,
   ReactionSchema,
   canonicalAuthority,
   deriveDmId,
@@ -39,7 +38,7 @@ import {
   resolveLocalDmOwner,
 } from "./dm-request.ts";
 import { AppError, parseRequestBody } from "./errors.ts";
-import { editedContent } from "./message-mutations.ts";
+import { checkCreateFields } from "./message-fields.ts";
 import { requireActorOrProviderSignature, requireSignature } from "./signature.ts";
 import type { AppBindings } from "./types.ts";
 
@@ -103,14 +102,21 @@ export function createFederationDmsRouter() {
       return c.json(MessageSchema.parse(existing.message), 200);
     }
 
+    // --- The §5.8 attachment checks and canonical mentions (new only) -------
+    // A DM is a `message`, never an `article` (§7.4), so no article fields.
+    const checked = checkCreateFields(db, config, author, "message", body);
+    if (checked.error) throw AppError.badRequest({ detail: checked.error.message });
+    const { fields } = checked;
+
     // --- Store in the recipient's inbox (only here — no sender copy) -------
     const record = storeDmMessage(db, config, {
       owner,
       dmId,
       author,
       content: body.content,
-      ...(body.attachments !== undefined ? { attachments: body.attachments } : {}),
+      attachments: fields.attachments,
       ...(body.reference !== undefined ? { reference: body.reference } : {}),
+      ...(fields.mentions !== undefined ? { mentions: fields.mentions } : {}),
       clientMessageId: body.clientMessageId,
     });
 
@@ -194,23 +200,25 @@ export function createFederationDmsRouter() {
     const dmId = requireParam(c, "dmId");
     const messageId = requireParam(c, "messageId");
 
-    const raw = (await c.req.json().catch(() => ({}))) as { actor?: unknown };
-    const actingActor = federationActingActor(c, raw.actor);
-    const edit = editedContent(parseRequestBody(MessageUpdateRequestSchema, raw));
-    if (edit.error) throw AppError.badRequest({ detail: edit.error.message });
-    const content = edit.content;
+    // The body is the `MessageUpdate` (plus `actor` when provider-signed). It
+    // is checked only after the message is found (404) and the actor is its
+    // author within the edit window (403), in `applyDmEdit`.
+    const body: unknown = await c.req.json().catch(() => undefined);
+    const bodyActor =
+      typeof body === "object" && body !== null ? (body as { actor?: unknown }).actor : undefined;
+    const actingActor = federationActingActor(c, bodyActor);
 
     const { owner, ownerActor } = resolveFederationDmOwner(db, config, actingActor, dmId);
     const row = getDmMessageRow(db, owner, dmId, messageId);
     if (!row) throw AppError.notFound({ detail: "no such message" });
 
-    const message = applyDmEdit(db, hub, {
+    const message = applyDmEdit(db, config, hub, {
       owner,
       ownerActor,
       dmId,
       messageId,
       actor: actingActor,
-      content,
+      body,
       row,
     });
     return c.json(MessageSchema.parse(message));

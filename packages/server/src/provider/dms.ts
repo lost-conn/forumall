@@ -83,6 +83,8 @@ export function rowToDmMessage(row: DmMessageRow): Message {
   const content = JSON.parse(row.content) as Content;
   const attachments = JSON.parse(row.attachments) as Attachment[];
   const reference = row.reference ? (JSON.parse(row.reference) as MessageReference) : undefined;
+  const tags = JSON.parse(row.tags) as string[];
+  const mentions = row.mentions != null ? (JSON.parse(row.mentions) as string[]) : undefined;
   return MessageSchema.parse({
     id: row.id,
     // Echo of the delivery's idempotency key (§7.1, §7.4): MUST be on the send
@@ -94,6 +96,8 @@ export function rowToDmMessage(row: DmMessageRow): Message {
     content,
     attachments,
     ...(reference ? { reference } : {}),
+    ...(tags.length > 0 ? { tags } : {}),
+    ...(mentions !== undefined ? { mentions } : {}),
     createdAt: rfc3339Timestamp(new Date(row.createdAt)),
     ...(row.editedAt != null ? { editedAt: rfc3339Timestamp(new Date(row.editedAt)) } : {}),
     ...(row.deletedAt != null ? { deletedAt: rfc3339Timestamp(new Date(row.deletedAt)) } : {}),
@@ -109,7 +113,8 @@ export interface DmMessageRecord {
   readonly cursor: string;
 }
 
-function toRecord(row: DmMessageRow): DmMessageRecord {
+/** The stored record for `row`: its canonical message, `seq` and cursor. */
+export function toDmRecord(row: DmMessageRow): DmMessageRecord {
   return { message: rowToDmMessage(row), seq: row.seq, cursor: encodeMessageCursor(row.seq) };
 }
 
@@ -158,7 +163,7 @@ export function getDmMessageByClientId(
       )
       .limit(1)
       .all()[0] ?? null;
-  return row ? toRecord(row) : null;
+  return row ? toDmRecord(row) : null;
 }
 
 /** Arguments to {@link storeDmMessage}. */
@@ -172,6 +177,8 @@ export interface StoreDmMessageInput {
   readonly content: Content;
   readonly attachments?: Attachment[];
   readonly reference?: MessageReference;
+  /** Mentioned actors (§5.3); omitted = none set (mentions parsed from the text). */
+  readonly mentions?: string[];
   /** Idempotency key `(owner, dmId, author, clientMessageId)` (§7.1). */
   readonly clientMessageId?: string;
 }
@@ -219,6 +226,8 @@ export function storeDmMessage(
       deletedAt: null,
       editUntil,
       clientMessageId: input.clientMessageId ?? null,
+      tags: "[]",
+      mentions: input.mentions !== undefined ? JSON.stringify(input.mentions) : null,
     };
     db.drizzle.insert(dmMessages).values(row).run();
     // Upsert the conversation summary for this inbox.
@@ -238,7 +247,7 @@ export function storeDmMessage(
       .run();
   })();
 
-  return toRecord(row);
+  return toDmRecord(row);
 }
 
 // ---------------------------------------------------------------------------
@@ -565,58 +574,4 @@ function lastInboxRow(db: Db, owner: string, dmId: string): DmMessageRow | undef
     .orderBy(sql`${dmMessages.seq} DESC`)
     .limit(1)
     .all()[0];
-}
-
-// ---------------------------------------------------------------------------
-// Edit / delete (§7.1 rules applied to the recipient's stored copy)
-// ---------------------------------------------------------------------------
-
-/** The cleared content a tombstone carries (mirrors `provider/messages.ts`). */
-const TOMBSTONE_CONTENT: Content = { text: "", mime: "text/plain" };
-
-/**
- * Replace an inbox DM's `content` and stamp `edited_at = now` (§7.1 edit). The
- * caller is responsible for authorization (author-only) + the edit-window check
- * BEFORE calling. Returns the updated record. Throws if the row is absent.
- */
-export function updateDmMessageContent(
-  db: Db,
-  owner: string,
-  dmId: string,
-  messageId: string,
-  content: Content,
-): DmMessageRecord {
-  db.drizzle
-    .update(dmMessages)
-    .set({ content: JSON.stringify(content), editedAt: Date.now() })
-    .where(
-      and(eq(dmMessages.owner, owner), eq(dmMessages.dmId, dmId), eq(dmMessages.id, messageId)),
-    )
-    .run();
-  const row = getDmMessageRow(db, owner, dmId, messageId);
-  if (!row) throw new Error(`updateDmMessageContent: no such message ${messageId}`);
-  return toRecord(row);
-}
-
-/**
- * Soft-delete (tombstone) an inbox DM (§7.1): keep its `id`/`seq`, clear
- * `content`, stamp `deleted_at = now`. The caller is responsible for
- * authorization BEFORE calling. Returns the tombstoned record. Throws if absent.
- */
-export function tombstoneDmMessage(
-  db: Db,
-  owner: string,
-  dmId: string,
-  messageId: string,
-): DmMessageRecord {
-  db.drizzle
-    .update(dmMessages)
-    .set({ content: JSON.stringify(TOMBSTONE_CONTENT), deletedAt: Date.now() })
-    .where(
-      and(eq(dmMessages.owner, owner), eq(dmMessages.dmId, dmId), eq(dmMessages.id, messageId)),
-    )
-    .run();
-  const row = getDmMessageRow(db, owner, dmId, messageId);
-  if (!row) throw new Error(`tombstoneDmMessage: no such message ${messageId}`);
-  return toRecord(row);
 }

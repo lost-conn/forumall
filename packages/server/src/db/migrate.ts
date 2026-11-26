@@ -26,6 +26,7 @@ import {
   m0034DmConversationsLastSent,
   m0035DmConversationsLastSentAt,
   m0036DmConversationsCanonicalCounterparty,
+  m0040DmMessagesTagsMentions,
 } from "./migrations/dms.ts";
 import {
   m0005GroupsAndMembers,
@@ -55,6 +56,7 @@ import {
   m0028ReadMarkers,
   m0037MessagesMetadata,
   m0038MediaDurationMs,
+  m0039MessagesMentionsArticle,
 } from "./migrations/messages.ts";
 import {
   m0020NotificationEndpoints,
@@ -127,6 +129,8 @@ export const migrations: readonly Migration[] = [
   m0036DmConversationsCanonicalCounterparty,
   m0037MessagesMetadata,
   m0038MediaDurationMs,
+  m0039MessagesMentionsArticle,
+  m0040DmMessagesTagsMentions,
 ];
 
 const LEDGER_DDL = `

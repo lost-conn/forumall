@@ -69,9 +69,11 @@ export async function forwardDmReaction(
  * Forward an edit of a sent DM to the counterparty's home provider (§8.1),
  * mirroring {@link forwardDmReaction}: the message lives only in the remote
  * recipient's inbox (storage-follows-message, §8.3), so the authoritative store
- * is the peer. The acting actor + the new content travel in the body (a
- * provider-signed request has no `X-OFSCP-Actor`); the peer re-validates dmId
- * membership and enforces author-only + the edit window.
+ * is the peer. The body is the client's whole `MessageUpdate` (every field it
+ * carries: content, attachments, tags, mentions, article fields — §7.1) plus
+ * the acting `actor` (a provider-signed request has no `X-OFSCP-Actor`); the
+ * peer re-validates dmId membership, enforces author-only + the edit window,
+ * and only then checks the edit (incl. the §5.8 attachment checks).
  */
 export async function forwardDmEdit(
   db: Db,
@@ -82,12 +84,14 @@ export async function forwardDmEdit(
     messageId: string;
     counterpartyDomain: string;
     actor: string;
-    content: Content;
+    /** The `MessageUpdate` body as the client sent it (checked by the peer). */
+    update: object;
   },
 ): Promise<Response> {
   const path = `/api/federation/dms/${args.dmId}/messages/${args.messageId}`;
   const url = `https://${args.counterpartyDomain}${path}`;
-  const body = JSON.stringify({ actor: args.actor, content: args.content });
+  // `actor` last: the authenticated actor, never one the client put in its body.
+  const body = JSON.stringify({ ...args.update, actor: args.actor });
   return signedProviderFetch(
     db,
     config,
@@ -96,7 +100,7 @@ export async function forwardDmEdit(
       url,
       body,
       headers: { "content-type": "application/json" },
-      // The edit REPLACES the content (same body → same result): idempotent.
+      // The edit REPLACES each field it carries (same body → same result): idempotent.
       retry: INLINE_RETRY,
     },
     federationFetch,

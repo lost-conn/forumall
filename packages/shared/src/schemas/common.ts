@@ -137,7 +137,9 @@ const AttachmentFieldsSchema = z
     durationMs: z.number().int().min(0).optional(),
     /**
      * When a short-lived `url` stops working (§5.8, Revocation). Absent = the
-     * url does not expire.
+     * url does not expire. Only the provider that mints the URL sets it, in
+     * messages it holds: a provider storing a message drops any `expiresAt` the
+     * author supplied (server `provider/message-attachments.ts`).
      */
     expiresAt: Rfc3339DateTimeSchema.optional(),
   })

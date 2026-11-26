@@ -16,8 +16,11 @@
  *     message is answered as it now stands, and nothing below is checked,
  *     stored or fanned out.
  *  5. For a new message only: the full `MessageCreate` schema (content,
- *     attachments, tags, metadata), a `reference` that is a reply to a message
- *     in this channel → 400; then `replyOnlyTo` → 403.
+ *     attachments, tags, mentions, article fields, metadata), the §5.8
+ *     attachment checks, canonical `mentions`, an article `cover` naming one of
+ *     its attachments (`http/message-fields.ts`), a `reference` that is a reply
+ *     to a message in this channel → 400; then `replyOnlyTo` → 403. The article
+ *     fields of any other type are ignored (§5.3).
  */
 import {
   type Message,
@@ -34,6 +37,7 @@ import { fireMessageNotifications } from "../provider/message-notifications.ts";
 import { type MessageRecord, createMessage, getMessageByClientId } from "../provider/messages.ts";
 import { deliverNotification, groupMemberActors } from "../provider/notifications.ts";
 import type { CorrelatedReply, Hub, OutboundEvent } from "../provider/ws-hub.ts";
+import { bodyIssue, checkCreateFields } from "./message-fields.ts";
 import {
   type MutationError,
   authorizePostAccess,
@@ -114,12 +118,11 @@ export function createChannelMessage(
 
   // 5. The full body, the reply target and replyOnlyTo — new messages only.
   const parsed = MessageCreateRequestSchema.safeParse(input.body);
-  if (!parsed.success) {
-    const issue = parsed.error.issues[0];
-    const where = issue && issue.path.length > 0 ? ` at ${issue.path.join(".")}` : "";
-    return badRequest(`invalid message body${where}`);
-  }
+  if (!parsed.success) return badRequest(bodyIssue("message body", parsed.error.issues));
   const body = parsed.data;
+  const checked = checkCreateFields(db, config, author, type, body);
+  if (checked.error) return { kind: "rejected", error: checked.error };
+  const { fields } = checked;
   const replyError = authorizeReplyTarget(db, channelId, access.grant, body.reference);
   if (replyError) return { kind: "rejected", error: replyError };
 
@@ -131,9 +134,11 @@ export function createChannelMessage(
       author,
       type,
       content: body.content,
-      ...(body.attachments !== undefined ? { attachments: body.attachments } : {}),
+      attachments: fields.attachments,
       ...(body.reference !== undefined ? { reference: body.reference } : {}),
       ...(body.tags !== undefined && body.tags.length > 0 ? { tags: body.tags } : {}),
+      ...(fields.mentions !== undefined ? { mentions: fields.mentions } : {}),
+      ...fields.article,
       ...(body.metadata !== undefined ? { metadata: body.metadata } : {}),
       ...(clientMessageId !== undefined ? { clientMessageId } : {}),
     });

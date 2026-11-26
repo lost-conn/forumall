@@ -25,6 +25,7 @@ import { and, eq } from "drizzle-orm";
 import { openDb } from "../src/db/index.ts";
 import { migrate, migrations, runMigrations } from "../src/db/migrate.ts";
 import { groupMembers } from "../src/db/schema.ts";
+import { hostedAttachment } from "./helpers/attachments.ts";
 import {
   type Booted,
   type Signer,
@@ -55,14 +56,6 @@ function boot(name: string): Booted {
 }
 
 const text = (t: string) => ({ mime: "text/plain", text: t });
-const attachment = {
-  id: "att_1",
-  mime: "image/png",
-  url: "https://cdn.providera.test/att_1.png",
-  size: 20480,
-  width: 1024,
-  height: 768,
-};
 const metadata = [{ schema: "https://x.example/meta/v1", version: "1", data: { a: 1 } }];
 
 const messagesPath = (groupId: string, channelId: string) =>
@@ -115,6 +108,7 @@ describe("REST POST …/messages (§7.1)", () => {
     const parent = await created(b, alice, ids, { content: text("parent") });
     await nextCreated(bConn);
 
+    const attachment = hostedAttachment(b, alice);
     const msg = await created(b, alice, ids, {
       clientMessageId: "cmsg_full",
       type: "memo",
@@ -344,6 +338,7 @@ describe("WS message.create (§7.1)", () => {
     await subscribe(aConn, ids.channelId);
     await subscribe(bConn, ids.channelId);
 
+    const attachment = hostedAttachment(b, alice);
     wsCreate(aConn, "cmd_1", ids, {
       clientMessageId: "cmsg_ws",
       type: "article",
@@ -432,6 +427,7 @@ describe("dm.message carries the full Message (§7.4)", () => {
     const dmId = deriveDmId(alice.actor, bob.actor);
     const bConn = await connectAuthenticated(b, bob);
     const path = `/api/federation/dms/${dmId}/messages`;
+    const attachment = hostedAttachment(b, alice);
     const body = {
       clientMessageId: "cmsg_dm",
       type: "article",
