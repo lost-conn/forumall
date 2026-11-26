@@ -472,6 +472,45 @@ describe("presence.set persistence + offline rejection (§7.5)", () => {
     });
     expect(res.status).toBe(400);
   });
+
+  test("PUT /api/me/presence is a full replace: an absent status clears it (§6.4)", async () => {
+    const b = boot("pr-rest-replace");
+    const alice = await registerUserWithKey(b, "alice");
+    // Live, so the effective presence is the stored one rather than `offline`.
+    const aConn = await connectAuthenticated(b, alice);
+    const set = await signedReq(b, alice, "PUT", "/api/me/presence", {
+      availability: "dnd",
+      status: "heads down",
+    });
+    expect(set.status).toBe(200);
+    expect(((await set.json()) as Presence).status).toBe("heads down");
+
+    const replaced = await signedReq(b, alice, "PUT", "/api/me/presence", {
+      availability: "away",
+    });
+    expect(replaced.status).toBe(200);
+    const body = (await replaced.json()) as Presence;
+    expect(body.availability).toBe("away");
+    expect(body.status).toBeUndefined();
+    const own = await getPresence(b, alice, alice);
+    expect(own.availability).toBe("away");
+    expect(own.status).toBeUndefined();
+    aConn.close();
+  });
+
+  test("presence.set is a full replace: an absent status clears it (§7.5)", async () => {
+    const b = boot("pr-ws-replace");
+    const alice = await registerUserWithKey(b, "alice");
+    const aConn = await connectAuthenticated(b, alice);
+    for (const data of [{ availability: "dnd", status: "heads down" }, { availability: "away" }]) {
+      aConn.send({ id: "pset", type: "presence.set", ts: rfc3339Timestamp(), data });
+      await Bun.sleep(50);
+    }
+    const own = await getPresence(b, alice, alice);
+    expect(own.availability).toBe("away");
+    expect(own.status).toBeUndefined();
+    aConn.close();
+  });
 });
 
 describe("privacy-filtered presence: WS snapshot + REST agree per viewer (§7.5)", () => {

@@ -29,6 +29,7 @@ import {
   DmConversationSchema,
   DmConversationsResponseSchema,
   DmMessageCreateRequestSchema,
+  Ed25519PublicKeySchema,
   FollowCreateRequestSchema,
   FollowSchema,
   FollowsResponseSchema,
@@ -52,7 +53,9 @@ import {
   NotificationsDeliverySchema,
   NotificationsWebhookRegistrationSchema,
   PresenceSchema,
+  PresenceUpdateRequestSchema,
   PrivacySettingsSchema,
+  PrivacySettingsUpdateRequestSchema,
   ProblemDetailsSchema,
   ProviderDiscoverySchema,
   ProvidersResponseSchema,
@@ -118,6 +121,7 @@ import {
   NotificationsResponseSchema,
   WsNotificationCreatedSchema,
 } from "../src/schemas/index.ts";
+import { generateKeyPair } from "../src/signing.ts";
 
 // The canonical OFSCP samples live in the sibling ofscp repo. Reference by
 // path (do NOT copy them in) so this stays pinned to the SSOT. Resolve it
@@ -198,7 +202,9 @@ const SAMPLE_SCHEMAS: Record<string, z.ZodTypeAny> = {
 
   // Privacy / social
   presence: PresenceSchema,
+  "presence-update-request": PresenceUpdateRequestSchema,
   "privacy-settings": PrivacySettingsSchema,
+  "privacy-settings-update-request": PrivacySettingsUpdateRequestSchema,
   contact: ContactSchema,
   "contact-create-request": ContactCreateRequestSchema,
   "contact-event": ContactEventSchema,
@@ -284,6 +290,68 @@ describe("OFSCP sample fixtures parse against their schemas", () => {
       expect(result.success).toBe(true);
     });
   }
+});
+
+/**
+ * Reject cases: `<schema-name>.<case>.invalid.json` is a document the named
+ * schema MUST reject, pinning a normative rule (ofscp `validate-schemas.mjs`
+ * runs the same files against the JSON Schemas). The schema name before the
+ * first `.` keys into {@link SAMPLE_SCHEMAS}.
+ */
+function rejectSchemaName(file: string): string {
+  return file.slice(0, file.indexOf("."));
+}
+
+const rejectFiles = readdirSync(SAMPLES_DIR)
+  .filter((f) => f.endsWith(".invalid.json"))
+  .sort();
+
+describe("OFSCP reject cases are rejected by their schemas", () => {
+  test("every reject case names a mapped schema (completeness guard)", () => {
+    const unmapped = rejectFiles.filter((f) => !(rejectSchemaName(f) in SAMPLE_SCHEMAS));
+    // If this fails, an ofscp reject case exists for a schema not mapped above.
+    expect(unmapped).toEqual([]);
+  });
+
+  test("at least the expected number of reject cases are present", () => {
+    expect(rejectFiles.length).toBeGreaterThanOrEqual(2);
+  });
+
+  for (const file of rejectFiles) {
+    test(`${file} is rejected`, () => {
+      const schema = SAMPLE_SCHEMAS[rejectSchemaName(file)];
+      if (!schema) {
+        throw new Error(`no schema mapped for reject case "${file}"`);
+      }
+      const raw = JSON.parse(readFileSync(join(SAMPLES_DIR, file), "utf8"));
+      expect(schema.safeParse(raw).success).toBe(false);
+    });
+  }
+});
+
+describe("Ed25519PublicKey: raw 32-byte key in padded standard base64 (§4.3.2)", () => {
+  const b64 = (n: number, fill = 7) => Buffer.from(new Uint8Array(n).fill(fill)).toString("base64");
+
+  test("a freshly generated public key is accepted", () => {
+    expect(Ed25519PublicKeySchema.safeParse(generateKeyPair().publicKey).success).toBe(true);
+    expect(Ed25519PublicKeySchema.safeParse(b64(32)).success).toBe(true);
+  });
+
+  test("the wrong length, unpadded, or url-safe forms are rejected", () => {
+    expect(Ed25519PublicKeySchema.safeParse(b64(16)).success).toBe(false);
+    expect(Ed25519PublicKeySchema.safeParse(b64(44)).success).toBe(false);
+    expect(Ed25519PublicKeySchema.safeParse(b64(32).replace(/=$/, "")).success).toBe(false);
+    expect(Ed25519PublicKeySchema.safeParse(b64(32, 0xff).replace(/\//g, "_")).success).toBe(false);
+  });
+
+  test("a non-canonical final character (nonzero pad bits) is rejected", () => {
+    // b64(32) ends in "c="; "d" decodes to the same 32 bytes but sets one of
+    // the two pad bits, so it is not the canonical encoding.
+    const key = b64(32);
+    const nonCanonical = `${key.slice(0, 42)}d=`;
+    expect(Buffer.from(nonCanonical, "base64").length).toBe(32);
+    expect(Ed25519PublicKeySchema.safeParse(nonCanonical).success).toBe(false);
+  });
 });
 
 describe("forward-compatibility (§2.3): unknown keys are preserved", () => {

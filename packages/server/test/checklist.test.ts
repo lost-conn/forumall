@@ -47,6 +47,11 @@ const PROVIDER_MUST: readonly ChecklistItem[] = [
     status: "covered",
   },
   {
+    item: "Encode every `public_key` as the raw 32-byte Ed25519 key in padded standard base64, and reject (`400`) a registration whose key does not decode to 32 bytes (§4.3.2)",
+    covers: ["packages/server/test/device-keys.test.ts", "packages/shared/test/schemas.test.ts"],
+    status: "covered",
+  },
+  {
     item: "Validate Ed25519 request signatures over the §4.4.2 canonical string, including authority binding and nonce replay rejection",
     covers: [
       "packages/shared/test/conformance.test.ts",
@@ -173,6 +178,15 @@ const PROVIDER_MUST: readonly ChecklistItem[] = [
     status: "covered",
   },
   {
+    item: "Treat `PUT /api/me/presence` as a full replace that rejects `offline` with `400`, and `PUT /api/me/privacy` as a partial update that rejects an actor in both lists, or an over-long list, with `400` (§6.4, §6.6)",
+    covers: [
+      "packages/server/test/presence.test.ts",
+      "packages/server/test/privacy.test.ts",
+      "packages/shared/test/schemas.test.ts",
+    ],
+    status: "covered",
+  },
+  {
     item: "Support message fan-out + notification endpoints",
     covers: ["packages/server/test/notifications.test.ts", "packages/server/test/ws.test.ts"],
     status: "covered",
@@ -261,7 +275,7 @@ describe("§12 Compliance Checklist coverage map", () => {
   // These counts pin the map to the spec; bump them when §12 changes (and update
   // CONFORMANCE.md). A mismatch means an item was added/removed upstream.
   test("item counts match the spec's §12 MUST lists", () => {
-    expect(PROVIDER_MUST.length).toBe(24);
+    expect(PROVIDER_MUST.length).toBe(26);
     expect(CLIENT_MUST.length).toBe(7);
   });
 
@@ -294,6 +308,6 @@ describe("§12 Compliance Checklist coverage map", () => {
       `\n§12 coverage: ${ALL.length} MUST items mapped (${PROVIDER_MUST.length} Provider, ${CLIENT_MUST.length} Client); ` +
         `${ALL.length - partials.length} fully covered, ${partials.length} partial.\n`,
     );
-    expect(ALL.length).toBe(31);
+    expect(ALL.length).toBe(33);
   });
 });

@@ -24,6 +24,7 @@ import { type Argon2Params, type Config, loadConfig } from "../src/config.ts";
 import { type Db, openDb } from "../src/db/index.ts";
 import { migrate } from "../src/db/migrate.ts";
 import { addMember } from "../src/provider/membership.ts";
+import { MAX_PRIVACY_LIST_ENTRIES } from "../src/provider/privacy.ts";
 import { canView } from "../src/provider/visibility.ts";
 
 const FAST_ARGON2: Argon2Params = { memoryKib: 1024, iterations: 1, parallelism: 1 };
@@ -297,6 +298,63 @@ describe("privacy settings (§6.6)", () => {
     expect(body.profileVisibility).toBe("nobody");
     expect(body.membershipVisibility).toBe("sharedGroups");
     expect(body.denyList).toEqual([`carol@${DOMAIN}`]);
+  });
+
+  test("an empty list clears it; an absent list is left unchanged", async () => {
+    const b = boot("privacy-list-clear");
+    const alice = await registerUserWithKey(b, "alice");
+    await signedReq(b, alice, "PUT", "/api/me/privacy", {
+      allowList: [`bob@${DOMAIN}`],
+      denyList: [`carol@${DOMAIN}`],
+    });
+    const put = await signedReq(b, alice, "PUT", "/api/me/privacy", { allowList: [] });
+    expect(put.status).toBe(200);
+    const body = (await put.json()) as Record<string, unknown>;
+    expect(body.allowList).toEqual([]);
+    expect(body.denyList).toEqual([`carol@${DOMAIN}`]);
+  });
+
+  test("an actor in both lists → 400, including against the stored list", async () => {
+    const b = boot("privacy-both-lists");
+    const alice = await registerUserWithKey(b, "alice");
+    const bob = `bob@${DOMAIN}`;
+    const same = await signedReq(b, alice, "PUT", "/api/me/privacy", {
+      allowList: [bob],
+      denyList: [bob],
+    });
+    expect(same.status).toBe(400);
+
+    expect((await signedReq(b, alice, "PUT", "/api/me/privacy", { allowList: [bob] })).status).toBe(
+      200,
+    );
+    // The stored allowList already holds bob, so denying him would leave him in both.
+    const merged = await signedReq(b, alice, "PUT", "/api/me/privacy", { denyList: [bob] });
+    expect(merged.status).toBe(400);
+    const get = await signedReq(b, alice, "GET", "/api/me/privacy");
+    const body = (await get.json()) as Record<string, unknown>;
+    expect(body.allowList).toEqual([bob]);
+    expect(body.denyList).toEqual([]);
+  });
+
+  test("a list longer than the provider maximum → 400", async () => {
+    const b = boot("privacy-list-max");
+    const alice = await registerUserWithKey(b, "alice");
+    const list = (n: number) => Array.from({ length: n }, (_, i) => `u${i}@${DOMAIN}`);
+    const over = await signedReq(b, alice, "PUT", "/api/me/privacy", {
+      denyList: list(MAX_PRIVACY_LIST_ENTRIES + 1),
+    });
+    expect(over.status).toBe(400);
+    const atMax = await signedReq(b, alice, "PUT", "/api/me/privacy", {
+      denyList: list(MAX_PRIVACY_LIST_ENTRIES),
+    });
+    expect(atMax.status).toBe(200);
+  });
+
+  test("a non-UserRef list entry → 400 (not silently dropped)", async () => {
+    const b = boot("privacy-list-type");
+    const alice = await registerUserWithKey(b, "alice");
+    const res = await signedReq(b, alice, "PUT", "/api/me/privacy", { allowList: [42] });
+    expect(res.status).toBe(400);
   });
 
   test("partial PUT leaves other fields unchanged", async () => {

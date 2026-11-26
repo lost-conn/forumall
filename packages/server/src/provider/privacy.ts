@@ -20,11 +20,17 @@
  *
  * These are deliberately middle-of-the-road; a user tightens or loosens them via
  * `PUT /api/me/privacy`.
+ *
+ * ## List rules (§6.6)
+ * `PUT` is a partial update. The provider MUST reject (400) an update that would
+ * leave an actor in both `allowList` and `denyList`, or a list longer than its
+ * provider-defined maximum, which here is {@link MAX_PRIVACY_LIST_ENTRIES}.
  */
 import { eq } from "drizzle-orm";
 
 import type { Db } from "../db/index.ts";
 import { type PrivacySettingsRow, privacySettings } from "../db/schema.ts";
+import { AppError } from "../http/errors.ts";
 import type { VisibilityPolicyValue } from "./visibility.ts";
 
 /** A user's resolved privacy settings (with defaults applied). */
@@ -44,6 +50,9 @@ export const DEFAULT_PRIVACY: ResolvedPrivacySettings = {
   allowList: [],
   denyList: [],
 };
+
+/** The provider-defined maximum length of `allowList` and of `denyList` (§6.6). */
+export const MAX_PRIVACY_LIST_ENTRIES = 1000;
 
 /** Parse a JSON `string[]` column, tolerating malformed/empty values. */
 function parseActorList(json: string): string[] {
@@ -114,6 +123,7 @@ export function updatePrivacySettings(
     allowList: update.allowList ? [...update.allowList] : current.allowList,
     denyList: update.denyList ? [...update.denyList] : current.denyList,
   };
+  assertValidLists(next);
 
   const row: PrivacySettingsRow = {
     handle,
@@ -142,4 +152,30 @@ export function updatePrivacySettings(
     .run();
 
   return next;
+}
+
+/**
+ * Enforce the §6.6 list rules on the settings an update would produce: neither
+ * list may exceed {@link MAX_PRIVACY_LIST_ENTRIES}, and no actor may be in both.
+ * Entries are already canonical actors (§2.2), so they compare verbatim.
+ */
+function assertValidLists(next: ResolvedPrivacySettings): void {
+  for (const [field, list] of [
+    ["allowList", next.allowList],
+    ["denyList", next.denyList],
+  ] as const) {
+    if (list.length > MAX_PRIVACY_LIST_ENTRIES) {
+      throw AppError.badRequest({
+        detail: `\`${field}\` may hold at most ${MAX_PRIVACY_LIST_ENTRIES} entries (OFSCP §6.6)`,
+      });
+    }
+  }
+  const allowed = new Set(next.allowList);
+  const both = [...new Set(next.denyList.filter((actor) => allowed.has(actor)))];
+  if (both.length > 0) {
+    throw AppError.badRequest({
+      detail: "an actor may not be in both `allowList` and `denyList` (OFSCP §6.6)",
+      extensions: { actors: both },
+    });
+  }
 }

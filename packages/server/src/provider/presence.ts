@@ -75,26 +75,25 @@ export function getPresenceRow(db: Db, handle: string): PresenceRow | null {
 }
 
 /**
- * Update `handle`'s stored EXPLICIT availability/status (upsert). `offline` is
- * not a valid argument — the WS/REST layers reject it before reaching here.
- * `status` is replaced when provided and cleared when explicitly `null`; passing
- * `undefined` leaves the existing status untouched. Returns the updated row.
+ * Replace `handle`'s stored EXPLICIT availability/status (upsert). This is the
+ * full replace of `PUT /api/me/presence` / `presence.set` (§6.4/§7.5): `status`
+ * is stored as given, and `null` (the request omitted it) clears it. `offline`
+ * is not a valid argument; the request schema rejects it before reaching here.
+ * `lastSeen` is provider-owned and kept. Returns the updated row.
  */
 export function setExplicitPresence(
   db: Db,
   handle: string,
   availability: ExplicitAvailability,
-  status?: string | null,
+  status: string | null,
 ): PresenceRow {
   const existing = getPresenceRow(db, handle);
   const now = Date.now();
-  const nextStatus =
-    status === undefined ? (existing?.status ?? null) : status === null ? null : status;
 
   const row: PresenceRow = {
     handle,
     availability,
-    status: nextStatus,
+    status,
     lastSeen: existing?.lastSeen ?? null,
     updatedAt: now,
   };
@@ -104,7 +103,7 @@ export function setExplicitPresence(
     .values(row)
     .onConflictDoUpdate({
       target: presence.handle,
-      set: { availability, status: nextStatus, updatedAt: now },
+      set: { availability, status, updatedAt: now },
     })
     .run();
 

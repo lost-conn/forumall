@@ -111,7 +111,7 @@ export function handlePresenceUnsubscribe(
 }
 
 /**
- * §7.5 presence.set: equivalent to `PUT /api/me/presence` — update the caller's
+ * §7.5 presence.set: equivalent to `PUT /api/me/presence` — replace the caller's
  * stored EXPLICIT availability/status (the schema already rejects `offline` as a
  * set value) and fan out a privacy-filtered `presence.update` to subscribers.
  * The same stored value drives both surfaces (§7.5 reconciliation).
@@ -140,8 +140,9 @@ export function handlePresenceSet(
     return;
   }
 
+  // Full replace (§7.5): an absent `status` clears the stored one.
   const { availability, status } = parsed.data.data;
-  setExplicitPresence(db, handle, availability, status ?? undefined);
+  setExplicitPresence(db, handle, availability, status ?? null);
   fanOutPresence(db, hub, config, presenceRegistry, handle);
 }
 /**
