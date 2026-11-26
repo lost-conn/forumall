@@ -445,6 +445,25 @@ describe("PATCH /api/me/profile avatar (§6.3)", () => {
       expect({ avatar, status: res.status }).toEqual({ avatar, status: 400 });
     }
   });
+
+  test("re-sending the stored avatar is grandfathered, even one this provider does not host", async () => {
+    const { app, db } = freshApp("avatar-grandfathered");
+    const alice = await registerUserWithKey(app, "alice");
+    // An external avatar stored before the hosted-media check existed.
+    const legacy = "https://cdn.example/old.png";
+    db.sqlite.query("UPDATE users SET avatar = ? WHERE handle = 'alice'").run(legacy);
+
+    // Saving a bio edit with the unchanged avatar succeeds and keeps it.
+    const same = await patchProfile(app, alice, { avatar: legacy, bio: "hi" });
+    expect(same.status).toBe(200);
+    const body = (await same.json()) as { avatar?: string; bio?: string };
+    expect(body.avatar).toBe(legacy);
+    expect(body.bio).toBe("hi");
+
+    // Changing it to another external URL is still a 400.
+    const changed = await patchProfile(app, alice, { avatar: "https://cdn.example/new.png" });
+    expect(changed.status).toBe(400);
+  });
 });
 
 describe("migration 0038_media_duration_ms", () => {

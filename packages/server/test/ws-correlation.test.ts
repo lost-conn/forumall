@@ -1,7 +1,9 @@
 /**
  * §7.1 / §7.3 `correlationId` on fanned-out events: when a WS command causes a
  * channel fan-out (`message.create` → `message.created`, `message.update` →
- * `message.updated`), only the requesting connection's copy carries the
+ * `message.updated`, `message.delete` → `message.deleted`, `reaction.add` →
+ * `reaction.added`, `reaction.remove` → `reaction.removed`), only the
+ * requesting connection's copy carries the
  * command's `id`. Every other subscriber — the author's other connections
  * included — gets an uncorrelated copy of the same event.
  */
@@ -38,7 +40,7 @@ const text = (t: string) => ({ mime: "text/plain", text: t });
 const messageOf = (frame: WsEnvelope) => (frame.data as { message: { id: string } }).message;
 
 describe("correlationId reaches only the requesting connection", () => {
-  test("message.created and message.updated: correlated for the sender, plain for the rest", async () => {
+  test("message and reaction events: correlated for the sender, plain for the rest", async () => {
     const b = bootIn(tmp, "ws-correlation");
     booted.push(b);
     const alice = await registerUserWithKey(b, "alice");
@@ -85,6 +87,39 @@ describe("correlationId reaches only the requesting connection", () => {
     expect(otherEdit?.correlationId).toBeUndefined();
     expect(bobEdit?.correlationId).toBeUndefined();
     expect(messageOf(otherEdit as WsEnvelope).id).toBe(message.id);
+
+    // Reactions and the delete correlate the same way.
+    const reactionTarget = { ...ids, messageId: message.id, key: "heart", unicode: "❤️" };
+    const cases = [
+      { id: "cmd_react", type: "reaction.add", event: "reaction.added", data: reactionTarget },
+      {
+        id: "cmd_unreact",
+        type: "reaction.remove",
+        event: "reaction.removed",
+        data: { ...ids, messageId: message.id, key: "heart" },
+      },
+      {
+        id: "cmd_delete",
+        type: "message.delete",
+        event: "message.deleted",
+        data: { ...ids, messageId: message.id },
+      },
+    ];
+    for (const { id, type, event, data } of cases) {
+      aliceSender.send({ id, type, ts: rfc3339Timestamp(), data });
+      const [own, other, bob] = await Promise.all(all.map((conn) => conn.ofType(event)));
+      expect({ event, correlationId: own?.correlationId }).toEqual({ event, correlationId: id });
+      expect({ event, correlationId: other?.correlationId }).toEqual({
+        event,
+        correlationId: undefined,
+      });
+      expect({ event, correlationId: bob?.correlationId }).toEqual({
+        event,
+        correlationId: undefined,
+      });
+      expect(other?.id).toBe(own?.id);
+      expect(bob?.data).toEqual(own?.data);
+    }
 
     for (const conn of all) conn.close();
   });

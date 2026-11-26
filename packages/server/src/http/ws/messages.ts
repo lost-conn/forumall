@@ -112,7 +112,8 @@ export function handleMessageUpdate(
 /**
  * §7.1 Deleting messages: tombstone (soft-delete) a message — keep `id`/`seq`,
  * clear `content`, set `deleted_at`. The **author** OR a member with the
- * `moderate` role may delete. On success fan out `message.deleted`. Missing
+ * `moderate` role may delete. On success fan out `message.deleted` (only the
+ * deleting connection's copy correlates to the request id, §7.1). Missing
  * message / wrong channel/group → 404; not permitted → 403.
  */
 export function handleMessageDelete(
@@ -129,7 +130,8 @@ export function handleMessageDelete(
     return;
   }
   const actor = state.actor;
-  if (!actor) return; // unreachable: only authenticated connections reach here
+  const hubConn = state.hubConn;
+  if (!actor || !hubConn) return; // unreachable: only authenticated connections reach here
 
   const { groupId, channelId, messageId } = parsed.data.data;
   const outcome = authorizeMessageDelete(db, groupId, channelId, messageId, actor);
@@ -140,16 +142,20 @@ export function handleMessageDelete(
 
   const record = tombstoneMessage(db, channelId, messageId);
   const deletedAt = record.message.deletedAt ?? rfc3339Timestamp();
-  hub.publishToChannel(channelId, {
-    type: "message.deleted",
-    data: WsMessageDeletedSchema.shape.data.parse({
-      groupId,
-      channelId,
-      messageId,
-      cursor: record.cursor,
-      deletedAt,
-    }),
-  });
+  hub.publishToChannel(
+    channelId,
+    {
+      type: "message.deleted",
+      data: WsMessageDeletedSchema.shape.data.parse({
+        groupId,
+        channelId,
+        messageId,
+        cursor: record.cursor,
+        deletedAt,
+      }),
+    },
+    { conn: hubConn, correlationId: frameId },
+  );
 }
 /**
  * Build a validated `message.updated` event for an edited `record` (§7.1). Mirrors

@@ -15,8 +15,8 @@ import { type ConnState, type WsContext, type WsCtx, errorEvent } from "./connec
  * ({@link authorizeReaction}); there is no per-key permission gate. The add is
  * idempotent on `(message, author, key)` — a repeat add returns the existing
  * reaction. On success fan out `reaction.added` carrying the FULL `Reaction`
- * object to every channel subscriber (the author's own copy correlates to the
- * request id). Missing message / no channel access → `error` (404/403).
+ * object to every channel subscriber (only the requesting connection's copy
+ * correlates to the request id). Missing message / no channel access → `error` (404/403).
  */
 export function handleReactionAdd(
   ctx: WsCtx,
@@ -32,7 +32,8 @@ export function handleReactionAdd(
     return;
   }
   const author = state.actor;
-  if (!author) return; // unreachable: only authenticated connections reach here
+  const hubConn = state.hubConn;
+  if (!author || !hubConn) return; // unreachable: only authenticated connections reach here
 
   const { groupId, channelId, messageId, key, unicode, image } = parsed.data.data;
   const outcome = authorizeReaction(db, groupId, channelId, messageId, author);
@@ -50,11 +51,14 @@ export function handleReactionAdd(
     ...(unicode !== undefined ? { unicode } : {}),
     ...(image !== undefined ? { image } : {}),
   });
-  hub.publishToChannel(channelId, {
-    type: "reaction.added",
-    correlationId: frameId,
-    data: WsReactionAddedSchema.shape.data.parse({ groupId, channelId, reaction }),
-  });
+  hub.publishToChannel(
+    channelId,
+    {
+      type: "reaction.added",
+      data: WsReactionAddedSchema.shape.data.parse({ groupId, channelId, reaction }),
+    },
+    { conn: hubConn, correlationId: frameId },
+  );
 }
 
 /**
@@ -62,7 +66,8 @@ export function handleReactionAdd(
  * Same visibility/existence authz as {@link handleReactionAdd}. Removal is
  * idempotent (a no-op if the actor held no such reaction). Always fan out
  * `reaction.removed { groupId, channelId, messageId, key, author }` to channel
- * subscribers (the author's own copy correlates to the request id). Missing
+ * subscribers (only the requesting connection's copy correlates to the request
+ * id). Missing
  * message / no channel access → `error` (404/403).
  */
 export function handleReactionRemove(
@@ -79,7 +84,8 @@ export function handleReactionRemove(
     return;
   }
   const author = state.actor;
-  if (!author) return; // unreachable: only authenticated connections reach here
+  const hubConn = state.hubConn;
+  if (!author || !hubConn) return; // unreachable: only authenticated connections reach here
 
   const { groupId, channelId, messageId, key } = parsed.data.data;
   const outcome = authorizeReaction(db, groupId, channelId, messageId, author);
@@ -89,15 +95,18 @@ export function handleReactionRemove(
   }
 
   removeReaction(db, messageId, author, key);
-  hub.publishToChannel(channelId, {
-    type: "reaction.removed",
-    correlationId: frameId,
-    data: WsReactionRemovedSchema.shape.data.parse({
-      groupId,
-      channelId,
-      messageId,
-      key,
-      author,
-    }),
-  });
+  hub.publishToChannel(
+    channelId,
+    {
+      type: "reaction.removed",
+      data: WsReactionRemovedSchema.shape.data.parse({
+        groupId,
+        channelId,
+        messageId,
+        key,
+        author,
+      }),
+    },
+    { conn: hubConn, correlationId: frameId },
+  );
 }
