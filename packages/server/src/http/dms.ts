@@ -36,7 +36,6 @@ import {
   DmConversationPointerRequestSchema,
   DmConversationsResponseSchema,
   MessageSchema,
-  MessageUpdateRequestSchema,
   MessagesPageSchema,
   ReactionSchema,
   canonicalAuthority,
@@ -82,7 +81,7 @@ import {
   requireParam,
   resolveLocalDmOwner,
 } from "./dm-request.ts";
-import { AppError, parseRequestBody } from "./errors.ts";
+import { AppError } from "./errors.ts";
 import { requireLocalActor, requireLocalHandle, requireSignature } from "./signature.ts";
 import type { AppBindings } from "./types.ts";
 

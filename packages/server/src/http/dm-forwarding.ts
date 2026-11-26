@@ -3,7 +3,6 @@
  * reactions, edits and deletes to the counterparty's home provider, and
  * relaying its answer.
  */
-import type { Content } from "@forumall/shared";
 import type { Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { Config } from "../config.ts";
