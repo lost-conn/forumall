@@ -231,7 +231,7 @@ function addMember(b: Booted, groupId: string, actor: string, role: string): voi
 }
 
 // ---------------------------------------------------------------------------
-// Minimal WS client (subset of the ws.test.ts helper).
+// Minimal WS client (subset of the `helpers/ws-harness.ts` one).
 // ---------------------------------------------------------------------------
 
 class WsClient {

@@ -15,6 +15,7 @@ import { createApp } from "./app.ts";
 import { type Config, loadConfig } from "./config.ts";
 import { openDb } from "./db/index.ts";
 import { migrate, migrationDomain } from "./db/migrate.ts";
+import { installShutdown } from "./lib/shutdown.ts";
 import { getProviderSigningKey } from "./provider/signing-key.ts";
 
 /**
@@ -119,12 +120,20 @@ console.log(`[server] ready at ${scheme}://${config.domain}`);
 
 const app = createApp(config, { db });
 
-// Bun's WebSocket support requires the entry to export a `websocket` handler
-// object alongside `fetch` (§7.1). `createApp` builds it and attaches it as
+// Bun's WebSocket support needs the server's `websocket` handler object
+// alongside `fetch` (§7.1). `createApp` builds it and attaches it as
 // `app.__websocket`; the upgrade route lives on the app, and Bun routes accepted
 // upgrades into this handler.
-export default {
+const server = Bun.serve({
   port: config.port,
   fetch: app.fetch,
   websocket: app.__websocket,
-};
+});
+
+// Shutdown (§7.1 "Close codes"): close every WebSocket with 1001 so clients
+// know to reconnect, then stop the server. A stop that outlasts its grace
+// period, or a second signal, is forced (see lib/shutdown.ts).
+installShutdown({
+  closeWebSockets: () => app.__closeWebSockets(),
+  stop: (force) => server.stop(force),
+});

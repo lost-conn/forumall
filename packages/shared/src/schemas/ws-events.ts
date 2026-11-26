@@ -1,6 +1,7 @@
 /**
  * OFSCP v0.1 WebSocket events (server → client, `ws/*.json`). Each schema pins
- * `type` to a literal and validates its own `data` shape.
+ * `type` to a literal and validates its own `data` shape on the event envelope
+ * (`ws/event-envelope.json`): `ts` is a required RFC 3339 timestamp (§7.1).
  */
 import { z } from "zod";
 
@@ -15,14 +16,14 @@ import { GroupPointerSchema, MemberSchema } from "./groups.ts";
 import { DmConversationSchema, MessageSchema, ReactionSchema } from "./messaging.ts";
 import { NotificationSchema } from "./notifications.ts";
 import { PresenceSchema } from "./privacy.ts";
-import { wsFrame } from "./ws-frame.ts";
+import { wsEvent } from "./ws-frame.ts";
 
 // ---------------------------------------------------------------------------
 // Events (server → client)
 // ---------------------------------------------------------------------------
 
 /** `auth.challenge` event. */
-export const WsAuthChallengeSchema = wsFrame(
+export const WsAuthChallengeSchema = wsEvent(
   "auth.challenge",
   z
     .object({
@@ -34,14 +35,14 @@ export const WsAuthChallengeSchema = wsFrame(
 export type WsAuthChallenge = z.infer<typeof WsAuthChallengeSchema>;
 
 /** `authenticated` event. */
-export const WsAuthenticatedSchema = wsFrame(
+export const WsAuthenticatedSchema = wsEvent(
   "authenticated",
   z.object({ actor: UserRefSchema }).passthrough(),
 );
 export type WsAuthenticated = z.infer<typeof WsAuthenticatedSchema>;
 
 /** `subscribed` event. */
-export const WsSubscribedSchema = wsFrame(
+export const WsSubscribedSchema = wsEvent(
   "subscribed",
   z
     .object({
@@ -59,7 +60,7 @@ export type WsSubscribed = z.infer<typeof WsSubscribedSchema>;
  * `unsubscribed` event. `reason` is present only on an unprompted unsubscribe
  * (§7.1 "Losing access"), e.g. `access_revoked`.
  */
-export const WsUnsubscribedSchema = wsFrame(
+export const WsUnsubscribedSchema = wsEvent(
   "unsubscribed",
   z
     .object({
@@ -71,7 +72,7 @@ export const WsUnsubscribedSchema = wsFrame(
 export type WsUnsubscribed = z.infer<typeof WsUnsubscribedSchema>;
 
 /** `message.created` event. */
-export const WsMessageCreatedSchema = wsFrame(
+export const WsMessageCreatedSchema = wsEvent(
   "message.created",
   z
     .object({
@@ -85,7 +86,7 @@ export const WsMessageCreatedSchema = wsFrame(
 export type WsMessageCreated = z.infer<typeof WsMessageCreatedSchema>;
 
 /** `message.updated` event. */
-export const WsMessageUpdatedSchema = wsFrame(
+export const WsMessageUpdatedSchema = wsEvent(
   "message.updated",
   z
     .object({
@@ -103,7 +104,7 @@ export const WsMessageUpdatedSchema = wsFrame(
 export type WsMessageUpdated = z.infer<typeof WsMessageUpdatedSchema>;
 
 /** `message.deleted` event. */
-export const WsMessageDeletedSchema = wsFrame(
+export const WsMessageDeletedSchema = wsEvent(
   "message.deleted",
   z
     .object({
@@ -120,7 +121,7 @@ export const WsMessageDeletedSchema = wsFrame(
 export type WsMessageDeleted = z.infer<typeof WsMessageDeletedSchema>;
 
 /** `reaction.added` event. */
-export const WsReactionAddedSchema = wsFrame(
+export const WsReactionAddedSchema = wsEvent(
   "reaction.added",
   z
     .object({
@@ -133,7 +134,7 @@ export const WsReactionAddedSchema = wsFrame(
 export type WsReactionAdded = z.infer<typeof WsReactionAddedSchema>;
 
 /** `reaction.removed` event. */
-export const WsReactionRemovedSchema = wsFrame(
+export const WsReactionRemovedSchema = wsEvent(
   "reaction.removed",
   z
     .object({
@@ -148,7 +149,7 @@ export const WsReactionRemovedSchema = wsFrame(
 export type WsReactionRemoved = z.infer<typeof WsReactionRemovedSchema>;
 
 /** `channel.typing` event. */
-export const WsChannelTypingSchema = wsFrame(
+export const WsChannelTypingSchema = wsEvent(
   "channel.typing",
   z
     .object({
@@ -166,7 +167,7 @@ export type WsChannelTyping = z.infer<typeof WsChannelTypingSchema>;
  * `Member` for the group so clients can reconcile their member cache / chat
  * author names live. Passthrough, like every other event.
  */
-export const WsMemberUpdatedSchema = wsFrame(
+export const WsMemberUpdatedSchema = wsEvent(
   "member.updated",
   z
     .object({
@@ -183,7 +184,7 @@ export type WsMemberUpdated = z.infer<typeof WsMemberUpdatedSchema>;
  * entries, `removed` the group URIs that left the list; at least one of the
  * two is non-empty.
  */
-export const WsGroupsUpdatedSchema = wsFrame(
+export const WsGroupsUpdatedSchema = wsEvent(
   "groups.updated",
   z
     .object({
@@ -198,7 +199,7 @@ export const WsGroupsUpdatedSchema = wsFrame(
 export type WsGroupsUpdated = z.infer<typeof WsGroupsUpdatedSchema>;
 
 /** `dm.message` event. */
-export const WsDmMessageSchema = wsFrame(
+export const WsDmMessageSchema = wsEvent(
   "dm.message",
   z
     .object({
@@ -220,7 +221,7 @@ export type WsDmMessage = z.infer<typeof WsDmMessageSchema>;
  * "removed"` carries the `messageId`/`key`/`author` of the removed reaction.
  * Fanned out to BOTH DM participants. Passthrough, like every other event.
  */
-export const WsDmReactionSchema = wsFrame(
+export const WsDmReactionSchema = wsEvent(
   "dm.reaction",
   z
     .object({
@@ -243,7 +244,7 @@ export type WsDmReaction = z.infer<typeof WsDmReactionSchema>;
  * `dm.typing` event — a participant started/stopped typing in a DM (mirrors
  * `channel.typing`, DM-scoped by `dmId`). Fanned out to the OTHER participant.
  */
-export const WsDmTypingSchema = wsFrame(
+export const WsDmTypingSchema = wsEvent(
   "dm.typing",
   z
     .object({
@@ -260,28 +261,28 @@ export type WsDmTyping = z.infer<typeof WsDmTypingSchema>;
  * created or updated by one of their own sends — fanned to all of the user's
  * connections so their other devices see conversations they started.
  */
-export const WsDmConversationSchema = wsFrame(
+export const WsDmConversationSchema = wsEvent(
   "dm.conversation",
   z.object({ conversation: DmConversationSchema }).passthrough(),
 );
 export type WsDmConversation = z.infer<typeof WsDmConversationSchema>;
 
 /** `presence.subscribed` event. */
-export const WsPresenceSubscribedSchema = wsFrame(
+export const WsPresenceSubscribedSchema = wsEvent(
   "presence.subscribed",
   z.object({ users: z.array(UserRefSchema) }).passthrough(),
 );
 export type WsPresenceSubscribed = z.infer<typeof WsPresenceSubscribedSchema>;
 
 /** `presence.unsubscribed` event. */
-export const WsPresenceUnsubscribedSchema = wsFrame(
+export const WsPresenceUnsubscribedSchema = wsEvent(
   "presence.unsubscribed",
   z.object({ users: z.array(UserRefSchema) }).passthrough(),
 );
 export type WsPresenceUnsubscribed = z.infer<typeof WsPresenceUnsubscribedSchema>;
 
 /** `presence.update` event. */
-export const WsPresenceUpdateSchema = wsFrame(
+export const WsPresenceUpdateSchema = wsEvent(
   "presence.update",
   z
     .object({
@@ -298,7 +299,7 @@ export type WsPresenceUpdate = z.infer<typeof WsPresenceUpdateSchema>;
  * connections after a `PATCH /api/me/read-markers`. Carries the touched markers,
  * each with its recomputed `unreadCount`. Passthrough, like every other event.
  */
-export const WsReadUpdatedSchema = wsFrame(
+export const WsReadUpdatedSchema = wsEvent(
   "read.updated",
   z
     .object({
@@ -324,7 +325,7 @@ export type WsReadUpdated = z.infer<typeof WsReadUpdatedSchema>;
  * `hub.publishToActor` to all of the recipient actor's connections for a live
  * inbox. Passthrough, like every other event.
  */
-export const WsNotificationCreatedSchema = wsFrame(
+export const WsNotificationCreatedSchema = wsEvent(
   "notification.created",
   z
     .object({
@@ -335,7 +336,7 @@ export const WsNotificationCreatedSchema = wsFrame(
 export type WsNotificationCreated = z.infer<typeof WsNotificationCreatedSchema>;
 
 /** `call.started` event. */
-export const WsCallStartedSchema = wsFrame(
+export const WsCallStartedSchema = wsEvent(
   "call.started",
   z
     .object({
@@ -349,7 +350,7 @@ export const WsCallStartedSchema = wsFrame(
 export type WsCallStarted = z.infer<typeof WsCallStartedSchema>;
 
 /** `call.ended` event. */
-export const WsCallEndedSchema = wsFrame(
+export const WsCallEndedSchema = wsEvent(
   "call.ended",
   z
     .object({
@@ -362,7 +363,7 @@ export const WsCallEndedSchema = wsFrame(
 export type WsCallEnded = z.infer<typeof WsCallEndedSchema>;
 
 /** `call.participant` event. */
-export const WsCallParticipantSchema = wsFrame(
+export const WsCallParticipantSchema = wsEvent(
   "call.participant",
   z
     .object({

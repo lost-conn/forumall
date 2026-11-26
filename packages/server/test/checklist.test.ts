@@ -62,11 +62,32 @@ const PROVIDER_MUST: readonly ChecklistItem[] = [
     status: "covered",
   },
   {
-    item: "Authenticate WebSocket connections via the signed auth.challenge/authenticate handshake (§7.1)",
+    item: "Authenticate WebSocket connections via the signed auth.challenge/authenticate handshake (§7.1), answering a failure with an error whose code/status mirror the REST answer (401; 403 for federation policy; 503 when the keys could not be fetched) and then close code 4001, never 1013",
     covers: [
       "packages/shared/test/conformance.test.ts",
       "packages/shared/test/ws-auth.test.ts",
-      "packages/server/test/ws.test.ts",
+      "packages/server/test/ws-handshake.test.ts",
+      "packages/server/test/ws-remote-key.test.ts",
+      "packages/server/test/federation-realtime.test.ts",
+    ],
+    status: "covered",
+  },
+  {
+    item: "Follow the WebSocket envelope and command rules (§7.1): accept commands without ts and ignore its value; answer a missing id (after authentication), malformed data or a standard command the provider does not support with error bad_request; ignore unknown non-standard command types (§2.3); use 4001/4003 only for the reasons in the close-code table",
+    covers: [
+      "packages/shared/test/ws-envelope-schema.test.ts",
+      "packages/shared/test/schemas.test.ts",
+      "packages/server/test/ws-envelope-rules.test.ts",
+      "packages/server/test/ws-handshake.test.ts",
+    ],
+    status: "covered",
+  },
+  {
+    item: "Subscribe the readable channels of a partially refused subscribe and refuse the rest with one not_found error naming them in details.channels (only the error when none is readable); refuse a subscribe that would exceed the subscription cap as a whole with subscription_limit (§7.1)",
+    covers: [
+      "packages/server/test/ws-subscriptions.test.ts",
+      "packages/server/test/dms-send.test.ts",
+      "packages/server/test/federation-realtime.test.ts",
     ],
     status: "covered",
   },
@@ -107,7 +128,8 @@ const PROVIDER_MUST: readonly ChecklistItem[] = [
     item: "Treat (author, channelId, clientMessageId) as idempotent, running only authentication, visibility and the actor's permission checks before the duplicate lookup and returning the existing message on a duplicate (over WebSocket as a message.created with no cursor); echo clientMessageId on the author's message.created, live or replayed, and on every create response (§7.1, §7.4)",
     covers: [
       "packages/server/test/message-create.test.ts",
-      "packages/server/test/dms.test.ts",
+      "packages/server/test/ws-message-create.test.ts",
+      "packages/server/test/dms-send.test.ts",
       "packages/server/test/conformance.test.ts",
     ],
     status: "covered",
@@ -135,7 +157,9 @@ const PROVIDER_MUST: readonly ChecklistItem[] = [
     covers: [
       "packages/shared/test/conformance.test.ts",
       "packages/shared/test/dm.test.ts",
-      "packages/server/test/dms.test.ts",
+      "packages/server/test/dms-send.test.ts",
+      "packages/server/test/dms-pointers.test.ts",
+      "packages/server/test/dms-read.test.ts",
       "packages/server/test/conformance.test.ts",
     ],
     status: "covered",
@@ -169,7 +193,10 @@ const PROVIDER_MUST: readonly ChecklistItem[] = [
   },
   {
     item: "Support WebSocket resume (since replay with per-message cursors) and the ping/pong heartbeat (§7.1)",
-    covers: ["packages/server/test/ws.test.ts"],
+    covers: [
+      "packages/server/test/ws-resume.test.ts",
+      "packages/server/test/ws-envelope-rules.test.ts",
+    ],
     status: "covered",
   },
   {
@@ -188,7 +215,11 @@ const PROVIDER_MUST: readonly ChecklistItem[] = [
   },
   {
     item: "Support message fan-out + notification endpoints",
-    covers: ["packages/server/test/notifications.test.ts", "packages/server/test/ws.test.ts"],
+    covers: [
+      "packages/server/test/notifications.test.ts",
+      "packages/server/test/ws-hub-fanout.test.ts",
+      "packages/server/test/ws-message-create.test.ts",
+    ],
     status: "covered",
   },
   {
@@ -275,7 +306,7 @@ describe("§12 Compliance Checklist coverage map", () => {
   // These counts pin the map to the spec; bump them when §12 changes (and update
   // CONFORMANCE.md). A mismatch means an item was added/removed upstream.
   test("item counts match the spec's §12 MUST lists", () => {
-    expect(PROVIDER_MUST.length).toBe(26);
+    expect(PROVIDER_MUST.length).toBe(28);
     expect(CLIENT_MUST.length).toBe(7);
   });
 
@@ -308,6 +339,6 @@ describe("§12 Compliance Checklist coverage map", () => {
       `\n§12 coverage: ${ALL.length} MUST items mapped (${PROVIDER_MUST.length} Provider, ${CLIENT_MUST.length} Client); ` +
         `${ALL.length - partials.length} fully covered, ${partials.length} partial.\n`,
     );
-    expect(ALL.length).toBe(33);
+    expect(ALL.length).toBe(35);
   });
 });

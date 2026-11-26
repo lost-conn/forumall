@@ -11,7 +11,7 @@
 import { z } from "zod";
 
 import { JsonValueSchema, Rfc3339DateTimeSchema } from "./common.ts";
-import { emptyData, wsFrame } from "./ws-frame.ts";
+import { ignoredTs, wsEvent, wsHeartbeat } from "./ws-frame.ts";
 
 // ---------------------------------------------------------------------------
 // Type enums (ws/types.json) — narrowing helpers only, never used to gate parse
@@ -122,39 +122,59 @@ export function isKnownWsType(type: string): type is WsType {
 }
 
 // ---------------------------------------------------------------------------
-// Envelope (ws/envelope.json) — OPEN `type`, arbitrary `data`
+// Envelopes (ws/envelope.json, ws/command-envelope.json, ws/event-envelope.json)
 // ---------------------------------------------------------------------------
 
 /**
- * The base WS frame (`envelope`). `type` is any non-empty string and `data` is
- * arbitrary JSON, so a frame with a novel/unknown `type` parses successfully
- * (§2.3 forward-compat).
+ * The base WS frame (`ws/envelope.json`). `type` is any non-empty string and
+ * `data` is arbitrary JSON, so a frame with a novel/unknown `type` parses
+ * successfully (§2.3 forward-compat). `ts` is unconstrained here: it is
+ * required on events ({@link WsEventEnvelopeSchema}) and optional, with its
+ * value ignored, on commands ({@link WsCommandEnvelopeSchema}).
  */
 export const WsEnvelopeSchema = z
   .object({
     id: z.string().min(1),
     type: z.string().min(1),
-    ts: Rfc3339DateTimeSchema,
+    ts: ignoredTs,
     correlationId: z.string().min(1).optional(),
-    data: JsonValueSchema.optional(),
+    data: JsonValueSchema,
   })
   .passthrough();
 export type WsEnvelope = z.infer<typeof WsEnvelopeSchema>;
+
+/**
+ * A client→server command of any `type` (`ws/command-envelope.json`): `id`
+ * required, `data` an object, `ts` optional and ignored (§7.1).
+ */
+export const WsCommandEnvelopeSchema = WsEnvelopeSchema.extend({
+  data: z.record(JsonValueSchema),
+});
+export type WsCommandEnvelope = z.infer<typeof WsCommandEnvelopeSchema>;
+
+/**
+ * A server→client event of any `type` (`ws/event-envelope.json`): `ts` is a
+ * required RFC 3339 timestamp (§7.1).
+ */
+export const WsEventEnvelopeSchema = WsEnvelopeSchema.extend({
+  ts: Rfc3339DateTimeSchema,
+});
+export type WsEventEnvelope = z.infer<typeof WsEventEnvelopeSchema>;
 
 // ---------------------------------------------------------------------------
 // Heartbeat + error
 // ---------------------------------------------------------------------------
 
-/** `ping` frame. `data` is optional (samples send `{}`). */
-export const WsPingSchema = wsFrame("ping", emptyData);
+/** `ping` frame (base envelope; `data` an object, samples send `{}`). */
+export const WsPingSchema = wsHeartbeat("ping");
 export type WsPing = z.infer<typeof WsPingSchema>;
 
-/** `pong` frame. `data` is optional (samples send `{}`). */
-export const WsPongSchema = wsFrame("pong", emptyData);
+/** `pong` frame (base envelope; `data` an object, samples send `{}`). */
+export const WsPongSchema = wsHeartbeat("pong");
 export type WsPong = z.infer<typeof WsPongSchema>;
 
 /** `error` event. */
-export const WsErrorSchema = wsFrame(
+export const WsErrorSchema = wsEvent(
   "error",
   z
     .object({

@@ -9,8 +9,9 @@
  *  - `remote-key-watch.ts` — keeping a remote actor's key confirmed (§7.1
  *                            "Close codes": 4003 when gone, 4001 when it can no
  *                            longer be confirmed or the peer is now denied);
- *  - `subscriptions.ts`, `messages.ts`, `reactions.ts`, `typing.ts`,
- *    `presence.ts`         — the post-auth commands.
+ *  - `dispatch.ts`         — frame decoding and command routing;
+ *  - `heartbeat.ts`, `subscriptions.ts`, `messages.ts`, `reactions.ts`,
+ *    `typing.ts`, `presence.ts` — the post-auth commands.
  *
  * The endpoint is mounted at `GET /api/ws` and upgraded via Bun's WebSocket
  * support (`createBunWebSocket` from `hono/bun`). Per-connection state lives in
@@ -20,9 +21,10 @@
  * ## Handshake ordering (§7.1 Authentication) — strict
  *  1. On open, the server issues an `auth.challenge` event FIRST, with a fresh
  *     ≥128-bit nonce and an `expiresAt` ~30s out, recorded on the connection.
- *  2. The client's FIRST command MUST be `authenticate`. Any other command
- *     before auth closes the connection. No valid `authenticate` within ~10s
- *     closes the connection.
+ *  2. The client's FIRST command MUST be `authenticate`. Any other frame
+ *     before auth (including one that is not JSON or has no `type`) closes the
+ *     connection with 4001. No valid `authenticate` within ~10s closes it with
+ *     4001.
  *  3. `authenticate` is verified with the shared {@link verifyWsAuthenticate}
  *     over the challenge nonce we issued (timestamp skew ±300s). The
  *     `(key_id, challenge nonce)` pair is checked against — and, once accepted,
@@ -37,12 +39,20 @@
  *     locally; a REMOTE actor (§8.5 step 3) resolves its key from its home
  *     provider via the §4.6 user-keys cache (with the §8 connect-time federation
  *     policy applied first). On success → `authenticated { actor }` + register in
- *     the hub. On failure → an `error` event then close code 4001.
+ *     the hub. On failure → an `error` event mirroring the REST answer, then
+ *     close code 4001.
  *
- * After auth, unknown command types are ignored (open-world, §2.3); malformed
- * frames get an `error` event.
+ * After auth (see `dispatch.ts`): a frame that is not JSON or has no `id` gets
+ * an uncorrelated `bad_request`; a standard command is validated by its handler
+ * (`bad_request` correlated to its `id` when malformed); unknown non-standard
+ * types are ignored (open-world, §2.3).
+ *
+ * ## Close codes (§7.1)
+ * `4001`/`4003` only for the reasons in the spec's table. Otherwise: idle
+ * timeout `1000`, shutdown `1001` ({@link WsHandlers.closeAll}), oversized
+ * frame `1009` (Bun, `maxPayloadLength`), connection cap `1013`.
  */
-import { WsEnvelopeSchema, canonicalAuthority } from "@forumall/shared";
+import { type WsCommandType, canonicalAuthority } from "@forumall/shared";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/index.ts";
 import type { FederationFetch } from "../provider/federation/http.ts";
@@ -56,6 +66,7 @@ import {
   type ConnState,
   DEFAULT_WS_TIMINGS,
   WS_CLOSE_AUTH_FAILED,
+  WS_CLOSE_NORMAL,
   type WsContext,
   type WsCtx,
   type WsTimings,
@@ -63,6 +74,8 @@ import {
   mintChallengeNonce,
   rawSocket,
 } from "./ws/connection.ts";
+import { decodeFrame, routeCommand } from "./ws/dispatch.ts";
+import { handlePing, handlePong } from "./ws/heartbeat.ts";
 import { handleMessageCreate, handleMessageDelete, handleMessageUpdate } from "./ws/messages.ts";
 import {
   handlePresenceSet,
@@ -130,11 +143,13 @@ export interface WsHandlerDeps {
 }
 
 /**
- * The post-auth commands (§7.1, §7.5), by envelope `type`. A type not listed —
- * known-but-not-implemented or unknown — is ignored after auth (open-world,
- * §2.3). `authenticate`, `ping` and `pong` are handled inline by `onMessage`.
+ * The post-auth commands (§7.1, §7.5), by envelope `type`. Typed over every
+ * standard command but `authenticate` (handled by `onMessage`), so a standard
+ * command added to the shared schema cannot be left without a handler here.
  */
-const COMMANDS: Readonly<Record<string, CommandHandler>> = {
+const COMMANDS: Readonly<Record<Exclude<WsCommandType, "authenticate">, CommandHandler>> = {
+  ping: handlePing,
+  pong: handlePong,
   subscribe: handleSubscribe,
   unsubscribe: handleUnsubscribe,
   "message.create": handleMessageCreate,
@@ -149,12 +164,25 @@ const COMMANDS: Readonly<Record<string, CommandHandler>> = {
   "presence.set": handlePresenceSet,
 };
 
+/** The Hono WS route handlers, plus the provider-side shutdown close. */
+export interface WsHandlers {
+  onOpen(evt: unknown, ws: WsContext): void;
+  onMessage(evt: { data: unknown }, ws: WsContext): void;
+  onClose(evt: unknown, ws: WsContext): void;
+  /**
+   * Close every open connection, authenticated or not, with `code` — `1001`
+   * on provider shutdown or restart (§7.1 "Close codes"). Their regular
+   * `onClose` teardown runs as each socket closes.
+   */
+  closeAll(code: number, reason: string): void;
+}
+
 /**
  * Build the Hono WS route handlers (`open`/`message`/`close`) for `upgradeWebSocket`.
  * Returned as a factory so `upgradeWebSocket(() => handlers)` can pass it
  * straight to the route, while the closure captures `deps` + per-socket state.
  */
-export function createWsHandlers(deps: WsHandlerDeps) {
+export function createWsHandlers(deps: WsHandlerDeps): WsHandlers {
   const ctx: WsCtx = {
     config: deps.config,
     db: deps.db,
@@ -172,6 +200,9 @@ export function createWsHandlers(deps: WsHandlerDeps) {
   // Per-socket state, keyed on the stable `ws.raw` so a fresh per-event
   // WSContext still resolves to one connection. Weak so a GC'd socket drops it.
   const stateBySocket = new WeakMap<object, ConnState>();
+  // Every open connection, for {@link WsHandlers.closeAll}. Keyed like
+  // `stateBySocket`; entries leave on close.
+  const openSockets = new Map<object, WsContext>();
 
   /** Resolve the stable identity/state key for a per-event WSContext. */
   function keyOf(ws: WsContext): object {
@@ -238,6 +269,7 @@ export function createWsHandlers(deps: WsHandlerDeps) {
         dmTypingTimers: new Map(),
       };
       stateBySocket.set(keyOf(ws), state);
+      openSockets.set(keyOf(ws), ws);
 
       // §7.1 step 1: the challenge MUST be the first frame the client sees.
       send(ws, {
@@ -253,7 +285,9 @@ export function createWsHandlers(deps: WsHandlerDeps) {
       // Heartbeat: periodically ping and close on idle (§7.1 Heartbeat).
       state.heartbeatTimer = setInterval(() => {
         if (Date.now() - state.lastSeen > timings.idleTimeoutMs) {
-          ws.close(WS_CLOSE_AUTH_FAILED, "idle timeout");
+          // §7.1: an idle close is a normal close, never 4001 (which would
+          // tell the client its authentication failed).
+          ws.close(WS_CLOSE_NORMAL, "idle timeout");
           return;
         }
         // Only ping authenticated connections; pre-auth liveness is the
@@ -263,39 +297,18 @@ export function createWsHandlers(deps: WsHandlerDeps) {
       }, timings.pingIntervalMs);
     },
 
-    /** On every inbound frame: parse the envelope and dispatch by phase. */
+    /** On every inbound frame: decode it and dispatch by phase. */
     onMessage(evt: { data: unknown }, ws: WsContext): void {
       const state = stateBySocket.get(keyOf(ws));
       // A connection being closed for revoked credentials processes nothing more.
       if (!state || state.terminated) return;
       state.lastSeen = Date.now();
-
-      // --- Parse the envelope (open-world) -----------------------------------
-      const text =
-        typeof evt.data === "string"
-          ? evt.data
-          : evt.data instanceof ArrayBuffer
-            ? Buffer.from(evt.data).toString("utf8")
-            : String(evt.data);
-      let raw_json: unknown;
-      try {
-        raw_json = JSON.parse(text);
-      } catch {
-        send(ws, errorEvent("bad_request", "frame is not valid JSON"));
-        return;
-      }
-      const parsed = WsEnvelopeSchema.safeParse(raw_json);
-      if (!parsed.success) {
-        send(ws, errorEvent("bad_request", "frame does not match the WS envelope"));
-        return;
-      }
-      const envelope = parsed.data;
-      const type = envelope.type;
+      const frame = decodeFrame(evt.data);
 
       // --- Pre-auth phase (§7.1): only `authenticate` is allowed -------------
       if (!state.authenticated) {
-        if (type !== "authenticate") {
-          // Any other command before auth → close the connection (§7.1).
+        if (frame.kind !== "frame" || frame.type !== "authenticate") {
+          // Any other frame before auth → close 4001 (§7.1 Authentication).
           ws.close(WS_CLOSE_AUTH_FAILED, "expected authenticate first");
           return;
         }
@@ -303,31 +316,38 @@ export function createWsHandlers(deps: WsHandlerDeps) {
         // a fire-and-forget event handler, so we don't await — `handleAuthenticate`
         // reports every outcome (ack or `error`+close) on the socket itself. A
         // thrown rejection (unexpected) falls back to an auth-failed close.
-        void handleAuthenticate(ctx, ws, state, raw_json, envelope.id).catch(() => {
+        void handleAuthenticate(ctx, ws, state, frame.json, frame.id).catch(() => {
           if (!state.authenticated) ws.close(WS_CLOSE_AUTH_FAILED, "authentication failed");
         });
         return;
       }
 
       // --- Authenticated phase ----------------------------------------------
-      switch (type) {
-        case "authenticate":
-          // Already authenticated; a second authenticate is ignored.
+      if (frame.kind === "invalid_json") {
+        send(ws, errorEvent("bad_request", "frame is not valid JSON"));
+        return;
+      }
+      if (frame.id === undefined) {
+        // §7.1: nothing to correlate, so the error carries no correlationId.
+        send(ws, errorEvent("bad_request", "command has no id"));
+        return;
+      }
+      if (frame.type === undefined) {
+        send(ws, errorEvent("bad_request", "command has no type", frame.id));
+        return;
+      }
+      // Already authenticated; a second authenticate is ignored.
+      if (frame.type === "authenticate") return;
+      const route = routeCommand(frame.type, COMMANDS);
+      switch (route.kind) {
+        case "handler":
+          route.handler(ctx, ws, state, frame.json, frame.id);
           return;
-        case "ping":
-          // §7.1 Heartbeat: reply pong echoing the ping id in correlationId.
-          send(ws, { type: "pong", correlationId: envelope.id, data: {} });
+        case "unsupported":
+          send(ws, errorEvent("bad_request", `command ${frame.type} is not supported`, frame.id));
           return;
-        case "pong":
-          // Client's reply to our ping — liveness already refreshed above.
+        case "ignore":
           return;
-        default: {
-          // Unknown and known-but-unimplemented types are ignored after auth
-          // (open-world, §2.3).
-          const handler = Object.hasOwn(COMMANDS, type) ? COMMANDS[type] : undefined;
-          handler?.(ctx, ws, state, raw_json, envelope.id);
-          return;
-        }
       }
     },
 
@@ -337,6 +357,11 @@ export function createWsHandlers(deps: WsHandlerDeps) {
       const state = stateBySocket.get(key);
       teardown(state);
       stateBySocket.delete(key);
+      openSockets.delete(key);
+    },
+
+    closeAll(code: number, reason: string): void {
+      for (const ws of [...openSockets.values()]) ws.close(code, reason);
     },
   };
 }

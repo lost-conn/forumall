@@ -15,9 +15,23 @@ import { type ConnState, type WsContext, type WsCtx, errorEvent } from "./connec
 
 /**
  * §7.1 Subscriptions + resume: enforce per-channel visibility (membership +
- * tier) at subscribe-time, ack the authorized ones, reject unauthorized
- * channels with a `forbidden` error, and — for any channel carrying a `since`
- * cursor — REPLAY the post-cursor timeline before any live event flows.
+ * tier) at subscribe-time, ack the readable ones, refuse the rest, and — for
+ * any channel carrying a `since` cursor — REPLAY the post-cursor timeline
+ * before any live event flows.
+ *
+ * ## Refused channels (§7.1, §11.3)
+ * A channel the actor cannot read is refused as one that does not exist. The
+ * readable channels are subscribed and acked with `subscribed` listing only
+ * them; then ONE `error` (`not_found`, the refused ids in `details.channels`)
+ * covers every refused one. With nothing readable, only the `error` is sent.
+ * A `dm_…` target the caller is not a participant of is refused the same way.
+ *
+ * ## Subscription cap (§7.1)
+ * All-or-nothing against {@link Config.wsMaxSubscriptions}: if subscribing
+ * every readable listed channel not already subscribed would exceed the cap,
+ * nothing is subscribed and a single `subscription_limit` (409) `error` is the
+ * whole answer — no `subscribed`, no `not_found`. Only readable channels
+ * count, so the limit error reveals nothing about unreadable ones.
  *
  * ## Resume (§7.1 "Resuming after a disconnect")
  * For each authorized channel with a `since` cursor we decode it to `sinceSeq`
@@ -63,11 +77,12 @@ export function handleSubscribe(
 
   const since = parsed.data.data.since;
   const authorized: string[] = [];
-  const forbidden: string[] = [];
+  const refused: string[] = [];
   // Authorized channels that carry a `since` cursor, paired with the channel's
   // groupId (needed to build the replayed `message.created` events).
   const resumable: { channelId: string; groupId: string; sinceCursor: string }[] = [];
-  for (const channelId of parsed.data.data.channels) {
+  // Each listed channel once, in the order given.
+  for (const channelId of new Set(parsed.data.data.channels)) {
     // A `dm_…` target is a DM subscription (§7.4). Delivery itself uses
     // `publishToActor`, so subscribing to a dm is an explicit opt-in/ack: we
     // authorize it iff the caller is a participant (has a `dm_conversations`
@@ -79,12 +94,13 @@ export function handleSubscribe(
       if (state.localHandle && isDmParticipant(db, state.localHandle, channelId, authority)) {
         authorized.push(channelId);
       } else {
-        forbidden.push(channelId);
+        refused.push(channelId);
       }
       continue;
     }
     const row = getChannelRow(db, channelId);
-    // Unknown channel or actor not permitted by tier/membership/view → forbidden.
+    // Unknown channel or actor not permitted by tier/membership/view → refused
+    // as not found (§11.3).
     if (row && canViewChannel(db, row, state.actor)) {
       authorized.push(channelId);
       const sinceCursor = since?.[channelId];
@@ -92,17 +108,32 @@ export function handleSubscribe(
         resumable.push({ channelId, groupId: row.groupId, sinceCursor });
       }
     } else {
-      forbidden.push(channelId);
+      refused.push(channelId);
     }
   }
 
-  if (forbidden.length > 0) {
+  // §7.1 subscription cap: all-or-nothing, counted over readable channels only.
+  const added = new Set(authorized.filter((channelId) => !hubConn.subscriptions.has(channelId)));
+  if (hubConn.subscriptions.size + added.size > config.wsMaxSubscriptions) {
     hub.send(
       ws,
-      errorEvent("forbidden", `not authorized to subscribe to: ${forbidden.join(", ")}`, frameId),
+      errorEvent(
+        "subscription_limit",
+        `subscribing would exceed this connection's limit of ${config.wsMaxSubscriptions} subscriptions`,
+        frameId,
+      ),
     );
+    return;
   }
-  if (authorized.length === 0) return;
+
+  const refusal = (): void => {
+    if (refused.length === 0) return;
+    hub.send(ws, errorEvent("not_found", "No such channel", frameId, { channels: refused }));
+  };
+  if (authorized.length === 0) {
+    refusal();
+    return;
+  }
 
   // Register the subscriptions BEFORE replaying so the single-process hub never
   // interleaves a live event ahead of the replay for a resumed channel.
@@ -124,8 +155,9 @@ export function handleSubscribe(
     }
   }
 
-  // Ack first (carrying `truncated` when non-empty), then replay — the ack
-  // tells the client which channels to backfill via REST before live events.
+  // Ack first (carrying `truncated` when non-empty), then the refusal, then
+  // replay — the ack tells the client which channels to backfill via REST
+  // before live events.
   hub.send(ws, {
     type: "subscribed",
     correlationId: frameId,
@@ -134,6 +166,7 @@ export function handleSubscribe(
       ...(truncated.length > 0 ? { truncated } : {}),
     },
   });
+  refusal();
 
   // Replay each non-truncated channel's post-cursor timeline, ascending, to
   // THIS connection only (a resume is private to the resuming client).

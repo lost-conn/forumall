@@ -159,6 +159,27 @@ const RawEnvSchema = z.object({
   TYPING_TIMEOUT_MS: z.coerce.number().int().min(1).default(6000),
 
   /**
+   * Largest WebSocket frame accepted, in bytes (§7.1 "Close codes"). A larger
+   * frame closes the connection with `1009` — the WebSocket counterpart of the
+   * REST `413` (§2.5). Default 1 MiB.
+   */
+  WS_MAX_FRAME_BYTES: z.coerce.number().int().min(1024).default(1_048_576),
+
+  /**
+   * Per-connection subscription cap (§7.1 "Delivery, ordering & limits"). A
+   * `subscribe` that would take the connection past it is refused as a whole
+   * with `subscription_limit` (409). Default 1000.
+   */
+  WS_MAX_SUBSCRIPTIONS: z.coerce.number().int().min(1).default(1000),
+
+  /**
+   * Per-actor cap on live authenticated WebSocket connections, across devices
+   * (§7.1 "Close codes"). A handshake past it gets `error` `too_many_requests`
+   * in place of `authenticated`, then close `1013`. Default 20.
+   */
+  WS_MAX_CONNECTIONS_PER_ACTOR: z.coerce.number().int().min(1).default(20),
+
+  /**
    * Federation allow-list (§8 Authorization): comma-separated remote provider
    * domains permitted to federate. **Empty by default → open** (every non-denied
    * domain is allowed). When non-empty, ONLY the listed domains may federate.
@@ -358,6 +379,12 @@ export interface Config {
   readonly maxResumeReplay: number;
   /** Typing-indicator auto-expiry window in ms (§7.1 "Typing indicators"). */
   readonly typingTimeoutMs: number;
+  /** Largest accepted WebSocket frame, bytes; larger closes `1009` (§7.1). */
+  readonly wsMaxFrameBytes: number;
+  /** Per-connection subscription cap (§7.1); past it → `subscription_limit`. */
+  readonly wsMaxSubscriptions: number;
+  /** Per-actor live WS connection cap (§7.1); past it → `too_many_requests` + `1013`. */
+  readonly wsMaxConnectionsPerActor: number;
   /**
    * Federation allow-list (§8): canonicalized domains permitted to federate.
    * Empty → open (all non-denied domains allowed). See {@link isProviderAllowed}.
@@ -447,6 +474,9 @@ export function loadConfig(env: Env = process.env): Config {
     messageEditWindowSeconds: raw.MESSAGE_EDIT_WINDOW_SECONDS,
     maxResumeReplay: raw.MAX_RESUME_REPLAY,
     typingTimeoutMs: raw.TYPING_TIMEOUT_MS,
+    wsMaxFrameBytes: raw.WS_MAX_FRAME_BYTES,
+    wsMaxSubscriptions: raw.WS_MAX_SUBSCRIPTIONS,
+    wsMaxConnectionsPerActor: raw.WS_MAX_CONNECTIONS_PER_ACTOR,
     adminHandles: parseHandleList(raw.ADMIN_HANDLES),
     trustProxy: raw.TRUST_PROXY,
     rateLimit: Object.freeze({

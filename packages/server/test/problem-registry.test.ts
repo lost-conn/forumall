@@ -239,7 +239,7 @@ function expectRegistryError(f: WsEnvelope, code: RegistryErrorCode): void {
 }
 
 describe("WS error events use the §7.3 registry", () => {
-  test("bad JSON / bad command / forbidden subscribe / failed auth", async () => {
+  test("bad JSON / bad command / refused subscribe / failed auth", async () => {
     const { app } = freshApp("ws-errors", WS_DOMAIN);
     const server = Bun.serve({ port: 0, fetch: app.fetch, websocket: app.__websocket });
     servers.push(server);
@@ -307,7 +307,7 @@ describe("WS error events use the §7.3 registry", () => {
     ws.send(JSON.stringify({ id: "c1", type: "subscribe", ts: rfc3339Timestamp(), data: {} }));
     expectRegistryError(await err, "bad_request");
 
-    // Subscribing to a channel we cannot see → forbidden / 403.
+    // Subscribing to a channel we cannot see → not_found / 404 (§7.1, §11.3).
     err = nextFrame(ws, (f) => f.type === "error" && f.correlationId === "c2");
     ws.send(
       JSON.stringify({
@@ -317,7 +317,7 @@ describe("WS error events use the §7.3 registry", () => {
         data: { channels: ["chn_nope"] },
       }),
     );
-    expectRegistryError(await err, "forbidden");
+    expectRegistryError(await err, "not_found");
     ws.close();
   });
 });

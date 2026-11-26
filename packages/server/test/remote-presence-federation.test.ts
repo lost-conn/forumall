@@ -261,7 +261,7 @@ async function presenceSubscribe(
 }
 
 describe("presence.subscribe for a remote user never leaks a local namesake (§4.5.1, §7.5)", () => {
-  test("bob online on B + carol subscribes to bob@a.test → uniform offline, not bob's real presence", async () => {
+  test("bob online on B + carol subscribes to bob@a.test → refused not_found, never bob's real presence", async () => {
     const fed = startFederation(tmp);
     open.push(fed);
 
@@ -275,31 +275,37 @@ describe("presence.subscribe for a remote user never leaks a local namesake (§4
     const bobConn = await connectAuthenticated(fed.b, bob);
     const carolConn = await connectAuthenticated(fed.b, carol);
 
-    // Subscribe to BOTH the cross-domain ref (a.test's "bob", who doesn't even
-    // exist on A) and bob's real, fully-qualified local ref in one request, so
-    // both snapshots come back from the exact same code path side by side.
+    // Subscribe to BOTH the cross-domain ref (a.test's "bob", whom B does not
+    // host) and bob's real, fully-qualified local ref in one request.
     const foreignRef = `bob@${fed.a.domain}`;
     const localRef = bob.actor; // bob@b.test
-    const snap = await presenceSubscribe(carolConn, [foreignRef, localRef]);
+    carolConn.send({
+      id: "psub",
+      type: "presence.subscribe",
+      data: { users: [foreignRef, localRef] },
+    });
 
-    const foreign = snap.get(foreignRef) as Presence;
-    expect(foreign.availability).toBe("offline");
-    expect(foreign.status).toBeUndefined();
-    expect(foreign.lastSeen).toBeUndefined();
+    // §7.5: the hosted user is subscribed and acked alone; the foreign ref is
+    // refused with one not_found naming it, and gets no snapshot.
+    const ack = await carolConn.ofType("presence.subscribed");
+    expect((ack.data as { users: string[] }).users).toEqual([localRef]);
+    const err = await carolConn.ofType("error");
+    expect(err.correlationId).toBe("psub");
+    expect(err.data).toMatchObject({
+      code: "not_found",
+      status: 404,
+      details: { users: [foreignRef] },
+    });
+    const snapshot = await carolConn.ofType("presence.update");
+    expect((snapshot.data as PresenceData).user).toBe(localRef);
+    expect((snapshot.data as PresenceData).presence.availability).toBe("online");
 
-    // The LOCAL ref, by contrast, shows bob's real (online) state — proving the
-    // uniform offline above is not just "presence subscribe is broken", but
-    // specifically the remote-ref protection.
-    const local = snap.get(localRef) as Presence;
-    expect(local.availability).toBe("online");
-
-    // Live updates: bob sets `dnd`. Carol's LOCAL subscription gets it; her
-    // subscription to the FOREIGN ref never fires at all (§7.5: no
-    // provider-to-provider relay — and definitely never bob's real update).
+    // Live updates: bob sets `dnd`. Carol's LOCAL subscription gets it; nothing
+    // is ever published under the foreign ref (§7.5: no provider-to-provider
+    // relay — and definitely never bob's real update).
     bobConn.send({
       id: "pset",
       type: "presence.set",
-      ts: rfc3339Timestamp(),
       data: {
         availability: "dnd",
         status: "should never reach the foreign-ref subscriber as bob@a.test",

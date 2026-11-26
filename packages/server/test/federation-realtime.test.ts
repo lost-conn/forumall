@@ -398,7 +398,7 @@ describe("cross-provider direct-WS channel delivery (§8.2, §8.5)", () => {
     bobConn.close();
   });
 
-  test("a remote actor who has NOT joined → subscribe rejected with error forbidden", async () => {
+  test("a remote actor who has NOT joined → subscribe refused with error not_found (§7.1, §11.3)", async () => {
     const fed = boot();
     const { keyId, keypair } = await registerAlice(fed);
     const alice = `alice@${fed.a.domain}`;
@@ -422,12 +422,16 @@ describe("cross-provider direct-WS channel delivery (§8.2, §8.5)", () => {
       data: { channels: [channelId] },
     });
     const err = await client.ofType("error");
-    expect((err.data as { code: string }).code).toBe("forbidden");
-    expect((err.data as { status: number }).status).toBe(403);
+    expect(err.correlationId).toBe("cli_sub");
+    expect(err.data).toMatchObject({
+      code: "not_found",
+      status: 404,
+      details: { channels: [channelId] },
+    });
     client.close();
   });
 
-  test("federation policy: B denies a.test → alice's WS handshake rejected (error + close 4001)", async () => {
+  test("federation policy: B denies a.test → alice's WS handshake rejected (error forbidden + close 4001)", async () => {
     const fed = boot({ envB: { FEDERATION_DENY: "a.test" } });
     const { keyId, keypair } = await registerAlice(fed);
     const alice = `alice@${fed.a.domain}`;
@@ -441,7 +445,8 @@ describe("cross-provider direct-WS channel delivery (§8.2, §8.5)", () => {
       authority: fed.b.domain,
     });
     const err = await client.ofType("error");
-    expect((err.data as { status: number }).status).toBe(401);
+    // A policy denial is a 403, mirroring the REST answer (§7.1 Authentication).
+    expect(err.data).toMatchObject({ code: "forbidden", status: 403 });
     await client.waitClosed();
     expect(client.closeCode).toBe(4001);
     // Policy short-circuited BEFORE any key fetch.

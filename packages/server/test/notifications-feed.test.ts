@@ -637,7 +637,7 @@ async function connectAuthenticated(b: Booted, signer: Signer): Promise<WsClient
 /**
  * Create a group owned by `owner` + a `public`-tier text channel via the real
  * signed API (so the group carries a permissions map and a non-member can post to
- * the public channel) — mirrors the ws.test.ts helper.
+ * the public channel) — mirrors `makeGroupChannel` in `helpers/ws-harness.ts`.
  */
 async function makeGroupChannel(
   b: Booted,

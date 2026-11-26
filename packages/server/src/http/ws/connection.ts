@@ -23,6 +23,25 @@ import type { RemoteKeyWatch } from "./remote-key-watch.ts";
  */
 export const WS_CLOSE_AUTH_FAILED = 4001;
 
+/*
+ * RFC 6455 close codes (§7.1 "Close codes"): `4001`/`4003` are reserved for
+ * the reasons in the spec's table, every other close uses one of these. A
+ * frame over the provider's size limit closes with `1009`, which Bun sends
+ * itself (`maxPayloadLength`, see `app.ts`).
+ */
+
+/** Heartbeat / idle timeout (§7.1 "Heartbeat & liveness"). */
+export const WS_CLOSE_NORMAL = 1000;
+
+/** Provider shutdown or restart. */
+export const WS_CLOSE_GOING_AWAY = 1001;
+
+/**
+ * A capacity limit: the per-actor connection cap, sent after an `error`
+ * (`too_many_requests`) in place of `authenticated`.
+ */
+export const WS_CLOSE_TRY_AGAIN_LATER = 1013;
+
 /** Allowed ±skew for the `authenticate` timestamp, seconds (§4.5 step 3). */
 export const TIMESTAMP_SKEW_SECONDS = 300;
 
@@ -171,16 +190,24 @@ export function rawSocket(ws: WsContext): HubSocket | undefined {
  * `code` MUST be an `errorCode` and its `status` the matching HTTP status, so
  * `code` is typed to the registry and `status` is DERIVED from it — a mismatched
  * pair (or an off-registry code like `rate_limited`) cannot be expressed.
+ * `details` carries the code's machine-readable extras, e.g. the refused
+ * `channels` of a partial `subscribe` or a `retryAfter` in seconds (§7.1).
  */
 export function errorEvent(
   code: RegistryErrorCode,
   message: string,
   correlationId?: string,
+  details?: Readonly<Record<string, unknown>>,
 ): OutboundEvent {
   return {
     type: "error",
     ...(correlationId !== undefined ? { correlationId } : {}),
-    data: { code, message, status: errorCodeStatus(code) },
+    data: {
+      code,
+      message,
+      status: errorCodeStatus(code),
+      ...(details !== undefined ? { details } : {}),
+    },
   };
 }
 
@@ -203,7 +230,11 @@ export interface WsCtx {
   readonly issueChallengeNonce: () => string;
 }
 
-/** A command handler: the parsed-envelope frame of an authenticated connection. */
+/**
+ * A command handler for an authenticated connection: `rawFrame` is the decoded
+ * JSON frame (which the handler validates against its own command schema) and
+ * `frameId` its `id`, present on every command that reaches a handler.
+ */
 export type CommandHandler = (
   ctx: WsCtx,
   ws: WsContext,

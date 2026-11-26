@@ -2,7 +2,7 @@
  * WS client tests (§7.1) against the REAL `@forumall/server` for fidelity.
  *
  * Each test boots the server on an ephemeral port via `Bun.serve` (the same
- * pattern as the server's own `ws.test.ts`), registers a device key over HTTP
+ * pattern as the server's own `ws-*.test.ts` suites), registers a device key over HTTP
  * with our signing `OfscpClient`, then drives `OfscpWsClient` through the signed
  * handshake (challenge → authenticate → authenticated), a subscribe, and a hub
  * fan-out event — asserting the client dispatches it to a per-type listener.
