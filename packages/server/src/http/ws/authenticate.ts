@@ -16,10 +16,13 @@ import type { RemoteActorKey } from "../../provider/federation/user-keys-cache.t
 import { nonceKeyId, nonceRetentionMs } from "../../provider/nonce-store.ts";
 import { fanOutPresence } from "../../provider/presence.ts";
 import type { HubConnection, HubSocket } from "../../provider/ws-hub.ts";
+import type { RegistryErrorCode } from "../errors.ts";
+import { KEY_FETCH_RETRY_AFTER_SECONDS, retryAfterSeconds } from "../signer-resolution.ts";
 import {
   type ConnState,
   TIMESTAMP_SKEW_SECONDS,
   WS_CLOSE_AUTH_FAILED,
+  WS_CLOSE_TRY_AGAIN_LATER,
   type WsContext,
   type WsCtx,
   errorEvent,
@@ -45,7 +48,21 @@ import { startRemoteKeyWatch } from "./remote-key-watch.ts";
  * ## Connect-time federation policy (§8.5 connection notes)
  * For a remote actor the §8 allow/deny policy ({@link isProviderAllowed}) is
  * applied at the handshake BEFORE any key fetch; a disallowed peer gets an
- * `error` then close 4001. Local actors are unaffected.
+ * `error` (`forbidden`) then close 4001. Local actors are unaffected.
+ *
+ * ## Failures (§7.1 Authentication)
+ * Every failure sends an `error` whose `code`/`status` mirror the REST answer
+ * to the same failure (§4.5, §4.6), then closes with 4001 — never 1013, even
+ * for a 503: `unauthorized` for a failed check (malformed `authenticate`, bad
+ * signature/timestamp/nonce, no matching key, a key fetch the outbound rules
+ * refuse), `forbidden` for federation policy, `service_unavailable` with
+ * `details.retryAfter` when the keys could not be fetched (see
+ * {@link remoteLookupFailure}).
+ *
+ * ## Connection cap (§7.1 "Close codes")
+ * Checked once the handshake has succeeded: an actor already at
+ * {@link Config.wsMaxConnectionsPerActor} live connections gets `error`
+ * `too_many_requests` in place of `authenticated`, then close 1013.
  *
  * ## Guests (§4.8)
  * Guest accounts are NOT federated and MUST NOT open a remote WS connection. In
@@ -62,14 +79,20 @@ export async function handleAuthenticate(
   ws: WsContext,
   state: ConnState,
   rawFrame: unknown,
-  frameId: string,
+  frameId: string | undefined,
 ): Promise<void> {
   const { config, db, hub, presenceRegistry, userKeysCache, nonceStore, authority } = ctx;
-  const fail = (message: string): void => {
-    hub.send(ws, errorEvent("unauthorized", message, frameId));
+  const fail = (
+    message: string,
+    code: RegistryErrorCode = "unauthorized",
+    details?: Readonly<Record<string, unknown>>,
+  ): void => {
+    hub.send(ws, errorEvent(code, message, frameId, details));
     ws.close(WS_CLOSE_AUTH_FAILED, "authentication failed");
   };
 
+  // §7.1: a malformed `authenticate` (including one without an `id`) is an
+  // authentication failure, not a `bad_request` that leaves the socket open.
   const parsed = WsAuthenticateSchema.safeParse(rawFrame);
   if (!parsed.success) {
     fail("malformed authenticate command");
@@ -161,7 +184,10 @@ export async function handleAuthenticate(
     // Connect-time federation policy (§8.5 connection notes): a disallowed peer
     // is rejected BEFORE any key fetch.
     if (!isProviderAllowed(config, actorDomain)) {
-      fail(`federation with ${actorDomain} is not permitted by this provider's policy`);
+      fail(
+        `federation with ${actorDomain} is not permitted by this provider's policy`,
+        "forbidden",
+      );
       return;
     }
 
@@ -174,7 +200,8 @@ export async function handleAuthenticate(
       lookup = await userKeysCache.lookupActorKey(actor, keyId, { forceRefresh: true });
     }
     if (lookup.kind !== "found") {
-      fail(`remote device key not resolved (${lookup.kind.replace("_", " ")})`);
+      const failure = remoteLookupFailure(lookup);
+      fail(failure.message, failure.code, failure.details);
       return;
     }
     if (!verifyWith(lookup.key.publicKey)) {
@@ -198,6 +225,23 @@ export async function handleAuthenticate(
     !nonceStore.remember(nsKeyId, state.challengeNonce, nonceRetentionMs(TIMESTAMP_SKEW_SECONDS))
   ) {
     fail("challenge nonce already used");
+    return;
+  }
+
+  // §7.1 connection cap, checked once the handshake has succeeded: the `error`
+  // goes in place of `authenticated`, then close 1013 (never 4001: the
+  // credentials are fine). The challenge stays burned — it verified.
+  if (hub.liveConnectionCount(actor) >= config.wsMaxConnectionsPerActor) {
+    state.challengeUsed = true;
+    hub.send(
+      ws,
+      errorEvent(
+        "too_many_requests",
+        `too many connections for ${actor} (limit ${config.wsMaxConnectionsPerActor})`,
+        frameId,
+      ),
+    );
+    ws.close(WS_CLOSE_TRY_AGAIN_LATER, "too many connections");
     return;
   }
 
@@ -232,7 +276,11 @@ export async function handleAuthenticate(
   const wasOffline = hub.liveConnectionCount(actor) === 0;
   hub.add(hubConn);
 
-  hub.send(ws, { type: "authenticated", correlationId: frameId, data: { actor } });
+  hub.send(ws, {
+    type: "authenticated",
+    ...(frameId !== undefined ? { correlationId: frameId } : {}),
+    data: { actor },
+  });
 
   // §7.5 connection-derived online: the actor's first live connection flips
   // them effectively online (their explicit away/dnd, if any, is preserved by
@@ -242,5 +290,46 @@ export async function handleAuthenticate(
   // Local actors only — see the note on ConnState.localHandle.
   if (wasOffline && state.localHandle !== undefined) {
     fanOutPresence(db, hub, config, presenceRegistry, state.localHandle);
+  }
+}
+
+/** The `error` a remote actor's failed key lookup is answered with. */
+interface LookupFailureError {
+  readonly code: RegistryErrorCode;
+  readonly message: string;
+  readonly details?: Readonly<Record<string, unknown>>;
+}
+
+/**
+ * §7.1 Authentication: map a remote key lookup that found no usable key to the
+ * `error` mirroring the REST answer (`signerFailureError`, §4.5 step 6, §4.6):
+ * no matching key, or a fetch the outbound-request rules refuse → `401`; the
+ * keys could not be fetched, or a re-fetch was suppressed → `503` with
+ * `details.retryAfter` (seconds), the REST `Retry-After`.
+ */
+export function remoteLookupFailure(
+  lookup: Exclude<KeyLookup<RemoteActorKey>, { kind: "found" }>,
+): LookupFailureError {
+  switch (lookup.kind) {
+    case "no_key":
+      return { code: "unauthorized", message: "no published device key matches actor/keyId" };
+    case "refused":
+      return {
+        code: "unauthorized",
+        message: `the actor's keys cannot be checked: this provider's outbound-request rules forbid fetching them (${lookup.reason})`,
+      };
+    case "fetch_failed":
+      return {
+        code: "service_unavailable",
+        message: `the actor's keys could not be fetched from its home provider (${lookup.reason}); retry later`,
+        details: { retryAfter: KEY_FETCH_RETRY_AFTER_SECONDS },
+      };
+    case "rate_limited":
+      return {
+        code: "service_unavailable",
+        message:
+          "the actor's keys were fetched moments ago and may not be re-fetched yet; retry later",
+        details: { retryAfter: retryAfterSeconds(lookup.retryAfterMs) },
+      };
   }
 }

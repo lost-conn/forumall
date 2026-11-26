@@ -344,6 +344,60 @@ describe("WS presence subscribe + snapshot + live updates (§7.5)", () => {
     aConn.close();
     bConn.close();
   });
+
+  test("partial presence.subscribe: ack lists hosted users, then one not_found names the rest, then snapshots", async () => {
+    const b = boot("pr-sub-partial");
+    const alice = await registerUserWithKey(b, "alice");
+    const bob = await registerUserWithKey(b, "bob");
+    await makeGroup(b, alice, bob);
+    const bConn = await connectAuthenticated(b, bob);
+
+    const ghost = `ghost@${DOMAIN}`;
+    const foreign = "carol@elsewhere.example";
+    bConn.send({
+      id: "psub_part",
+      type: "presence.subscribe",
+      data: { users: [alice.actor, ghost, foreign] },
+    });
+    const ack = await bConn.next();
+    expect(ack.type).toBe("presence.subscribed");
+    expect(ack.correlationId).toBe("psub_part");
+    expect((ack.data as { users: string[] }).users).toEqual([alice.actor]);
+    const err = await bConn.next();
+    expect(err.type).toBe("error");
+    expect(err.correlationId).toBe("psub_part");
+    expect(err.data).toMatchObject({
+      code: "not_found",
+      status: 404,
+      details: { users: [ghost, foreign] },
+    });
+    const snap = await bConn.next();
+    expect(snap.type).toBe("presence.update");
+    expect((snap.data as PresenceData).user).toBe(alice.actor);
+    bConn.close();
+  });
+
+  test("a presence.subscribe naming only unknown users → only an error not_found", async () => {
+    const b = boot("pr-sub-none");
+    const bob = await registerUserWithKey(b, "bob");
+    const bConn = await connectAuthenticated(b, bob);
+
+    bConn.send({
+      id: "psub_none",
+      type: "presence.subscribe",
+      data: { users: [`ghost@${DOMAIN}`] },
+    });
+    const err = await bConn.next();
+    expect(err.type).toBe("error");
+    expect(err.data).toMatchObject({ code: "not_found", details: { users: [`ghost@${DOMAIN}`] } });
+    expect(
+      await bConn.none(
+        (f) => f.type === "presence.subscribed" || f.type === "presence.update",
+        150,
+      ),
+    ).toBe(true);
+    bConn.close();
+  });
 });
 
 describe("connection-derived online/offline (§7.5)", () => {

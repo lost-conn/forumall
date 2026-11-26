@@ -51,6 +51,7 @@ import {
   toPresence,
 } from "../provider/presence.ts";
 import { getPrivacySettings, updatePrivacySettings } from "../provider/privacy.ts";
+import { localHandleOfUserRef } from "../provider/user-refs.ts";
 import { canView } from "../provider/visibility.ts";
 import { userRefToCanonicalActor } from "./canonical-fields.ts";
 import { AppError } from "./errors.ts";
@@ -85,36 +86,11 @@ function requireParam(c: Context<AppBindings>, name: string): string {
 }
 
 /**
- * Resolve a `userRef` (a path param: `handle`, `handle@domain`, or the canonical
- * HTTPS URI `https://{domain}/api/users/{handle}`) to a LOCAL handle, or `null`
- * if it is not a local user of this provider.
+ * Resolve a `userRef` path param to a LOCAL handle, or `null` if it is not a
+ * local user of this provider (see {@link localHandleOfUserRef}).
  */
 function localHandleOfRef(c: Context<AppBindings>, ref: string): string | null {
-  const { config, db } = c.var;
-  const host = canonicalAuthority(config.domain);
-
-  let handle = ref;
-  if (ref.startsWith("https://")) {
-    // https://{domain}/api/users/{handle}
-    try {
-      const u = new URL(ref);
-      if (canonicalAuthority(u.host) !== host) return null;
-      const m = u.pathname.match(/\/api\/users\/([^/]+)$/);
-      if (!m) return null;
-      handle = decodeURIComponent(m[1] as string);
-    } catch {
-      return null;
-    }
-  } else {
-    const at = ref.lastIndexOf("@");
-    if (at > 0 && at < ref.length - 1) {
-      if (canonicalAuthority(ref.slice(at + 1)) !== host) return null; // foreign domain
-      handle = ref.slice(0, at);
-    }
-    // else: bare handle — treat as local.
-  }
-
-  return getUserRow(db, handle) ? handle : null;
+  return localHandleOfUserRef(c.var.db, canonicalAuthority(c.var.config.domain), ref);
 }
 
 /**

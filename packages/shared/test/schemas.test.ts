@@ -266,6 +266,10 @@ const SAMPLE_SCHEMAS: Record<string, z.ZodTypeAny> = {
   "ws-ping": WsPingSchema,
   "ws-pong": WsPongSchema,
   "ws-error": WsErrorSchema,
+  // §7.1 partial subscribe: the refused channel ids ride in details.channels.
+  "ws-error-subscribe-partial": WsErrorSchema,
+  // §7.1 envelope: a command's `ts` is optional and its value ignored.
+  "ws-command-ts-ignored": WsTypingStopSchema,
 };
 
 function sampleName(file: string): string {

@@ -18,6 +18,7 @@ import {
   setExplicitPresence,
   toPresence,
 } from "../../provider/presence.ts";
+import { localHandleOfUserRef } from "../../provider/user-refs.ts";
 import { type ConnState, type WsContext, type WsCtx, errorEvent } from "./connection.ts";
 
 /**
@@ -25,13 +26,18 @@ import { type ConnState, type WsContext, type WsCtx, errorEvent } from "./connec
  * named user's presence (connection-scoped, like channel subscriptions), ack
  * with `presence.subscribed`, then IMMEDIATELY send an initial `presence.update`
  * snapshot for each subscribed user — filtered for THIS viewer exactly as
- * `GET /api/users/{ref}/presence` would be (so the two surfaces agree). Subjects
- * are subscribed by canonical actor, keeping each ref's OWN domain (§4.5.1): a
- * bare handle defaults to this provider's authority, but `handle@domain` is
- * NEVER rewritten onto the local authority. A provider only hosts presence for
- * its own users (§7.5 Federation), so a subject whose domain isn't ours gets
- * the same uniform `offline` a hidden/nonexistent local user would — never a
- * local namesake's real presence. See {@link presenceForSubject}.
+ * `GET /api/users/{ref}/presence` would be (so the two surfaces agree).
+ *
+ * ## Refused subjects (§7.5, parallel to channel `subscribe` §7.1)
+ * A provider only hosts presence for its own users. A listed user it does not
+ * host, or an unknown local handle — exactly the subjects
+ * `GET /api/users/{userRef}/presence` answers `404` ({@link localHandleOfUserRef})
+ * — is left out of `presence.subscribed` and gets no updates. The rest are
+ * subscribed and acked with `presence.subscribed` listing only them; then ONE
+ * `error` (`not_found`, the refused refs as given in `details.users`) covers
+ * every refused one. With no subject left, only the `error` is sent.
+ * Subscribed subjects are keyed by their canonical local actor
+ * (`handle@<this authority>`), the key the fan-out publishes under.
  */
 export function handlePresenceSubscribe(
   ctx: WsCtx,
@@ -49,21 +55,35 @@ export function handlePresenceSubscribe(
   const hubConn = state.hubConn;
   if (!hubConn) return; // unreachable: only authenticated connections reach here
 
-  // Normalize each subject to its canonical actor key — a bare handle defaults
-  // to OUR authority, but a `handle@domain` ref keeps its own domain (§4.5.1:
-  // never key provider-local storage on a bare handle stripped of a foreign
-  // domain). The registry key matches the fan-out key for LOCAL subjects
-  // (`${handle}@${host}`); a remote subject's key simply never gets fanned
-  // into (§7.5: no provider-to-provider presence relay in v0.1).
-  const subjects = parsed.data.data.users.map((u) => canonicalSubjectActor(u, authority));
+  // Split hosted subjects from refused ones. Each listed ref once, in order.
+  const subjects: string[] = [];
+  const refused: string[] = [];
+  for (const ref of new Set(parsed.data.data.users)) {
+    const handle = localHandleOfUserRef(db, authority, ref);
+    if (handle === null) {
+      refused.push(ref);
+    } else {
+      const subject = `${handle}@${authority}`;
+      if (!subjects.includes(subject)) subjects.push(subject);
+    }
+  }
+  const refusal = (): void => {
+    if (refused.length === 0) return;
+    hub.send(ws, errorEvent("not_found", "No such user", frameId, { users: refused }));
+  };
+  if (subjects.length === 0) {
+    refusal();
+    return;
+  }
   presenceRegistry.subscribe(hubConn, subjects);
 
-  // Ack first, then the per-user snapshot (§7.5).
+  // Ack first, then the refusal, then the per-user snapshot (§7.5).
   hub.send(ws, {
     type: "presence.subscribed",
     correlationId: frameId,
     data: WsPresenceSubscribedSchema.shape.data.parse({ users: subjects }),
   });
+  refusal();
 
   // `canView` matches SELF on the full actor; `handle` is the viewer's LOCAL
   // handle (empty for a remote viewer), never a foreign handle passed off as one.
@@ -90,7 +110,7 @@ export function handlePresenceUnsubscribe(
   rawFrame: unknown,
   frameId: string,
 ): void {
-  const { hub, presenceRegistry, authority } = ctx;
+  const { db, hub, presenceRegistry, authority } = ctx;
   const parsed = WsPresenceUnsubscribeSchema.safeParse(rawFrame);
   if (!parsed.success) {
     hub.send(ws, errorEvent("bad_request", "malformed presence.unsubscribe command", frameId));
@@ -99,9 +119,13 @@ export function handlePresenceUnsubscribe(
   const hubConn = state.hubConn;
   if (!hubConn) return;
 
-  // Normalize to the same canonical actor key used at subscribe time (§4.5.1:
-  // preserves each ref's own domain, never rewritten onto ours).
-  const subjects = parsed.data.data.users.map((u) => canonicalSubjectActor(u, authority));
+  // Normalize to the same canonical actor key used at subscribe time: a hosted
+  // user's local actor; any other ref keeps its own domain (§4.5.1), which
+  // matches no subscription and is simply acked.
+  const subjects = parsed.data.data.users.map((u) => {
+    const handle = localHandleOfUserRef(db, authority, u);
+    return handle === null ? canonicalSubjectActor(u, authority) : `${handle}@${authority}`;
+  });
   presenceRegistry.unsubscribe(hubConn, subjects);
   hub.send(ws, {
     type: "presence.unsubscribed",

@@ -70,7 +70,7 @@ Status legend: **covered** = exercised by an executing test; **partial** =
 provider-side guarantee is tested but a client-UI aspect (web app) is out of scope
 for these protocol tests, or the feature is optional.
 
-### Provider MUST (26 items)
+### Provider MUST (28 items)
 
 | # | §12 item | Tests | Status |
 |---|---|---|---|
@@ -79,23 +79,25 @@ for these protocol tests, or the feature is optional.
 | 3 | Device key registration + revocation | `device-keys.test.ts` | covered |
 | 25 | Every `public_key` is the raw 32-byte Ed25519 key in padded standard base64; a registration whose key is not is `400` (§4.3.2) | `device-keys.test.ts`, `shared/schemas.test.ts` (`Ed25519PublicKey`, the `device-key-registration.spki.invalid.json` reject case) | covered |
 | 4 | Validate Ed25519 request signatures over §4.4.2 canonical string (authority binding, nonce replay) | `shared/conformance.test.ts`, `shared/signing.test.ts`, `signature.test.ts`, `nonce-store.test.ts`, `replay-warmup.test.ts` (§4.5 Restarts: 503 + `Retry-After` warm-up of the in-memory replay store; WS handshake exempt), `canonical-authority.test.ts` (§2.2 canonical actors/authorities) | covered |
-| 5 | Signed WS `auth.challenge`/`authenticate` handshake (§7.1) | `shared/conformance.test.ts`, `shared/ws-auth.test.ts`, `ws.test.ts` | covered |
+| 5 | Signed WS `auth.challenge`/`authenticate` handshake; a failure is an `error` mirroring REST (`401`; `403` federation policy; `503` + `retryAfter` when the keys could not be fetched), then close `4001`, never `1013` (§7.1) | `shared/conformance.test.ts`, `shared/ws-auth.test.ts`, `ws-handshake.test.ts` (malformed `authenticate` is an auth failure; connection cap → `too_many_requests` + `1013` in place of `authenticated`), `ws-remote-key.test.ts` (remote key lookup outcomes), `federation-realtime.test.ts` (policy `403`) | covered |
+| 27 | WS envelope and command rules: command `ts` optional and ignored; missing `id` after auth, malformed `data`, or an unsupported standard command → `bad_request`; unknown non-standard types ignored (§2.3); `4001`/`4003` only for the table's reasons (idle `1000`, shutdown `1001`, oversized frame `1009`) (§7.1) | `shared/ws-envelope-schema.test.ts`, `shared/schemas.test.ts` (command/event envelope samples and reject cases), `ws-envelope-rules.test.ts`, `ws-handshake.test.ts` | covered |
+| 28 | Partial `subscribe`: `subscribed` for the readable channels, then one `not_found` naming the rest in `details.channels` (only the `error` when none is readable); a `subscribe` over the cap is refused whole with `subscription_limit`, counting readable channels only (§7.1) | `ws-subscriptions.test.ts`, `dms-send.test.ts` (DM targets), `federation-realtime.test.ts` (remote non-member), `presence.test.ts` (the §7.5 `presence.subscribe` parallel, `details.users`) | covered |
 | 6 | Serve user public keys at `/.well-known/ofscp/users/{handle}/keys` | `conformance.test.ts`, `device-keys.test.ts` | covered |
 | 7 | Group + channel CRUD with permission model (§5.5) | `groups.test.ts`, `channels.test.ts`, `conformance.test.ts` | covered |
 | 8 | Group membership: join/leave, listing, roles, request approval (§5.7) | `membership.test.ts`, `conformance.test.ts` | covered |
 | 9 | Message edit (author-only, `editUntil`) replacing any of `content`, `attachments`, `tags`, `mentions` and the article fields, + tombstone delete (§7.1) | `message-edit-delete.test.ts`, `ws-correlation.test.ts` (only the editing connection's `message.updated` is correlated), `message-edit-fields.test.ts` (channel PATCH + WS `message.update`: each field present replaces the stored value, absent ones kept, `type`/`reference`/`metadata` ignored; article `title`/`summary`/`cover` with `null` removing, a resulting `cover` naming no attachment → 400; article-only fields on a non-article → 400, else ignored; the §5.8 attachment checks and canonical `mentions` of a create; 404 / 403 before any body 400; full message in `message.updated`), `message-edit-dm.test.ts` (the same on `PATCH /api/dms/…` and `/api/federation/dms/…`, and the whole `MessageUpdate` forwarded to a remote counterparty's provider), `shared/edits-media-groups.test.ts` | covered |
 | 22 | Message creation of every type with attachments / reference / tags / mentions / article fields / metadata over `message.create` and `POST …/messages`; `post:<type>`, `replyOnly` / `replyOnlyTo` (valid reply only); 404 for an unreadable channel; §5.8 checks on attachments in a message (§5.2.1, §5.3, §5.8, §7.1) | `message-create.test.ts` (incl. the order of checks: step-1 400 before 404, steps 2–3 before the duplicate lookup), `message-create-fields.test.ts` (hosted attachments: the author's stored upload with matching `mime`/`size`/`hash`, stored as the provider's record; a local author's attachments must be hosted; a remote author's others lose `expiresAt`; canonical `mentions`; article `title`/`summary`/`cover`, a `cover` naming no attachment → 400, ignored on other types; the same checks on a DM create), `ws-correlation.test.ts` (only the requesting connection's `message.created` is correlated), `channel-permissions.test.ts`, `conformance.test.ts`, `shared/message-create-schema.test.ts` | covered |
-| 23 | `(author, channelId, clientMessageId)` idempotency after only auth / visibility / permission checks; WS duplicate answer without `cursor`; `clientMessageId` echoed live, replayed and on every create response (§7.1, §7.4) | `message-create.test.ts`, `dms.test.ts`, `conformance.test.ts` | covered |
+| 23 | `(author, channelId, clientMessageId)` idempotency after only auth / visibility / permission checks; WS duplicate answer without `cursor`; `clientMessageId` echoed live, replayed and on every create response (§7.1, §7.4) | `message-create.test.ts`, `ws-message-create.test.ts`, `dms-send.test.ts`, `conformance.test.ts` | covered |
 | 24 | Full canonical `Message` in `message.created`, `message.updated`, `dm.message` (§7.1, §7.4) | `message-create.test.ts`, `conformance.test.ts`, `shared/message-create-schema.test.ts`, `shared/schemas.test.ts` | covered |
-| 10 | Direct messages: dmId, inbox-only storage, delivery verification, listing/reading, `dm.message` realtime (§7.4) | `shared/conformance.test.ts`, `shared/dm.test.ts`, `dms.test.ts`, `conformance.test.ts` | covered |
+| 10 | Direct messages: dmId, inbox-only storage, delivery verification, listing/reading, `dm.message` realtime (§7.4) | `shared/conformance.test.ts`, `shared/dm.test.ts`, `dms-send.test.ts`, `dms-pointers.test.ts`, `dms-read.test.ts`, `conformance.test.ts` | covered |
 | 11 | Explicit contacts model (request/accept/remove, local + federated) (§6.7) | `contacts.test.ts` | covered |
 | 12 | Publish provider signing keys + sign provider-to-provider requests (§8.1) | `shared/signing.test.ts`, `federation.test.ts`, `conformance.test.ts` | covered |
 | 13 | Accept remote direct-WS, resolve remote keys (§4.6), enforce membership+tier, advertise `realtimeDelivery` (§8.5) | `federation-realtime.test.ts`, `federation-actor.test.ts`, `canonical-authority.test.ts` (§8 deny list on all outbound requests), `signer-resolution.test.ts` (§4.6 fetch outcomes: 401 / 503 / outbound-rules 401 / policy 403, unexpired-cache rule) | covered |
 | 14 | Follow list as pointers only — no server feed (§7.6) | `follows.test.ts`, `conformance.test.ts` | covered |
-| 15 | WS resume (`since` replay, per-message cursors) + ping/pong (§7.1) | `ws.test.ts` | covered |
+| 15 | WS resume (`since` replay, per-message cursors) + ping/pong (§7.1) | `ws-resume.test.ts`, `ws-envelope-rules.test.ts` | covered |
 | 16 | Real-time presence over WS + §6.1 visibility, consistent with REST (§7.5) | `presence.test.ts`, `conformance.test.ts` | covered |
 | 26 | `PUT /api/me/presence` is a full replace rejecting `offline` (`400`); `PUT /api/me/privacy` is a partial update rejecting an actor in both lists or an over-long list (`400`) (§6.4, §6.6) | `presence.test.ts`, `privacy.test.ts`, `shared/schemas.test.ts` (the `presence-update-request.offline.invalid.json` reject case) | covered |
-| 17 | Message fan-out + notification endpoints | `notifications.test.ts`, `ws.test.ts` | covered |
+| 17 | Message fan-out + notification endpoints | `notifications.test.ts`, `ws-hub-fanout.test.ts`, `ws-message-create.test.ts` | covered |
 | 18 | Enforce tiers per channel and group | `channels.test.ts`, `groups.test.ts`, `messages.test.ts` | covered |
 | 19 | Support the `private` tier | `groups.test.ts`, `channels.test.ts` | covered |
 | 20 | Expose `GET /api/tiers` | `conformance.test.ts`, `server.test.ts` | covered |
@@ -130,11 +132,12 @@ pure web-UI behavior outside the scope of these tests.
 - **Client SHOULD** — Render metadata extensions when schemas known: web-UI concern, not covered by protocol tests.
 - **Client SHOULD** — UX for tiers (access + discoverability): web-UI concern.
 - **Client SHOULD** — Handle federation latency + retries: partially exercised by federation tests on the provider side.
+- **Provider MAY** — WS limits (§7.1): a per-connection subscription cap (`WS_MAX_SUBSCRIPTIONS`, `subscription_limit`), a per-actor connection cap (`WS_MAX_CONNECTIONS_PER_ACTOR`, `too_many_requests` + `1013`) and a frame size limit (`WS_MAX_FRAME_BYTES`, `1009`) are **implemented** (`ws-subscriptions.test.ts`, `ws-handshake.test.ts`, `ws-envelope-rules.test.ts`). There is **no** per-connection command rate limit and no outbound-queue bound, so Forumall never closes with `1008` or with `1013` for a slow consumer.
 
 ## Summary
 
-- **33** §12 MUST items (26 Provider, 7 Client): **all mapped to executing tests.**
-- **28** fully covered, **5** partial (each partial is an honest provider-tested /
+- **35** §12 MUST items (28 Provider, 7 Client): **all mapped to executing tests.**
+- **30** fully covered, **5** partial (each partial is an honest provider-tested /
   web-UI-untested split, or an optional feature — see notes above). **No MUST item
   is unmapped or failing.**
 - **23** live response bodies validated against the spec's own JSON Schemas.

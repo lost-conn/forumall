@@ -16,6 +16,10 @@
  *  - with no cache entry (`cache_until` already past) the first failed
  *    re-fetch is `4001`;
  *  - the actor's provider becoming federation-denied is `4001` at once.
+ *
+ * A handshake whose key lookup fails answers the `error` REST would (`503`
+ * with `retryAfter` when the keys could not be fetched, `401` when they show
+ * no usable key, `403` for a denied provider), then closes `4001`.
  */
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -506,6 +510,78 @@ describe("remote WS key re-check — federation policy (§7.1)", () => {
     (h.config.federationDeny as string[]).push(REMOTE);
     await expectClosedWith(alice, 4001);
     expect(h.fetches).toBe(fetchesAtAuth);
+  });
+});
+
+/**
+ * Assert a failed handshake: an `error` mirroring the REST answer (§7.1
+ * Authentication), then close 4001 — never 1013 or 4003.
+ */
+async function expectHandshakeRefused(
+  client: WsClient,
+  code: string,
+  status: number,
+): Promise<{ details?: { retryAfter?: number } }> {
+  const err = await client.ofType("error");
+  expect(err.correlationId).toBe("cli_auth");
+  expect(err.data).toMatchObject({ code, status });
+  expect(await client.waitClosed()).toBe(4001);
+  expect(await client.ofType("authenticated", 50).catch(() => null)).toBeNull();
+  return err.data as { details?: { retryAfter?: number } };
+}
+
+describe("remote WS handshake failures mirror REST (§7.1 Authentication)", () => {
+  for (const script of ["server_error", "network_error"] as const) {
+    test(`a ${script.replace("_", " ")} fetching the key → 503 service_unavailable with retryAfter, close 4001`, async () => {
+      const h = boot({ ttlMs: -1000 });
+      h.script = script;
+      const data = await expectHandshakeRefused(
+        await sendAliceAuthenticate(h),
+        "service_unavailable",
+        503,
+      );
+      expect(data.details?.retryAfter).toBe(30);
+    });
+  }
+
+  test("a key fetch suppressed by the re-fetch limit → 503 with the wait as retryAfter", async () => {
+    const h = boot({ ttlMs: -1000, refetchIntervalMs: 3_600_000 });
+    h.script = "server_error";
+    await expectHandshakeRefused(await sendAliceAuthenticate(h), "service_unavailable", 503);
+    const fetches = h.fetches;
+
+    const data = await expectHandshakeRefused(
+      await sendAliceAuthenticate(h),
+      "service_unavailable",
+      503,
+    );
+    expect(h.fetches).toBe(fetches); // no new fetch was let through
+    expect(data.details?.retryAfter).toBeGreaterThan(0);
+  });
+
+  for (const [script, what] of [
+    ["not_found", "a 404 for the keys"],
+    ["without_key", "keys without the key id"],
+    ["refused", "a fetch the egress rules forbid"],
+  ] as const) {
+    test(`${what} → 401 unauthorized, close 4001`, async () => {
+      const h = boot({ ttlMs: -1000 });
+      h.script = script;
+      await expectHandshakeRefused(await sendAliceAuthenticate(h), "unauthorized", 401);
+    });
+  }
+
+  test("a key that does not verify the signature → 401 unauthorized, close 4001", async () => {
+    const h = boot();
+    h.script = "other_key";
+    await expectHandshakeRefused(await sendAliceAuthenticate(h), "unauthorized", 401);
+  });
+
+  test("a federation-denied provider → 403 forbidden, close 4001, no fetch", async () => {
+    const h = boot();
+    (h.config.federationDeny as string[]).push(REMOTE);
+    await expectHandshakeRefused(await sendAliceAuthenticate(h), "forbidden", 403);
+    expect(h.fetches).toBe(0);
   });
 });
 

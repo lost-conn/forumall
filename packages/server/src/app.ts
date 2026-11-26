@@ -38,6 +38,7 @@ import { createStaticHandler } from "./http/static.ts";
 import type { AppBindings } from "./http/types.ts";
 import { createUserKeysRouter } from "./http/user-keys.ts";
 import { type WsTimings, createWsHandlers } from "./http/ws.ts";
+import { WS_CLOSE_GOING_AWAY } from "./http/ws/connection.ts";
 import { channelDeliveryGate } from "./provider/access-revocation.ts";
 import { RemoteDiscoveryCache } from "./provider/federation/discovery-cache.ts";
 import {
@@ -111,7 +112,15 @@ export interface AppDeps {
 /** A Hono app augmented with the Bun `websocket` handler object it requires. */
 export type AppWithWebSocket = Hono<AppBindings> & {
   /** The Bun WS handler object to export alongside `fetch` (see file header). */
-  readonly __websocket: ReturnType<typeof createBunWebSocket>["websocket"];
+  readonly __websocket: ReturnType<typeof createBunWebSocket>["websocket"] & {
+    /** Largest accepted frame, bytes (`config.wsMaxFrameBytes`); larger closes 1009. */
+    readonly maxPayloadLength: number;
+  };
+  /**
+   * Close every open WebSocket connection with `1001` (§7.1 "Close codes") —
+   * the entry point calls it on shutdown, before stopping the server.
+   */
+  readonly __closeWebSockets: (reason?: string) => void;
   /** The shared real-time hub (for tests / later wiring). */
   readonly __hub: Hub;
   /** The shared presence-subscription registry (for tests / later wiring). */
@@ -254,8 +263,12 @@ export function createApp(config: Config, deps: AppDeps): AppWithWebSocket {
   app.onError(problems.onError);
 
   // Attach the Bun WS handler object + hub + registry for the entry/test harness.
+  // §7.1 "Close codes": Bun closes a connection whose frame exceeds
+  // `maxPayloadLength` with 1009, the WebSocket counterpart of the REST 413.
   return Object.assign(app, {
-    __websocket: websocket,
+    __websocket: { ...websocket, maxPayloadLength: config.wsMaxFrameBytes },
+    __closeWebSockets: (reason = "server shutting down") =>
+      wsHandlers.closeAll(WS_CLOSE_GOING_AWAY, reason),
     __hub: hub,
     __presenceRegistry: presenceRegistry,
     __discoveryCache: discoveryCache,
