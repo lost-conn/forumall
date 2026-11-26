@@ -7,7 +7,6 @@ import { z } from "zod";
 import {
   DmIdSchema,
   HttpsUriSchema,
-  MetadataListSchema,
   OpaqueCursorSchema,
   Rfc3339DateTimeSchema,
   UserRefSchema,
@@ -18,6 +17,7 @@ import {
   NO_EDIT_FIELD_MESSAGE,
   carriesAnEditField,
 } from "./messaging.ts";
+import { PresenceUpdateRequestSchema } from "./privacy.ts";
 import { WsEventTypeSchema } from "./ws-envelope.ts";
 import { wsFrame } from "./ws-frame.ts";
 
@@ -163,15 +163,9 @@ export const WsPresenceUnsubscribeSchema = wsFrame(
 );
 export type WsPresenceUnsubscribe = z.infer<typeof WsPresenceUnsubscribeSchema>;
 
-/** `presence.set` command. `offline` is connection-derived, not settable here. */
-export const WsPresenceSetSchema = wsFrame(
-  "presence.set",
-  z
-    .object({
-      availability: z.enum(["online", "away", "dnd"]),
-      status: z.string().optional(),
-      metadata: MetadataListSchema.optional(),
-    })
-    .passthrough(),
-);
+/**
+ * `presence.set` command: the same full-replace body as `PUT /api/me/presence`
+ * (§6.4/§7.5). `offline` is connection-derived, not settable here.
+ */
+export const WsPresenceSetSchema = wsFrame("presence.set", PresenceUpdateRequestSchema);
 export type WsPresenceSet = z.infer<typeof WsPresenceSetSchema>;

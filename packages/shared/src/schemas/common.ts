@@ -36,6 +36,18 @@ export type LocalId = z.infer<typeof LocalIdSchema>;
 export const Rfc3339DateTimeSchema = z.string().min(1);
 export type Rfc3339DateTime = z.infer<typeof Rfc3339DateTimeSchema>;
 
+/**
+ * An Ed25519 public key (`Ed25519PublicKey`): the raw 32-byte key of RFC 8032
+ * (not a DER SubjectPublicKeyInfo) in padded standard base64 (RFC 4648 §4),
+ * i.e. exactly 44 characters ending in `=`. The final data character is
+ * restricted to those whose two low bits are zero, so only the canonical
+ * encoding of 32 bytes matches.
+ */
+export const Ed25519PublicKeySchema = z.string().regex(/^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=$/, {
+  message: "must be a raw 32-byte Ed25519 key in padded standard base64",
+});
+export type Ed25519PublicKey = z.infer<typeof Ed25519PublicKeySchema>;
+
 /** IANA media type, best-effort (`MimeType`). */
 export const MimeTypeSchema = z.string().regex(/^[a-zA-Z0-9!#$&^_.+-]+\/[a-zA-Z0-9!#$&^_.+-]+$/, {
   message: "must look like an IANA media type",

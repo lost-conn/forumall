@@ -22,17 +22,27 @@ export const PrivacySettingsSchema = z
     presenceVisibility: VisibilityPolicySchema,
     profileVisibility: VisibilityPolicySchema,
     membershipVisibility: VisibilityPolicySchema,
+    /** Always-allowed user references, overriding the policies (§6.1). */
+    allowList: z.array(UserRefSchema).optional(),
+    /** Always-denied user references, overriding the policies (§6.1). */
+    denyList: z.array(UserRefSchema).optional(),
     metadata: MetadataListSchema,
   })
   .passthrough();
 export type PrivacySettings = z.infer<typeof PrivacySettingsSchema>;
 
-/** PUT /api/me/privacy body (`privacy-settings-update-request`). All optional. */
+/**
+ * PUT /api/me/privacy body (`privacy-settings-update-request`). A partial update
+ * (§6.6): every field is optional, an absent field is left unchanged, and `[]`
+ * clears a list.
+ */
 export const PrivacySettingsUpdateRequestSchema = z
   .object({
     presenceVisibility: VisibilityPolicySchema.optional(),
     profileVisibility: VisibilityPolicySchema.optional(),
     membershipVisibility: VisibilityPolicySchema.optional(),
+    allowList: z.array(UserRefSchema).optional(),
+    denyList: z.array(UserRefSchema).optional(),
     metadata: MetadataListSchema.optional(),
   })
   .passthrough();
@@ -53,11 +63,23 @@ export const PresenceSchema = z
   .passthrough();
 export type Presence = z.infer<typeof PresenceSchema>;
 
+/** The presence values a client may set; `offline` is connection-derived (§7.5). */
+export const SettableAvailabilitySchema = z.enum(["online", "away", "dnd"]);
+export type SettableAvailability = z.infer<typeof SettableAvailabilitySchema>;
+
 /**
- * PUT /api/me/presence body (`presence-update-request`). The JSON Schema `$ref`s
- * `presence.json`, so it is structurally identical to {@link PresenceSchema}.
+ * PUT /api/me/presence body (`presence-update-request`), also the `data` of the
+ * WS `presence.set` command (§7.5). A full replace (§6.4): `availability` is
+ * required and cannot be `offline`, an absent `status` clears it, and
+ * `lastSeen` is provider-set, so it is not part of the request.
  */
-export const PresenceUpdateRequestSchema = PresenceSchema;
+export const PresenceUpdateRequestSchema = z
+  .object({
+    availability: SettableAvailabilitySchema,
+    status: z.string().optional(),
+    metadata: MetadataListSchema.optional(),
+  })
+  .passthrough();
 export type PresenceUpdateRequest = z.infer<typeof PresenceUpdateRequestSchema>;
 
 // ---------------------------------------------------------------------------

@@ -6,6 +6,7 @@
 import { z } from "zod";
 
 import {
+  Ed25519PublicKeySchema,
   HttpsUriSchema,
   IceServerSchema,
   MetadataListSchema,
@@ -182,7 +183,7 @@ const ProviderPublicKeySchema = z
   .object({
     key_id: z.string().min(1),
     algorithm: z.enum(["Ed25519"]),
-    public_key: z.string().min(1),
+    public_key: Ed25519PublicKeySchema,
     created_at: Rfc3339DateTimeSchema.optional(),
   })
   .passthrough();

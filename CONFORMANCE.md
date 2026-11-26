@@ -60,7 +60,9 @@ never copied in.
 
 3. **Schema-sample coverage** ([`packages/shared/test/schemas.test.ts`](packages/shared/test/schemas.test.ts))
    parses **every** `ofscp/tests/*.sample.json` fixture against the zod mirror,
-   with a completeness guard that fails if a new upstream sample has no schema.
+   with a completeness guard that fails if a new upstream sample has no schema,
+   and checks that the mirror rejects **every** `ofscp/tests/*.invalid.json`
+   reject case (`<schema>.<case>.invalid.json`), under the same guard.
 
 ## §12 Compliance Checklist coverage map
 
@@ -68,13 +70,14 @@ Status legend: **covered** = exercised by an executing test; **partial** =
 provider-side guarantee is tested but a client-UI aspect (web app) is out of scope
 for these protocol tests, or the feature is optional.
 
-### Provider MUST (24 items)
+### Provider MUST (26 items)
 
 | # | §12 item | Tests | Status |
 |---|---|---|---|
 | 1 | Password-based registration and login | `auth.test.ts` | covered |
 | 2 | Scoped, short-lived bootstrap tokens (§4.2) | `auth.test.ts` | covered |
 | 3 | Device key registration + revocation | `device-keys.test.ts` | covered |
+| 25 | Every `public_key` is the raw 32-byte Ed25519 key in padded standard base64; a registration whose key is not is `400` (§4.3.2) | `device-keys.test.ts`, `shared/schemas.test.ts` (`Ed25519PublicKey`, the `device-key-registration.spki.invalid.json` reject case) | covered |
 | 4 | Validate Ed25519 request signatures over §4.4.2 canonical string (authority binding, nonce replay) | `shared/conformance.test.ts`, `shared/signing.test.ts`, `signature.test.ts`, `nonce-store.test.ts`, `replay-warmup.test.ts` (§4.5 Restarts: 503 + `Retry-After` warm-up of the in-memory replay store; WS handshake exempt), `canonical-authority.test.ts` (§2.2 canonical actors/authorities) | covered |
 | 5 | Signed WS `auth.challenge`/`authenticate` handshake (§7.1) | `shared/conformance.test.ts`, `shared/ws-auth.test.ts`, `ws.test.ts` | covered |
 | 6 | Serve user public keys at `/.well-known/ofscp/users/{handle}/keys` | `conformance.test.ts`, `device-keys.test.ts` | covered |
@@ -91,6 +94,7 @@ for these protocol tests, or the feature is optional.
 | 14 | Follow list as pointers only — no server feed (§7.6) | `follows.test.ts`, `conformance.test.ts` | covered |
 | 15 | WS resume (`since` replay, per-message cursors) + ping/pong (§7.1) | `ws.test.ts` | covered |
 | 16 | Real-time presence over WS + §6.1 visibility, consistent with REST (§7.5) | `presence.test.ts`, `conformance.test.ts` | covered |
+| 26 | `PUT /api/me/presence` is a full replace rejecting `offline` (`400`); `PUT /api/me/privacy` is a partial update rejecting an actor in both lists or an over-long list (`400`) (§6.4, §6.6) | `presence.test.ts`, `privacy.test.ts`, `shared/schemas.test.ts` (the `presence-update-request.offline.invalid.json` reject case) | covered |
 | 17 | Message fan-out + notification endpoints | `notifications.test.ts`, `ws.test.ts` | covered |
 | 18 | Enforce tiers per channel and group | `channels.test.ts`, `groups.test.ts`, `messages.test.ts` | covered |
 | 19 | Support the `private` tier | `groups.test.ts`, `channels.test.ts` | covered |
@@ -129,8 +133,8 @@ pure web-UI behavior outside the scope of these tests.
 
 ## Summary
 
-- **31** §12 MUST items (24 Provider, 7 Client): **all mapped to executing tests.**
-- **26** fully covered, **5** partial (each partial is an honest provider-tested /
+- **33** §12 MUST items (26 Provider, 7 Client): **all mapped to executing tests.**
+- **28** fully covered, **5** partial (each partial is an honest provider-tested /
   web-UI-untested split, or an optional feature — see notes above). **No MUST item
   is unmapped or failing.**
 - **23** live response bodies validated against the spec's own JSON Schemas.
