@@ -13,7 +13,8 @@ const ACTOR = "alice@a.test";
 const KEY = {
   key_id: "k1",
   algorithm: "Ed25519",
-  public_key: "pk",
+  // A well-formed raw 32-byte Ed25519 key (§4.3.2); its value is never verified here.
+  public_key: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
   created_at: "2026-01-01T00:00:00Z",
 };
 
@@ -105,7 +106,7 @@ describe("RemoteUserKeysCache.lastCompletedFetch", () => {
 
     await cache.lookupActorKey(ACTOR, "k1");
     expect(cache.lastCompletedFetch(ACTOR, "k1")).toMatchObject({
-      key: { keyId: "k1", publicKey: "pk" },
+      key: { keyId: "k1", publicKey: KEY.public_key },
       expiresAt: now + 60_000,
     });
     expect(cache.lastCompletedFetch(ACTOR, "other")).toMatchObject({ key: null });

@@ -13,6 +13,7 @@ import type {
   Presence,
   PrivacySettings,
   PrivacySettingsUpdateRequest,
+  SettableAvailability,
   UserPublicProfileResponse,
 } from "@forumall/shared";
 import type { OfscpClient } from "./ofscp-client.ts";
@@ -33,12 +34,13 @@ export async function fetchPresence(client: OfscpClient, ref: string): Promise<P
 }
 
 /** Settable availability (the WS/REST set surface rejects `offline`). */
-export type SettableAvailability = "online" | "away" | "dnd";
+export type { SettableAvailability } from "@forumall/shared";
 
 /**
  * Set the caller's own availability + status (`PUT /api/me/presence`, equivalent
- * to the WS `presence.set`). The WS command is preferred when a connection is up
- * (it fans out immediately); this REST form is the durable fallback.
+ * to the WS `presence.set`). A full replace (§6.4): omitting `status` clears it.
+ * The WS command is preferred when a connection is up (it fans out
+ * immediately); this REST form is the durable fallback.
  */
 export async function setMyPresence(
   client: OfscpClient,
@@ -61,13 +63,10 @@ export async function fetchPrivacy(client: OfscpClient): Promise<PrivacySettings
   return res.data;
 }
 
-/** The privacy-update body, including the passthrough allow/deny lists (§6.6). */
-export type PrivacyUpdate = PrivacySettingsUpdateRequest & {
-  allowList?: string[];
-  denyList?: string[];
-};
+/** The privacy-update body, a partial update including the allow/deny lists (§6.6). */
+export type PrivacyUpdate = PrivacySettingsUpdateRequest;
 
-/** Update the caller's privacy settings (`PUT /api/me/privacy`). */
+/** Update the caller's privacy settings (`PUT /api/me/privacy`; absent fields are kept). */
 export async function updatePrivacy(
   client: OfscpClient,
   body: PrivacyUpdate,

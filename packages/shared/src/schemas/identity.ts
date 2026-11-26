@@ -5,6 +5,7 @@
 import { z } from "zod";
 
 import {
+  Ed25519PublicKeySchema,
   HttpsUriSchema,
   MetadataListSchema,
   Rfc3339DateTimeSchema,
@@ -45,7 +46,7 @@ export const DeviceKeySchema = z
   .object({
     key_id: z.string().min(1),
     algorithm: z.enum(["Ed25519"]),
-    public_key: z.string().min(1),
+    public_key: Ed25519PublicKeySchema,
     created_at: Rfc3339DateTimeSchema,
   })
   .passthrough();
@@ -108,7 +109,7 @@ export type AuthBootstrapResponse = z.infer<typeof AuthBootstrapResponseSchema>;
 /** POST /api/auth/device-keys body (`device-key-registration`). */
 export const DeviceKeyRegistrationSchema = z
   .object({
-    public_key: z.string().min(1),
+    public_key: Ed25519PublicKeySchema,
     algorithm: z.enum(["Ed25519"]).optional(),
     device_name: z.string(),
   })
@@ -120,7 +121,7 @@ export const DeviceKeyListItemSchema = z
   .object({
     key_id: z.string().min(1),
     algorithm: z.enum(["Ed25519"]),
-    public_key: z.string().min(1),
+    public_key: Ed25519PublicKeySchema,
     device_name: z.string(),
     created_at: Rfc3339DateTimeSchema,
   })
@@ -146,7 +147,7 @@ export type DeviceKeyResponse = z.infer<typeof DeviceKeyResponseSchema>;
 export const GuestCreateRequestSchema = z
   .object({
     displayName: z.string().optional(),
-    public_key: z.string().min(1),
+    public_key: Ed25519PublicKeySchema,
     algorithm: z.enum(["Ed25519"]).optional(),
     device_name: z.string(),
   })
@@ -158,7 +159,7 @@ export const UserPublicKeySchema = z
   .object({
     key_id: z.string().min(1),
     algorithm: z.enum(["Ed25519"]),
-    public_key: z.string().min(1),
+    public_key: Ed25519PublicKeySchema,
     created_at: Rfc3339DateTimeSchema,
   })
   .passthrough();

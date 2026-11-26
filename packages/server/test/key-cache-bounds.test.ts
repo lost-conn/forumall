@@ -95,7 +95,13 @@ describe("ExpiringEntries", () => {
 });
 
 const START_ISO = new Date(START).toISOString();
-const KEY = { key_id: "k1", algorithm: "Ed25519", public_key: "pk", created_at: START_ISO };
+// A well-formed raw 32-byte Ed25519 key (§4.3.2); its value is never verified here.
+const KEY = {
+  key_id: "k1",
+  algorithm: "Ed25519",
+  public_key: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+  created_at: START_ISO,
+};
 
 /** A user-keys transport: every actor publishes k1, cached for an hour. */
 function userKeysFetch(now: () => number, calls: string[]): FederationFetch {

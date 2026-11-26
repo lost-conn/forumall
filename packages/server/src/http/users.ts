@@ -45,7 +45,6 @@ import { hostedMediaRowForUrl } from "../provider/media.ts";
 import { groupIdsOf } from "../provider/membership.ts";
 import { mergeGuestIntoAccount } from "../provider/merge.ts";
 import {
-  type ExplicitAvailability,
   fanOutPresence,
   filterPresenceFor,
   setExplicitPresence,
@@ -336,22 +335,11 @@ export function createMeUserRouter() {
       });
     }
 
-    // `allowList` / `denyList` are not in the shared update schema (passthrough
-    // keeps them), so read them off the raw body when present.
-    const body = raw as Record<string, unknown>;
     // §2.2: entries are compared against viewer actors verbatim, so each is
     // stored as a canonical actor: a `UserRef` user URI is converted to its actor,
     // and a non-canonical actor (or any other URI shape) is rejected (400).
-    const allowList = Array.isArray(body.allowList)
-      ? (body.allowList.filter((x) => typeof x === "string") as string[]).map((x) =>
-          userRefToCanonicalActor(x, "allowList"),
-        )
-      : undefined;
-    const denyList = Array.isArray(body.denyList)
-      ? (body.denyList.filter((x) => typeof x === "string") as string[]).map((x) =>
-          userRefToCanonicalActor(x, "denyList"),
-        )
-      : undefined;
+    const allowList = parsed.data.allowList?.map((x) => userRefToCanonicalActor(x, "allowList"));
+    const denyList = parsed.data.denyList?.map((x) => userRefToCanonicalActor(x, "denyList"));
 
     const settings = updatePrivacySettings(db, requireLocalHandle(c), {
       ...(parsed.data.presenceVisibility !== undefined
@@ -381,7 +369,7 @@ export function createMeUserRouter() {
   });
 
   // -- PUT /api/me/presence (§6.4 — signed) -------------------------------
-  // Equivalent to the WS `presence.set` (§7.5): update the caller's stored
+  // Equivalent to the WS `presence.set` (§7.5): replace the caller's stored
   // EXPLICIT availability/status (the request body's enum rejects `offline`) and
   // fan out a privacy-filtered `presence.update` to subscribers over the shared
   // registry. The response echoes the caller's own (self-visible) presence.
@@ -402,18 +390,8 @@ export function createMeUserRouter() {
         extensions: { errors: parsed.error.flatten() },
       });
     }
-    // `offline` is connection-derived, never a settable value (§6.4/§7.5). The
-    // shared Presence schema permits it (it is the read shape), so reject here.
-    if (parsed.data.availability === "offline") {
-      throw AppError.badRequest({ detail: "`offline` is not a settable availability" });
-    }
-
-    setExplicitPresence(
-      db,
-      handle,
-      parsed.data.availability as ExplicitAvailability,
-      parsed.data.status ?? undefined,
-    );
+    // Full replace (§6.4): an absent `status` clears the stored one.
+    setExplicitPresence(db, handle, parsed.data.availability, parsed.data.status ?? null);
     fanOutPresence(db, hub, config, presenceRegistry, handle);
 
     // The caller always sees their own real presence (self-visibility).
