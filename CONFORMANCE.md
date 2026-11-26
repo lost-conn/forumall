@@ -26,7 +26,7 @@ never copied in.
 
 2. **Live response schema validation** ([`packages/server/test/conformance.test.ts`](packages/server/test/conformance.test.ts))
    boots a real provider (over `Bun.serve`, so the WebSocket path is live) and
-   validates **21 real response bodies** against the spec's **own** JSON Schemas
+   validates **23 real response bodies** against the spec's **own** JSON Schemas
    (`ofscp/schemas/v0.1/*.json`) using **ajv** (2020-12 dialect, `$ref`/`defs`
    resolved exactly as `ofscp/tests/validate-schemas.mjs` does). This is strictly
    stronger than the zod mirror: it proves the wire bytes satisfy the authoritative
@@ -54,6 +54,8 @@ never copied in.
    | DM conversation | each item in `GET /api/me/dms` | `dm-conversation.json` |
    | DM conversations | `GET /api/me/dms` | `dm-conversations-response.json` |
    | WS message.created | realtime envelope after `message.create` | `ws/message-created.json` |
+   | Message (create) | `POST /api/groups/{g}/channels/{c}/messages` (201) | `message.json` |
+   | WS message.created (REST) | fan-out after the REST create | `ws/message-created.json` |
    | WS dm.message | realtime envelope after DM send | `ws/dm-message.json` |
 
 3. **Schema-sample coverage** ([`packages/shared/test/schemas.test.ts`](packages/shared/test/schemas.test.ts))
@@ -66,7 +68,7 @@ Status legend: **covered** = exercised by an executing test; **partial** =
 provider-side guarantee is tested but a client-UI aspect (web app) is out of scope
 for these protocol tests, or the feature is optional.
 
-### Provider MUST (21 items)
+### Provider MUST (24 items)
 
 | # | §12 item | Tests | Status |
 |---|---|---|---|
@@ -79,6 +81,9 @@ for these protocol tests, or the feature is optional.
 | 7 | Group + channel CRUD with permission model (§5.5) | `groups.test.ts`, `channels.test.ts`, `conformance.test.ts` | covered |
 | 8 | Group membership: join/leave, listing, roles, request approval (§5.7) | `membership.test.ts`, `conformance.test.ts` | covered |
 | 9 | Message edit (author-only, `editUntil`) + tombstone delete (§7.1) | `message-edit-delete.test.ts` | covered |
+| 22 | Message creation of every type with attachments / reference / tags / metadata over `message.create` and `POST …/messages`; `post:<type>`, `replyOnly` / `replyOnlyTo` (valid reply only); 404 for an unreadable channel (§5.2.1, §7.1) | `message-create.test.ts`, `channel-permissions.test.ts`, `conformance.test.ts`, `shared/message-create-schema.test.ts` | covered |
+| 23 | `(author, channelId, clientMessageId)` idempotency after only auth / visibility / permission checks; WS duplicate answer without `cursor`; `clientMessageId` echoed live, replayed and on every create response (§7.1, §7.4) | `message-create.test.ts`, `dms.test.ts`, `conformance.test.ts` | covered |
+| 24 | Full canonical `Message` in `message.created`, `message.updated`, `dm.message` (§7.1, §7.4) | `message-create.test.ts`, `conformance.test.ts`, `shared/message-create-schema.test.ts`, `shared/schemas.test.ts` | covered |
 | 10 | Direct messages: dmId, inbox-only storage, delivery verification, listing/reading, `dm.message` realtime (§7.4) | `shared/conformance.test.ts`, `shared/dm.test.ts`, `dms.test.ts`, `conformance.test.ts` | covered |
 | 11 | Explicit contacts model (request/accept/remove, local + federated) (§6.7) | `contacts.test.ts` | covered |
 | 12 | Publish provider signing keys + sign provider-to-provider requests (§8.1) | `shared/signing.test.ts`, `federation.test.ts`, `conformance.test.ts` | covered |
@@ -92,7 +97,7 @@ for these protocol tests, or the feature is optional.
 | 20 | Expose `GET /api/tiers` | `conformance.test.ts`, `server.test.ts` | covered |
 | 21 | Metadata schema registry (optional entries allowed) | `shared/schemas.test.ts` | **partial** — forward-compat metadata lists (§2.3) validated end-to-end; no explicit named-schema registry endpoint is exposed (entries are OPTIONAL). |
 
-### Client MUST (6 items)
+### Client MUST (7 items)
 
 The Forumall web client (`packages/web`) runs all protocol-critical logic
 (signing, dmId derivation, WS handshake) through `@forumall/shared`, so the shared
@@ -108,6 +113,7 @@ pure web-UI behavior outside the scope of these tests.
 | 4 | For remote channels, open WS to the channel's home provider + handshake there (§8.5) | `federation-realtime.test.ts` | **partial** — provider side (accept remote direct-WS + handshake) tested; the web client's home-provider WS routing is not exercised here. |
 | 5 | Compose the home feed client-side from each followed channel's source (§7.6) | `follows.test.ts` | **partial** — provider guarantee (follows are pointers, no server feed) tested; client feed composition is a web-UI concern. |
 | 6 | Support all message types or graceful fallback | `shared/schemas.test.ts` | covered — forward-compat parsing (§2.3): unknown message/WS types survive without throwing. |
+| 7 | Treat the cursor-less `message.created` answering a duplicate create as the pending send's result, never a resume point (§7.1) | `message-create.test.ts`, `shared/message-create-schema.test.ts` | **partial** — the provider's correlated, cursor-less duplicate answer is tested; the web chat controller's reconciliation by `correlationId` is web-UI behaviour. |
 
 ### SHOULD / MAY (tracked, not asserted)
 
@@ -119,11 +125,11 @@ pure web-UI behavior outside the scope of these tests.
 
 ## Summary
 
-- **27** §12 MUST items (21 Provider, 6 Client): **all mapped to executing tests.**
-- **23** fully covered, **4** partial (each partial is an honest provider-tested /
+- **31** §12 MUST items (24 Provider, 7 Client): **all mapped to executing tests.**
+- **26** fully covered, **5** partial (each partial is an honest provider-tested /
   web-UI-untested split, or an optional feature — see notes above). **No MUST item
   is unmapped or failing.**
-- **21** live response bodies validated against the spec's own JSON Schemas.
+- **23** live response bodies validated against the spec's own JSON Schemas.
 - **3** golden vectors (request-signing, WS-authenticate, dmId) reproduced
   byte-for-byte.
 

@@ -78,8 +78,13 @@ export const messages = sqliteTable(
     deletedAt: integer("deleted_at", { mode: "number" }),
     /** Edit-window end (epoch millis); `permissions.editUntil` (§5.3). */
     editUntil: integer("edit_until", { mode: "number" }).notNull(),
-    /** Client-supplied idempotency key (WS create card); nullable + unused here. */
+    /**
+     * Client-chosen idempotency key (§7.1): `(author, channel_id,
+     * client_message_id)` is unique; echoed as `clientMessageId`. Nullable.
+     */
     clientMessageId: text("client_message_id"),
+    /** Metadata objects (§5.4), stored as JSON (`MetadataList`). Added in 0037. */
+    metadata: text("metadata").notNull(),
   },
   (t) => ({
     channelSeqIdx: index("idx_messages_channel_seq").on(t.channelId, t.seq),

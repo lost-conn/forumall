@@ -53,6 +53,7 @@ import {
   m0013Media,
   m0023MessagesReplyTo,
   m0028ReadMarkers,
+  m0037MessagesMetadata,
 } from "./migrations/messages.ts";
 import {
   m0020NotificationEndpoints,
@@ -123,6 +124,7 @@ export const migrations: readonly Migration[] = [
   m0034DmConversationsLastSent,
   m0035DmConversationsLastSentAt,
   m0036DmConversationsCanonicalCounterparty,
+  m0037MessagesMetadata,
 ];
 
 const LEDGER_DDL = `

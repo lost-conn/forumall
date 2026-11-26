@@ -85,7 +85,11 @@ export function rowToDmMessage(row: DmMessageRow): Message {
   const reference = row.reference ? (JSON.parse(row.reference) as MessageReference) : undefined;
   return MessageSchema.parse({
     id: row.id,
+    // Echo of the delivery's idempotency key (§7.1, §7.4): MUST be on the send
+    // response (first or duplicate); also carried by `dm.message` and history.
+    ...(row.clientMessageId != null ? { clientMessageId: row.clientMessageId } : {}),
     author: row.author,
+    // The v0.1 DM body carries no `type`; a DM is always a `message` (§7.4).
     type: "message",
     content,
     attachments,

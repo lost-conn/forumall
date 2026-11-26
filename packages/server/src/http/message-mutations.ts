@@ -1,8 +1,12 @@
 /**
- * Shared authorization for message edit / delete (spec §7.1 "Editing & deleting
- * messages"), used identically by the WS commands (`http/ws/messages.ts`) and the REST
- * equivalents (`http/messages.ts`):
+ * Shared authorization for message create / edit / delete (spec §5.2.1, §7.1),
+ * used identically by the WS commands (`http/ws/messages.ts`) and the REST
+ * equivalents (`http/messages.ts`, via `http/message-create.ts` for creates):
  *
+ *  - **create** (`message.create` / `POST …/messages`): {@link authorizePostAccess}
+ *    (visibility 404, `post:<type>` + reply-only presence 403) before the
+ *    duplicate lookup, {@link authorizeReplyTarget} (parent 400, `replyOnlyTo`
+ *    403) after it.
  *  - **edit** (`message.update` / `PATCH …/messages/{id}`): author-only, and only
  *    while `permissions.editUntil` (the row's `edit_until`) is in the future;
  *    otherwise 403. A missing message (or wrong channel/group) → 404.
@@ -13,6 +17,8 @@
  * `provider/messages.ts` store) or `{ error }` carrying the right status/code so
  * the WS path can build an `error` event and the REST path an {@link AppError}.
  */
+import type { ChannelPermissions } from "@forumall/shared";
+
 import type { Db } from "../db/index.ts";
 import type { MessageRow } from "../db/schema.ts";
 import { canViewChannel, getChannelRow, parseChannelPermissions } from "../provider/channels.ts";
@@ -151,34 +157,49 @@ export function authorizeReaction(
 }
 
 /**
- * Authorize a **post** (`message.create`, §5.2.1): the channel must exist in
- * `groupId`, be readable by the actor ({@link canViewChannel}), and the actor —
- * a group member — must be permitted to post a message of `type` there
- * ({@link canPostKind}, falling back to the group `post` action). Reply
- * qualification (`replyOnly` / `replyOnlyTo`) is enforced here too: a
- * reply-restricted actor MUST supply a `reference`, and when `replyOnlyTo` is set
- * the referenced parent's `type` must be allowed. A supplied `reference` MUST
- * resolve to a message in the same channel (§7.2).
- *
- * Returns `null` when authorized, or a {@link MutationError}. Existence failures
- * surface as `forbidden` (403) — like the prior single-boolean gate — so posting
- * never leaks channel existence beyond what `subscribe` already does. A bad
- * reply target is a `bad_request` (400).
+ * What {@link authorizePostAccess} established about a poster: their role and
+ * the channel's overrides, needed again by {@link authorizeReplyTarget}.
  */
-export function authorizeChannelPost(
+export interface PostGrant {
+  readonly role: string;
+  readonly channelPermissions: ChannelPermissions | null;
+}
+
+/** Either the {@link PostGrant} (steps 2–3 passed) or a structured error. */
+export type PostAccessOutcome =
+  | { readonly error: MutationError; readonly grant?: undefined }
+  | { readonly error?: undefined; readonly grant: PostGrant };
+
+/**
+ * Steps 2–3 of a create (§7.1 "Order of checks", shared by `message.create` and
+ * `POST …/messages`) — the checks that depend only on the actor and the request,
+ * so they also apply to a duplicate retry:
+ *
+ *  2. **Visibility:** the channel must exist in `groupId` and be readable by the
+ *     actor ({@link canViewChannel}); otherwise `not_found` (404) — a missing
+ *     and an unreadable channel get the same answer.
+ *  3. **Permission:** the actor — a group member — must be permitted to post a
+ *     message of `type` ({@link canPostKind}, falling back to the group `post`
+ *     action), and a reply-restricted actor (§5.2.1 `replyOnly`) must supply a
+ *     `reference`; otherwise `forbidden` (403).
+ *
+ * The parent check and `replyOnlyTo` need the parent message, so they are step
+ * 5 ({@link authorizeReplyTarget}), applied to a new message only.
+ */
+export function authorizePostAccess(
   db: Db,
   groupId: string,
   channelId: string,
   actor: string,
   type: MessageKind,
-  reference: { readonly type: string; readonly id: string } | undefined,
-): MutationError | null {
-  const deny = (message: string): MutationError => ({ code: "forbidden", message });
+  hasReference: boolean,
+): PostAccessOutcome {
+  const deny = (message: string): PostAccessOutcome => ({ error: { code: "forbidden", message } });
 
   const channel = getChannelRow(db, channelId);
-  if (!channel || channel.groupId !== groupId)
-    return deny("not authorized to post to this channel");
-  if (!canViewChannel(db, channel, actor)) return deny("not authorized to post to this channel");
+  if (!channel || channel.groupId !== groupId || !canViewChannel(db, channel, actor)) {
+    return { error: { code: "not_found", message: "no such channel" } };
+  }
 
   const membership = getMembership(db, groupId, actor);
   const groupRow = getGroupRow(db, groupId);
@@ -193,33 +214,44 @@ export function authorizeChannelPost(
       readonly string[] | undefined
     >,
   };
-
-  // A reply target must resolve to a message in this same channel (§7.2).
-  let parent: MessageRow | null = null;
-  if (reference) {
-    parent = getMessageRow(db, channelId, reference.id);
-    if (!parent) {
-      return {
-        code: "bad_request",
-        message: "reply target not found in this channel",
-      };
-    }
-  }
-
   if (!canPostKind(ctx, type)) {
     return deny(`not authorized to post ${type}s to this channel`);
   }
+  if (isReplyRestricted(membership.role, channelPermissions) && !hasReference) {
+    return deny("you may only post replies in this channel");
+  }
+  return { grant: { role: membership.role, channelPermissions } };
+}
 
-  // Reply qualification (§5.2.1).
-  if (isReplyRestricted(membership.role, channelPermissions)) {
-    if (!reference || !parent) {
-      return deny("you may only post replies in this channel");
-    }
-    const allowedParentTypes = replyOnlyToTypes(channelPermissions);
+/**
+ * Step 5 of a create (§7.1), for a new message only: a supplied `reference` must
+ * be a reply (`type: "reply"`) whose `id` is a message in the same channel
+ * (§7.2) — else `bad_request` (400) — and, for a reply-restricted actor with a
+ * `replyOnlyTo` list, the parent's `type` must be listed — else `forbidden`
+ * (403). Returns `null` when the reply target is acceptable (or there is none).
+ */
+export function authorizeReplyTarget(
+  db: Db,
+  channelId: string,
+  grant: PostGrant,
+  reference: { readonly type: string; readonly id: string } | undefined,
+): MutationError | null {
+  if (!reference) return null;
+  if (reference.type !== "reply") {
+    return { code: "bad_request", message: 'a message reference must have type "reply"' };
+  }
+  const parent: MessageRow | null = getMessageRow(db, channelId, reference.id);
+  if (!parent) {
+    return { code: "bad_request", message: "reply target not found in this channel" };
+  }
+  if (isReplyRestricted(grant.role, grant.channelPermissions)) {
+    const allowedParentTypes = replyOnlyToTypes(grant.channelPermissions);
     if (allowedParentTypes && !allowedParentTypes.includes(parent.type)) {
-      return deny(`replies in this channel must target a ${allowedParentTypes.join(" or ")}`);
+      return {
+        code: "forbidden",
+        message: `replies in this channel must target a ${allowedParentTypes.join(" or ")}`,
+      };
     }
   }
-
   return null;
 }

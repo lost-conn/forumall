@@ -25,35 +25,13 @@ import { AppError } from "./errors.ts";
 
 /**
  * Build the `data` payload of a `dm.message` event for a stored record (§7.4),
- * validated against `WsDmMessageSchema`. Carries the `dmId`, the message's
- * opaque `cursor`, and the message body (with `clientMessageId` echoed when the
- * delivery carried one, so the recipient can de-dupe an optimistic echo).
+ * validated against `WsDmMessageSchema`: the `dmId`, the message's opaque
+ * `cursor`, and the full canonical `Message` — the same object
+ * `GET /api/dms/{dmId}/messages` returns, carrying the delivery's
+ * `clientMessageId` so the recipient's devices can de-dupe.
  */
-export function dmMessageEventData(
-  dmId: string,
-  cursor: string,
-  message: Message,
-  clientMessageId?: string,
-): unknown {
-  return WsDmMessageSchema.shape.data.parse({
-    dmId,
-    cursor,
-    message: {
-      id: message.id,
-      ...(clientMessageId !== undefined ? { clientMessageId } : {}),
-      author: message.author,
-      createdAt: message.createdAt,
-      content: message.content,
-      // Carry attachments / reply reference + edit/delete markers on the live
-      // event so a DM with media or a reply renders without a re-fetch.
-      ...(message.attachments && message.attachments.length > 0
-        ? { attachments: message.attachments }
-        : {}),
-      ...(message.reference ? { reference: message.reference } : {}),
-      ...(message.editedAt ? { editedAt: message.editedAt } : {}),
-      ...(message.deletedAt ? { deletedAt: message.deletedAt } : {}),
-    },
-  });
+export function dmMessageEventData(dmId: string, cursor: string, message: Message): unknown {
+  return WsDmMessageSchema.shape.data.parse({ dmId, cursor, message });
 }
 
 /** Build a validated `dm.reaction` event payload (added/removed). */

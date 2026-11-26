@@ -119,7 +119,7 @@ export function createFederationDmsRouter() {
     // the recipient's inbox stored it, so only the recipient is notified (§7.4).
     hub.publishToActor(recipientActor, {
       type: "dm.message",
-      data: dmMessageEventData(dmId, record.cursor, record.message, body.clientMessageId),
+      data: dmMessageEventData(dmId, record.cursor, record.message),
     });
 
     // --- Sender's conversation pointer (§7.4) when the sender is LOCAL -------

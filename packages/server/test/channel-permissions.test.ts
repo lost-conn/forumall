@@ -6,7 +6,7 @@
  * gate, and reply-qualification (`replyOnly` / `replyOnlyTo`).
  *
  * Authorization decisions are exercised two ways: directly via
- * {@link authorizeChannelPost} / {@link canViewChannel} (fast, exhaustive) and
+ * {@link authorizePostAccess} / {@link authorizeReplyTarget} / {@link canViewChannel} (fast, exhaustive) and
  * end-to-end via `app.request` for the HTTP read gate + the channel
  * create/update round-trip (the `permissions` object persists + re-serializes).
  *
@@ -29,7 +29,11 @@ import { type Argon2Params, type Config, loadConfig } from "../src/config.ts";
 import { openDb } from "../src/db/index.ts";
 import { migrate } from "../src/db/migrate.ts";
 import { groupMembers } from "../src/db/schema.ts";
-import { authorizeChannelPost } from "../src/http/message-mutations.ts";
+import {
+  type PostGrant,
+  authorizePostAccess,
+  authorizeReplyTarget,
+} from "../src/http/message-mutations.ts";
 import { canViewChannel, getChannelRow } from "../src/provider/channels.ts";
 import { createMessage } from "../src/provider/messages.ts";
 
@@ -180,28 +184,38 @@ describe("per-channel permissions (§5.2.1)", () => {
       permissions: { "post:memo": ["admin"], "post:article": ["admin"] },
     });
 
+    const post = (actor: string, type: "message" | "memo" | "article") =>
+      authorizePostAccess(db, group.id, channel.id, actor, type, false).error?.code ?? null;
     // Regular `message` falls back to group `post` (members may post).
-    expect(
-      authorizeChannelPost(db, group.id, channel.id, member.actor, "message", undefined),
-    ).toBeNull();
+    expect(post(member.actor, "message")).toBeNull();
     // `memo`/`article` require admin → member denied, admin allowed.
-    const denied = authorizeChannelPost(db, group.id, channel.id, member.actor, "memo", undefined);
-    expect(denied?.code).toBe("forbidden");
-    expect(
-      authorizeChannelPost(db, group.id, channel.id, admin.actor, "memo", undefined),
-    ).toBeNull();
-    expect(
-      authorizeChannelPost(db, group.id, channel.id, admin.actor, "article", undefined),
-    ).toBeNull();
+    expect(post(member.actor, "memo")).toBe("forbidden");
+    expect(post(admin.actor, "memo")).toBeNull();
+    expect(post(admin.actor, "article")).toBeNull();
     // Owner is always allowed regardless of the override.
-    expect(
-      authorizeChannelPost(db, group.id, channel.id, owner.actor, "memo", undefined),
-    ).toBeNull();
+    expect(post(owner.actor, "memo")).toBeNull();
 
-    // Non-member cannot post at all.
+    // A non-member cannot read this group-tier channel, so a create is answered
+    // as for a missing channel (§7.1: 404, not 403).
     const stranger = await registerUserWithKey(app, "stranger2");
+    expect(post(stranger.actor, "message")).toBe("not_found");
+    // So is a channel that does not exist, or one named under another group.
     expect(
-      authorizeChannelPost(db, group.id, channel.id, stranger.actor, "message", undefined)?.code,
+      authorizePostAccess(db, group.id, "chn_nope", member.actor, "message", false).error?.code,
+    ).toBe("not_found");
+    expect(
+      authorizePostAccess(db, "grp_nope", channel.id, member.actor, "message", false).error?.code,
+    ).toBe("not_found");
+  });
+
+  test("a reader who is not a member may not post (403)", async () => {
+    const { app, db } = freshApp("readernotmember");
+    const owner = await registerUserWithKey(app, "owner5");
+    const reader = await registerUserWithKey(app, "reader5");
+    const group = await createGroup(app, owner, { name: "G", tier: "public" });
+    const channel = await createChannel(app, owner, group.id, { type: "text", tier: "public" });
+    expect(
+      authorizePostAccess(db, group.id, channel.id, reader.actor, "message", false).error?.code,
     ).toBe("forbidden");
   });
 
@@ -234,35 +248,29 @@ describe("per-channel permissions (§5.2.1)", () => {
       content: { text: "hi", mime: "text/plain" },
     });
 
-    // Member (reply-restricted) cannot post a top-level message.
+    // Step 3: a reply-restricted member cannot post without a reference (403);
+    // the owner is never reply-restricted.
     expect(
-      authorizeChannelPost(db, group.id, channel.id, member.actor, "message", undefined)?.code,
+      authorizePostAccess(db, group.id, channel.id, member.actor, "message", false).error?.code,
     ).toBe("forbidden");
-    // Replying to a memo is allowed.
     expect(
-      authorizeChannelPost(db, group.id, channel.id, member.actor, "message", {
-        type: "reply",
-        id: memo.message.id,
-      }),
-    ).toBeNull();
-    // Replying to a non-memo (chat message) is denied by replyOnlyTo.
-    expect(
-      authorizeChannelPost(db, group.id, channel.id, member.actor, "message", {
-        type: "reply",
-        id: chat.message.id,
-      })?.code,
-    ).toBe("forbidden");
-    // Owner is never reply-restricted.
-    expect(
-      authorizeChannelPost(db, group.id, channel.id, owner.actor, "message", undefined),
-    ).toBeNull();
+      authorizePostAccess(db, group.id, channel.id, owner.actor, "message", false).error,
+    ).toBeUndefined();
+    const access = authorizePostAccess(db, group.id, channel.id, member.actor, "message", true);
+    expect(access.error).toBeUndefined();
+    const grant = access.grant as PostGrant;
+
+    // Step 5: replying to a memo is allowed; to a non-memo is denied by replyOnlyTo.
+    const target = (id: string, type = "reply") =>
+      authorizeReplyTarget(db, channel.id, grant, { type, id })?.code ?? null;
+    expect(target(memo.message.id)).toBeNull();
+    expect(target(chat.message.id)).toBe("forbidden");
     // A reply to a nonexistent message is a 400 (bad target), not a 403.
-    expect(
-      authorizeChannelPost(db, group.id, channel.id, member.actor, "message", {
-        type: "reply",
-        id: "msg_nope",
-      })?.code,
-    ).toBe("bad_request");
+    expect(target("msg_nope")).toBe("bad_request");
+    // A reference that is not a reply is a 400 (§7.1).
+    expect(target(memo.message.id, "quote")).toBe("bad_request");
+    // No reference: nothing to check.
+    expect(authorizeReplyTarget(db, channel.id, grant, undefined)).toBeNull();
   });
 
   test("view override restricts read access, overriding tier", async () => {

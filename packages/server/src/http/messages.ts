@@ -1,6 +1,6 @@
 /**
- * `/api/groups/:groupId/channels/:channelId/messages` router — paged message
- * history reads (spec §5.3, §7.2). Mounted under the channels router so both
+ * `/api/groups/:groupId/channels/:channelId/messages` router — message history
+ * reads, creation and mutations (spec §5.3, §7.1, §7.2). Mounted under the channels router so both
  * `:groupId` and `:channelId` are in scope via merged request params.
  *
  *  - `GET /` (optional auth): read a page of the channel timeline. Authorized
@@ -10,10 +10,11 @@
  *    `direction` (`backward` default | `forward`), `limit`. → `{ items, page:
  *    { nextCursor, prevCursor } }` per §7.2, validated against
  *    `MessagesPageSchema`.
- *
- * This card is storage + REST reads only; `message.create`/fan-out, edits,
- * deletes, and reactions are later WS cards that reuse `provider/messages.ts`
- * (the seq/cursor contract documented there).
+ *  - `POST /` (signed): create a message (§7.1) — the REST equivalent of the WS
+ *    `message.create`, sharing its logic (`message-create.ts`).
+ *  - `PATCH` / `DELETE /{messageId}` (signed): edit / tombstone (§7.1), and
+ *    `PUT` / `DELETE /{messageId}/reactions/{key}`; each fans out over the hub
+ *    exactly as its WS equivalent does.
  */
 import {
   MessageSchema,
@@ -40,6 +41,7 @@ import {
 } from "../provider/messages.ts";
 import { addReaction, hasReaction, listReactions, removeReaction } from "../provider/reactions.ts";
 import { AppError, parseRequestBody, slugForErrorCode } from "./errors.ts";
+import { createChannelMessage } from "./message-create.ts";
 import {
   type MutationError,
   authorizeMessageDelete,
@@ -136,6 +138,35 @@ export function createMessagesRouter() {
       ...(limit !== undefined ? { limit } : {}),
     });
     return c.json(MessagesPageSchema.parse(page));
+  });
+
+  // -- POST .../messages (§7.1 create, signed) -----------------------------
+  // The REST equivalent of `message.create`: the `MessageCreate` body, the same
+  // ordered checks, idempotency and fan-out (shared `createChannelMessage`).
+  // 201 + the new Message; 200 + the existing Message for a duplicate
+  // `clientMessageId` (nothing fanned out). The fan-out `message.created` has
+  // no `correlationId` — no WS command caused it.
+  router.post("/", signed, async (c) => {
+    const { config, db, hub, federationFetch } = c.var;
+    const actor = c.var.actor;
+    if (!actor) throw AppError.unauthorized();
+    const body = await c.req.json().catch(() => {
+      throw AppError.badRequest({ detail: "request body must be valid JSON" });
+    });
+    const outcome = createChannelMessage(
+      { config, db, hub, federationFetch },
+      {
+        groupId: requireParam(c, "groupId"),
+        channelId: requireParam(c, "channelId"),
+        author: actor.actor,
+        body,
+      },
+    );
+    if (outcome.kind === "rejected") throw toAppError(outcome.error);
+    return c.json(
+      MessageSchema.parse(outcome.record.message),
+      outcome.kind === "created" ? 201 : 200,
+    );
   });
 
   // -- PATCH .../messages/:messageId (§7.1 edit, signed) -------------------

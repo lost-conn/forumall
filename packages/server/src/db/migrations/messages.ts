@@ -152,3 +152,19 @@ export const m0028ReadMarkers: Migration = {
     sqlite.exec("CREATE INDEX IF NOT EXISTS idx_read_markers_handle ON read_markers (handle);");
   },
 };
+
+export const m0037MessagesMetadata: Migration = {
+  // Message metadata (§5.4, §7.1): a create stores the `metadata` it carries
+  // (omitted → []). Existing rows had none, so the NOT NULL default backfills
+  // them with an empty list. Guarded so a re-run is a no-op.
+  id: "0037_messages_metadata",
+  up: (sqlite) => {
+    const cols = sqlite
+      .query<{ name: string }, []>("PRAGMA table_info(messages)")
+      .all()
+      .map((c) => c.name);
+    if (!cols.includes("metadata")) {
+      sqlite.exec("ALTER TABLE messages ADD COLUMN metadata TEXT NOT NULL DEFAULT '[]';");
+    }
+  },
+};

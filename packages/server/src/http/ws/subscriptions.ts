@@ -10,8 +10,8 @@ import {
   decodeMessageCursor,
   resumeMessages,
 } from "../../provider/messages.ts";
+import { createdEvent } from "../message-create.ts";
 import { type ConnState, type WsContext, type WsCtx, errorEvent } from "./connection.ts";
-import { createdEvent } from "./messages.ts";
 
 /**
  * §7.1 Subscriptions + resume: enforce per-channel visibility (membership +
