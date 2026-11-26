@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { z } from "zod";
@@ -247,27 +247,6 @@ const SAMPLE_SCHEMAS: Record<string, z.ZodTypeAny> = {
   "ws-error": WsErrorSchema,
 };
 
-/**
- * ofscp#23 replaced the compact message in these three event samples with the
- * full `BaseMessage`, and Forumall's schemas follow #23. CI clones ofscp `main`,
- * so until #23 lands there an older checkout (detected by the
- * `message-create-request` schema #23 added) still ships the compact samples.
- * Against such a checkout each of them must fail ONLY on the `BaseMessage`
- * fields #23 made required: everything else in the sample is still checked, and
- * the test cannot pass by accident. Once ofscp `main` carries #23 this branch no
- * longer runs and the set can be removed.
- */
-const OFSCP_HAS_FULL_MESSAGE_EVENTS = existsSync(
-  join(SAMPLES_DIR, "..", "schemas", "v0.1", "message-create-request.json"),
-);
-const PRE_23_COMPACT_MESSAGE_SAMPLES: ReadonlySet<string> = new Set([
-  "ws-message-created",
-  "ws-message-updated",
-  "ws-dm-message",
-]);
-/** The `BaseMessage` fields a pre-#23 compact event message lacks. */
-const FULL_MESSAGE_ONLY_FIELDS: ReadonlySet<string> = new Set(["type", "attachments", "metadata"]);
-
 function sampleName(file: string): string {
   return basename(file, ".sample.json");
 }
@@ -290,22 +269,6 @@ describe("OFSCP sample fixtures parse against their schemas", () => {
 
   for (const file of sampleFiles) {
     const name = sampleName(file);
-    if (!OFSCP_HAS_FULL_MESSAGE_EVENTS && PRE_23_COMPACT_MESSAGE_SAMPLES.has(name)) {
-      test(`${file} (pre-ofscp#23 compact message) fails only on the full-Message fields`, () => {
-        const schema = SAMPLE_SCHEMAS[name] as z.ZodTypeAny;
-        const raw = JSON.parse(readFileSync(join(SAMPLES_DIR, file), "utf8"));
-        const result = schema.safeParse(raw);
-        expect(result.success).toBe(false);
-        const paths = result.success ? [] : result.error.issues.map((i) => i.path.join("."));
-        expect(paths.length).toBeGreaterThan(0);
-        for (const path of paths) {
-          const [data, message, field, ...rest] = path.split(".");
-          expect([data, message, rest.length]).toEqual(["data", "message", 0]);
-          expect(FULL_MESSAGE_ONLY_FIELDS.has(field ?? "")).toBe(true);
-        }
-      });
-      continue;
-    }
     test(`${file} parses`, () => {
       const schema = SAMPLE_SCHEMAS[name];
       if (!schema) {
