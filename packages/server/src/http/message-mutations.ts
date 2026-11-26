@@ -7,9 +7,10 @@
  *    (visibility 404, `post:<type>` + reply-only presence 403) before the
  *    duplicate lookup, {@link authorizeReplyTarget} (parent 400, `replyOnlyTo`
  *    403) after it.
- *  - **edit** (`message.update` / `PATCH …/messages/{id}`): author-only, and only
- *    while `permissions.editUntil` (the row's `edit_until`) is in the future;
- *    otherwise 403. A missing message (or wrong channel/group) → 404.
+ *  - **edit** (`message.update` / `PATCH …/messages/{id}`): a missing message
+ *    (or wrong channel/group) → 404; then author-only, and only while
+ *    `permissions.editUntil` (the row's `edit_until`) is in the future;
+ *    otherwise 403. The body is judged only after that (`http/message-edit.ts`).
  *  - **delete** (`message.delete` / `DELETE …/messages/{id}`): the **author** OR
  *    a member with the `moderate` role; otherwise 403. Missing → 404.
  *

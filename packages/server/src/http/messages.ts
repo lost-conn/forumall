@@ -18,7 +18,6 @@
  */
 import {
   MessageSchema,
-  MessageUpdateRequestSchema,
   MessagesPageSchema,
   PagedResponseSchema,
   ReactionSchema,
@@ -33,19 +32,14 @@ import { z } from "zod";
 
 import { canViewChannel, getChannelRow } from "../provider/channels.ts";
 import { getGroupRow } from "../provider/groups.ts";
-import {
-  listMessages,
-  listReplies,
-  tombstoneMessage,
-  updateMessageContent,
-} from "../provider/messages.ts";
+import { listMessages, listReplies, tombstoneMessage } from "../provider/messages.ts";
 import { addReaction, hasReaction, listReactions, removeReaction } from "../provider/reactions.ts";
 import { AppError, parseRequestBody, slugForErrorCode } from "./errors.ts";
 import { createChannelMessage } from "./message-create.ts";
+import { editChannelMessage } from "./message-edit.ts";
 import {
   type MutationError,
   authorizeMessageDelete,
-  authorizeMessageEdit,
   authorizeReaction,
 } from "./message-mutations.ts";
 import { optionalSignature, requireSignature } from "./signature.ts";
@@ -173,19 +167,24 @@ export function createMessagesRouter() {
   // Author-only + edit window; returns the updated Message (with `editedAt`).
   // Fans out `message.updated` to WS subscribers via the shared hub.
   router.patch("/:messageId", signed, async (c) => {
-    const { db, hub } = c.var;
+    const { db, config, hub } = c.var;
     const actor = c.var.actor;
     if (!actor) throw AppError.unauthorized();
     const groupId = requireParam(c, "groupId");
     const channelId = requireParam(c, "channelId");
     const messageId = requireParam(c, "messageId");
 
-    const body = parseRequestBody(MessageUpdateRequestSchema, await c.req.json());
-
-    const outcome = authorizeMessageEdit(db, groupId, channelId, messageId, actor.actor);
+    // 404 / 403 before the body is judged (400): see `editChannelMessage`.
+    const body: unknown = await c.req.json().catch(() => undefined);
+    const outcome = editChannelMessage(db, config, {
+      groupId,
+      channelId,
+      messageId,
+      actor: actor.actor,
+      body,
+    });
     if (outcome.error) throw toAppError(outcome.error);
-
-    const record = updateMessageContent(db, channelId, messageId, body.content);
+    const { record } = outcome;
 
     // Reach WS subscribers exactly as the WS path does (REST/WS parity).
     hub.publishToChannel(channelId, {

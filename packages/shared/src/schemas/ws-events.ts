@@ -4,8 +4,14 @@
  */
 import { z } from "zod";
 
-import { DmIdSchema, OpaqueCursorSchema, Rfc3339DateTimeSchema, UserRefSchema } from "./common.ts";
-import { MemberSchema } from "./groups.ts";
+import {
+  DmIdSchema,
+  HttpsUriSchema,
+  OpaqueCursorSchema,
+  Rfc3339DateTimeSchema,
+  UserRefSchema,
+} from "./common.ts";
+import { GroupPointerSchema, MemberSchema } from "./groups.ts";
 import { DmConversationSchema, MessageSchema, ReactionSchema } from "./messaging.ts";
 import { NotificationSchema } from "./notifications.ts";
 import { PresenceSchema } from "./privacy.ts";
@@ -170,6 +176,26 @@ export const WsMemberUpdatedSchema = wsFrame(
     .passthrough(),
 );
 export type WsMemberUpdated = z.infer<typeof WsMemberUpdatedSchema>;
+
+/**
+ * `groups.updated` event — the user's group list changed (§5.7 My groups);
+ * sent to all of the user's connections. `groups` holds added or changed
+ * entries, `removed` the group URIs that left the list; at least one of the
+ * two is non-empty.
+ */
+export const WsGroupsUpdatedSchema = wsFrame(
+  "groups.updated",
+  z
+    .object({
+      groups: z.array(GroupPointerSchema),
+      removed: z.array(HttpsUriSchema),
+    })
+    .passthrough()
+    .refine((d) => d.groups.length > 0 || d.removed.length > 0, {
+      message: "groups.updated must carry at least one added, changed or removed group",
+    }),
+);
+export type WsGroupsUpdated = z.infer<typeof WsGroupsUpdatedSchema>;
 
 /** `dm.message` event. */
 export const WsDmMessageSchema = wsFrame(

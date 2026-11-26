@@ -33,11 +33,9 @@
  * blocking inbox poisoning into a conversation the author is not part of.
  */
 import {
-  type Content,
   DmConversationPointerRequestSchema,
   DmConversationsResponseSchema,
   MessageSchema,
-  MessageUpdateRequestSchema,
   MessagesPageSchema,
   ReactionSchema,
   canonicalAuthority,
@@ -83,7 +81,7 @@ import {
   requireParam,
   resolveLocalDmOwner,
 } from "./dm-request.ts";
-import { AppError, parseRequestBody } from "./errors.ts";
+import { AppError } from "./errors.ts";
 import { requireLocalActor, requireLocalHandle, requireSignature } from "./signature.ts";
 import type { AppBindings } from "./types.ts";
 
@@ -479,20 +477,22 @@ export function createDmsRouter() {
     const messageId = requireParam(c, "messageId");
     const authority = canonicalAuthority(config.domain);
 
-    const body = parseRequestBody(MessageUpdateRequestSchema, await c.req.json());
-    const content = body.content as Content;
+    // The `MessageUpdate` body is checked only once the message is found (else
+    // 404) and the caller is its author within the edit window (else 403): by
+    // `applyDmEdit` for (a)/(b), by the peer for (c), which gets it in full.
+    const body: unknown = await c.req.json().catch(() => undefined);
 
     // (a) The target lives in the caller's own LOCAL inbox.
     const me = actor.localHandle;
     const own = me !== undefined ? getDmMessageRow(db, me, dmId, messageId) : null;
     if (me !== undefined && own) {
-      const message = applyDmEdit(db, hub, {
+      const message = applyDmEdit(db, config, hub, {
         owner: me,
         ownerActor: actor.actor,
         dmId,
         messageId,
         actor: actor.actor,
-        content,
+        body,
         row: own,
       });
       return c.json(MessageSchema.parse(message));
@@ -502,13 +502,13 @@ export function createDmsRouter() {
     const owner = resolveLocalDmOwner(db, config, actor.actor, dmId);
     const row = owner !== null ? getDmMessageRow(db, owner, dmId, messageId) : null;
     if (owner !== null && row) {
-      const message = applyDmEdit(db, hub, {
+      const message = applyDmEdit(db, config, hub, {
         owner,
         ownerActor: `${owner}@${authority}`,
         dmId,
         messageId,
         actor: actor.actor,
-        content,
+        body,
         row,
       });
       return c.json(MessageSchema.parse(message));
@@ -523,7 +523,7 @@ export function createDmsRouter() {
         messageId,
         counterpartyDomain: cpDomain,
         actor: actor.actor,
-        content,
+        update: typeof body === "object" && body !== null && !Array.isArray(body) ? body : {},
       });
       return relayPeerResponse(c, res);
     }

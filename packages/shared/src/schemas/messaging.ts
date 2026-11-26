@@ -8,6 +8,7 @@ import {
   AttachmentSchema,
   DmIdSchema,
   HttpsUriSchema,
+  LocalIdSchema,
   MetadataListSchema,
   MimeTypeSchema,
   OpaqueCursorSchema,
@@ -19,7 +20,11 @@ import {
 // Message primitives (defs/messaging.json)
 // ---------------------------------------------------------------------------
 
-/** Message body text + mime (`Content`). */
+/**
+ * Message body text + mime (`Content`, §5.3 Content formats). Every provider
+ * accepts text/plain and text/markdown; a body places the message's own
+ * attachments inline with `attachment:<id>` references.
+ */
 export const ContentSchema = z
   .object({
     text: z.string(),
@@ -45,6 +50,25 @@ export const MessagePermissionsSchema = z
   .passthrough();
 export type MessagePermissions = z.infer<typeof MessagePermissionsSchema>;
 
+/**
+ * Actors the message mentions, set by the author's client (§5.3). When present
+ * it is authoritative for mention notifications (§10.1); when absent, mentions
+ * are parsed from the text.
+ */
+export const MentionsSchema = z.array(UserRefSchema);
+export type Mentions = z.infer<typeof MentionsSchema>;
+
+/**
+ * The article fields of a message (§5.3): plain-text `title` and `summary`, and
+ * `cover`, the id of one of the message's own attachments. Defined only for
+ * type `article`; ignored on other types.
+ */
+const ArticleFieldsShape = {
+  title: z.string().optional(),
+  summary: z.string().optional(),
+  cover: LocalIdSchema.optional(),
+};
+
 // ---------------------------------------------------------------------------
 // Message (message.json → BaseMessage; the message|memo|article variants)
 // ---------------------------------------------------------------------------
@@ -68,6 +92,8 @@ export const MessageSchema = z
     attachments: z.array(AttachmentSchema),
     reference: MessageReferenceSchema.optional(),
     tags: z.array(z.string()).optional(),
+    mentions: MentionsSchema.optional(),
+    ...ArticleFieldsShape,
     replyCount: z.number().int().min(0).optional(),
     createdAt: Rfc3339DateTimeSchema,
     editedAt: Rfc3339DateTimeSchema.optional(),
@@ -147,17 +173,66 @@ export const MessageCreateRequestSchema = z
     attachments: z.array(AttachmentSchema).optional(),
     reference: MessageReferenceSchema.optional(),
     tags: z.array(z.string()).optional(),
+    mentions: MentionsSchema.optional(),
+    ...ArticleFieldsShape,
     metadata: MetadataListSchema.optional(),
   })
   .passthrough();
 export type MessageCreateRequest = z.infer<typeof MessageCreateRequestSchema>;
 
-/** PATCH .../messages/{messageId} body (`message-update-request`). */
-export const MessageUpdateRequestSchema = z
+/**
+ * The fields an edit may carry (`MessageUpdate`, §7.1 Editing). Each field
+ * present replaces the stored value; absent fields are unchanged. The article
+ * fields take `null` to remove the stored value. `type`, `reference` and
+ * `metadata` cannot be edited (unknown keys pass through, as everywhere).
+ *
+ * Kept as a plain object so the WS `message.update` command can extend it with
+ * its target ids; {@link MessageUpdateRequestSchema} adds the
+ * at-least-one-field rule.
+ */
+export const MessageUpdateFieldsSchema = z
   .object({
-    content: ContentSchema,
+    content: ContentSchema.optional(),
+    attachments: z.array(AttachmentSchema).optional(),
+    tags: z.array(z.string()).optional(),
+    mentions: MentionsSchema.optional(),
+    title: z.string().nullable().optional(),
+    summary: z.string().nullable().optional(),
+    cover: LocalIdSchema.nullable().optional(),
   })
   .passthrough();
+
+/** The fields of a `MessageUpdate`, one of which every edit must carry (§7.1). */
+export const MESSAGE_UPDATE_FIELDS = [
+  "content",
+  "attachments",
+  "tags",
+  "mentions",
+  "title",
+  "summary",
+  "cover",
+] as const;
+
+/** The issue message when an edit carries none of {@link MESSAGE_UPDATE_FIELDS}. */
+export const NO_EDIT_FIELD_MESSAGE = `an edit must carry at least one of: ${MESSAGE_UPDATE_FIELDS.join(", ")}`;
+
+/**
+ * True iff `update` carries at least one {@link MESSAGE_UPDATE_FIELDS} entry.
+ * An edit carrying none is a 400 (§7.1). Whether only article fields were sent
+ * to a non-article (also a 400) depends on the stored message, so that check is
+ * the provider's, not the schema's.
+ */
+export function carriesAnEditField(update: Record<string, unknown>): boolean {
+  return MESSAGE_UPDATE_FIELDS.some((field) => update[field] !== undefined);
+}
+
+/**
+ * PATCH .../messages/{messageId} body (`message-update-request`, §7.1), in a
+ * channel or a DM (§7.4, §8.3): a `MessageUpdate` carrying at least one field.
+ */
+export const MessageUpdateRequestSchema = MessageUpdateFieldsSchema.refine(carriesAnEditField, {
+  message: NO_EDIT_FIELD_MESSAGE,
+});
 export type MessageUpdateRequest = z.infer<typeof MessageUpdateRequestSchema>;
 
 // ---------------------------------------------------------------------------
@@ -197,6 +272,7 @@ export const DmMessageCreateRequestSchema = z
     to: UserRefSchema.optional(),
     content: ContentSchema,
     attachments: z.array(AttachmentSchema).optional(),
+    mentions: MentionsSchema.optional(),
     reference: MessageReferenceSchema.optional(),
   })
   .passthrough();

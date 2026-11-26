@@ -7,24 +7,34 @@ import {
   type Message,
   WsMessageDeleteSchema,
   WsMessageDeletedSchema,
-  WsMessageUpdateSchema,
   WsMessageUpdatedSchema,
   rfc3339Timestamp,
 } from "@forumall/shared";
 import { z } from "zod";
-import {
-  type MessageRecord,
-  tombstoneMessage,
-  updateMessageContent,
-} from "../../provider/messages.ts";
+import { type MessageRecord, tombstoneMessage } from "../../provider/messages.ts";
 import type { OutboundEvent } from "../../provider/ws-hub.ts";
 import { createChannelMessage, duplicateCreatedEvent } from "../message-create.ts";
-import { authorizeMessageDelete, authorizeMessageEdit } from "../message-mutations.ts";
+import { editChannelMessage } from "../message-edit.ts";
+import { authorizeMessageDelete } from "../message-mutations.ts";
 import { type ConnState, type WsContext, type WsCtx, errorEvent } from "./connection.ts";
 
 /** The `message.create` target: `groupId` / `channelId` beside the body. */
 const CreateTargetSchema = z.object({
   data: z.object({ groupId: z.string().min(1), channelId: z.string().min(1) }).passthrough(),
+});
+
+/**
+ * The `message.update` target: `groupId` / `channelId` / `messageId` beside the
+ * `MessageUpdate` body, which `editChannelMessage` checks after authorizing.
+ */
+const UpdateTargetSchema = z.object({
+  data: z
+    .object({
+      groupId: z.string().min(1),
+      channelId: z.string().min(1),
+      messageId: z.string().min(1),
+    })
+    .passthrough(),
 });
 
 /**
@@ -71,12 +81,12 @@ export function handleMessageCreate(
 }
 
 /**
- * §7.1 Editing messages: replace a message's `content`. Only the **author** may
- * edit, and only while `permissions.editUntil` is in the future; otherwise
- * reject with 403. On success stamp `edited_at` and fan out `message.updated`
- * to every channel subscriber (only the editing connection's copy correlates
- * to the request id). Missing message / wrong channel/group → 404; not author or window passed
- * → 403.
+ * §7.1 Editing messages: `data` is the `MessageUpdate` plus the target ids;
+ * each field present replaces the stored one (`http/message-edit.ts`). Missing
+ * message / wrong channel/group → 404; not the author or the window passed →
+ * 403; only then a body breaking a rule → 400. On success stamp `edited_at` and
+ * fan out `message.updated` with the full message to every channel subscriber
+ * (only the editing connection's copy correlates to the request id).
  */
 export function handleMessageUpdate(
   ctx: WsCtx,
@@ -85,9 +95,11 @@ export function handleMessageUpdate(
   rawFrame: unknown,
   frameId: string,
 ): void {
-  const { db, hub } = ctx;
-  const parsed = WsMessageUpdateSchema.safeParse(rawFrame);
-  if (!parsed.success) {
+  const { db, config, hub } = ctx;
+  // Only the target ids first: the edit itself is judged (400) after the
+  // message is found (404) and the actor may edit it (403).
+  const target = UpdateTargetSchema.safeParse(rawFrame);
+  if (!target.success) {
     hub.send(ws, errorEvent("bad_request", "malformed message.update command", frameId));
     return;
   }
@@ -95,14 +107,20 @@ export function handleMessageUpdate(
   const hubConn = state.hubConn;
   if (!actor || !hubConn) return; // unreachable: only authenticated connections reach here
 
-  const { groupId, channelId, messageId, content } = parsed.data.data;
-  const outcome = authorizeMessageEdit(db, groupId, channelId, messageId, actor);
+  const { groupId, channelId, messageId } = target.data.data;
+  const outcome = editChannelMessage(db, config, {
+    groupId,
+    channelId,
+    messageId,
+    actor,
+    body: target.data.data,
+  });
   if (outcome.error) {
     hub.send(ws, errorEvent(outcome.error.code, outcome.error.message, frameId));
     return;
   }
 
-  const record = updateMessageContent(db, channelId, messageId, content);
+  const { record } = outcome;
   hub.publishToChannel(channelId, updatedEvent(groupId, channelId, record), {
     conn: hubConn,
     correlationId: frameId,

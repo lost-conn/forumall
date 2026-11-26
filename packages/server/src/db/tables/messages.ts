@@ -16,7 +16,7 @@ import {
  * channel. Reactions are a separate object/table (later card), so `type` here
  * is `message|memo|article` only.
  *
- * `content`, `attachments`, `reference`, and `tags` are stored as JSON text and
+ * `content`, `attachments`, `reference`, `tags` and `mentions` are stored as JSON text and
  * mapped to the shared `Message` shape at the read boundary
  * (`provider/messages.ts`). `reference`/`edited_at`/`deleted_at`/`client_message_id`
  * are nullable.
@@ -88,6 +88,21 @@ export const messages = sqliteTable(
     clientMessageId: text("client_message_id"),
     /** Metadata objects (§5.4), stored as JSON (`MetadataList`). Added in 0037. */
     metadata: text("metadata").notNull(),
+    /**
+     * Mentioned actors (§5.3), stored as JSON (`string[]`); null when the
+     * message never carried `mentions` (then they are parsed from the text,
+     * §10.1). Added in 0039.
+     */
+    mentions: text("mentions"),
+    /** Article title (§5.3); null when absent. Only set on `article`. Added in 0039. */
+    title: text("title"),
+    /** Article summary (§5.3); null when absent. Only set on `article`. Added in 0039. */
+    summary: text("summary"),
+    /**
+     * Article cover (§5.3): the `id` of one of the message's own `attachments`;
+     * null when absent. Only set on `article`. Added in 0039.
+     */
+    cover: text("cover"),
   },
   (t) => ({
     channelSeqIdx: index("idx_messages_channel_seq").on(t.channelId, t.seq),

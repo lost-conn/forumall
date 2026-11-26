@@ -232,3 +232,24 @@ export const m0036DmConversationsCanonicalCounterparty: Migration = {
     );
   },
 };
+
+export const m0040DmMessagesTagsMentions: Migration = {
+  // DM `tags` and `mentions` (§5.3, §7.1, §7.4): a DM edit may replace either
+  // (`MessageUpdate`), and a DM create may carry `mentions`. `tags` backfills
+  // existing rows with an empty list; `mentions` is nullable (null = never set,
+  // so mentions are parsed from the text). Guarded per column so a re-run is a
+  // no-op.
+  id: "0040_dm_messages_tags_mentions",
+  up: (sqlite) => {
+    const cols = sqlite
+      .query<{ name: string }, []>("PRAGMA table_info(dm_messages)")
+      .all()
+      .map((c) => c.name);
+    if (!cols.includes("tags")) {
+      sqlite.exec("ALTER TABLE dm_messages ADD COLUMN tags TEXT NOT NULL DEFAULT '[]';");
+    }
+    if (!cols.includes("mentions")) {
+      sqlite.exec("ALTER TABLE dm_messages ADD COLUMN mentions TEXT;");
+    }
+  },
+};

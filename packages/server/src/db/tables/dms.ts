@@ -55,6 +55,13 @@ export const dmMessages = sqliteTable(
     editUntil: integer("edit_until", { mode: "number" }).notNull(),
     /** Client-supplied idempotency key; nullable. */
     clientMessageId: text("client_message_id"),
+    /** Tag list (§5.3), stored as JSON (`string[]`); set by an edit (§7.1). Added in 0040. */
+    tags: text("tags").notNull(),
+    /**
+     * Mentioned actors (§5.3), stored as JSON (`string[]`); null when the
+     * message never carried `mentions`. Added in 0040.
+     */
+    mentions: text("mentions"),
   },
   (t) => ({
     // Per-inbox conversation timeline read (§7.4): keyset paging over `seq`.

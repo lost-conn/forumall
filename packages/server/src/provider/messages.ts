@@ -113,6 +113,7 @@ export function rowToMessage(row: MessageRow): Message {
   const tags = JSON.parse(row.tags) as string[];
   const metadata = JSON.parse(row.metadata) as MetadataList;
   const reference = row.reference ? (JSON.parse(row.reference) as MessageReference) : undefined;
+  const mentions = row.mentions != null ? (JSON.parse(row.mentions) as string[]) : undefined;
   return MessageSchema.parse({
     id: row.id,
     // Echo of the create's idempotency key (§7.1): MUST be on the author's
@@ -125,6 +126,10 @@ export function rowToMessage(row: MessageRow): Message {
     attachments,
     ...(reference ? { reference } : {}),
     ...(tags.length > 0 ? { tags } : {}),
+    ...(mentions !== undefined ? { mentions } : {}),
+    ...(row.title != null ? { title: row.title } : {}),
+    ...(row.summary != null ? { summary: row.summary } : {}),
+    ...(row.cover != null ? { cover: row.cover } : {}),
     createdAt: rfc3339Timestamp(new Date(row.createdAt)),
     ...(row.editedAt != null ? { editedAt: rfc3339Timestamp(new Date(row.editedAt)) } : {}),
     ...(row.deletedAt != null ? { deletedAt: rfc3339Timestamp(new Date(row.deletedAt)) } : {}),
@@ -193,6 +198,12 @@ export interface CreateMessageInput {
   readonly attachments?: Attachment[];
   readonly reference?: MessageReference;
   readonly tags?: string[];
+  /** Mentioned actors (§5.3); omitted = none set (mentions parsed from the text). */
+  readonly mentions?: string[];
+  /** Article fields (§5.3); the caller sets them only on an `article`. */
+  readonly title?: string;
+  readonly summary?: string;
+  readonly cover?: string;
   /** Metadata objects (§5.4); omitted means `[]`. */
   readonly metadata?: MetadataList;
   /**
@@ -253,6 +264,10 @@ export function createMessage(db: Db, config: Config, input: CreateMessageInput)
       editUntil,
       clientMessageId: input.clientMessageId ?? null,
       metadata: JSON.stringify(input.metadata ?? []),
+      mentions: input.mentions !== undefined ? JSON.stringify(input.mentions) : null,
+      title: input.title ?? null,
+      summary: input.summary ?? null,
+      cover: input.cover ?? null,
     };
     db.drizzle.insert(messages).values(row).run();
   })();
@@ -269,26 +284,70 @@ export function createMessage(db: Db, config: Config, input: CreateMessageInput)
 const TOMBSTONE_CONTENT: Content = { text: "", mime: "text/plain" };
 
 /**
- * Replace a message's `content` and stamp `edited_at = now` (§7.1 edit). The
- * caller is responsible for authorization (author-only) and the edit-window check
- * (`permissions.editUntil` in the future) BEFORE calling this. Returns the
- * updated canonical {@link MessageRecord} (message + seq + cursor). Throws if the
- * row does not exist (callers check existence first).
+ * The fields an edit replaces (§7.1 `MessageUpdate`), already checked: each
+ * present one replaces the stored value, each absent one is kept. The article
+ * fields take `null` to remove the stored value; the caller sets them only on
+ * an `article`.
  */
-export function updateMessageContent(
+export interface MessageFieldsUpdate {
+  readonly content?: Content;
+  readonly attachments?: Attachment[];
+  readonly tags?: string[];
+  readonly mentions?: string[];
+  readonly title?: string | null;
+  readonly summary?: string | null;
+  readonly cover?: string | null;
+}
+
+/**
+ * The stored columns for the `content`, `attachments`, `tags` and `mentions`
+ * of `update` (JSON text, as created), only for the fields it carries. Shared
+ * with the DM inbox (`provider/dms.ts`), whose rows store them alike.
+ */
+export function editedJsonColumns(update: MessageFieldsUpdate): {
+  content?: string;
+  attachments?: string;
+  tags?: string;
+  mentions?: string;
+} {
+  return {
+    ...(update.content !== undefined ? { content: JSON.stringify(update.content) } : {}),
+    ...(update.attachments !== undefined
+      ? { attachments: JSON.stringify(update.attachments) }
+      : {}),
+    ...(update.tags !== undefined ? { tags: JSON.stringify(update.tags) } : {}),
+    ...(update.mentions !== undefined ? { mentions: JSON.stringify(update.mentions) } : {}),
+  };
+}
+
+/**
+ * Apply an edit (§7.1): replace each field `update` carries and stamp
+ * `edited_at = now`. The caller is responsible for authorization (author-only),
+ * the edit-window check and the field rules (`http/message-edit.ts`) BEFORE
+ * calling this. Returns the updated canonical {@link MessageRecord} (message +
+ * seq + cursor). Throws if the row does not exist (callers check existence
+ * first).
+ */
+export function updateMessageFields(
   db: Db,
   channelId: string,
   messageId: string,
-  content: Content,
+  update: MessageFieldsUpdate,
 ): MessageRecord {
   const now = Date.now();
   db.drizzle
     .update(messages)
-    .set({ content: JSON.stringify(content), editedAt: now })
+    .set({
+      ...editedJsonColumns(update),
+      ...(update.title !== undefined ? { title: update.title } : {}),
+      ...(update.summary !== undefined ? { summary: update.summary } : {}),
+      ...(update.cover !== undefined ? { cover: update.cover } : {}),
+      editedAt: now,
+    })
     .where(and(eq(messages.channelId, channelId), eq(messages.id, messageId)))
     .run();
   const row = getMessageRow(db, channelId, messageId);
-  if (!row) throw new Error(`updateMessageContent: no such message ${messageId}`);
+  if (!row) throw new Error(`updateMessageFields: no such message ${messageId}`);
   return { message: rowToMessage(row), seq: row.seq, cursor: encodeMessageCursor(row.seq) };
 }
 

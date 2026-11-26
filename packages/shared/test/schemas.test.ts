@@ -34,6 +34,9 @@ import {
   FollowSchema,
   FollowsResponseSchema,
   GroupCreateRequestSchema,
+  GroupPointerRequestSchema,
+  GroupPointerSchema,
+  GroupPointersResponseSchema,
   GroupSchema,
   GroupUpdateRequestSchema,
   GuestClaimRequestSchema,
@@ -79,6 +82,7 @@ import {
   WsDmTypingSchema,
   WsEnvelopeSchema,
   WsErrorSchema,
+  WsGroupsUpdatedSchema,
   WsMemberUpdatedSchema,
   WsMessageCreateSchema,
   WsMessageCreatedSchema,
@@ -132,11 +136,14 @@ const SAMPLES_DIR = fileURLToPath(new URL("../../../../ofscp/tests", import.meta
 /**
  * Maps each `<name>.sample.json` to the schema that should accept it. This map
  * IS the completeness guard: the enumeration test fails loudly if a sample file
- * has no entry here, so adding a sample upstream forces a schema here.
+ * has no entry here, so adding a sample upstream forces a schema here. The
+ * per-sample tests are generated from the files present, so an entry whose
+ * sample is not (yet) in the checked-out spec simply produces no test.
  */
 const SAMPLE_SCHEMAS: Record<string, z.ZodTypeAny> = {
   // Misc objects
   attachment: AttachmentSchema,
+  "attachment-video": AttachmentSchema,
   "problem-details": ProblemDetailsSchema,
   "call-answer": CallAnswerSchema,
   "call-ice": CallIceSchema,
@@ -173,11 +180,13 @@ const SAMPLE_SCHEMAS: Record<string, z.ZodTypeAny> = {
   "push-payload": PushPayloadSchema,
   "guest-upgrade-response": GuestUpgradeResponseSchema,
   "ws-member-updated": WsMemberUpdatedSchema,
+  "ws-groups-updated": WsGroupsUpdatedSchema,
   "ws-notification-created": WsNotificationCreatedSchema,
   "user-profile": UserProfileSchema,
 
   // Groups / channels
   group: GroupSchema,
+  "group-membership": GroupSchema,
   "group-create-request": GroupCreateRequestSchema,
   "group-update-request": GroupUpdateRequestSchema,
   channel: ChannelSchema,
@@ -189,11 +198,16 @@ const SAMPLE_SCHEMAS: Record<string, z.ZodTypeAny> = {
   "join-request": JoinRequestSchema,
   "tiers-response": TiersResponseSchema,
   "providers-response": ProvidersResponseSchema,
+  "group-pointer": GroupPointerSchema,
+  "group-pointer-request": GroupPointerRequestSchema,
+  "group-pointers-response": GroupPointersResponseSchema,
 
   // Messaging
   message: MessageSchema,
+  "message-article": MessageSchema,
   "message-create-request": MessageCreateRequestSchema,
   "message-update-request": MessageUpdateRequestSchema,
+  "message-update-article-request": MessageUpdateRequestSchema,
   "messages-page": MessagesPageSchema,
   reaction: ReactionSchema,
   "dm-conversation": DmConversationSchema,
@@ -226,6 +240,7 @@ const SAMPLE_SCHEMAS: Record<string, z.ZodTypeAny> = {
   "ws-message-create": WsMessageCreateSchema,
   "ws-message-created": WsMessageCreatedSchema,
   "ws-message-update": WsMessageUpdateSchema,
+  "ws-message-update-article": WsMessageUpdateSchema,
   "ws-message-updated": WsMessageUpdatedSchema,
   "ws-message-delete": WsMessageDeleteSchema,
   "ws-message-deleted": WsMessageDeletedSchema,

@@ -11,7 +11,12 @@ import {
   Rfc3339DateTimeSchema,
   UserRefSchema,
 } from "./common.ts";
-import { ContentSchema, MessageCreateRequestSchema } from "./messaging.ts";
+import {
+  MessageCreateRequestSchema,
+  MessageUpdateFieldsSchema,
+  NO_EDIT_FIELD_MESSAGE,
+  carriesAnEditField,
+} from "./messaging.ts";
 import { PresenceUpdateRequestSchema } from "./privacy.ts";
 import { WsEventTypeSchema } from "./ws-envelope.ts";
 import { wsFrame } from "./ws-frame.ts";
@@ -67,17 +72,18 @@ export const WsMessageCreateSchema = wsFrame(
 );
 export type WsMessageCreate = z.infer<typeof WsMessageCreateSchema>;
 
-/** `message.update` command. */
+/**
+ * `message.update` command: the `MessageUpdate` body (shared with the REST
+ * PATCH, §7.1) plus the target `groupId`, `channelId` and `messageId`. Like the
+ * PATCH, it must carry at least one edit field.
+ */
 export const WsMessageUpdateSchema = wsFrame(
   "message.update",
-  z
-    .object({
-      groupId: z.string().min(1),
-      channelId: z.string().min(1),
-      messageId: z.string().min(1),
-      content: ContentSchema,
-    })
-    .passthrough(),
+  MessageUpdateFieldsSchema.extend({
+    groupId: z.string().min(1),
+    channelId: z.string().min(1),
+    messageId: z.string().min(1),
+  }).refine(carriesAnEditField, { message: NO_EDIT_FIELD_MESSAGE }),
 );
 export type WsMessageUpdate = z.infer<typeof WsMessageUpdateSchema>;
 
