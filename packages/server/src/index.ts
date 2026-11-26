@@ -15,6 +15,7 @@ import { createApp } from "./app.ts";
 import { type Config, loadConfig } from "./config.ts";
 import { openDb } from "./db/index.ts";
 import { migrate, migrationDomain } from "./db/migrate.ts";
+import { installShutdown } from "./lib/shutdown.ts";
 import { getProviderSigningKey } from "./provider/signing-key.ts";
 
 /**
@@ -129,15 +130,10 @@ const server = Bun.serve({
   websocket: app.__websocket,
 });
 
-// Graceful shutdown (§7.1 "Close codes"): close every WebSocket with 1001 so
-// clients know to reconnect, then stop accepting requests and exit.
-let shuttingDown = false;
-function shutdown(signal: string): void {
-  if (shuttingDown) return;
-  shuttingDown = true;
-  console.log(`[server] ${signal} received — closing connections and shutting down`);
-  app.__closeWebSockets();
-  void server.stop().finally(() => process.exit(0));
-}
-process.on("SIGTERM", () => shutdown("SIGTERM"));
-process.on("SIGINT", () => shutdown("SIGINT"));
+// Shutdown (§7.1 "Close codes"): close every WebSocket with 1001 so clients
+// know to reconnect, then stop the server. A stop that outlasts its grace
+// period, or a second signal, is forced (see lib/shutdown.ts).
+installShutdown({
+  closeWebSockets: () => app.__closeWebSockets(),
+  stop: (force) => server.stop(force),
+});
