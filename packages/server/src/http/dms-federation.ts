@@ -4,7 +4,6 @@
  * signed.
  */
 import {
-  type Content,
   DmMessageCreateRequestSchema,
   MessageSchema,
   MessageUpdateRequestSchema,
@@ -40,6 +39,7 @@ import {
   resolveLocalDmOwner,
 } from "./dm-request.ts";
 import { AppError, parseRequestBody } from "./errors.ts";
+import { editedContent } from "./message-mutations.ts";
 import { requireActorOrProviderSignature, requireSignature } from "./signature.ts";
 import type { AppBindings } from "./types.ts";
 
@@ -194,10 +194,11 @@ export function createFederationDmsRouter() {
     const dmId = requireParam(c, "dmId");
     const messageId = requireParam(c, "messageId");
 
-    const raw = (await c.req.json().catch(() => ({}))) as { actor?: unknown; content?: unknown };
+    const raw = (await c.req.json().catch(() => ({}))) as { actor?: unknown };
     const actingActor = federationActingActor(c, raw.actor);
-    const content = parseRequestBody(MessageUpdateRequestSchema, { content: raw.content })
-      .content as Content;
+    const edit = editedContent(parseRequestBody(MessageUpdateRequestSchema, raw));
+    if (edit.error) throw AppError.badRequest({ detail: edit.error.message });
+    const content = edit.content;
 
     const { owner, ownerActor } = resolveFederationDmOwner(db, config, actingActor, dmId);
     const row = getDmMessageRow(db, owner, dmId, messageId);

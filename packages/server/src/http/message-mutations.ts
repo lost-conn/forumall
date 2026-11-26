@@ -7,9 +7,11 @@
  *    (visibility 404, `post:<type>` + reply-only presence 403) before the
  *    duplicate lookup, {@link authorizeReplyTarget} (parent 400, `replyOnlyTo`
  *    403) after it.
- *  - **edit** (`message.update` / `PATCH …/messages/{id}`): author-only, and only
- *    while `permissions.editUntil` (the row's `edit_until`) is in the future;
- *    otherwise 403. A missing message (or wrong channel/group) → 404.
+ *  - **edit** (`message.update` / `PATCH …/messages/{id}`): {@link editedContent}
+ *    first (this provider edits `content` only; 400 otherwise), then
+ *    author-only, and only while `permissions.editUntil` (the row's
+ *    `edit_until`) is in the future; otherwise 403. A missing message (or wrong
+ *    channel/group) → 404.
  *  - **delete** (`message.delete` / `DELETE …/messages/{id}`): the **author** OR
  *    a member with the `moderate` role; otherwise 403. Missing → 404.
  *
@@ -17,7 +19,7 @@
  * `provider/messages.ts` store) or `{ error }` carrying the right status/code so
  * the WS path can build an `error` event and the REST path an {@link AppError}.
  */
-import type { ChannelPermissions } from "@forumall/shared";
+import type { ChannelPermissions, Content, MessageUpdateRequest } from "@forumall/shared";
 
 import type { Db } from "../db/index.ts";
 import type { MessageRow } from "../db/schema.ts";
@@ -254,4 +256,29 @@ export function authorizeReplyTarget(
     }
   }
   return null;
+}
+
+/**
+ * Why an edit without `content` is refused: this provider does not yet apply
+ * the other `MessageUpdate` fields (§7.1: attachments, tags, mentions and the
+ * article fields).
+ */
+export const CONTENT_ONLY_EDIT_MESSAGE =
+  "this provider can only edit a message's content; the edit must carry content";
+
+/**
+ * The new body an edit carries. The schema already guarantees at least one
+ * `MessageUpdate` field (§7.1); this provider applies only `content`, so an
+ * edit without it is `bad_request` (400). That also gives §7.1's 400 for an
+ * edit of a non-article that carries only article fields.
+ */
+export function editedContent(
+  update: MessageUpdateRequest,
+):
+  | { readonly error: MutationError; readonly content?: undefined }
+  | { readonly error?: undefined; readonly content: Content } {
+  if (update.content === undefined) {
+    return { error: { code: "bad_request", message: CONTENT_ONLY_EDIT_MESSAGE } };
+  }
+  return { content: update.content };
 }

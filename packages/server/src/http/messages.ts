@@ -47,6 +47,7 @@ import {
   authorizeMessageDelete,
   authorizeMessageEdit,
   authorizeReaction,
+  editedContent,
 } from "./message-mutations.ts";
 import { optionalSignature, requireSignature } from "./signature.ts";
 import type { AppBindings } from "./types.ts";
@@ -181,11 +182,13 @@ export function createMessagesRouter() {
     const messageId = requireParam(c, "messageId");
 
     const body = parseRequestBody(MessageUpdateRequestSchema, await c.req.json());
+    const edit = editedContent(body);
+    if (edit.error) throw toAppError(edit.error);
 
     const outcome = authorizeMessageEdit(db, groupId, channelId, messageId, actor.actor);
     if (outcome.error) throw toAppError(outcome.error);
 
-    const record = updateMessageContent(db, channelId, messageId, body.content);
+    const record = updateMessageContent(db, channelId, messageId, edit.content);
 
     // Reach WS subscribers exactly as the WS path does (REST/WS parity).
     hub.publishToChannel(channelId, {

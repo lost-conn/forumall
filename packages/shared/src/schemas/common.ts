@@ -20,6 +20,15 @@ export const HttpsUriSchema = z.string().regex(/^https:\/\//, {
 export type HttpsUri = z.infer<typeof HttpsUriSchema>;
 
 /**
+ * A provider-assigned local id (`LocalId`, §2.2): opaque, unique within the
+ * issuing provider, path-safe.
+ */
+export const LocalIdSchema = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/, {
+  message: "must be 1-128 characters of A-Z, a-z, 0-9, _ or -",
+});
+export type LocalId = z.infer<typeof LocalIdSchema>;
+
+/**
  * RFC 3339 / ISO-8601 timestamp with timezone (`Rfc3339DateTime`). The JSON
  * Schema only tags `format: date-time` (advisory in draft 2020-12); we keep it
  * a plain string so valid samples never fail on formatting nuances.
@@ -114,8 +123,8 @@ export type MetadataList = z.infer<typeof MetadataListSchema>;
 // Attachment (objects.json#/$defs/Attachment)
 // ---------------------------------------------------------------------------
 
-/** Message attachment (`Attachment`). */
-export const AttachmentSchema = z
+/** The fields of an `Attachment` other than its `thumbnail`. */
+const AttachmentFieldsSchema = z
   .object({
     id: z.string().min(1),
     mime: MimeTypeSchema,
@@ -126,8 +135,24 @@ export const AttachmentSchema = z
     width: z.number().int().min(0).optional(),
     height: z.number().int().min(0).optional(),
     durationMs: z.number().int().min(0).optional(),
+    /**
+     * When a short-lived `url` stops working (§5.8, Revocation). Absent = the
+     * url does not expire.
+     */
+    expiresAt: Rfc3339DateTimeSchema.optional(),
   })
   .passthrough();
+
+/**
+ * Message attachment (`Attachment`). `thumbnail` is an optional preview image,
+ * e.g. a video's poster frame (§5.8); a thumbnail MUST NOT itself carry a
+ * thumbnail.
+ */
+export const AttachmentSchema = AttachmentFieldsSchema.extend({
+  thumbnail: AttachmentFieldsSchema.refine((t) => !("thumbnail" in t), {
+    message: "a thumbnail must not itself carry a thumbnail",
+  }).optional(),
+});
 export type Attachment = z.infer<typeof AttachmentSchema>;
 
 // ---------------------------------------------------------------------------

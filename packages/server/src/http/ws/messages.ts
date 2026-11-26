@@ -19,7 +19,11 @@ import {
 } from "../../provider/messages.ts";
 import type { OutboundEvent } from "../../provider/ws-hub.ts";
 import { createChannelMessage, duplicateCreatedEvent } from "../message-create.ts";
-import { authorizeMessageDelete, authorizeMessageEdit } from "../message-mutations.ts";
+import {
+  authorizeMessageDelete,
+  authorizeMessageEdit,
+  editedContent,
+} from "../message-mutations.ts";
 import { type ConnState, type WsContext, type WsCtx, errorEvent } from "./connection.ts";
 
 /** The `message.create` target: `groupId` / `channelId` beside the body. */
@@ -95,14 +99,19 @@ export function handleMessageUpdate(
   const hubConn = state.hubConn;
   if (!actor || !hubConn) return; // unreachable: only authenticated connections reach here
 
-  const { groupId, channelId, messageId, content } = parsed.data.data;
+  const { groupId, channelId, messageId } = parsed.data.data;
+  const edit = editedContent(parsed.data.data);
+  if (edit.error) {
+    hub.send(ws, errorEvent(edit.error.code, edit.error.message, frameId));
+    return;
+  }
   const outcome = authorizeMessageEdit(db, groupId, channelId, messageId, actor);
   if (outcome.error) {
     hub.send(ws, errorEvent(outcome.error.code, outcome.error.message, frameId));
     return;
   }
 
-  const record = updateMessageContent(db, channelId, messageId, content);
+  const record = updateMessageContent(db, channelId, messageId, edit.content);
   hub.publishToChannel(channelId, updatedEvent(groupId, channelId, record), {
     conn: hubConn,
     correlationId: frameId,

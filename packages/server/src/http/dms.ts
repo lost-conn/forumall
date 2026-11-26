@@ -33,7 +33,6 @@
  * blocking inbox poisoning into a conversation the author is not part of.
  */
 import {
-  type Content,
   DmConversationPointerRequestSchema,
   DmConversationsResponseSchema,
   MessageSchema,
@@ -84,6 +83,7 @@ import {
   resolveLocalDmOwner,
 } from "./dm-request.ts";
 import { AppError, parseRequestBody } from "./errors.ts";
+import { editedContent } from "./message-mutations.ts";
 import { requireLocalActor, requireLocalHandle, requireSignature } from "./signature.ts";
 import type { AppBindings } from "./types.ts";
 
@@ -480,7 +480,9 @@ export function createDmsRouter() {
     const authority = canonicalAuthority(config.domain);
 
     const body = parseRequestBody(MessageUpdateRequestSchema, await c.req.json());
-    const content = body.content as Content;
+    const edit = editedContent(body);
+    if (edit.error) throw AppError.badRequest({ detail: edit.error.message });
+    const content = edit.content;
 
     // (a) The target lives in the caller's own LOCAL inbox.
     const me = actor.localHandle;

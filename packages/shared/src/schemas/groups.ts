@@ -92,7 +92,26 @@ export type CallSummary = z.infer<typeof CallSummarySchema>;
 // Group (group.json → defs/groups.json#/$defs/Group)
 // ---------------------------------------------------------------------------
 
-/** Canonical group object (`Group`). */
+/**
+ * The caller's own membership of a group (`Membership`, §5.5): returned as
+ * `Group.membership` by GET /api/groups/{groupId} to a signed member.
+ * Authoritative.
+ */
+export const MembershipSchema = z
+  .object({
+    role: RoleSchema,
+    joinedAt: Rfc3339DateTimeSchema,
+    /** The caller's group-scoped display name, if set (§5.7). */
+    displayNameOverride: z.string().optional(),
+  })
+  .passthrough();
+export type Membership = z.infer<typeof MembershipSchema>;
+
+/**
+ * Canonical group object (`Group`). `membership` is present only in an answer
+ * to a request signed by a member (§5.5); its absence does not prove the
+ * caller is not a member.
+ */
 export const GroupSchema = z
   .object({
     id: z.string().min(1),
@@ -104,6 +123,7 @@ export const GroupSchema = z
     tier: TierSchema,
     permissions: GroupPermissionsSchema,
     roles: z.array(RoleDefinitionSchema).optional(),
+    membership: MembershipSchema.optional(),
     createdAt: Rfc3339DateTimeSchema,
     updatedAt: Rfc3339DateTimeSchema,
     metadata: MetadataListSchema,
@@ -255,6 +275,47 @@ export const JoinRequestSchema = z
   })
   .passthrough();
 export type JoinRequest = z.infer<typeof JoinRequestSchema>;
+
+// ---------------------------------------------------------------------------
+// My groups (§5.7): group-pointer, group-pointer-request, group-pointers-response
+// ---------------------------------------------------------------------------
+
+/**
+ * An entry in the user's group list at their home provider (`GroupPointer`,
+ * §5.7 My groups): a group the provider hosts and the user belongs to, or a
+ * pointer the user's client recorded for a remote group. `group` is the
+ * group's object URI, `https://{authority}/api/groups/{groupId}`. `role` is
+ * the current role for a hosted group, and for a remote group a client-recorded
+ * hint that MAY be stale or absent (the authority is `Group.membership`).
+ */
+export const GroupPointerSchema = z
+  .object({
+    group: HttpsUriSchema,
+    role: RoleSchema.optional(),
+    updatedAt: Rfc3339DateTimeSchema,
+  })
+  .passthrough();
+export type GroupPointer = z.infer<typeof GroupPointerSchema>;
+
+/**
+ * PUT /api/me/groups/{groupRef} body (`group-pointer-request`): optional; its
+ * `role` is stored as a non-authoritative hint.
+ */
+export const GroupPointerRequestSchema = z
+  .object({
+    role: RoleSchema.optional(),
+  })
+  .passthrough();
+export type GroupPointerRequest = z.infer<typeof GroupPointerRequestSchema>;
+
+/** GET /api/me/groups response (`group-pointers-response`). */
+export const GroupPointersResponseSchema = z
+  .object({
+    groups: z.array(GroupPointerSchema),
+    metadata: MetadataListSchema,
+  })
+  .passthrough();
+export type GroupPointersResponse = z.infer<typeof GroupPointersResponseSchema>;
 
 // ---------------------------------------------------------------------------
 // tiers-response / providers-response
