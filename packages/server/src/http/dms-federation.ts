@@ -27,9 +27,9 @@ import { assertCanonicalActorField } from "./canonical-fields.ts";
 import {
   applyDmDelete,
   applyDmEdit,
-  dmMessageEventData,
   fanOutDmReaction,
   publishDmConversation,
+  publishDmMessage,
 } from "./dm-events.ts";
 import {
   assertValidReactionKey,
@@ -121,13 +121,11 @@ export function createFederationDmsRouter() {
       clientMessageId: body.clientMessageId,
     });
 
-    // --- Real-time: deliver `dm.message` to the recipient ONLY -------------
-    // Use publishToActor so every connection of the recipient receives it; only
-    // the recipient's inbox stored it, so only the recipient is notified (§7.4).
-    hub.publishToActor(recipientActor, {
-      type: "dm.message",
-      data: dmMessageEventData(dmId, record.cursor, record.message),
-    });
+    // --- Real-time: `dm.message` (§7.4) -------------------------------------
+    // Implicitly to every connection of the recipient (only their inbox stored
+    // it), and to the author's `dmId` subscriptions here, if any — the sender
+    // follows their sent messages on the recipient's provider that way.
+    publishDmMessage(hub, { dmId, ownerActor: recipientActor, record });
 
     // --- Sender's conversation pointer (§7.4) when the sender is LOCAL -------
     // A remote sender's client records the pointer at its own home provider
@@ -179,10 +177,11 @@ export function createFederationDmsRouter() {
   //    provider-signed request carries no `X-OFSCP-Actor`) and must belong to
   //    that peer — a domain mismatch is a 403, so provider A cannot act as a
   //    user of provider B.
-  // Either way we re-derive the local inbox owner from (actor, dmId) — the same
-  // §8.3 guard the send ingest applies — apply to the stored copy (edit/delete
-  // additionally enforcing §7.1 author-only + the edit window), and fan the
-  // resulting `dm.message` / `dm.reaction` to the local recipient.
+  // Either way we re-derive the local inbox owner from (actor, dmId) — the
+  // derivation the send ingest applies; a non-participant gets the unknown-dmId
+  // 404 — apply to the stored copy (edit/delete additionally enforcing §7.1
+  // author-only + the edit window), and fan out the resulting `dm.message` /
+  // `dm.reaction`.
   const actorOrProviderSigned = requireActorOrProviderSignature();
 
   // PUT /{dmId}/messages/{messageId}/reactions/{key}
@@ -286,11 +285,13 @@ function federationActingActor(c: Context<AppBindings>, bodyActor: unknown): str
 }
 
 /**
- * Resolve the LOCAL inbox owner for a forwarded DM edit/delete, applying the
- * §8.3 recipient-resolution guard: the local user `u` such that
- * `deriveDmId(actingActor, u@authority) === dmId`. No match → 400 (the message
- * is for a conversation with no local recipient — inbox poisoning). Returns both
- * the bare handle and the full `handle@authority` actor.
+ * Resolve the LOCAL inbox owner for a federation DM edit/delete/reaction: the
+ * local user `u` such that `deriveDmId(actingActor, u@authority) === dmId`,
+ * which is exactly what makes the actor a participant (§7.4). No match means
+ * the actor is not a participant — or the `dmId` is unknown, indistinguishably
+ * — and is answered `404`, the same "no such message" as a missing message, so
+ * the reply never reveals whether a conversation exists (§7.4 "Non-participants
+ * answer as unknown"). Returns both the bare handle and the full actor.
  */
 function resolveFederationDmOwner(
   db: Db,
@@ -299,11 +300,7 @@ function resolveFederationDmOwner(
   dmId: string,
 ): { owner: string; ownerActor: string } {
   const owner = resolveLocalDmOwner(db, config, actingActor, dmId);
-  if (owner === null) {
-    throw AppError.badRequest({
-      detail: "{dmId} does not match a conversation between the actor and a local recipient",
-    });
-  }
+  if (owner === null) throw AppError.notFound({ detail: "no such message" });
   const authority = canonicalAuthority(config.domain);
   return { owner, ownerActor: `${owner}@${authority}` };
 }
@@ -313,8 +310,8 @@ function resolveFederationDmOwner(
  * lives in a LOCAL recipient's inbox and the reaction reaches us in either §8.3
  * delivery shape — user-signed by the reacting participant, or provider-signed
  * by their home provider (see {@link federationActingActor}). We re-derive the
- * local owner from `(actor, dmId)` — the same §8.3 guard the DM-send ingest
- * uses — store/remove, then fan out.
+ * local owner from `(actor, dmId)` ({@link resolveFederationDmOwner}: 404 for a
+ * non-participant, as for an unknown dmId), store/remove, then fan out.
  */
 async function handleFederationDmReaction(
   c: Context<AppBindings>,
@@ -341,21 +338,17 @@ async function handleFederationDmReaction(
   // missing/blank actor is a 400. See {@link federationActingActor}.
   const reactingActor = federationActingActor(c, body.actor);
 
-  // §8.3 guard: the local inbox owner is the local user `u` such that
-  // deriveDmId(reactingActor, u@authority) === dmId. No match → 400 (the
-  // reaction is for a conversation with no local recipient — inbox poisoning).
-  const owner = resolveLocalDmOwner(db, config, reactingActor, dmId);
-  if (owner === null) {
-    throw AppError.badRequest({
-      detail: "{dmId} does not match a conversation between the actor and a local recipient",
-    });
-  }
+  // The local inbox owner, or the unknown-dmId 404 for a non-participant.
+  const { owner, ownerActor: recipientActor } = resolveFederationDmOwner(
+    db,
+    config,
+    reactingActor,
+    dmId,
+  );
   const authority = canonicalAuthority(config.domain);
-  const recipientActor = `${owner}@${authority}`;
 
-  if (!getDmMessageRow(db, owner, dmId, messageId)) {
-    throw AppError.notFound({ detail: "no such message" });
-  }
+  const row = getDmMessageRow(db, owner, dmId, messageId);
+  if (!row) throw AppError.notFound({ detail: "no such message" });
 
   if (state === "added") {
     const reaction = addDmReaction(db, {
@@ -372,7 +365,9 @@ async function handleFederationDmReaction(
       author: reactingActor,
       key,
       reaction,
+      messageAuthor: row.author,
       participants: [recipientActor, reactingActor],
+      authority,
     });
     return c.json(ReactionSchema.parse(reaction), 200);
   }
@@ -384,7 +379,9 @@ async function handleFederationDmReaction(
     state: "removed",
     author: reactingActor,
     key,
+    messageAuthor: row.author,
     participants: [recipientActor, reactingActor],
+    authority,
   });
   return c.body(null, 204);
 }

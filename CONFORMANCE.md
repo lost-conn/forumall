@@ -52,12 +52,12 @@ Notes marked "spec question" point at wording in the spec that needs clarifying 
 
 | Level | Items | Covered | Partial | Missing |
 |---|---|---|---|---|
-| Provider MUST | 44 | 16 | 24 | 4 |
+| Provider MUST | 44 | 17 | 23 | 4 |
 | Provider SHOULD | 4 | 0 | 0 | 4 |
 | Provider MAY (optional) | 6 | 5 | 1 | 0 |
 | Client MUST | 13 | 4 | 7 | 2 |
 | Client SHOULD | 8 | 1 | 2 | 5 |
-| **Total** | 75 | 26 | 34 | 15 |
+| **Total** | 75 | 27 | 33 | 15 |
 
 ## §12 Compliance Checklist coverage map
 
@@ -145,9 +145,9 @@ Notes marked "spec question" point at wording in the spec that needs clarifying 
 30. **partial**: Treat `PUT /api/me/presence` as a full replace that rejects `offline` with `400`, and `PUT /api/me/privacy` as a partial update that rejects an actor in both lists, or an over-long list, with `400` (§6.4, §6.6)
     - Tests: `packages/server/test/presence.test.ts`, `packages/server/test/privacy.test.ts`
     - Note: Related deviation: privacy lists also accept a user-object URI and convert it to an actor; the ofscp `UserRef` schema takes canonical actors only, so a URI must be `400`.
-31. **partial**: Support direct messages: deterministic `dmId` derivation, inbox-only storage (no sender copy), the `{dmId}`/`to` verification on delivery, conversation pointers and `dm.conversation`, conversation listing/reading, `dm.message` real-time delivery, and `dmId` subscriptions from a remote participant, answering a non-participant on every DM path exactly as an unknown `dmId` (`404` / `not_found`) (§7.4)
-    - Tests: `packages/shared/test/dm.test.ts`, `packages/shared/test/conformance.test.ts`, `packages/server/test/dms-send.test.ts`, `packages/server/test/dms-pointers.test.ts`, `packages/server/test/dms-read.test.ts`, `packages/server/test/dms-federation.test.ts`, `packages/server/test/dm-pointer-hygiene.test.ts`, `packages/server/test/message-create.test.ts`, `packages/server/test/canonical-authority.test.ts`, `packages/server/test/remote-handle-impersonation.test.ts`
-    - Note: Behaviour gap: a remote participant cannot subscribe to a `dmId` (no participant check, no delivery of their sent messages, no resume). Untested: `dm.conversation` emission, and that a non-participant gets the same `404` / `not_found` as an unknown `dmId` on every DM path.
+31. **covered**: Support direct messages: deterministic `dmId` derivation, inbox-only storage (no sender copy), the `{dmId}`/`to` verification on delivery, conversation pointers and `dm.conversation`, conversation listing/reading, `dm.message` real-time delivery, and `dmId` subscriptions from a remote participant, answering a non-participant on every DM path exactly as an unknown `dmId` (`404` / `not_found`) (§7.4)
+    - Tests: `packages/shared/test/dm.test.ts`, `packages/shared/test/conformance.test.ts`, `packages/server/test/dms-send.test.ts`, `packages/server/test/dms-pointers.test.ts`, `packages/server/test/dms-read.test.ts`, `packages/server/test/dms-federation.test.ts`, `packages/server/test/dm-pointer-hygiene.test.ts`, `packages/server/test/message-create.test.ts`, `packages/server/test/canonical-authority.test.ts`, `packages/server/test/remote-handle-impersonation.test.ts`, `packages/server/test/dm-subscriptions.test.ts`, `packages/server/test/dm-reactions.test.ts`, `packages/server/test/message-edit-dm.test.ts`, `packages/server/test/read-markers.test.ts`
+    - Context: A participant is an actor the `dmId` derives from together with a local user; a local actor whose counterparty is on another provider is recognised by its consistent conversation row instead, since the one-way `dmId` names no local user then. `dm.typing` is delivered to a remote participant's `dmId` subscription (a MAY).
 32. **partial**: Support the explicit contacts model (request/accept/remove, local and federated) backing the `contacts` visibility tier (§6.7)
     - Tests: `packages/server/test/contacts.test.ts`, `packages/server/test/privacy.test.ts`, `packages/server/test/presence.test.ts`
     - Note: A federated `action: "remove"` is untested; only `request` and `accept` are sent to `/api/federation/contacts`.

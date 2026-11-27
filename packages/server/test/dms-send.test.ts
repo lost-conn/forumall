@@ -220,13 +220,13 @@ describe("ignored conversation rows over WS (§7.4 pointer hygiene)", () => {
       type: "subscribe",
       data: { channels: [dmId] },
     });
-    // The subscribe is refused as not found (§7.1); typing stays forbidden.
+    // Both are refused as for an unknown dmId (§7.4 "Non-participants answer as unknown").
     const subErr = await aConn.ofType("error");
     expect(subErr.data).toMatchObject({ code: "not_found", details: { channels: [dmId] } });
 
     aConn.send({ id: "a_typ", type: "typing.start", data: { dmId } });
     const typErr = await aConn.ofType("error");
-    expect((typErr.data as { code: string }).code).toBe("forbidden");
+    expect((typErr.data as { code: string }).code).toBe("not_found");
     aConn.send({ id: "a_stop", type: "typing.stop", data: { dmId } });
     await expect(await bConn.none((f) => f.type === "dm.typing", 300)).toBe(true);
 

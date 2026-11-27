@@ -7,7 +7,14 @@ import { and, eq, or, sql } from "drizzle-orm";
 
 import type { Db } from "../db/index.ts";
 import { dmMessages } from "../db/schema.ts";
-import { DEFAULT_PAGE_SIZE, type DmViewer, MAX_PAGE_SIZE, rowToDmMessage } from "./dms.ts";
+import {
+  DEFAULT_PAGE_SIZE,
+  type DmMessageRecord,
+  type DmViewer,
+  MAX_PAGE_SIZE,
+  rowToDmMessage,
+  toDmRecord,
+} from "./dms.ts";
 import { type PageDirection, encodeMessageCursor } from "./messages.ts";
 
 /** Options for {@link listDmMessages}. */
@@ -47,16 +54,7 @@ export function listDmMessages(
       : DEFAULT_PAGE_SIZE;
   const after = opts.cursor ? decodeMessageSeqCursor(opts.cursor) : null;
 
-  // Scope: rows authored by the viewer (their SENT messages, stored in the
-  // counterparty's inbox) OR — when the viewer is local — rows in the viewer's
-  // own inbox (their RECEIVED messages). A self-DM row could satisfy both clauses
-  // but it's a single row under OR, so no duplication.
-  const scope = and(
-    eq(dmMessages.dmId, dmId),
-    viewer.localHandle !== undefined
-      ? or(eq(dmMessages.author, viewer.actor), eq(dmMessages.owner, viewer.localHandle))
-      : eq(dmMessages.author, viewer.actor),
-  );
+  const scope = viewScope(dmId, viewer);
   const where =
     after != null
       ? and(
@@ -97,6 +95,52 @@ export function listDmMessages(
       ...(prevCursor !== undefined ? { prevCursor } : {}),
     },
   };
+}
+
+/** The outcome of {@link resumeDmMessages}: a replay set, or "too large". */
+export type DmResumeOutcome =
+  | { readonly truncated: true }
+  | { readonly truncated: false; readonly records: DmMessageRecord[] };
+
+/**
+ * The `since` resume of a `dmId` subscription (§7.4 "Real-time": "supports
+ * resume with `since`, in the cursor space of its `GET /api/dms/{dmId}/
+ * messages`"): every message of `viewer`'s view of `dmId` — exactly the rows
+ * {@link listDmMessages} serves them — with `seq > sinceSeq`, ascending, in
+ * its CURRENT state (edits and tombstones included). More than `cap` such
+ * messages → `truncated`, and the client backfills through REST (§7.1).
+ */
+export function resumeDmMessages(
+  db: Db,
+  dmId: string,
+  viewer: DmViewer,
+  sinceSeq: number,
+  cap: number,
+): DmResumeOutcome {
+  const rows = db.drizzle
+    .select()
+    .from(dmMessages)
+    .where(and(viewScope(dmId, viewer), sql`${dmMessages.seq} > ${sinceSeq}`))
+    .orderBy(sql`${dmMessages.seq} ASC`)
+    .limit(cap + 1)
+    .all();
+  if (rows.length > cap) return { truncated: true };
+  return { truncated: false, records: rows.map(toDmRecord) };
+}
+
+/**
+ * The rows of `dmId` that make up `viewer`'s view: the rows they AUTHORED (their
+ * sent messages, stored in the counterparty's inbox) OR — when the viewer is
+ * local — the rows in their own inbox (their received messages). A self-DM row
+ * can satisfy both clauses but is one row under OR, so no duplication.
+ */
+function viewScope(dmId: string, viewer: DmViewer) {
+  return and(
+    eq(dmMessages.dmId, dmId),
+    viewer.localHandle !== undefined
+      ? or(eq(dmMessages.author, viewer.actor), eq(dmMessages.owner, viewer.localHandle))
+      : eq(dmMessages.author, viewer.actor),
+  );
 }
 
 /** Decode a §7.2 opaque cursor to its seq, or null. Local copy of the codec. */

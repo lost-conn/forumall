@@ -21,9 +21,14 @@ export const REALTIME_FEDERATION: readonly ChecklistEntry[] = [
       "packages/server/test/message-create.test.ts",
       "packages/server/test/canonical-authority.test.ts",
       "packages/server/test/remote-handle-impersonation.test.ts",
+      "packages/server/test/dm-subscriptions.test.ts",
+      "packages/server/test/dm-reactions.test.ts",
+      "packages/server/test/message-edit-dm.test.ts",
+      "packages/server/test/read-markers.test.ts",
     ],
-    status: "partial",
-    note: "Behaviour gap: a remote participant cannot subscribe to a `dmId` (no participant check, no delivery of their sent messages, no resume). Untested: `dm.conversation` emission, and that a non-participant gets the same `404` / `not_found` as an unknown `dmId` on every DM path.",
+    status: "covered",
+    context:
+      "A participant is an actor the `dmId` derives from together with a local user; a local actor whose counterparty is on another provider is recognised by its consistent conversation row instead, since the one-way `dmId` names no local user then. `dm.typing` is delivered to a remote participant's `dmId` subscription (a MAY).",
   },
   {
     item: "Support the explicit contacts model (request/accept/remove, local and federated) backing the `contacts` visibility tier (§6.7)",

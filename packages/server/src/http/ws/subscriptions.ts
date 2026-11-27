@@ -4,14 +4,16 @@
  */
 import { WsSubscribeSchema, WsUnsubscribeSchema } from "@forumall/shared";
 import { canViewChannel, getChannelRow } from "../../provider/channels.ts";
-import { isDmParticipant } from "../../provider/dms.ts";
+import type { DmMessageRecord } from "../../provider/dms.ts";
 import {
   type MessageRecord,
   decodeMessageCursor,
   resumeMessages,
 } from "../../provider/messages.ts";
+import type { OutboundEvent } from "../../provider/ws-hub.ts";
 import { createdEvent } from "../message-create.ts";
 import { type ConnState, type WsContext, type WsCtx, errorEvent } from "./connection.ts";
+import { dmReplayEvent, mayFollowDm, resolveDmReplay } from "./dm-subscriptions.ts";
 
 /**
  * §7.1 Subscriptions + resume: enforce per-channel visibility (membership +
@@ -24,7 +26,14 @@ import { type ConnState, type WsContext, type WsCtx, errorEvent } from "./connec
  * readable channels are subscribed and acked with `subscribed` listing only
  * them; then ONE `error` (`not_found`, the refused ids in `details.channels`)
  * covers every refused one. With nothing readable, only the `error` is sent.
- * A `dm_…` target the caller is not a participant of is refused the same way.
+ *
+ * ## `dmId` targets (§7.4 "Real-time", §8.5)
+ * A `dm_…` target is accepted iff the actor — local, or remote over a direct
+ * connection — is a participant ({@link mayFollowDm}); anyone else is refused
+ * in that same `not_found`, exactly as an unknown `dmId` is. It counts toward
+ * the cap like a channel, and its `since` resumes in the DM cursor space
+ * ({@link resolveDmReplay}): the subscriber's `GET /api/dms/{dmId}/messages`
+ * rows after the cursor, replayed as `dm.message`, or reported `truncated`.
  *
  * ## Subscription cap (§7.1)
  * All-or-nothing against {@link Config.wsMaxSubscriptions}: if subscribing
@@ -78,21 +87,19 @@ export function handleSubscribe(
   const since = parsed.data.data.since;
   const authorized: string[] = [];
   const refused: string[] = [];
-  // Authorized channels that carry a `since` cursor, paired with the channel's
-  // groupId (needed to build the replayed `message.created` events).
-  const resumable: { channelId: string; groupId: string; sinceCursor: string }[] = [];
+  // Authorized targets that carry a `since` cursor: a channel (with its groupId,
+  // needed to build the replayed `message.created` events) or a `dmId`.
+  const resumable: ({ channelId: string; sinceCursor: string } & (
+    | { kind: "channel"; groupId: string }
+    | { kind: "dm" }
+  ))[] = [];
   // Each listed channel once, in the order given.
   for (const channelId of new Set(parsed.data.data.channels)) {
-    // A `dm_…` target is a DM subscription (§7.4). Delivery itself uses
-    // `publishToActor`, so subscribing to a dm is an explicit opt-in/ack: we
-    // authorize it iff the caller is a participant (has a `dm_conversations`
-    // row). No resume/replay path for DMs in v0.1.
     if (channelId.startsWith("dm_")) {
-      // A DM subscription acks against the caller's LOCAL inbox rows, which only
-      // a local actor has; a remote participant's inbox lives at their own home
-      // provider (DM delivery itself is `publishToActor`, not subscription-based).
-      if (state.localHandle && isDmParticipant(db, state.localHandle, channelId, authority)) {
+      if (mayFollowDm(db, config, authority, state, channelId)) {
         authorized.push(channelId);
+        const sinceCursor = since?.[channelId];
+        if (sinceCursor !== undefined) resumable.push({ kind: "dm", channelId, sinceCursor });
       } else {
         refused.push(channelId);
       }
@@ -105,7 +112,7 @@ export function handleSubscribe(
       authorized.push(channelId);
       const sinceCursor = since?.[channelId];
       if (sinceCursor !== undefined) {
-        resumable.push({ channelId, groupId: row.groupId, sinceCursor });
+        resumable.push({ kind: "channel", channelId, groupId: row.groupId, sinceCursor });
       }
     } else {
       refused.push(channelId);
@@ -139,19 +146,34 @@ export function handleSubscribe(
   // interleaves a live event ahead of the replay for a resumed channel.
   hub.subscribe(hubConn, authorized);
 
-  // Resolve each resumable channel to either a replay set or a truncation.
+  // Resolve each resumable target to either a replay (its events, in order) or
+  // a truncation.
   const truncated: string[] = [];
-  const replays: { channelId: string; groupId: string; records: MessageRecord[] }[] = [];
-  for (const { channelId, groupId, sinceCursor } of resumable) {
-    const sinceSeq = decodeMessageCursor(sinceCursor);
+  const replays: OutboundEvent[][] = [];
+  for (const target of resumable) {
+    if (target.kind === "dm") {
+      const replay = resolveDmReplay(db, config, state, target.channelId, target.sinceCursor);
+      if (replay.kind === "truncated") truncated.push(target.channelId);
+      if (replay.kind === "replay") {
+        replays.push(
+          replay.records.map((r: DmMessageRecord) => dmReplayEvent(target.channelId, r, frameId)),
+        );
+      }
+      continue;
+    }
+    const sinceSeq = decodeMessageCursor(target.sinceCursor);
     // A forged/garbage cursor decodes to null; treat it as "no replay" rather
     // than replaying the whole channel from the start.
     if (sinceSeq == null) continue;
-    const outcome = resumeMessages(db, channelId, sinceSeq, config.maxResumeReplay);
+    const outcome = resumeMessages(db, target.channelId, sinceSeq, config.maxResumeReplay);
     if (outcome.truncated) {
-      truncated.push(channelId);
+      truncated.push(target.channelId);
     } else {
-      replays.push({ channelId, groupId, records: outcome.messages });
+      replays.push(
+        outcome.messages.map((record: MessageRecord) =>
+          createdEvent(target.groupId, target.channelId, record, frameId),
+        ),
+      );
     }
   }
 
@@ -168,12 +190,10 @@ export function handleSubscribe(
   });
   refusal();
 
-  // Replay each non-truncated channel's post-cursor timeline, ascending, to
+  // Replay each non-truncated target's post-cursor timeline, ascending, to
   // THIS connection only (a resume is private to the resuming client).
-  for (const { channelId, groupId, records } of replays) {
-    for (const record of records) {
-      hub.send(ws, createdEvent(groupId, channelId, record, frameId));
-    }
+  for (const events of replays) {
+    for (const event of events) hub.send(ws, event);
   }
 }
 

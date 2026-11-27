@@ -313,6 +313,36 @@ export class Hub {
   }
 
   /**
+   * Fan out `event` to an audience made of two parts: every connection of each
+   * actor in `audience.actors` (implicit, subscription-free delivery), and
+   * every connection subscribed to `audience.channelId` whose actor is in
+   * `audience.subscribedActors`. A connection in both parts gets ONE frame, so
+   * a subscriber that is also implicitly addressed never sees a duplicate. The
+   * DM fan-out (§7.4) uses it: implicit delivery to the local participants plus
+   * the `dmId` subscriptions of the message's author.
+   */
+  publishToAudience(
+    audience: {
+      readonly actors: readonly string[];
+      readonly channelId: string;
+      readonly subscribedActors: readonly string[];
+    },
+    event: OutboundEvent,
+  ): void {
+    const targets = new Set<HubConnection>();
+    for (const actor of audience.actors) {
+      for (const conn of this.byActor.get(actor) ?? []) targets.add(conn);
+    }
+    const subscribed = new Set(audience.subscribedActors);
+    for (const conn of this.byChannel.get(audience.channelId) ?? []) {
+      if (subscribed.has(conn.actor)) targets.add(conn);
+    }
+    if (targets.size === 0) return;
+    const frame = this.frame(event);
+    for (const conn of targets) this.write(conn.socket, frame);
+  }
+
+  /**
    * Send a single `event` to one connection's socket, stamping `id`/`ts` and
    * serializing. The low-level write helper every command handler uses to reply
    * (acks, errors, pong). Safe against a socket that has already closed.
