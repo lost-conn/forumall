@@ -11,6 +11,7 @@
 import { Hono } from "hono";
 
 import { buildDiscoveryDocument, discoveryETag } from "../provider/discovery.ts";
+import { ifNoneMatchMatches } from "./conditional.ts";
 import type { AppBindings } from "./types.ts";
 
 /** Clients may cache discovery; re-validate after this window. */
@@ -27,7 +28,7 @@ export function createDiscoveryRouter() {
     c.header("Cache-Control", CACHE_CONTROL);
     c.header("ETag", etag);
 
-    if (c.req.header("if-none-match") === etag) {
+    if (ifNoneMatchMatches(c.req.header("if-none-match"), etag)) {
       return c.body(null, 304);
     }
 

@@ -261,6 +261,14 @@ describe("discovery (§3.1)", () => {
       headers: { "if-none-match": etag ?? "" },
     });
     expect(res2.status).toBe(304);
+
+    // Revalidation follows RFC 9110: the tag inside a list, or in its strong form.
+    for (const inm of [`"stale", ${etag}`, (etag ?? "").replace(/^W\//, "")]) {
+      const res3 = await app.request("/.well-known/ofscp-provider", {
+        headers: { "if-none-match": inm },
+      });
+      expect(res3.status).toBe(304);
+    }
   });
 
   test("provider signing key persists across a fresh app on the same db file", async () => {

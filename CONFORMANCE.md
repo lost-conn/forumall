@@ -52,12 +52,12 @@ Notes marked "spec question" point at wording in the spec that needs clarifying 
 
 | Level | Items | Covered | Partial | Missing |
 |---|---|---|---|---|
-| Provider MUST | 46 | 17 | 24 | 5 |
-| Provider SHOULD | 4 | 0 | 0 | 4 |
+| Provider MUST | 46 | 20 | 23 | 3 |
+| Provider SHOULD | 4 | 0 | 1 | 3 |
 | Provider MAY (optional) | 7 | 5 | 2 | 0 |
 | Client MUST | 14 | 4 | 7 | 3 |
 | Client SHOULD | 8 | 1 | 2 | 5 |
-| **Total** | 79 | 27 | 35 | 17 |
+| **Total** | 79 | 30 | 35 | 14 |
 
 ## §12 Compliance Checklist coverage map
 
@@ -84,8 +84,9 @@ Notes marked "spec question" point at wording in the spec that needs clarifying 
 7. **partial**: Apply federation allow/deny policy to every outbound request and to every signed inbound request (`403` at the start of §4.5 step 6 or §8.1 step 2, before any key or discovery fetch; WebSocket `4001`); answer unsigned requests to public endpoints regardless (§8)
     - Tests: `packages/server/test/federation-actor.test.ts`, `packages/server/test/signer-resolution.test.ts`, `packages/server/test/canonical-authority.test.ts`, `packages/server/test/dms-pointers.test.ts`, `packages/server/test/federation-realtime.test.ts`, `packages/server/test/ws-remote-key.test.ts`
     - Note: Behaviour gap: a signed request from a denied provider to a public route that does no signature checking (discovery, the keys endpoint, `/problems/*`, `/api/tiers`, `/api/health`) is served instead of `403` (spec question: must such routes run §4.5 steps 1–5 first?). Untested: steps 1–5 winning over the `403`, the `403`'d nonce not being recorded, unsigned public reads under a deny list, push to a since-denied host, and the provider's own authority being exempt.
-8. **missing**: Allow cross-origin access per §3.4 (CORS preflight and headers; no `Origin` check on WebSocket upgrades) on every endpoint in §3.4's scope (standard endpoints, `/.well-known/ofscp…`, attachment and pre-signed upload URLs); non-standard ambient-credential endpoints SHOULD stay same-origin
-    - Note: No test asserts CORS: needed are preflights to a standard and a `/.well-known/ofscp…` path, the allow/expose/`Vary` headers on success, error and media responses, and a WebSocket upgrade with a foreign `Origin`. The behaviour exists (global wildcard `http/cors.ts`, no `Origin` check in `http/ws.ts`); there are no pre-signed upload URLs.
+8. **covered**: Allow cross-origin access per §3.4 (CORS preflight and headers; no `Origin` check on WebSocket upgrades) on every endpoint in §3.4's scope (standard endpoints, `/.well-known/ofscp…`, attachment and pre-signed upload URLs); non-standard ambient-credential endpoints SHOULD stay same-origin
+    - Tests: `packages/server/test/cors.test.ts`
+    - Context: `http/cors.ts` is a global, credential-less wildcard, so non-standard endpoints get CORS too; none relies on ambient authority (admin is signature-authed). There are no pre-signed upload URLs.
 9. **covered**: Authenticate WebSocket connections via the signed `auth.challenge`/`authenticate` handshake (§7.1), answering a failure with an `error` whose `code`/`status` mirror the REST answer (`401`; `403` for federation policy; `503` when the keys could not be fetched) and then close code `4001`, never `1013`
     - Tests: `packages/server/test/ws-handshake.test.ts`, `packages/server/test/ws-remote-key.test.ts`, `packages/server/test/federation-realtime.test.ts`, `packages/shared/test/ws-auth.test.ts`, `packages/shared/test/conformance.test.ts`
 10. **covered**: Follow the WebSocket envelope and command rules (§7.1): accept commands without `ts` and ignore its value; answer a missing `id` (after authentication), malformed `data` (other than in `authenticate`, which fails authentication) or a standard command the provider does not support with `error` `bad_request`; ignore unknown non-standard command types (§2.3); use `4001`/`4003` only for the reasons in the close-code table
@@ -131,14 +132,15 @@ Notes marked "spec question" point at wording in the spec that needs clarifying 
 24. **partial**: Support single-step media upload at `POST /api/media`, recording its `target` (default: this provider), setting `size` and `hash` from the bytes and `mime` per §5.8 (the declared type is allowed, but an inline type — `image/*` other than SVG, `video/*`, `audio/*` — only when the bytes confirm it, otherwise `application/octet-stream`), and `width`, `height` and `durationMs` from the bytes when they can be determined or from the uploader otherwise, and accepting an uploader's `thumbnail` part; if the provider offers pre-signed uploads, refuse one at completion when its inline `mime` is not confirmed by the bytes (§5.8)
     - Tests: `packages/server/test/media.test.ts`
     - Note: Behaviour gap: the `target` part (stored, canonicalised, `400` for a bad authority) and the `thumbnail` part are not implemented. `mime` must not record an inline-shown type (non-SVG image, video, audio) the bytes do not confirm; today the declared part type is stored unchecked. Forumall offers no pre-signed uploads, so the completion check does not apply.
-25. **partial**: Serve attachments as capability URLs: `https`, at least 128 bits of entropy, unlisted, fetchable unsigned, with the §3.4 CORS headers, from any host the provider chooses (§5.8)
-    - Tests: `packages/server/test/media.test.ts`
-    - Note: Behaviour present but untested: ≥128 bits of entropy in the id, that uploads are unlisted (no `GET /api/media` listing), and the §3.4 CORS headers on the media `GET`.
+25. **covered**: Serve attachments as capability URLs: `https`, at least 128 bits of entropy, unlisted, fetchable unsigned, with the §3.4 CORS headers, from any host the provider chooses (§5.8)
+    - Tests: `packages/server/test/media.test.ts`, `packages/server/test/media-serving.test.ts`, `packages/server/test/cors.test.ts`
+    - Context: Served from the provider's own host (`https://{domain}/api/media/{id}`); the id is `att_` + 16 bytes from `crypto.getRandomValues`.
 26. **partial**: Check each attachment in a stored message: for one it hosts (from `POST /api/media` or a completed `POST /api/media/uploads`), that the `id` exists, was uploaded by the author, is a local upload, and matches in `mime`, `size` and `hash`; reject any it does not host from a local author; for a remote author's, that `url` and `thumbnail.url` are `https` and the `thumbnail` has no `thumbnail`, dropping the author's `expiresAt` and fetching only under the §8 outbound rules (§5.8)
     - Tests: `packages/server/test/message-create-fields.test.ts`, `packages/server/test/message-edit-fields.test.ts`, `packages/server/test/message-edit-dm.test.ts`, `packages/shared/test/edits-media-groups.test.ts`
     - Note: Behaviour gap: no check that a hosted attachment is a local upload (no upload `target` is recorded). Untested: a remote author's `http` `thumbnail.url` is rejected.
-27. **missing**: Serve attachments with `Content-Disposition: attachment` (or `Content-Security-Policy: sandbox` where the host can send it) for types other than images (or for SVG), video and audio, and with `X-Content-Type-Options: nosniff` where the host can send it (§5.8)
-    - Note: `GET /api/media/{id}` sends neither `Content-Disposition: attachment` (or CSP `sandbox`) for non-image/video/audio types or SVG, nor `X-Content-Type-Options: nosniff`, and no test covers it.
+27. **covered**: Serve attachments with `Content-Disposition: attachment` (or `Content-Security-Policy: sandbox` where the host can send it) for types other than images (or for SVG), video and audio, and with `X-Content-Type-Options: nosniff` where the host can send it (§5.8)
+    - Tests: `packages/server/test/media-serving.test.ts`
+    - Context: Both `Content-Disposition: attachment` and `Content-Security-Policy: sandbox` are sent (the sandbox on every type, as defence in depth), plus `nosniff` on every response.
 28. **missing**: Give remote uploads a stable `url` without `expiresAt`, and never treat one as unreferenced because no message or profile it holds references it; use short-lived URLs (such as pre-signed `GET` URLs, with `expiresAt`) only for local uploads in messages; keep a pending local upload postable for at least 24 hours before removing it (§5.8)
     - Note: No target-aware upload lifecycle exists: remote uploads are not distinguished (no `target`), no short-lived URLs are minted and nothing is ever removed, so the MUSTs hold only vacuously. Untestable until remote uploads and upload removal exist.
 29. **missing**: Keep each user's group list at `GET`/`PUT`/`DELETE /api/me/groups` (its own memberships plus unchecked pointers to remote groups) and emit `groups.updated` (§5.7)
@@ -192,8 +194,9 @@ Notes marked "spec question" point at wording in the spec that needs clarifying 
 
 1. **missing**: Include the caller's `membership` in `GET /api/groups/{groupId}` for a signed member, never marking that answer publicly cacheable (§5.5)
     - Note: `GET /api/groups/{groupId}` never includes `membership` and sets no `Cache-Control`; once it does, it must omit it for unsigned/non-members and send `private` or `no-store`.
-2. **missing**: Not mark attachments publicly cacheable unless all their messages are public, and stop serving a local upload once no current message version or profile it holds references it: remove it within a bounded time, or serve it through short-lived URLs with `expiresAt` (§5.8)
-    - Note: Media is served `Cache-Control: public, max-age=31536000, immutable`, and nothing tracks references or removes a local upload once unreferenced (no short-lived URLs either).
+2. **partial**: Not mark attachments publicly cacheable unless all their messages are public, and stop serving a local upload once no current message version or profile it holds references it: remove it within a bounded time, or serve it through short-lived URLs with `expiresAt` (§5.8)
+    - Tests: `packages/server/test/media-serving.test.ts`
+    - Note: Caching is done (`Cache-Control: private, max-age=31536000, immutable`, never public). Nothing tracks references or removes a local upload once unreferenced, and no short-lived URLs are minted.
 3. **missing**: Serve attachments from an origin other than the web client's (§5.8)
     - Note: Attachment URLs are on the web client's own origin (`https://{domain}/api/media/{id}`); there is no setting for a separate media origin.
 4. **missing**: Give `article` messages a longer edit window than chat, or none (§7.1)

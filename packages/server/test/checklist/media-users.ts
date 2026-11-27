@@ -17,9 +17,14 @@ export const MEDIA_USERS: readonly ChecklistEntry[] = [
   {
     item: "Serve attachments as capability URLs: `https`, at least 128 bits of entropy, unlisted, fetchable unsigned, with the §3.4 CORS headers, from any host the provider chooses (§5.8)",
     level: "provider-must",
-    covers: ["packages/server/test/media.test.ts"],
-    status: "partial",
-    note: "Behaviour present but untested: ≥128 bits of entropy in the id, that uploads are unlisted (no `GET /api/media` listing), and the §3.4 CORS headers on the media `GET`.",
+    covers: [
+      "packages/server/test/media.test.ts",
+      "packages/server/test/media-serving.test.ts",
+      "packages/server/test/cors.test.ts",
+    ],
+    status: "covered",
+    context:
+      "Served from the provider's own host (`https://{domain}/api/media/{id}`); the id is `att_` + 16 bytes from `crypto.getRandomValues`.",
   },
   {
     item: "Check each attachment in a stored message: for one it hosts (from `POST /api/media` or a completed `POST /api/media/uploads`), that the `id` exists, was uploaded by the author, is a local upload, and matches in `mime`, `size` and `hash`; reject any it does not host from a local author; for a remote author's, that `url` and `thumbnail.url` are `https` and the `thumbnail` has no `thumbnail`, dropping the author's `expiresAt` and fetching only under the §8 outbound rules (§5.8)",
@@ -36,9 +41,10 @@ export const MEDIA_USERS: readonly ChecklistEntry[] = [
   {
     item: "Serve attachments with `Content-Disposition: attachment` (or `Content-Security-Policy: sandbox` where the host can send it) for types other than images (or for SVG), video and audio, and with `X-Content-Type-Options: nosniff` where the host can send it (§5.8)",
     level: "provider-must",
-    covers: [],
-    status: "missing",
-    note: "`GET /api/media/{id}` sends neither `Content-Disposition: attachment` (or CSP `sandbox`) for non-image/video/audio types or SVG, nor `X-Content-Type-Options: nosniff`, and no test covers it.",
+    covers: ["packages/server/test/media-serving.test.ts"],
+    status: "covered",
+    context:
+      "Both `Content-Disposition: attachment` and `Content-Security-Policy: sandbox` are sent (the sandbox on every type, as defence in depth), plus `nosniff` on every response.",
   },
   {
     item: "Give remote uploads a stable `url` without `expiresAt`, and never treat one as unreferenced because no message or profile it holds references it; use short-lived URLs (such as pre-signed `GET` URLs, with `expiresAt`) only for local uploads in messages; keep a pending local upload postable for at least 24 hours before removing it (§5.8)",

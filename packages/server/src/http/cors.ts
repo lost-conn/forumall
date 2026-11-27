@@ -17,7 +17,13 @@ import { HEADER } from "@forumall/shared";
  * Origin changes nothing). We do NOT set `Allow-Credentials` (no cookies), keeping
  * the wildcard origin valid per the Fetch spec. The exposed/allowed headers are
  * exactly the OFSCP signing headers plus the few transport headers the client
- * uses; a preflight `OPTIONS` short-circuits with a 204.
+ * uses; a preflight `OPTIONS` short-circuits with a 204 (§3.4).
+ *
+ * The same headers are sent on every path, including the provider's own
+ * non-standard endpoints: §3.4 allows that, and none of them relies on ambient
+ * authority (the admin API is signature-authed too). WebSocket upgrades are
+ * never checked against `Origin` (§3.4/§7.1): the signed `authenticate`
+ * handshake is the access control.
  */
 import type { MiddlewareHandler } from "hono";
 import type { AppBindings } from "./types.ts";
@@ -59,9 +65,10 @@ export function cors(): MiddlewareHandler<AppBindings> {
       return;
     }
 
-    if (c.req.method === "OPTIONS") {
-      // Preflight: answer with the allow set, no body. `*` is valid since we send
-      // no credentials.
+    if (c.req.method === "OPTIONS" && c.req.header("access-control-request-method") !== undefined) {
+      // Preflight (§3.4: `OPTIONS` with `Origin` and `Access-Control-Request-Method`):
+      // answer with the allow set, no body. `*` is valid since we send no
+      // credentials. Any other `OPTIONS` is an ordinary request and is routed.
       return new Response(null, {
         status: 204,
         headers: {
@@ -77,6 +84,22 @@ export function cors(): MiddlewareHandler<AppBindings> {
     await next();
     c.res.headers.set("access-control-allow-origin", "*");
     c.res.headers.set("access-control-expose-headers", EXPOSE_HEADERS);
-    c.res.headers.set("vary", "Origin");
+    addVaryOrigin(c.res.headers);
   };
+}
+
+/**
+ * Add `Origin` to the response's `Vary` list, keeping whatever a handler
+ * already listed there (overwriting it would let a cache serve the wrong
+ * variant). `Vary: *` already covers every request header.
+ */
+export function addVaryOrigin(headers: Headers): void {
+  const current = headers.get("vary");
+  if (current === null || current.trim() === "") {
+    headers.set("vary", "Origin");
+    return;
+  }
+  const fields = current.split(",").map((f) => f.trim().toLowerCase());
+  if (fields.includes("*") || fields.includes("origin")) return;
+  headers.set("vary", `${current}, Origin`);
 }
