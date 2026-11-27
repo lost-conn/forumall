@@ -21,6 +21,7 @@
 import type { Attachment, Reaction, WsDmConversation, WsEnvelope } from "@forumall/shared";
 import { createStore, produce } from "solid-js/store";
 import { compareByCursorThenId } from "../lib/cursor.ts";
+import { type LocalVersion, mergeCanonical } from "../lib/merge-message.ts";
 import type { OfscpWsClient } from "../lib/ofscp-ws.ts";
 
 /** A DM message as the thread renders it (received OR locally-retained sent). */
@@ -34,8 +35,17 @@ export interface DmMessage {
   /** §5.3 reply pointer: `{ type: "reply", id: <parent message id> }`. */
   reference?: { type: string; id: string };
   createdAt: string;
-  /** Set when the message was edited in place. */
+  /**
+   * Set when the message was edited in place: the holding provider's stamp, or
+   * the client's own (display only) on an unconfirmed local edit.
+   */
   editedAt?: string;
+  /**
+   * Set while this copy is the caller's own optimistic edit, until a server copy
+   * confirms or supersedes it; it orders the copy without the client's clock
+   * (`lib/merge-message.ts`).
+   */
+  localVersion?: LocalVersion;
   /** Set when the message was tombstoned (deleted). */
   deletedAt?: string;
   /** Set on a local echo until its canonical confirmation replaces it. */
@@ -126,6 +136,28 @@ function compareMessages(a: DmMessage, b: DmMessage): number {
 }
 
 /**
+ * The {@link DmMessage} fields a message version owns. A merge of the same
+ * version or a newer one removes each one the copy lacks, so an edit that drops
+ * attachments or a reply `reference` no longer leaves the old value on screen;
+ * an older copy (a stale history page racing a live edit) leaves them all as
+ * stored ({@link mergeCanonical}). `deletedAt` is not listed: the shared merge
+ * treats a tombstone as terminal, so no upsert un-deletes a message.
+ * `clientMessageId`, `cursor`, `mine`, `pending` and `failed` are local
+ * bookkeeping, kept when the newer copy omits them.
+ */
+const VERSION_KEYS = [
+  "content",
+  "attachments",
+  "reference",
+  "editedAt",
+] as const satisfies readonly (keyof DmMessage)[];
+
+/** Merge a newer copy into the stored message in place ({@link mergeCanonical}). */
+function mergeDmMessage(target: DmMessage | undefined, incoming: DmMessage): void {
+  if (target !== undefined) mergeCanonical(target, incoming, VERSION_KEYS);
+}
+
+/**
  * Fold one message into a conversation thread, de-duped by `id` and — when it
  * carries a `clientMessageId` — reconciling a matching optimistic echo in place
  * (so a confirmed send replaces its local echo rather than duplicating). The
@@ -151,7 +183,7 @@ export function upsertDmMessage(dmId: string, message: DmMessage): void {
             (m) => (m.pending || m.failed) && m.clientMessageId === message.clientMessageId,
           );
           if (at !== -1) {
-            list[at] = { ...list[at], ...message, pending: false, failed: false };
+            mergeDmMessage(list[at], { ...message, pending: false, failed: false });
           }
           list.sort(compareMessages);
           return;
@@ -161,7 +193,7 @@ export function upsertDmMessage(dmId: string, message: DmMessage): void {
       // 2) De-dupe by canonical id.
       const idx = list.findIndex((m) => m.id === message.id);
       if (idx === -1) list.push(message);
-      else list[idx] = { ...list[idx], ...message };
+      else mergeDmMessage(list[idx], message);
       list.sort(compareMessages);
     }),
   );
@@ -245,18 +277,19 @@ export interface DmMessageRestore {
    * when it had never been edited, in which case the marker is REMOVED.
    */
   editedAt?: string;
+  /** The prior copy's {@link DmMessage.localVersion}, when it was an unconfirmed edit. */
+  localVersion?: LocalVersion;
 }
 
 /**
  * Rewind a message to its pre-mutation snapshot — the un-do for an optimistic
  * {@link applyDmEdit} / {@link tombstoneDmMessage} that the server rejected.
  *
- * This is NOT expressible as an upsert: {@link upsertDmMessage} MERGES
- * (`{...existing, ...incoming}`), so a snapshot without `editedAt`/`deletedAt`
- * leaves the old markers in place and the message renders "(edited)" (or stays a
- * tombstone) while showing the pre-edit text. The row is therefore REBUILT from
+ * This is NOT expressible as an upsert: {@link upsertDmMessage} never clears
+ * `deletedAt` (a tombstone is terminal for it) and keeps the local bookkeeping,
+ * so a snapshot could not rewind an optimistic tombstone. The row is therefore REBUILT from
  * the snapshot: the mutation-owned fields (`content`, `attachments`, `reference`,
- * `editedAt`, `deletedAt`) are re-derived and simply absent when the snapshot has
+ * `editedAt`, `localVersion`, `deletedAt`) are re-derived and simply absent when the snapshot has
  * none, while identity + placement (`author`, `createdAt`, `cursor`, `mine`, echo
  * state) are carried over so the message keeps its position and echo linkage.
  * A no-op when the message is not loaded in this thread.
@@ -278,6 +311,7 @@ export function restoreDmMessage(dmId: string, prior: DmMessageRestore): void {
           : {}),
         ...(prior.reference ? { reference: prior.reference } : {}),
         ...(prior.editedAt !== undefined ? { editedAt: prior.editedAt } : {}),
+        ...(prior.localVersion !== undefined ? { localVersion: prior.localVersion } : {}),
         ...(existing.clientMessageId !== undefined
           ? { clientMessageId: existing.clientMessageId }
           : {}),

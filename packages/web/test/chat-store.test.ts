@@ -76,6 +76,29 @@ describe("optimistic echo reconciliation", () => {
     expect(list[0]?.pending).toBe(false);
   });
 
+  test("reconciling keeps the stored object, so its rendered row (and an open lightbox) survives", () => {
+    addOptimistic(CH, {
+      id: "optimistic:cmid_1",
+      author: "me@h",
+      content: { text: "pic" },
+      clientMessageId: "cmid_1",
+    });
+    const echo = messagesFor(CH)[0];
+    upsertMessage(CH, {
+      id: "m_real",
+      author: "me@h",
+      content: { text: "pic" },
+      clientMessageId: "cmid_1",
+    });
+    expect(messagesFor(CH)[0]).toBe(echo);
+    expect(echo?.id).toBe("m_real");
+
+    // A later update (edit) merges into the same object too.
+    upsertMessage(CH, { id: "m_real", author: "me@h", content: { text: "edited" } });
+    expect(messagesFor(CH)[0]).toBe(echo);
+    expect(echo?.content.text).toBe("edited");
+  });
+
   test("an unrelated message does not consume the echo", () => {
     addOptimistic(CH, {
       id: "optimistic:cmid_1",

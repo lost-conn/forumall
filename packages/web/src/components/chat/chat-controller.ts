@@ -102,7 +102,7 @@ export const HISTORY_PAGE_SIZE = 50;
  * store's shape. `cursor` is the event's timeline cursor; a history item carries
  * its own (passthrough) `cursor`.
  */
-function toChatMessage(m: Message, cursor?: string): ChatMessage {
+export function toChatMessage(m: Message, cursor?: string): ChatMessage {
   return {
     id: m.id,
     author: m.author,
@@ -112,6 +112,9 @@ function toChatMessage(m: Message, cursor?: string): ChatMessage {
     reference: m.reference,
     replyCount: m.replyCount,
     tags: m.tags,
+    ...(m.title !== undefined ? { title: m.title } : {}),
+    ...(m.summary !== undefined ? { summary: m.summary } : {}),
+    ...(m.cover !== undefined ? { cover: m.cover } : {}),
     createdAt: m.createdAt,
     editedAt: m.editedAt,
     deletedAt: m.deletedAt,

@@ -14,10 +14,13 @@
     "@forumall/shared": "workspace:*",
     "@solidjs/router": "^0.15.3",
     "@tanstack/solid-query": "^5.66.0",
+    "markdown-it": "^14",
+    "parse5": "^7",
     "solid-js": "^1.9.4"
   },
   "devDependencies": {
     "@forumall/server": "workspace:*",
+    "@types/markdown-it": "^14",
     "@unocss/preset-wind": "^0.65.4",
     "unocss": "^0.65.4",
     "vite": "^6.0.11",

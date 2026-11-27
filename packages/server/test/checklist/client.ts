@@ -124,23 +124,41 @@ export const CLIENT: readonly ChecklistEntry[] = [
   {
     item: "Render `text/plain` and CommonMark `text/markdown`, showing raw HTML in Markdown as text; render `text/html` only through the §5.3 allow-list sanitizer (or as text with tags removed); make only `http`, `https`, `mailto` and `attachment:` links active (§5.3)",
     level: "client-must",
-    covers: ["packages/web/test/markdown.test.ts", "packages/web/test/inline.test.ts"],
-    status: "partial",
-    note: "Behaviour gaps: rendering ignores `content.mime` (`text/plain` gets inline formatting, non-article `text/markdown` gets only the inline subset, `text/html` is neither sanitised nor tag-stripped), the Markdown renderer is a CommonMark subset, and `attachment:` links are inert; `mailto:` being active is untested. Scheme-less and relative links must be inactive (a message has no base URL); today they pass `safeHref`.",
+    covers: [
+      "packages/web/test/content-markdown.test.ts",
+      "packages/web/test/content-html.test.ts",
+      "packages/web/test/content-links.test.ts",
+      "packages/web/test/content-body.test.ts",
+      "e2e/tests/rendering.spec.ts",
+    ],
+    status: "covered",
+    context:
+      "Dispatch is on `content.mime`; an unrecognised mime renders as `text/plain`. Markdown is CommonMark (markdown-it, raw HTML off) with soft line breaks shown as breaks. `text/html` goes through the §5.3 allow-list (parse5, no `innerHTML`). Scheme-less and relative links are inactive (a message has no base URL, ofscp#31).",
   },
   {
     item: "Resolve `attachment:<id>` references against the message's own attachments, show unreferenced attachments after the body, and, when an article has no `title`, use its body's first block as the title if that block is a level-1 heading (ATX or Setext, or `<h1>`) (§5.3)",
     level: "client-must",
-    covers: [],
-    status: "missing",
-    note: "Not implemented: no `attachment:<id>` resolution, the article view ignores `title` and renders no attachments, and the title fallback takes any `#`–`###` heading or the first line. The e2e tests that touch article titles do not assert the spec rules; spec question: is an article with no `title` and no H1 first block untitled?",
+    covers: [
+      "packages/web/test/content-body.test.ts",
+      "packages/web/test/content-markdown.test.ts",
+      "packages/web/test/content-html.test.ts",
+      "e2e/tests/rendering.spec.ts",
+    ],
+    status: "covered",
+    context:
+      "An `attachment:` id the message lacks renders as its caption or link text. An article with no `title` and no leading level-1 heading is shown as untitled. An article's `cover` is shown above the body and not repeated after it.",
   },
   {
     item: "Treat attachment metadata and files as untrusted, never opening a fetched file as an active document: a plain link to its `url` is allowed, `blob:`/`data:` URLs, `srcdoc` and frames are not (§5.8)",
     level: "client-must",
-    covers: ["packages/web/test/chat-api.test.ts"],
-    status: "partial",
-    note: "Untested: a `text/html` or `image/svg+xml` attachment never renders inline as a document. A plain link to the `url` is allowed; `blob:`/`data:` URLs, `srcdoc` and frames must not be used for attachments.",
+    covers: [
+      "packages/web/test/content-links.test.ts",
+      "packages/web/test/chat-api.test.ts",
+      "e2e/tests/rendering.spec.ts",
+    ],
+    status: "covered",
+    context:
+      "Only `http`/`https` attachment URLs are used, as plain top-level links or `<img>`/`<video>`/`<audio>` elements; any other URL shows the file name with no link. A `text/html` or `image/svg+xml` attachment is a link or an `<img>`, never framed, and no `blob:`/`data:`/`srcdoc` is ever used (asserted in the browser).",
   },
   {
     item: "Render metadata extensions when schemas known",
@@ -174,9 +192,11 @@ export const CLIENT: readonly ChecklistEntry[] = [
   {
     item: "Not load remote content a message body names, or the attachments of an author on another provider than the message's, without a user action (§5.3)",
     level: "client-should",
-    covers: [],
-    status: "missing",
-    note: "Attachments of authors on other providers auto-load (`<img>`/`<video>`/`<audio>`) with no user action. Body-named remote images are never loaded (no image syntax), but that is untested.",
+    covers: ["packages/web/test/content-markdown.test.ts", "e2e/tests/rendering.spec.ts"],
+    status: "partial",
+    note: "Attachments of authors on other providers auto-load (`<img>`/`<video>`/`<audio>`) with no user action.",
+    context:
+      "A body-named remote image renders as a link to it and is never loaded (asserted in the browser); `text/html` `<img>` without `data-attachment` renders as its alt text.",
   },
   {
     item: "Set `mentions` on messages that mention users (§5.3), and in a DM write `@handle@domain` (or set `mentions`) for a user who is not on the recipient's home provider, since a bare `@handle` there names a user of that provider (§10.1)",

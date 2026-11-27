@@ -24,6 +24,7 @@
 import type { Attachment, Reaction } from "@forumall/shared";
 import { createStore, produce } from "solid-js/store";
 import { cursorAdvances } from "../lib/cursor.ts";
+import { mergeCanonical } from "../lib/merge-message.ts";
 
 /** A message as the client cares about it (superset of the WS payload). */
 export interface ChatMessage {
@@ -40,6 +41,11 @@ export interface ChatMessage {
   replyCount?: number;
   /** §5.3 tags (article topics; a `promoted-from:#channel` lineage marker). */
   tags?: string[];
+  /** §5.3 article fields (type `article` only): plain-text title and summary. */
+  title?: string;
+  summary?: string;
+  /** §5.3 article cover: the id of one of the message's own attachments. */
+  cover?: string;
   createdAt?: string;
   editedAt?: string;
   deletedAt?: string;
@@ -104,6 +110,45 @@ export function upsertChannel(channel: ChannelSummary): void {
 }
 
 /**
+ * The {@link ChatMessage} fields a message version owns (§5.3). A merge of the
+ * same version or a newer one removes each one the copy lacks, so an edit that
+ * drops an article's `title` or `cover` (or a reply `reference`, `tags`…)
+ * clears it; an older copy leaves them all as stored ({@link mergeCanonical}).
+ * `deletedAt` is not listed: the shared merge treats a tombstone as terminal,
+ * so no copy un-deletes a message. `cursor`, `clientMessageId`, `pending` and
+ * `failed` are local bookkeeping, kept when a copy omits them. So is
+ * `replyCount`: it is advisory listing metadata a history page stamps (§7.2),
+ * not a field of the message, and `message.updated` never carries it, so a
+ * live edit keeps the stored count while a copy that has one replaces it.
+ */
+const VERSION_KEYS = [
+  "content",
+  "type",
+  "attachments",
+  "reference",
+  "tags",
+  "title",
+  "summary",
+  "cover",
+  "createdAt",
+  "editedAt",
+] as const satisfies readonly (keyof ChatMessage)[];
+
+/**
+ * Merge a newer copy of a message into the stored one, IN PLACE. The stored
+ * object's identity is what `<For>` keys a rendered row on, so keeping it keeps
+ * the row and its UI state (an open lightbox, an edit in progress) alive when
+ * the optimistic echo reconciles or the message is updated. Replacing the
+ * object re-created the row mid-interaction: a lightbox opened on the echo
+ * vanished when the canonical copy landed. The stored copy then mirrors a
+ * same-or-newer copy for every version field, and an older copy (a stale
+ * history page) cannot undo an edit or a delete ({@link mergeCanonical}).
+ */
+function mergeMessage(target: ChatMessage | undefined, patch: ChatMessage): void {
+  if (target !== undefined) mergeCanonical(target, patch, VERSION_KEYS);
+}
+
+/**
  * Append or replace a message in a channel timeline. De-dupes by `id`, and — when
  * the message carries a `clientMessageId` — reconciles a matching optimistic echo
  * (replacing it in place so the local copy becomes canonical, no duplicate).
@@ -126,7 +171,7 @@ export function upsertMessage(channelId: string, message: ChatMessage): void {
             m.author === message.author,
         );
         if (echoIdx !== -1) {
-          list[echoIdx] = { ...list[echoIdx], ...message, pending: false, failed: false };
+          mergeMessage(list[echoIdx], { ...message, pending: false, failed: false });
           if (message.cursor && cursorAdvances(s.cursors[channelId], message.cursor)) {
             s.cursors[channelId] = message.cursor;
           }
@@ -137,7 +182,7 @@ export function upsertMessage(channelId: string, message: ChatMessage): void {
       // 2) De-dupe by canonical id.
       const idx = list.findIndex((m) => m.id === message.id);
       if (idx === -1) list.push(message);
-      else list[idx] = { ...list[idx], ...message };
+      else mergeMessage(list[idx], message);
 
       if (message.cursor && cursorAdvances(s.cursors[channelId], message.cursor)) {
         s.cursors[channelId] = message.cursor;
@@ -175,12 +220,12 @@ export function reconcileOptimistic(
           (m) => (m.pending || m.failed) && m.clientMessageId === clientMessageId,
         );
         if (at !== -1) {
-          list[at] = { ...list[at], ...message, pending: false, failed: false };
+          mergeMessage(list[at], { ...message, pending: false, failed: false });
         }
       } else if (dupeIdx === -1) {
         list.push({ ...message, pending: false, failed: false });
       } else {
-        list[dupeIdx] = { ...list[dupeIdx], ...message };
+        mergeMessage(list[dupeIdx], message);
       }
       if (message.cursor && cursorAdvances(s.cursors[channelId], message.cursor)) {
         s.cursors[channelId] = message.cursor;
@@ -211,7 +256,7 @@ export function prependHistory(channelId: string, older: ChatMessage[]): void {
       for (const m of older) {
         const idx = list.findIndex((x) => x.id === m.id);
         if (idx === -1) fresh.push(m);
-        else list[idx] = { ...list[idx], ...m };
+        else mergeMessage(list[idx], m);
       }
       list.unshift(...fresh);
     }),

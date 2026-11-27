@@ -4,6 +4,7 @@
  * delivered to the recipient's provider through {@link sendDm}.
  */
 import { type Accessor, type Component, Show, createSignal } from "solid-js";
+import { COMPOSED_MIME } from "../../lib/content/body.ts";
 import type { DmSentStore } from "../../lib/dm-store.ts";
 import { domainOf } from "../../lib/federation.ts";
 import type { DmMessage } from "../../stores/dms.ts";
@@ -100,6 +101,7 @@ export const DmComposer: Component<{
             me,
             counterparty,
             text: body,
+            mime: COMPOSED_MIME,
             ...(atts.length > 0 ? { attachments: atts } : {}),
             ...(target ? { reference: { type: "reply", id: target.id } } : {}),
             sentStore: store,

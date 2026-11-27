@@ -1,15 +1,13 @@
 /**
  * One message in a channel stream, as {@link ChatView} renders it: the node (a
  * message plus its optional quoted-parent reference), the row (author, time,
- * reactions, edit / delete / reply affordances, send status), the kind-aware
- * body (`message` / `memo` text, an `article` card, a best-effort fallback for
- * an unknown `type`, §5.3 / §2.3), and the typing line under the stream.
- * `MessageBody` is shared with the home feed.
+ * reactions, edit / delete / reply affordances, send status), the body by its
+ * `content.mime` with its attachments (`MessageBody.tsx`, shared with the home
+ * feed), and the typing line under the stream.
  */
 import {
   type Accessor,
   type Component,
-  For,
   Match,
   Show,
   Switch,
@@ -20,16 +18,13 @@ import { formatTime } from "../../lib/time.ts";
 import { type ChatMessage, type ReactionGroup, reactionsFor } from "../../stores/chat.ts";
 import { displayNameForInGroup, initialsFor } from "../../stores/profiles.ts";
 import { session, sessionWs } from "../../stores/session.ts";
-import { Icon } from "../Icon.tsx";
-import { AttachmentList } from "../shared/AttachmentList.tsx";
 import { EditMessageForm } from "../shared/EditMessageForm.tsx";
 import { MessageStatus } from "../shared/MessageStatus.tsx";
 import { ReactionBar, ReactionPicker } from "../shared/Reactions.tsx";
 import { ReplyQuote } from "../shared/ReplyQuote.tsx";
-import { RichText } from "../shared/RichText.tsx";
 import { Avatar } from "../social/Avatar.tsx";
 import { openUserProfile } from "../social/user-profile-store.ts";
-import { splitArticle } from "./ArticleReadingPane.tsx";
+import { MessageBody } from "./MessageBody.tsx";
 import {
   addReactionCmd,
   deleteMessage,
@@ -37,26 +32,6 @@ import {
   removeReactionCmd,
   retrySend,
 } from "./chat-controller.ts";
-import { PROMOTE_TAG_PREFIX } from "./promote.ts";
-
-/** The source channel an article was promoted from, if its tags carry the marker. */
-function promotedFrom(message: ChatMessage): string | undefined {
-  const tag = message.tags?.find((t) => t.startsWith(PROMOTE_TAG_PREFIX));
-  return tag ? tag.slice(PROMOTE_TAG_PREFIX.length) : undefined;
-}
-
-/** A plaintext one-glance excerpt of an article body for the channel card.
- *  Strips markdown markers — leading block markers (heading/blockquote/list) and
- *  horizontal rules per line, then inline emphasis/code anywhere — but keeps
- *  in-word hyphens, then collapses whitespace. */
-function articleExcerpt(body: string): string {
-  return body
-    .replace(/^\s*(?:#{1,6}|>|[-*+])\s+/gm, "")
-    .replace(/^\s*(?:[-*_]\s*){3,}$/gm, "")
-    .replace(/[*`_]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
 
 // ---------------------------------------------------------------------------
 // Message node (a channel message + an optional quoted-parent reference)
@@ -330,11 +305,6 @@ const MessageRow: Component<{
           </Match>
         </Switch>
 
-        {/* Attachments */}
-        <Show when={!isDeleted() && (m().attachments?.length ?? 0) > 0}>
-          <AttachmentList attachments={m().attachments ?? []} testid="attachments" />
-        </Show>
-
         {/* Reactions */}
         <ReactionBar
           reactions={props.reactions}
@@ -344,94 +314,6 @@ const MessageRow: Component<{
         />
       </div>
     </div>
-  );
-};
-
-/** Render a message body by §5.3 type, with a safe fallback for unknown types. */
-export const MessageBody: Component<{ message: ChatMessage; onOpenArticle?: () => void }> = (
-  props,
-) => {
-  const text = () => props.message.content.text ?? "";
-  const type = () => props.message.type ?? "message";
-  return (
-    <Switch
-      fallback={
-        // Unknown type (§2.3 forward-compat): best-effort plain text, never crash.
-        <p class="text-sm text-ink whitespace-pre-wrap break-words" data-testid="message-text">
-          <RichText text={text()} />
-        </p>
-      }
-    >
-      <Match when={type() === "article"}>
-        {/* Article renders as a bordered card with a clickable title + excerpt +
-            a tags/replies foot, mirroring the prototype's article message card. */}
-        <div class="mt-0.5 rounded-md border-[1.5px] border-border-strong bg-surface px-3.5 py-3.5">
-          <Show when={promotedFrom(props.message)}>
-            {(from) => (
-              <div
-                class="mb-2 inline-flex items-center gap-1.5 rounded-sm border-[1.5px] border-dashed border-ember bg-ember-soft px-2 py-0.5 text-[11px] font-mono uppercase tracking-wide text-ember"
-                data-testid="promote-lineage"
-              >
-                <span aria-hidden="true">↳</span>
-                promoted from {from()}
-              </div>
-            )}
-          </Show>
-          <button
-            type="button"
-            class="block text-left font-display text-base font-semibold text-ink transition-colors hover:text-accent"
-            data-testid="open-article"
-            onClick={() => props.onOpenArticle?.()}
-          >
-            {splitArticle(text()).title}
-          </button>
-          <p
-            class="my-[7px] mb-[11px] line-clamp-3 text-sm text-muted"
-            data-testid="message-article"
-          >
-            {articleExcerpt(splitArticle(text()).body)}
-          </p>
-          <div class="flex flex-wrap items-center justify-between gap-2.5">
-            <div class="flex flex-wrap items-center gap-[7px]">
-              <For
-                each={(props.message.tags ?? []).filter((t) => !t.startsWith(PROMOTE_TAG_PREFIX))}
-              >
-                {(t) => <span class="fa-tag">{t}</span>}
-              </For>
-            </div>
-            <button
-              type="button"
-              class="inline-flex items-center gap-1.5 font-mono text-[11px] text-accent hover:underline"
-              data-testid="open-article-replies"
-              onClick={() => props.onOpenArticle?.()}
-            >
-              <Icon name="reply" size={12} />
-              {props.message.replyCount ? `${props.message.replyCount} replies` : "Open article"}
-            </button>
-          </div>
-          <div class="fa-divider fa-divider--dashed my-[11px]" />
-        </div>
-      </Match>
-      <Match when={type() === "memo"}>
-        {/* Memo renders as a phosphor-bordered card (social-style post). Clicking
-            it opens the reading pane, where its replies + reply composer live. */}
-        <button
-          type="button"
-          class="mt-1 block w-full rounded-md border-[1.5px] border-accent bg-surface p-3.5 text-left transition-colors hover:bg-surface-2"
-          data-testid="open-memo"
-          onClick={() => props.onOpenArticle?.()}
-        >
-          <p class="text-sm text-ink whitespace-pre-wrap break-words" data-testid="message-text">
-            <RichText text={text()} />
-          </p>
-        </button>
-      </Match>
-      <Match when={type() === "message"}>
-        <p class="text-sm text-ink whitespace-pre-wrap break-words" data-testid="message-text">
-          <RichText text={text()} />
-        </p>
-      </Match>
-    </Switch>
   );
 };
 

@@ -21,6 +21,7 @@
  * simple; a future migration to IndexedDB (mirroring `key-store.ts`) can swap the
  * backend without touching callers.
  */
+import { type LocalVersion, mergeCanonical } from "./merge-message.ts";
 
 /** A locally-retained sent DM message (a subset of the canonical §5.3 Message). */
 export interface SentDmMessage {
@@ -36,11 +37,24 @@ export interface SentDmMessage {
   createdAt: string;
   /** Set when the sender edited this message in place (local-only own-copy edit). */
   editedAt?: string;
+  /**
+   * Set while the retained copy is an edit the server has not confirmed (see
+   * `DmMessage.localVersion`); persisted so a reload still orders it correctly.
+   */
+  localVersion?: LocalVersion;
   /** Set when the sender deleted (tombstoned) this own message (local-only). */
   deletedAt?: string;
   /** Echoed so a live `dm.message` (foreign tab) can de-dupe against the local copy. */
   clientMessageId?: string;
 }
+
+/** The fields a version of a retained message owns (as the DM store's). */
+const SENT_VERSION_KEYS = [
+  "content",
+  "attachments",
+  "reference",
+  "editedAt",
+] as const satisfies readonly (keyof SentDmMessage)[];
 
 /** The synchronous persistence surface every backend implements. */
 interface SentStoreBackend {
@@ -157,6 +171,21 @@ export class DmSentStore {
     );
     if (idx === -1) list.push(message);
     else list[idx] = message;
+    list.sort(compareByCreatedAt);
+    this.store.write(this.storageKey(dmId), JSON.stringify(list));
+  }
+
+  /**
+   * Merge a server copy of a retained message into its entry by the shared
+   * version rules (`mergeCanonical`): a copy confirming or superseding an
+   * unconfirmed local edit replaces it (clearing `localVersion`), an older copy
+   * leaves the entry's version as it is. A no-op when no entry has its `id`.
+   */
+  mergeCopy(dmId: string, copy: SentDmMessage): void {
+    const list = this.list(dmId);
+    const entry = list.find((m) => m.id === copy.id);
+    if (!entry) return;
+    mergeCanonical(entry, copy, SENT_VERSION_KEYS);
     list.sort(compareByCreatedAt);
     this.store.write(this.storageKey(dmId), JSON.stringify(list));
   }

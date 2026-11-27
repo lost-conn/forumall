@@ -1,9 +1,9 @@
 /**
  * One message in a DM thread, as the thread view renders it: author, time,
- * reactions, reply / edit / delete affordances, send status and the reply
- * listing affordance (§7.4), plus the body and the typing line.
+ * the body by its `content.mime` (§5.3) with its attachments, reactions,
+ * reply / edit / delete / retry affordances (edits and deletes are optimistic,
+ * `dm-mutations.ts`), send status, plus the typing line.
  */
-import type { Attachment } from "@forumall/shared";
 import {
   type Accessor,
   type Component,
@@ -19,12 +19,11 @@ import { formatFullTime, formatTime } from "../../lib/time.ts";
 import { type DmMessage, dmReactionsFor, upsertDmMessage } from "../../stores/dms.ts";
 import { displayNameFor } from "../../stores/profiles.ts";
 import { session, sessionClient } from "../../stores/session.ts";
-import { AttachmentList } from "../shared/AttachmentList.tsx";
+import { BodyContent, TrailingAttachments, useParsedBody } from "../shared/BodyContent.tsx";
 import { EditMessageForm } from "../shared/EditMessageForm.tsx";
 import { MessageStatus } from "../shared/MessageStatus.tsx";
 import { ReactionBar, ReactionPicker } from "../shared/Reactions.tsx";
 import { ReplyQuote } from "../shared/ReplyQuote.tsx";
-import { RichText } from "../shared/RichText.tsx";
 import { Avatar } from "../social/Avatar.tsx";
 import { resolveDeliveryClient } from "./dm-delivery.ts";
 import {
@@ -33,7 +32,7 @@ import {
   DmUnconfirmedError,
 } from "./dm-errors.ts";
 import { deleteDm, editDm, toggleDmReaction } from "./dm-mutations.ts";
-import { retrySendDm } from "./dm-send.ts";
+import { resendOf, retrySendDm } from "./dm-send.ts";
 import { isRemoteActor } from "./remote-actor.ts";
 
 export const DmMessageRow: Component<{
@@ -49,6 +48,7 @@ export const DmMessageRow: Component<{
   const m = () => props.message;
   const mine = () => m().mine === true || m().author === session.actor;
   const isDeleted = () => m().deletedAt !== undefined;
+  const body = useParsedBody(m);
   const [editing, setEditing] = createSignal(false);
   const [editText, setEditText] = createSignal("");
   const [editError, setEditError] = createSignal<string | null>(null);
@@ -204,7 +204,12 @@ export const DmMessageRow: Component<{
     const client = sessionClient();
     const store = props.sentStore();
     const me = session.actor;
-    if (!client || !store || !me || !m().clientMessageId) return;
+    // The echo's own text, mime, attachments and reply pointer, under its
+    // ORIGINAL idempotency key: a retry of a send that had in fact committed
+    // dedupes on the recipient's provider instead of delivering the message a
+    // second time (see `retrySendDm`).
+    const resend = resendOf(m());
+    if (!client || !store || !me || !resend) return;
     const counterparty = props.counterparty;
     setActionError(null);
     void resolveDeliveryClient(counterparty)
@@ -215,16 +220,8 @@ export const DmMessageRow: Component<{
           dmId: props.dmId,
           me,
           counterparty,
-          text: m().content.text ?? "",
-          ...(m().attachments && (m().attachments as Attachment[]).length > 0
-            ? { attachments: m().attachments }
-            : {}),
-          ...(m().reference ? { reference: m().reference } : {}),
+          ...resend,
           sentStore: store,
-          // The ORIGINAL idempotency key: a retry of a send that had in fact
-          // committed dedupes on the recipient's provider instead of delivering
-          // the message a second time (see `retrySendDm`).
-          clientMessageId: m().clientMessageId as string,
         }),
       )
       .catch((err) => {
@@ -307,14 +304,19 @@ export const DmMessageRow: Component<{
                 }}
                 data-testid="dm-message-bubble"
               >
-                <DmMessageBody message={m()} />
+                {/* Rendered by content.mime (§5.3), like every message body. */}
+                <BodyContent
+                  body={body()}
+                  attachments={m().attachments ?? []}
+                  class="text-sm leading-[1.45]"
+                  testid="dm-message-text"
+                />
               </div>
             </Match>
           </Switch>
 
-          {/* Attachments */}
-          <Show when={!isDeleted() && (m().attachments?.length ?? 0) > 0}>
-            <AttachmentList attachments={m().attachments ?? []} testid="dm-attachments" />
+          <Show when={!isDeleted()}>
+            <TrailingAttachments message={m()} body={body()} testid="dm-attachments" />
           </Show>
 
           {/* Reactions */}
@@ -400,19 +402,6 @@ export const DmMessageRow: Component<{
     </li>
   );
 };
-
-/**
- * Render a DM message body. DM messages are always `type: "message"` (the server
- * stores no other kind), so this renders content with the shared inline
- * formatter (`RichText`) — the same bold/italic/code/link + clickable-mention
- * rendering channel chat uses for `message`/`memo`. (Block markdown is reserved
- * for `article`-type messages, which DMs never carry.)
- */
-const DmMessageBody: Component<{ message: DmMessage }> = (props) => (
-  <p class="whitespace-pre-wrap break-words text-sm leading-[1.45]" data-testid="dm-message-text">
-    <RichText text={props.message.content.text ?? ""} />
-  </p>
-);
 
 /** Typing indicator for the counterparty (mirrors the channel typing line). */
 export const DmTypingLine: Component<{ actors: string[] }> = (props) => (

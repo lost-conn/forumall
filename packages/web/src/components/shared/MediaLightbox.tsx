@@ -16,7 +16,8 @@
 import type { Attachment } from "@forumall/shared";
 import { type Component, Show, onCleanup, onMount } from "solid-js";
 import { stepExpandIndex } from "../../lib/attachment-gallery.ts";
-import { attachmentKind, resolveAttachmentUrl } from "../../lib/chat-api.ts";
+import { attachmentUrl } from "../../lib/attachment-url.ts";
+import { attachmentKind } from "../../lib/chat-api.ts";
 import { attachmentDownloadLink } from "./AttachmentView.tsx";
 
 /**
@@ -51,7 +52,7 @@ export const MediaLightbox: Component<{
   };
   const url = () => {
     const att = current();
-    return att ? resolveAttachmentUrl(att.url) : "";
+    return att ? attachmentUrl(att) : null;
   };
   const step = (delta: number): void =>
     props.onIndex(stepExpandIndex(props.index, delta, props.items.length));
@@ -116,7 +117,7 @@ export const MediaLightbox: Component<{
           </Show>
           <span class="flex-1" />
           <a
-            href={url()}
+            href={url() ?? undefined}
             target="_blank"
             rel="noopener noreferrer"
             class="shrink-0 text-xs text-muted hover:text-ink"
@@ -158,7 +159,7 @@ export const MediaLightbox: Component<{
                   when={attachmentKind(att) === "video"}
                   fallback={
                     <img
-                      src={url()}
+                      src={url() ?? undefined}
                       alt={name()}
                       class="max-h-[85vh] max-w-full object-contain"
                       data-testid="lightbox-image"
@@ -174,7 +175,7 @@ export const MediaLightbox: Component<{
                     class="max-h-[85vh] max-w-full"
                     data-testid="lightbox-video"
                   >
-                    <source src={url()} type={att.mime} />
+                    <source src={url() ?? undefined} type={att.mime} />
                     {attachmentDownloadLink(att, url(), "attachment-fallback-link")}
                   </video>
                 </Show>

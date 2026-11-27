@@ -12,17 +12,19 @@
  * lightbox slide with nothing to show.
  */
 import type { Attachment } from "@forumall/shared";
+import { attachmentUrl } from "./attachment-url.ts";
 import { attachmentKind } from "./chat-api.ts";
 
 /**
  * True when an attachment has something worth showing full-size: images and
  * video. Audio is deliberately excluded — an expanded audio track is just the
  * same player on a black backdrop — as are non-playable files, which only have
- * a download link.
+ * a download link. An attachment whose `url` may not be used ({@link attachmentUrl})
+ * has nothing to show either.
  */
 export function isExpandableAttachment(att: Attachment): boolean {
   const kind = attachmentKind(att);
-  return kind === "image" || kind === "video";
+  return (kind === "image" || kind === "video") && attachmentUrl(att) !== null;
 }
 
 /**
