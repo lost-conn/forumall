@@ -18,7 +18,7 @@ import { canonicalAuthority } from "@forumall/shared";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/index.ts";
 import { buildPushRequest } from "../lib/web-push.ts";
-import { DEFAULT_EGRESS_TIMEOUT_MS, assertPublicHttpsUrl } from "./federation/egress-guard.ts";
+import { type Resolver, guardedFetch } from "./federation/egress-guard.ts";
 import { isProviderAllowed } from "./federation/policy.ts";
 import {
   deleteSubscriptionByEndpoint,
@@ -52,8 +52,47 @@ export interface PushPayload {
 /** The minimal fetch surface, injectable so tests can simulate 410/ok. */
 export type PushFetch = (
   url: string,
-  init: { method: "POST"; headers: Record<string, string>; body: Uint8Array },
+  init: { method: "POST"; headers: Record<string, string>; body: Uint8Array<ArrayBuffer> },
 ) => Promise<{ status: number }>;
+
+/** Options for {@link guardedPushFetch}. */
+export interface GuardedPushFetchOptions {
+  /** Forward proxy for push egress (`PUSH_PROXY`; a Bun `fetch` extension). */
+  readonly proxy?: string;
+  /** Name resolver for the egress check (tests). */
+  readonly resolve?: Resolver;
+  /** The underlying fetch (tests). Default: the global `fetch`. */
+  readonly fetch?: (request: Request, init: RequestInit) => Promise<Response>;
+}
+
+/**
+ * The production {@link PushFetch}. Push endpoints are supplied by browsers
+ * via `/api/push/subscribe`, so each POST goes through {@link guardedFetch}
+ * like any request to a host named by someone else (§8 "Outbound requests"):
+ * `https` only, every resolved address public, redirects returned (never
+ * followed), and one deadline covering DNS and the request.
+ */
+export function guardedPushFetch(opts: GuardedPushFetchOptions = {}): PushFetch {
+  const underlying = opts.fetch ?? fetch;
+  return async (url, init) => {
+    const request = new Request(url, {
+      method: init.method,
+      headers: init.headers,
+      body: init.body,
+    });
+    const res = await guardedFetch(request, {
+      ...(opts.resolve ? { resolve: opts.resolve } : {}),
+      fetch: (req, guardInit) => {
+        // `proxy` is a Bun fetch extension; typed locally so this stays valid TS.
+        const withProxy: RequestInit & { proxy?: string } = { ...guardInit };
+        if (opts.proxy) withProxy.proxy = opts.proxy;
+        return underlying(req, withProxy);
+      },
+    });
+    await res.body?.cancel();
+    return { status: res.status };
+  };
+}
 
 /** Split a canonical actor (`handle@domain`) into its parts. */
 function splitActor(actor: string): { handle: string; domain: string } | null {
@@ -68,7 +107,7 @@ function splitActor(actor: string): { handle: string; domain: string } | null {
  * settle, but callers should NOT await it on the hot path. Returns the number of
  * pushes accepted by a push service (mostly for tests).
  *
- * `fetchImpl` defaults to the global `fetch`; tests inject one that returns a
+ * `fetchImpl` defaults to {@link guardedPushFetch}; tests inject one that returns a
  * fixed status (e.g. 410) to exercise the cleanup path without a real service.
  */
 export async function sendPushToRecipient(
@@ -91,27 +130,7 @@ export async function sendPushToRecipient(
     const subject = `https://${canonicalAuthority(config.domain)}`;
     const payloadBytes = new TextEncoder().encode(JSON.stringify(payload));
     const doFetch: PushFetch =
-      fetchImpl ??
-      (async (url, init) => {
-        // `proxy` is a Bun fetch extension (forward-proxy egress); only set it
-        // when configured, and type it locally so this stays valid TS.
-        const reqInit: RequestInit & { proxy?: string } = {
-          method: init.method,
-          headers: init.headers,
-          body: init.body as BodyInit,
-        };
-        if (config.pushProxy) reqInit.proxy = config.pushProxy;
-        // Push endpoints are supplied by browsers via /api/push/subscribe, so
-        // vet them like any federation target: public https host, no redirect
-        // following, and ONE deadline covering DNS and the request
-        // (egress-guard.ts).
-        const signal = AbortSignal.timeout(DEFAULT_EGRESS_TIMEOUT_MS);
-        await assertPublicHttpsUrl(url, { signal });
-        reqInit.redirect = "manual";
-        reqInit.signal = signal;
-        const res = await fetch(url, reqInit);
-        return { status: res.status };
-      });
+      fetchImpl ?? guardedPushFetch(config.pushProxy ? { proxy: config.pushProxy } : {});
 
     let accepted = 0;
     await Promise.all(

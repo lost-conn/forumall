@@ -121,7 +121,7 @@ export function vapidAuthHeader(
 // ---------------------------------------------------------------------------
 
 /** Concatenate byte arrays into one Uint8Array. */
-function concat(...parts: Uint8Array[]): Uint8Array {
+function concat(...parts: Uint8Array[]): Uint8Array<ArrayBuffer> {
   let len = 0;
   for (const p of parts) len += p.length;
   const out = new Uint8Array(len);
@@ -154,7 +154,7 @@ export interface EncryptOverrides {
 /** The encrypted body plus the inputs a caller may want to inspect/test. */
 export interface EncryptedPayload {
   /** The full `aes128gcm` message: header || ciphertext (the HTTP body). */
-  readonly body: Uint8Array;
+  readonly body: Uint8Array<ArrayBuffer>;
   /** The 16-byte record salt used (random unless overridden). */
   readonly salt: Uint8Array;
   /** The ephemeral (sender) public key (65 bytes, uncompressed). */
@@ -262,7 +262,7 @@ export type PushRequestHeaders = {
 export interface PushRequest {
   readonly url: string;
   readonly headers: PushRequestHeaders;
-  readonly body: Uint8Array;
+  readonly body: Uint8Array<ArrayBuffer>;
 }
 
 /** TTL (seconds) the push service should retain an undelivered message: 28 days. */
