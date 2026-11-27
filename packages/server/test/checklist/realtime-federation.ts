@@ -8,7 +8,7 @@ import type { ChecklistEntry } from "./types.ts";
 
 export const REALTIME_FEDERATION: readonly ChecklistEntry[] = [
   {
-    item: "Support direct messages: deterministic `dmId` derivation, inbox-only storage (no sender copy), the `{dmId}`/`to` verification on delivery, conversation pointers and `dm.conversation`, conversation listing/reading, `dm.message` real-time delivery, and `dmId` subscriptions from a remote participant (§7.4)",
+    item: "Support direct messages: deterministic `dmId` derivation, inbox-only storage (no sender copy), the `{dmId}`/`to` verification on delivery, conversation pointers and `dm.conversation`, conversation listing/reading, `dm.message` real-time delivery, and `dmId` subscriptions from a remote participant, answering a non-participant on every DM path exactly as an unknown `dmId` (`404` / `not_found`) (§7.4)",
     level: "provider-must",
     covers: [
       "packages/shared/test/dm.test.ts",

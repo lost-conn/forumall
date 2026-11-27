@@ -8,11 +8,11 @@ import type { ChecklistEntry } from "./types.ts";
 
 export const MEDIA_USERS: readonly ChecklistEntry[] = [
   {
-    item: "Support single-step media upload at `POST /api/media`, recording its `target` (default: this provider) and setting `mime`, `size` and `hash`, and `width`, `height` and `durationMs` from the bytes when it can determine them or from the uploader otherwise, and accepting an uploader's `thumbnail` part (§5.8)",
+    item: "Support single-step media upload at `POST /api/media`, recording its `target` (default: this provider), setting `size` and `hash` from the bytes and `mime` per §5.8 (the declared type is allowed, but an inline type — `image/*` other than SVG, `video/*`, `audio/*` — only when the bytes confirm it, otherwise `application/octet-stream`), and `width`, `height` and `durationMs` from the bytes when they can be determined or from the uploader otherwise, and accepting an uploader's `thumbnail` part; if the provider offers pre-signed uploads, refuse one at completion when its inline `mime` is not confirmed by the bytes (§5.8)",
     level: "provider-must",
     covers: ["packages/server/test/media.test.ts"],
     status: "partial",
-    note: "Behaviour gap: the `target` part (stored, canonicalised, `400` for a bad authority) and the `thumbnail` part are not implemented. `mime` must not record an inline-shown type (non-SVG image, video, audio) the bytes do not confirm; today the declared part type is stored unchecked.",
+    note: "Behaviour gap: the `target` part (stored, canonicalised, `400` for a bad authority) and the `thumbnail` part are not implemented. `mime` must not record an inline-shown type (non-SVG image, video, audio) the bytes do not confirm; today the declared part type is stored unchecked. Forumall offers no pre-signed uploads, so the completion check does not apply.",
   },
   {
     item: "Serve attachments as capability URLs: `https`, at least 128 bits of entropy, unlisted, fetchable unsigned, with the §3.4 CORS headers, from any host the provider chooses (§5.8)",
