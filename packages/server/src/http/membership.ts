@@ -48,20 +48,19 @@ import {
   setMemberRole,
   transferOwnership,
 } from "../provider/membership.ts";
-import {
-  CANONICAL_ROLES,
-  canActor,
-  getMembership,
-  isMember,
-  roleHoldsAll,
-} from "../provider/permissions.ts";
+import { CANONICAL_ROLES, canActor, getMembership, roleHoldsAll } from "../provider/permissions.ts";
 import { effectiveJoinPolicy, tierReadableBy } from "../provider/tiers.ts";
 import type { Hub } from "../provider/ws-hub.ts";
 import { AppError } from "./errors.ts";
 import { requireSignature } from "./signature.ts";
 import type { AppBindings } from "./types.ts";
 
-/** Max length of a per-group display-name override (mirrors a sane name limit). */
+/**
+ * Max length of a per-group display-name override (§5.7: "at most 64
+ * characters"), counted in Unicode code points — JSON Schema's notion of a
+ * string's length — not UTF-16 code units, so a name of astral characters
+ * (emoji) gets the same 64.
+ */
 const MAX_DISPLAY_NAME_OVERRIDE = 64;
 
 /**
@@ -326,7 +325,7 @@ export function createMembershipRouter() {
       const trimmed = value.trim();
       if (trimmed.length === 0) {
         nickname = null;
-      } else if (trimmed.length > MAX_DISPLAY_NAME_OVERRIDE) {
+      } else if ([...trimmed].length > MAX_DISPLAY_NAME_OVERRIDE) {
         throw AppError.badRequest({
           detail: `displayNameOverride must be ${MAX_DISPLAY_NAME_OVERRIDE} characters or fewer`,
         });
@@ -345,8 +344,9 @@ export function createMembershipRouter() {
     const targetRow = getMemberRow(db, groupId, target);
     if (!targetRow) throw AppError.notFound({ detail: "no such member" });
 
-    // Setting one's OWN nickname needs no permission; setting another's requires
-    // the `members.set-nickname` action plus the subset/self-protect rule.
+    // Setting one's OWN nickname needs no permission (the caller is a member:
+    // its row is `targetRow`); setting another's requires the
+    // `members.set-nickname` action plus the subset/self-protect rule.
     if (target !== actor.actor) {
       if (!canActor(db, "members.set-nickname", groupId, actor.actor)) {
         throw AppError.forbidden({ detail: "you may not set other members' nicknames" });
@@ -359,9 +359,6 @@ export function createMembershipRouter() {
           detail: "you may not rename a member more privileged than you",
         });
       }
-    } else if (!isMember(db, groupId, actor.actor)) {
-      // Setting your own nickname still requires you to be a member of the group.
-      throw AppError.forbidden({ detail: "you are not a member of this group" });
     }
 
     const updated = setMemberDisplayName(db, groupId, target, nickname);
