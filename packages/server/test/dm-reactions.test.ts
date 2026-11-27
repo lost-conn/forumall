@@ -1202,7 +1202,7 @@ describe("DM edit/delete — author-signed on the message's home provider (§8.3
 
     // mallory signs for herself but names alice in the body: the body is not
     // trusted, so she is judged as mallory — no local user derives {dmId} with
-    // her → the §8.3 recipient-resolution guard rejects with 400.
+    // her, so she is no participant → the unknown-dmId 404 (§7.4).
     const patch = await signedReqAt(
       fed.b.base,
       "bedit2.test",
@@ -1211,7 +1211,7 @@ describe("DM edit/delete — author-signed on the message's home provider (§8.3
       `/api/federation/dms/${dmId}/messages/${msgId}`,
       { actor: alice.actor, content: { mime: "text/plain", text: "hijacked" } },
     );
-    expect(patch.status).toBe(400);
+    expect(patch.status).toBe(404);
 
     const hist = await signedReqAt(
       fed.b.base,
@@ -1584,7 +1584,7 @@ describe("DM reactions — author-signed on the message's home provider (§8.3)"
 
     // mallory signs for herself but names alice in the body: the body is not
     // trusted, so she is judged as mallory — no local user derives {dmId} with
-    // her → the §8.3 recipient-resolution guard rejects with 400, and nothing is
+    // her, so she is no participant → the unknown-dmId 404 (§7.4), and nothing is
     // stored under alice's name.
     const res = await signedReqAt(
       fed.b.base,
@@ -1594,7 +1594,7 @@ describe("DM reactions — author-signed on the message's home provider (§8.3)"
       `/api/federation/dms/${dmId}/messages/${msgId}/reactions/heart`,
       { actor: alice.actor },
     );
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(404);
 
     const hist = await signedReqAt(
       fed.b.base,

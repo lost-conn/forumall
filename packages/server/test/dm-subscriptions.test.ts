@@ -166,8 +166,34 @@ describe("a remote participant's dmId subscription (§7.4, §8.5)", () => {
     expect((await signedTo(fed.b, bob, "PUT", reactPath)).status).toBe(201);
     const fedReact = `/api/federation/dms/${dmId}/messages/${sent.id}/reactions/star`;
     expect((await signedTo(fed.b, alice, "PUT", fedReact)).status).toBe(200);
+    const bobOnB = await ws(fed.b, bob);
+    bobOnB.send({ id: "typ", type: "typing.start", data: { dmId } });
 
     expect(await aliceOnB.none(isDm, 300)).toBe(true);
+  });
+
+  test("typing flows both ways between a remote participant and the local one", async () => {
+    const fed = boot();
+    const alice = await registerOn(fed.a, "alice");
+    const bob = await registerOn(fed.b, "bob");
+    const dmId = deriveDmId(alice.actor, bob.actor);
+    await send(fed.b, alice, dmId, "hi", "cmsg_1"); // gives bob his conversation row
+    const aliceOnB = await ws(fed.b, alice);
+    await subscribeDm(aliceOnB, dmId);
+    const bobOnB = await ws(fed.b, bob);
+
+    // alice (remote, a participant by derivation) types → bob sees it.
+    aliceOnB.send({ id: "a_typ", type: "typing.start", data: { dmId } });
+    const toBob = await bobOnB.ofType("dm.typing");
+    expect(toBob.data).toEqual({ dmId, user: alice.actor, state: "start" });
+    // bob types → it reaches alice through her dmId subscription.
+    bobOnB.send({ id: "b_typ", type: "typing.start", data: { dmId } });
+    const toAlice = await aliceOnB.ofType("dm.typing");
+    expect(toAlice.data).toEqual({ dmId, user: bob.actor, state: "start" });
+    bobOnB.send({ id: "b_stop", type: "typing.stop", data: { dmId } });
+    const stop = await aliceOnB.ofType("dm.typing");
+    expect(stop.data).toEqual({ dmId, user: bob.actor, state: "stop" });
+    expect(await aliceOnB.none((f) => f.type === "error", 200)).toBe(true);
   });
 
   test("`since` resumes in the DM cursor space, in current state, for remote and local subscribers", async () => {
@@ -378,7 +404,12 @@ describe("a non-participant gets the unknown-dmId answer on every DM path", () =
         const b = await signedTo(fed.b, carol, method, unknownPath, unknownBody);
         const label = `${method} ${path}`;
         expect({ label, status: a.status }).toEqual({ label, status: b.status });
-        expect([400, 404]).toContain(a.status);
+        // 404 everywhere; only the delivery's own `{dmId}` check is a 400,
+        // which depends on the caller and the request alone (§7.4).
+        expect({ label, status: a.status }).toEqual({
+          label,
+          status: method === "POST" ? 400 : 404,
+        });
         expect({ label, body: await a.json() }).toEqual({ label, body: await b.json() });
       }
       // Nothing was written into the conversation.
@@ -404,6 +435,7 @@ describe("a non-participant gets the unknown-dmId answer on every DM path", () =
       expect(subKnown).toContain('"code":"not_found"');
       expect(subKnown).toBe(await answer(UNKNOWN, "subscribe", { channels: [UNKNOWN] }));
       const typKnown = await answer(dmId, "typing.start", { dmId });
+      expect(typKnown).toContain('"code":"not_found"');
       expect(typKnown).toBe(await answer(UNKNOWN, "typing.start", { dmId: UNKNOWN }));
     });
   }

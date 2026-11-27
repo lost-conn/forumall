@@ -13,8 +13,9 @@ import type { Db } from "../../db/index.ts";
 import { getReadableChannel } from "../../provider/channels.ts";
 import { getDmConversationRow } from "../../provider/dms.ts";
 import { getMembership } from "../../provider/permissions.ts";
-import type { OutboundEvent } from "../../provider/ws-hub.ts";
+import type { Hub, OutboundEvent } from "../../provider/ws-hub.ts";
 import { CHANNEL_NOT_FOUND } from "../channel-access.ts";
+import { domainOf, resolveLocalDmOwner } from "../dm-request.ts";
 import type { MutationError } from "../message-mutations.ts";
 import { type ConnState, type WsContext, type WsCtx, errorEvent } from "./connection.ts";
 
@@ -71,6 +72,44 @@ function dmTypingEvent(dmId: string, user: string, typingState: "start" | "stop"
   };
 }
 
+/**
+ * The counterparty of the connection's actor in `dmId`, or `null` when the actor
+ * is not a participant (§7.4): the counterparty of a local actor's consistent
+ * conversation row, else the local user the `dmId` derives from together with
+ * the actor (which also covers a remote participant connected here directly).
+ */
+function dmTypingCounterparty(ctx: WsCtx, state: ConnState, dmId: string): string | null {
+  const { config, db, authority } = ctx;
+  const handle = state.localHandle;
+  const row = handle !== undefined ? getDmConversationRow(db, handle, dmId, authority) : null;
+  if (row) return row.counterparty;
+  if (state.actor === undefined) return null;
+  const owner = resolveLocalDmOwner(db, config, state.actor, dmId);
+  return owner !== null ? `${owner}@${authority}` : null;
+}
+
+/**
+ * Deliver a `dm.typing` to `counterparty` (§7.4): implicitly when it is a local
+ * user, and to its `dmId` subscriptions here either way — the only way a remote
+ * counterparty, with no inbox here, receives DM events (one frame each).
+ */
+function deliverDmTyping(
+  hub: Hub,
+  authority: string,
+  dmId: string,
+  counterparty: string,
+  event: OutboundEvent,
+): void {
+  hub.publishToAudience(
+    {
+      actors: domainOf(counterparty) === authority ? [counterparty] : [],
+      channelId: dmId,
+      subscribedActors: [counterparty],
+    },
+    event,
+  );
+}
+
 /** Clear a connection's DM typing timer for `dmId` without fanning out. */
 function clearDmTypingTimer(state: ConnState, dmId: string): void {
   const entry = state.dmTypingTimers.get(dmId);
@@ -86,11 +125,12 @@ function clearDmTypingTimer(state: ConnState, dmId: string): void {
  * connection never leaves a stuck indicator — mirrors {@link clearAllTyping}).
  */
 export function clearAllDmTyping(ctx: WsCtx, state: ConnState, emitStop: boolean): void {
-  const { hub } = ctx;
+  const { hub, authority } = ctx;
   for (const [dmId, entry] of state.dmTypingTimers) {
     clearTimeout(entry.timer);
     if (emitStop && state.actor) {
-      hub.publishToActor(entry.counterparty, dmTypingEvent(dmId, state.actor, "stop"));
+      const stop = dmTypingEvent(dmId, state.actor, "stop");
+      deliverDmTyping(hub, authority, dmId, entry.counterparty, stop);
     }
   }
   state.dmTypingTimers.clear();
@@ -143,23 +183,21 @@ export function handleTypingStart(
   const dmId = parsed.data.data.dmId;
   // --- DM-scoped typing (§7.4) ------------------------------------------
   if (dmId !== undefined) {
-    // The conversation row is a LOCAL inbox row (see ConnState.localHandle); a
-    // remote actor has none here, so they cannot type into a local inbox.
-    const handle = state.localHandle;
-    const conv = handle !== undefined ? getDmConversationRow(db, handle, dmId, authority) : null;
-    if (!conv) {
-      hub.send(ws, errorEvent("forbidden", "not authorized to type in this conversation", frameId));
+    // A non-participant gets exactly what an unknown dmId gets (§7.4
+    // "Non-participants answer as unknown").
+    const counterparty = dmTypingCounterparty(ctx, state, dmId);
+    if (counterparty === null) {
+      hub.send(ws, errorEvent("not_found", "No such conversation", frameId));
       return;
     }
-    const counterparty = conv.counterparty;
     // Fan the `start` to the counterparty (the typer doesn't need its own echo
     // for a 2-party DM, mirroring how DM messages deliver to the recipient).
-    hub.publishToActor(counterparty, dmTypingEvent(dmId, actor, "start"));
+    deliverDmTyping(hub, authority, dmId, counterparty, dmTypingEvent(dmId, actor, "start"));
     // (Re)arm the per-(connection, dmId) auto-expiry timer.
     clearDmTypingTimer(state, dmId);
     const timer = setTimeout(() => {
       state.dmTypingTimers.delete(dmId);
-      hub.publishToActor(counterparty, dmTypingEvent(dmId, actor, "stop"));
+      deliverDmTyping(hub, authority, dmId, counterparty, dmTypingEvent(dmId, actor, "stop"));
     }, config.typingTimeoutMs);
     state.dmTypingTimers.set(dmId, { timer, counterparty });
     return;
@@ -220,17 +258,13 @@ export function handleTypingStop(
   const dmId = parsed.data.data.dmId;
   if (dmId !== undefined) {
     // Resolve the counterparty (prefer the live timer's, fall back to the
-    // caller's own LOCAL conversation row) so an explicit stop still reaches the
-    // other party. A remote actor has no local row — see ConnState.localHandle.
-    const entry = state.dmTypingTimers.get(dmId);
-    const handle = state.localHandle;
+    // participant lookup) so an explicit stop still reaches the other party.
     const counterparty =
-      entry?.counterparty ??
-      (handle !== undefined
-        ? getDmConversationRow(db, handle, dmId, authority)?.counterparty
-        : undefined);
+      state.dmTypingTimers.get(dmId)?.counterparty ?? dmTypingCounterparty(ctx, state, dmId);
     clearDmTypingTimer(state, dmId);
-    if (counterparty) hub.publishToActor(counterparty, dmTypingEvent(dmId, actor, "stop"));
+    if (counterparty !== null) {
+      deliverDmTyping(hub, authority, dmId, counterparty, dmTypingEvent(dmId, actor, "stop"));
+    }
     return;
   }
 
