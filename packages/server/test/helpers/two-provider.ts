@@ -132,6 +132,8 @@ export function startFederation(dir: string, opts: StartFederationOptions = {}):
       ...(opts.wsTimings !== undefined ? { wsTimings: opts.wsTimings } : {}),
     });
     const server = Bun.serve({ port: 0, fetch: app.fetch, websocket: app.__websocket });
+    // A TCP listener always has a port; only a unix-socket server lacks one.
+    if (server.port === undefined) throw new Error(`no port bound for ${domain}`);
     ports.set(domain, server.port);
     return {
       domain,

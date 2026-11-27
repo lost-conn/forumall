@@ -18,7 +18,7 @@ Bun · Hono · bun:sqlite + Drizzle · Zod · `@noble/ed25519`/`@noble/hashes` �
 
 ## Commands (run from repo root)
 - `bun install`
-- `bun run typecheck` — per-package `tsc --noEmit` across all four packages.
+- `bun run typecheck` — per-package `tsc --noEmit` across all four packages, test code included (every package's tsconfig includes `test/**`). Under `noUncheckedIndexedAccess`, index test arrays with `at(xs, i)` (`packages/server/test/helpers/at.ts`) rather than a cast.
 - `bun run test` — **scoped** unit/integration via `--filter` (shared + web + server). **Use this, NOT bare `bun test`** — bare `bun test` scans into `e2e/` and pulls Playwright `*.spec.ts` into Bun's runner, producing ~7 spurious "did not expect test()" errors. Per-package: `bun test packages/server`.
 - `bun run build` — vite build of the web bundle → `packages/web/dist`.
 - `bunx biome check .` (or `bunx biome check --write .` to fix). Keep it clean; CI runs it.

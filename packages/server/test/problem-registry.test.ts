@@ -142,7 +142,7 @@ describe("errorCode registry (§7.3)", () => {
   test("Forumall's registry equals the spec's table exactly", () => {
     const fromSpec = specRegistry();
     expect(Object.keys(fromSpec).length).toBeGreaterThanOrEqual(10);
-    const ours = Object.fromEntries(
+    const ours: Record<string, number> = Object.fromEntries(
       Object.entries(ERROR_CODE_REGISTRY).map(([code, { status }]) => [code, status]),
     );
     expect(ours).toEqual(fromSpec);

@@ -6,6 +6,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import { rfc3339Timestamp } from "@forumall/shared";
+import { at } from "./helpers/at.ts";
 
 import {
   FAST_TIMINGS,
@@ -86,7 +87,7 @@ describe("WS resume (§7.1 Resuming after a disconnect)", () => {
         cursor: string;
         message: { id: string; content: { text: string } };
       };
-      expect(data.message.id).toBe(ids[i - 1]);
+      expect(data.message.id).toBe(at(ids, i - 1));
       expect(data.message.content.text).toBe(`m${i}`);
       expect(typeof data.cursor).toBe("string");
     }

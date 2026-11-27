@@ -91,7 +91,7 @@ async function registerUser(b: Booted, handle: string): Promise<Signer> {
   return { keyId, privateKey, actor: `${handle}@${DOMAIN}`, handle };
 }
 
-function signedReq(
+async function signedReq(
   b: Booted,
   signer: Signer,
   method: string,
@@ -290,7 +290,9 @@ describe("/api/me/notification-settings routes", () => {
     // GET reflects it.
     const get = await signedReq(b, alice, "GET", "/api/me/notification-settings");
     expect(get.status).toBe(200);
-    const listed = (await get.json()) as { prefs: Array<{ scopeId: string; mode: string }> };
+    const listed = (await get.json()) as {
+      prefs: Array<{ scopeType: string; scopeId: string; mode: string }>;
+    };
     expect(listed.prefs).toEqual([{ scopeType: "channel", scopeId: "chn_abc", mode: "all" }]);
 
     // Invalid mode → 400.
