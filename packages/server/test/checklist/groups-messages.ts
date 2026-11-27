@@ -46,18 +46,21 @@ export const GROUPS_MESSAGES: readonly ChecklistEntry[] = [
       "The behaviour is there: the creator's row is stamped with the group's `createdAt` (`packages/server/src/provider/groups.ts:122`, `:130`), role changes and transfers update only `role` (`provider/membership.ts:240`, `:275`), and the listing pages by the total order (`joinedAt`, `user`) (`provider/membership.ts:152`), which `membership.test.ts:290` walks without skip or repeat.",
   },
   {
-    item: "Answer a repeat `join` under the `request` policy with `202` and the caller's existing pending `JoinRequest`, unchanged; answer `leave` from a non-member with `404` (and from the owner with `409`) (§5.7)",
+    item: "Answer a repeat `join` under the `request` policy with `202` and the caller's existing pending `JoinRequest`, unchanged; under the `request` policy, check a JSON `join` body against `join-create-request.json` (absent, empty and `{}` valid; a `null` `message` invalid) and answer a mismatch, or a `message` over any provider maximum, with `400` `bad_request`, and ignore a JSON body on any other join; answer a non-empty non-JSON `join` body with `400` on every join; answer `leave` from a non-member with `404` (and from the owner with `409`) (§5.7)",
     level: "provider-must",
-    covers: ["packages/server/test/membership.test.ts"],
+    covers: ["packages/server/test/join-body.test.ts", "packages/server/test/membership.test.ts"],
     status: "partial",
     note: "Untested: a repeat `join` carrying a different `message` leaves the pending request unchanged (`membership.test.ts:178` repeats with no body and compares `id` only), and `leave` from a non-member → `404` (`packages/server/src/http/membership.ts:141`).",
     context:
       "`requestToJoin` returns the existing pending row as stored (`packages/server/src/provider/membership.ts:354`); the owner's `409` is tested (`membership.test.ts:257`).",
   },
   {
-    item: "Gate join-request approve and deny on `manage` or `moderate`, without the subset rule; give an approved requester role `member`, and answer an approval for someone already a member with `200` and the existing `Member`, marking the request `approved` (§5.7)",
+    item: "List only `pending` join requests, paginated per §7.2 and ordered by `requestedAt` then `id`, newest first by default (`join-requests-page.json`); gate join-request approve and deny on `manage` or `moderate`, without the subset rule; give an approved requester role `member`, and answer an approval for someone already a member with `200` and the existing `Member`, marking the request `approved` (§5.7)",
     level: "provider-must",
-    covers: ["packages/server/test/membership.test.ts"],
+    covers: [
+      "packages/server/test/group-listings.test.ts",
+      "packages/server/test/membership.test.ts",
+    ],
     status: "partial",
     note: "Untested: approve and deny by a role holding only `moderate`, and their `403` for a caller holding neither (only the listing's `403` is, `membership.test.ts:678`); an approval for a requester who is already a member → `200` with the existing `Member` unchanged and the request `approved` (`packages/server/src/provider/membership.ts:415`).",
     context:
@@ -73,9 +76,13 @@ export const GROUPS_MESSAGES: readonly ChecklistEntry[] = [
       "Pending requests already survive tier and `joinPolicy` changes: only deleting the group removes them (`packages/server/src/provider/groups.ts:173`).",
   },
   {
-    item: "On invite creation, reject a `role` that is `owner` or neither canonical nor in the group's `roles`, and a `channelId` that is not a channel of the group, with `400`, and an invite whose role holds a permission the creator lacks with `403`; return the invite's `token` in the `201` (it may be omitted elsewhere, including the invite listing), mint tokens with at least 128 bits of entropy from a cryptographically secure random source, and store them so that a database leak does not reveal them, e.g. as a SHA-256 digest looked up by digesting the presented token; send `Referrer-Policy: no-referrer` from any join-link page and do not log tokens (§5.6)",
+    item: "On invite creation, reject a `role` that is `owner` or neither canonical nor in the group's `roles`, and a `channelId` that is not a channel of the group, with `400`, and an invite whose role holds a permission the creator lacks with `403`; return the invite's `token` in the `201` (it may be omitted elsewhere, including the invite listing, which is paginated per §7.2 and ordered by `createdAt` then `id`, newest first by default, `invites-page.json`), mint tokens with at least 128 bits of entropy from a cryptographically secure random source, and store them so that a database leak does not reveal them, e.g. as a SHA-256 digest looked up by digesting the presented token; send `Referrer-Policy: no-referrer` from any join-link page and do not log tokens (§5.6)",
     level: "provider-must",
-    covers: ["packages/server/test/conformance.test.ts", "packages/server/test/invites.test.ts"],
+    covers: [
+      "packages/server/test/conformance.test.ts",
+      "packages/server/test/group-listings.test.ts",
+      "packages/server/test/invites.test.ts",
+    ],
     status: "partial",
     note: "Behaviour gaps: `POST …/invites` (`packages/server/src/http/invites.ts:103`) checks only `manage`. `role` is any non-empty string (`RoleSchema`, `packages/shared/src/schemas/groups.ts:22`), so `owner` or an unknown role is stored; `channelId` is never checked against the group's channels; and there is no `roleHoldsAll` subset check of the granted role (`member` when absent) against the creator. Tokens are stored in plaintext (`invites.token`, `packages/server/src/db/tables/groups.ts:199`) and looked up as given (`packages/server/src/provider/invites.ts:115`). Nothing sends `Referrer-Policy: no-referrer`: the `/invite/{token}` join-link page is the web bundle's static fallback. Untested: the `400`/`403` checks, the token's entropy, and the header.",
     context:
