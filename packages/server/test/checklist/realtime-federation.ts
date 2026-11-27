@@ -38,9 +38,9 @@ export const REALTIME_FEDERATION: readonly ChecklistEntry[] = [
       "packages/server/test/contacts.test.ts",
       "packages/server/test/privacy.test.ts",
       "packages/server/test/presence.test.ts",
+      "packages/server/test/contacts-federation.test.ts",
     ],
-    status: "partial",
-    note: 'A federated `action: "remove"` is untested; only `request` and `accept` are sent to `/api/federation/contacts`.',
+    status: "covered",
   },
   {
     item: "Publish provider signing key(s) in discovery and sign provider-to-provider requests (§8.1)",

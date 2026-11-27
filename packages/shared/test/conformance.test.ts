@@ -7,9 +7,9 @@
  * `ws-auth.test.ts`, `dm.test.ts`) on purpose: this file is the canonical index
  * of "the spec's vectors are met", so the proof lives in one greppable spot.
  *
- * Vectors are read from the sibling `ofscp` repo (SSOT) where they're published;
- * the WS-authenticate vector is computed against the published challenge/auth
- * sample inputs (no `ws-signing-vector.json` exists upstream yet).
+ * Vectors are read from the sibling `ofscp` repo (SSOT): the request-signing
+ * vector (`tests/signing-vector.json`) and the WS-authenticate vector
+ * (`tests/ws-signing-vector.json`). The dmId hash is the one printed in §7.4.
  */
 import { describe, expect, test } from "bun:test";
 
@@ -86,48 +86,67 @@ describe("CONFORMANCE: request-signing vector (§4.4.2, byte-for-byte)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// WS-authenticate vector (§7.1) — computed against the published WS samples.
+// WS-authenticate vector (§7.1) — published at ofscp/tests/ws-signing-vector.json
 // ---------------------------------------------------------------------------
 
-// Inputs from ofscp/tests/ws-auth-challenge.sample.json + ws-authenticate.sample.json.
-const WS_AUTHORITY = "providera.com";
-const WS_CHALLENGE_NONCE = "Yz0aF1kP9rT2uV4xZ6bN8cQwE3sH5jL7";
-const WS_TIMESTAMP = "2026-01-01T12:00:01Z";
-// Deterministic Ed25519 signature for the tuple above under the test key — the
-// authoritative WS-auth vector value (kept in lockstep with ws-auth.test.ts).
-const WS_EXPECTED_SIGNATURE =
-  "5/oyosSNBdeu39klnsv0HwuAGJnEvA3Y/XG1CXJASSuf/ipyYlg8tYSJQzx2MBe9fXlccurvhGxsK4N6LQPZDA==";
+const wsVectorPath = new URL("../../../../ofscp/tests/ws-signing-vector.json", import.meta.url);
+const wsVector = (await Bun.file(wsVectorPath).json()) as {
+  algorithm: string;
+  key: { seed_hex: string; public_key_base64: string };
+  challenge: { authority: string; challengeNonce: string; timestamp: string };
+  canonical_string: string;
+  canonical_string_lines: string[];
+  expected: { signature: string };
+};
 
 describe("CONFORMANCE: WS-authenticate vector (§7.1, byte-for-byte)", () => {
-  test("canonical string is the 4-line authority/tag/nonce/timestamp tuple", () => {
-    expect(
-      buildWsAuthCanonicalString({
-        authority: WS_AUTHORITY,
-        challengeNonce: WS_CHALLENGE_NONCE,
-        timestamp: WS_TIMESTAMP,
-      }),
-    ).toBe(
-      "providera.com\nofscp-ws-authenticate\nYz0aF1kP9rT2uV4xZ6bN8cQwE3sH5jL7\n2026-01-01T12:00:01Z",
-    );
+  test("the vector is an Ed25519 vector", () => {
+    expect(wsVector.algorithm).toBe("Ed25519");
   });
 
-  test("signature is the stable authoritative WS-auth vector value", () => {
-    const { signature } = signWsAuthenticate({
-      privateKey: signingVector.key.seed_hex,
-      authority: WS_AUTHORITY,
-      challengeNonce: WS_CHALLENGE_NONCE,
-      timestamp: WS_TIMESTAMP,
+  test("canonical string === ofscp/tests/ws-signing-vector.json canonical_string", () => {
+    const canonical = buildWsAuthCanonicalString(wsVector.challenge);
+    expect(canonical).toBe(wsVector.canonical_string);
+    // LF-joined lines, no trailing newline.
+    expect(canonical.split("\n")).toEqual(wsVector.canonical_string_lines);
+  });
+
+  test("the authority is canonicalized as §4.4.2 (case, default :443)", () => {
+    const { authority, challengeNonce, timestamp } = wsVector.challenge;
+    expect(
+      buildWsAuthCanonicalString({
+        authority: `${authority.toUpperCase()}:443`,
+        challengeNonce,
+        timestamp,
+      }),
+    ).toBe(wsVector.canonical_string);
+  });
+
+  test("Ed25519 signature === ofscp/tests/ws-signing-vector.json expected.signature", () => {
+    const { signature, canonicalString } = signWsAuthenticate({
+      privateKey: wsVector.key.seed_hex,
+      ...wsVector.challenge,
     });
-    expect(signature).toBe(WS_EXPECTED_SIGNATURE);
+    expect(canonicalString).toBe(wsVector.canonical_string);
+    expect(signature).toBe(wsVector.expected.signature);
     expect(
       verifyWsAuthenticate({
-        publicKey: signingVector.key.public_key_base64,
-        authority: WS_AUTHORITY,
-        challengeNonce: WS_CHALLENGE_NONCE,
-        timestamp: WS_TIMESTAMP,
-        signature: WS_EXPECTED_SIGNATURE,
+        publicKey: wsVector.key.public_key_base64,
+        ...wsVector.challenge,
+        signature: wsVector.expected.signature,
       }),
     ).toBe(true);
+  });
+
+  test("the published signature does not verify for another challenge nonce", () => {
+    expect(
+      verifyWsAuthenticate({
+        publicKey: wsVector.key.public_key_base64,
+        ...wsVector.challenge,
+        challengeNonce: `${wsVector.challenge.challengeNonce}x`,
+        signature: wsVector.expected.signature,
+      }),
+    ).toBe(false);
   });
 });
 
