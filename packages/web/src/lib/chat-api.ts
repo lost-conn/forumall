@@ -44,8 +44,9 @@ export async function fetchHistory(
 
 /**
  * Read one page of the replies to a message (§7.2) — the thread under a parent,
- * oldest-first by default. Returns messages + the next cursor. Used to nest replies under a
- * memo/article and to expand a thread whose parent is outside the loaded window.
+ * oldest-first by default. Returns messages + the next cursor. Used to nest
+ * replies under a memo/article and to expand a thread whose parent is outside
+ * the loaded window.
  */
 export async function fetchReplies(
   client: OfscpClient,

@@ -52,12 +52,12 @@ Notes marked "spec question" point at wording in the spec that needs clarifying 
 
 | Level | Items | Covered | Partial | Missing |
 |---|---|---|---|---|
-| Provider MUST | 58 | 18 | 35 | 5 |
+| Provider MUST | 58 | 19 | 34 | 5 |
 | Provider SHOULD | 4 | 0 | 1 | 3 |
 | Provider MAY (optional) | 10 | 5 | 5 | 0 |
 | Client MUST | 14 | 4 | 7 | 3 |
 | Client SHOULD | 8 | 1 | 2 | 5 |
-| **Total** | 94 | 28 | 50 | 16 |
+| **Total** | 94 | 29 | 49 | 16 |
 
 ## §12 Compliance Checklist coverage map
 
@@ -168,10 +168,9 @@ Notes marked "spec question" point at wording in the spec that needs clarifying 
     - Tests: `packages/server/test/typing.test.ts`
     - Note: Behaviour gap: `typingRefusal` (`packages/server/src/http/ws/typing.ts:46`) requires group membership, not a `post:<type>` grant, so a member with no post grant may type; and a `typing.stop` with no active `start` is fanned out whenever the actor may type (`:276`). Untested: the `forbidden` case and the no-op stop.
     - Context: A missing or unreadable channel gets `not_found` (`typing.test.ts:419`); a successful `start` gets no correlated reply (it is fanned out uncorrelated).
-34. **partial**: Serve channel history and replies holding messages only, tombstones included, never reactions (§7.2)
-    - Tests: `packages/server/test/message-edit-delete.test.ts`, `packages/server/test/conformance.test.ts`, `packages/shared/test/schemas.test.ts`
-    - Note: Untested: the history and reply listing of a message that has reactions hold no `Reaction` item, and a tombstoned reply stays in the reply listing.
-    - Context: `listMessages` / `listReplies` read the messages table only, and both routes parse the page with `MessagesPageSchema`, whose `TimelineItemSchema` is `MessageSchema`. A tombstone stays in history (`message-edit-delete.test.ts:408`, `:569`).
+34. **covered**: Serve channel history and replies holding messages only, tombstones included, never reactions (§7.2)
+    - Tests: `packages/server/test/messages.test.ts`, `packages/server/test/message-edit-delete.test.ts`, `packages/server/test/conformance.test.ts`, `packages/shared/test/schemas.test.ts`
+    - Context: The history and reply listing of messages that carry reactions hold no `Reaction` item, and a tombstoned reply stays in the reply listing (`messages.test.ts`, "history and replies hold messages only"). A tombstone stays in history (`message-edit-delete.test.ts:408`, `:569`). Both live pages validate against the spec's `messages-page` schema (`conformance.test.ts`), and `MessagesPageSchema`, which both routes parse with, rejects a page whose item is a `Reaction` (`schemas.test.ts`, "history and reply pages hold messages only").
 35. **partial**: Accept `text/plain` and `text/markdown` bodies for every message type; store the article fields `title`, `summary` and `cover` (rejecting a `cover` that names none of the message's attachments) and ignore them on other types; store `mentions` (§5.3) and, if the provider offers the §10.1 feed, take a message's mentions from it in place of text parsing when present (§10.1)
     - Tests: `packages/server/test/message-create-fields.test.ts`, `packages/server/test/message-edit-fields.test.ts`, `packages/shared/test/edits-media-groups.test.ts`
     - Note: Behaviour gap: mention notifications are still parsed from the text, never from `mentions`; and no server test creates or edits a `text/markdown` `message`, `memo` or `article`. (Forumall offers the §10.1 feed, so the mentions clause binds it.)

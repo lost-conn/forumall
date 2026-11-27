@@ -178,7 +178,6 @@ numbers are in the spec at `e94447d`.
 | 34 (P MUST) | Channel reactions: tombstone `404`, repeated add and no-op remove to the requester only | behaviour | Add to a tombstone accepted (`http/message-mutations.ts:178`); a repeated add is fanned out (`ws/reactions.ts:56`, `http/messages.ts:276`). No-op remove is right and tested. | U20 |
 | 35 (P MUST) | One correlated copy to the requester, subscribed or not | behaviour | `publishToChannel` writes to subscribers only (`provider/ws-hub.ts:233`). | U20 |
 | 36 (P MUST) | `typing.start` needs read access and a `post:*` grant; no-op stop sends nothing | behaviour | Gate is membership (`ws/typing.ts:46`); a stop with no `start` is fanned out (`:276`). | U20 |
-| 37 (P MUST) | History and replies hold messages only | tests only | Behaviour right; `TimelineItemSchema` is now `MessageSchema` (this PR). History with reactions untested. | U20 |
 | 48 (P MUST) | DMs: a participant by derivation, a local user's remote conversations too | behaviour | History and reply reads decide from stored rows (`http/dms.ts:76`, `:104`), so a derivation participant with nothing stored gets `404`. Subscribe and typing already derive. | U10 |
 | 53 (P MUST) | Resume: current state, deleted → `message.created` then `message.deleted`; cursors shared with REST, DM too | behaviour | No `message.deleted` after a replayed tombstone (`ws/subscriptions.ts:168`); cursor interchange untested. | U20 |
 | 77 (P MAY) | DM reactions: tombstone `404`, no-op remove and repeated add emit no `dm.reaction` | behaviour | Tombstone add stored, and both no-ops fan out `dm.reaction` (`http/dm-reaction-routes.ts:102`, `:104`, `:119`). | U10 |
@@ -192,7 +191,11 @@ and `Referrer-Policy`, redeem order and deleted channels, guest role, approve
 `409`, with tests), U19 (verifier: both identity headers → step-1 `401`), U20 (server
 channel messaging per ofscp#37: tombstones, reaction no-ops, the requester's
 copy, typing grant, resume of deletes, cursor tests). This PR also drops
-`Reaction` from `TimelineItemSchema`, as the ofscp#37 schema does.
+`Reaction` from `TimelineItemSchema`, as the ofscp#37 schema does, and closes
+L37 (history and replies hold messages only): tests now cover the history and
+reply listing of reacted messages, a tombstoned reply, and the schema refusing
+a `Reaction` item. The web client backfills each loaded message's reactions
+from `…/reactions` for the first page, older pages and reply listings.
 
 ## Units of work
 
@@ -221,7 +224,7 @@ Each unit is one pull request to `main`. Each updates its area's entries in
 | U17 | Client keying by (holding provider, `id`), DM reply `provider`, unresolved-parent test. Follows U15. | 74 (at `300f6fa`) |
 | U18 | Server invites and join requests: creation `role`/`channelId` `400`s and subset `403`; token digest and `Referrer-Policy: no-referrer`; redeem checks the invite before membership and omits a deleted `channelId`; `/guest` always `guest`; approve `409` while invite-only; tests. | 23–26 (at `e94447d`) |
 | U19 | Verifier: a request carrying both `X-OFSCP-Actor` and `X-OFSCP-Provider` → step-1 `401`, before the deny check; tests. | 8 (at `e94447d`) |
-| U20 | Server channel messaging (ofscp#37): tombstone edit `404` and repeat-delete no-op, reaction tombstone and no-op rules, one copy to an unsubscribed requester, typing `post:*` grant and no-op stop, `message.deleted` after a replayed tombstone, cursor interchange tests. | 33–37, 53 (at `e94447d`) |
+| U20 | Server channel messaging (ofscp#37): tombstone edit `404` and repeat-delete no-op, reaction tombstone and no-op rules, one copy to an unsubscribed requester, typing `post:*` grant and no-op stop, `message.deleted` after a replayed tombstone, cursor interchange tests. | 33–36, 53 (at `e94447d`) |
 
 Order: U0 first (every unit edits the map). U3, U4, U5, U9, U10, U11, U13 and
 U14 touch disjoint files and can run in parallel; U6 follows U4 and U5; U7

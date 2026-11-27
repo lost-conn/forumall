@@ -209,14 +209,14 @@ export const GROUPS_MESSAGES: readonly ChecklistEntry[] = [
     item: "Serve channel history and replies holding messages only, tombstones included, never reactions (§7.2)",
     level: "provider-must",
     covers: [
+      "packages/server/test/messages.test.ts",
       "packages/server/test/message-edit-delete.test.ts",
       "packages/server/test/conformance.test.ts",
       "packages/shared/test/schemas.test.ts",
     ],
-    status: "partial",
-    note: "Untested: the history and reply listing of a message that has reactions hold no `Reaction` item, and a tombstoned reply stays in the reply listing.",
+    status: "covered",
     context:
-      "`listMessages` / `listReplies` read the messages table only, and both routes parse the page with `MessagesPageSchema`, whose `TimelineItemSchema` is `MessageSchema`. A tombstone stays in history (`message-edit-delete.test.ts:408`, `:569`).",
+      'The history and reply listing of messages that carry reactions hold no `Reaction` item, and a tombstoned reply stays in the reply listing (`messages.test.ts`, "history and replies hold messages only"). A tombstone stays in history (`message-edit-delete.test.ts:408`, `:569`). Both live pages validate against the spec\'s `messages-page` schema (`conformance.test.ts`), and `MessagesPageSchema`, which both routes parse with, rejects a page whose item is a `Reaction` (`schemas.test.ts`, "history and reply pages hold messages only").',
   },
   {
     item: "Accept `text/plain` and `text/markdown` bodies for every message type; store the article fields `title`, `summary` and `cover` (rejecting a `cover` that names none of the message's attachments) and ignore them on other types; store `mentions` (§5.3) and, if the provider offers the §10.1 feed, take a message's mentions from it in place of text parsing when present (§10.1)",

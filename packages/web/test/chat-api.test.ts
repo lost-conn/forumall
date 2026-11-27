@@ -8,8 +8,14 @@
  * that can trail a `;`.
  */
 import { describe, expect, test } from "bun:test";
-import type { Attachment } from "@forumall/shared";
-import { attachmentKind, isImageAttachment } from "../src/lib/chat-api.ts";
+import type { Attachment, Message } from "@forumall/shared";
+import {
+  attachmentKind,
+  fetchHistory,
+  fetchReplies,
+  isImageAttachment,
+} from "../src/lib/chat-api.ts";
+import type { OfscpClient } from "../src/lib/ofscp-client.ts";
 
 /** A minimal attachment with the given mime; other fields are irrelevant to kind. */
 function att(mime: string): Attachment {
@@ -54,5 +60,56 @@ describe("isImageAttachment (thin wrapper over attachmentKind)", () => {
     expect(isImageAttachment(att("image/jpeg"))).toBe(true);
     expect(isImageAttachment(att("video/mp4"))).toBe(false);
     expect(isImageAttachment(att("application/pdf"))).toBe(false);
+  });
+});
+
+describe("history and reply fetches return messages only (§7.2, lost-conn/ofscp#37)", () => {
+  const message = (id: string, over: Partial<Message> = {}): Message =>
+    ({
+      id,
+      author: "alice@h",
+      type: "message",
+      content: { mime: "text/plain", text: id },
+      createdAt: "2026-06-05T00:00:00Z",
+      cursor: `c_${id}`,
+      ...over,
+    }) as Message;
+
+  /** A client that answers every GET with `body` and records the paths. */
+  function clientAnswering(body: unknown) {
+    const gets: string[] = [];
+    const client = {
+      async get(path: string) {
+        gets.push(path);
+        return { data: body };
+      },
+    } as unknown as OfscpClient;
+    return { client, gets };
+  }
+
+  test("fetchHistory returns the page's items as messages, tombstones included", async () => {
+    const items = [message("m2", { deletedAt: "2026-06-05T00:01:00Z" }), message("m1")];
+    const { client, gets } = clientAnswering({ items, page: { nextCursor: "c_next" } });
+    const page = await fetchHistory(client, "g1", "ch1", { limit: 2 });
+    expect(gets).toEqual(["/api/groups/g1/channels/ch1/messages?limit=2&direction=backward"]);
+    // Exactly messages + cursor: no reaction split survives the narrowing.
+    expect(Object.keys(page).sort()).toEqual(["messages", "nextCursor"]);
+    expect(page.messages).toEqual(items);
+    expect(page.nextCursor).toBe("c_next");
+  });
+
+  test("fetchHistory with no items and no cursor is an empty last page", async () => {
+    const { client } = clientAnswering({ items: [], page: {} });
+    expect(await fetchHistory(client, "g1", "ch1")).toEqual({ messages: [], nextCursor: null });
+  });
+
+  test("fetchReplies returns the reply items as messages, oldest-first by default", async () => {
+    const items = [message("r1", { reference: { type: "message", id: "p1" } })];
+    const { client, gets } = clientAnswering({ items, page: {} });
+    const page = await fetchReplies(client, "g1", "ch1", "p1");
+    expect(gets).toEqual(["/api/groups/g1/channels/ch1/messages/p1/replies?direction=forward"]);
+    expect(Object.keys(page).sort()).toEqual(["messages", "nextCursor"]);
+    expect(page.messages).toEqual(items);
+    expect(page.nextCursor).toBeNull();
   });
 });

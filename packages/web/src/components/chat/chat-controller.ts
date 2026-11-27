@@ -5,7 +5,8 @@
  * `openChannel(...)` (driven from {@link ChatView}'s `onMount`) does the §7.1/§7.2
  * dance:
  *   1. load the most-recent history page over REST (backward paging) and backfill
- *      the timeline + per-message reaction history — only ONE page, so a busy
+ *      the timeline, then each loaded message's reactions from its own
+ *      `…/reactions` listing (see `reaction-backfill.ts`) — only ONE page, so a busy
  *      channel doesn't drag its whole history down; the page's `nextCursor` is
  *      published to the store (`setOlderCursor`) so the view can page back,
  *      either from the "Load older" button or on a scroll to the top,
@@ -34,12 +35,7 @@ import type {
   WsReactionRemoved,
 } from "@forumall/shared";
 import { rfc3339Timestamp } from "@forumall/shared";
-import {
-  fetchHistory,
-  fetchReactions,
-  fetchReplies,
-  newClientMessageId,
-} from "../../lib/chat-api.ts";
+import { fetchHistory, fetchReplies, newClientMessageId } from "../../lib/chat-api.ts";
 import type { OfscpClient } from "../../lib/ofscp-client.ts";
 import type { OfscpWsClient } from "../../lib/ofscp-ws.ts";
 import type { ChatMessage } from "../../stores/chat.ts";
@@ -58,6 +54,7 @@ import {
   tombstoneMessage,
   upsertMessage,
 } from "../../stores/chat.ts";
+import { backfillReactions, noteLiveReaction } from "./reaction-backfill.ts";
 
 /** A single client message frame id counter (per session). */
 let frameSeq = 0;
@@ -188,12 +185,15 @@ export async function openChannel(deps: OpenChannelDeps): Promise<ChannelHandle>
   const offReactionAdded = ws.on("reaction.added", (e: WsEnvelope) => {
     const data = (e as WsReactionAdded).data;
     if (data.channelId !== channelId) return;
-    addReactionAgg(channelId, data.reaction as Reaction);
+    const reaction = data.reaction as Reaction;
+    noteLiveReaction(channelId, reaction.reference.id, reaction.key, reaction.author);
+    addReactionAgg(channelId, reaction);
   });
 
   const offReactionRemoved = ws.on("reaction.removed", (e: WsEnvelope) => {
     const data = (e as WsReactionRemoved).data;
     if (data.channelId !== channelId) return;
+    noteLiveReaction(channelId, data.messageId, data.key, data.author);
     removeReactionAgg(channelId, data.messageId, data.key, data.author);
   });
 
@@ -224,17 +224,12 @@ export async function openChannel(deps: OpenChannelDeps): Promise<ChannelHandle>
     upsertMessage(channelId, toChatMessage(m));
   }
 
-  // Backfill reaction history for each loaded message: a timeline holds
-  // messages only (§7.2), so reactions come from each message's `…/reactions`.
-  await Promise.all(
-    page.messages.map(async (m) => {
-      try {
-        const reactions = await fetchReactions(client, groupId, channelId, m.id);
-        for (const r of reactions) addReactionAgg(channelId, r);
-      } catch {
-        /* a private/deleted message's reactions may 404 — ignore */
-      }
-    }),
+  // A history page holds messages only (§7.2), so each loaded message's
+  // reactions come from its own `…/reactions` listing; older pages and reply
+  // listings go through the same backfill.
+  await backfillReactions(
+    deps,
+    page.messages.map((m) => m.id),
   );
 
   return {
@@ -253,6 +248,10 @@ export async function openChannel(deps: OpenChannelDeps): Promise<ChannelHandle>
       );
       olderCursor = older.nextCursor;
       setOlderCursor(channelId, olderCursor);
+      await backfillReactions(
+        deps,
+        older.messages.map((m) => m.id),
+      );
       return olderCursor !== null;
     },
     close(): void {
@@ -330,7 +329,8 @@ export function sendMessage(args: SendArgs): string {
  * Load the replies to `messageId` over REST (§7.2) and fold them into the store
  * (so they de-dupe against any already in the timeline). Used to expand a thread
  * / nest replies under a memo or article whose replies may be outside the loaded
- * history window. Returns the reply messages in thread order.
+ * history window. A reply listing holds messages only (§7.2), so each reply's
+ * reactions are then backfilled from its own `…/reactions` listing.
  */
 export async function loadReplies(deps: {
   client: OfscpClient;
@@ -343,6 +343,10 @@ export async function loadReplies(deps: {
     limit: HISTORY_PAGE_SIZE,
   });
   for (const m of page.messages) upsertMessage(channelId, toChatMessage(m));
+  await backfillReactions(
+    deps,
+    page.messages.map((m) => m.id),
+  );
 }
 
 /** Retry a failed optimistic send: drop the failed echo and resend its content. */
