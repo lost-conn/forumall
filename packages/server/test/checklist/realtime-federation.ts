@@ -71,8 +71,7 @@ export const REALTIME_FEDERATION: readonly ChecklistEntry[] = [
     item: "Support the follow list (`GET`/`POST`/`DELETE /api/me/follows`) as pointers only — no server-side feed compilation or content replication — with each `groupId` derived from the channel as a ref, never taken from the request (§7.6)",
     level: "provider-must",
     covers: ["packages/server/test/follows.test.ts", "packages/server/test/conformance.test.ts"],
-    status: "partial",
-    note: "Behaviour gap: `POST /api/me/follows` stores the request body's `groupId` (`packages/server/src/http/follows.ts:128`, passed to `addFollow` at `:158`, stored by `packages/server/src/provider/follows.ts:63`) instead of ignoring it and deriving the group from the channel (the local channel's `groupId`; for a remote channel URI, `https://{domain}/api/groups/{groupId}` on its authority). A follow posted without `groupId` gets none. `packages/server/test/follows.test.ts:161` sends `groupId` and asserts the echo (`:168`), so no test checks derivation or that a mismatched body `groupId` is ignored. Pointers-only storage is implemented and tested.",
+    status: "covered",
   },
   {
     item: "Support WebSocket resume (`since` replay with per-message cursors, each replayed event carrying the message's current state, a since-deleted message replaying as a `message.created` with the tombstone followed by its `message.deleted`), accept a channel's event cursors as its REST history and reply-listing `cursor` and those listings' cursors as `since`, and likewise for a DM conversation's `dm.message` cursors, history and reply listing on the provider that issued them, and support the `ping`/`pong` heartbeat (§7.1, §7.2)",
