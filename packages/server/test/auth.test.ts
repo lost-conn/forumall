@@ -158,7 +158,7 @@ describe("POST /api/auth/register (§4.1.1)", () => {
       body: JSON.stringify({ handle: "erin", password: "correct-horse" }),
     });
     const row = db.drizzle.select().from(users).where(eq(users.handle, "erin")).all()[0];
-    expect(row?.passwordHash.startsWith("$argon2id$")).toBe(true);
+    expect(row?.passwordHash?.startsWith("$argon2id$")).toBe(true);
     // Sanity: the embedded params reflect the (test) cost we configured.
     expect(row?.passwordHash).toContain("m=1024,t=1,p=1");
   });

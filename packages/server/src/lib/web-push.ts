@@ -249,10 +249,19 @@ export interface PushSubscription {
   readonly auth: string;
 }
 
+/** The headers of a Web Push delivery (RFC 8291 / RFC 8292 / RFC 8030). */
+export type PushRequestHeaders = {
+  readonly Authorization: string;
+  readonly "Content-Encoding": "aes128gcm";
+  readonly "Content-Type": "application/octet-stream";
+  readonly TTL: string;
+  readonly "Content-Length": string;
+};
+
 /** A ready-to-`fetch` push request (caller performs the network call). */
 export interface PushRequest {
   readonly url: string;
-  readonly headers: Record<string, string>;
+  readonly headers: PushRequestHeaders;
   readonly body: Uint8Array;
 }
 
@@ -272,7 +281,7 @@ export async function buildPushRequest(
   subject: string,
 ): Promise<PushRequest> {
   const { body } = await encryptPayload(payload, subscription.p256dh, subscription.auth);
-  const headers: Record<string, string> = {
+  const headers: PushRequestHeaders = {
     Authorization: vapidAuthHeader(
       subscription.endpoint,
       vapidKeys.publicKey,

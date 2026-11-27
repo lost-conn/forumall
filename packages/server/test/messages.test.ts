@@ -33,6 +33,7 @@ import { openDb } from "../src/db/index.ts";
 import { migrate } from "../src/db/migrate.ts";
 import { groupMembers } from "../src/db/schema.ts";
 import { createMessage } from "../src/provider/messages.ts";
+import { at } from "./helpers/at.ts";
 
 const FAST_ARGON2: Argon2Params = { memoryKib: 1024, iterations: 1, parallelism: 1 };
 const DOMAIN = "providera.test";
@@ -416,7 +417,9 @@ describe("replies (§7.2)", () => {
     const group = await createGroup(app, alice, { name: "G", tier: "public" });
     const channel = await createChannel(app, alice, group.id, { type: "text", tier: "public" });
 
-    const [parent, other] = seedMessages(db, config, group.id, channel.id, alice.actor, 2);
+    const seeded = seedMessages(db, config, group.id, channel.id, alice.actor, 2);
+    const parent = at(seeded, 0);
+    const other = at(seeded, 1);
     const r1 = seedReply(db, config, group.id, channel.id, alice.actor, parent, "re 1");
     const r2 = seedReply(db, config, group.id, channel.id, alice.actor, parent, "re 2");
     // A reply to a different message must not leak into parent's thread.
@@ -440,7 +443,7 @@ describe("replies (§7.2)", () => {
     const group = await createGroup(app, alice, { name: "G", tier: "public" });
     const channel = await createChannel(app, alice, group.id, { type: "text", tier: "public" });
 
-    const [parent] = seedMessages(db, config, group.id, channel.id, alice.actor, 1);
+    const parent = at(seedMessages(db, config, group.id, channel.id, alice.actor, 1), 0);
     seedReply(db, config, group.id, channel.id, alice.actor, parent, "a");
     seedReply(db, config, group.id, channel.id, alice.actor, parent, "b");
 
@@ -461,7 +464,7 @@ describe("replies (§7.2)", () => {
     const bob = await registerUserWithKey(app, "bob");
     const group = await createGroup(app, alice, { name: "G", tier: "public" });
     const channel = await createChannel(app, alice, group.id, { type: "text", tier: "private" });
-    const [parent] = seedMessages(db, config, group.id, channel.id, alice.actor, 1);
+    const parent = at(seedMessages(db, config, group.id, channel.id, alice.actor, 1), 0);
     const path = `/api/groups/${group.id}/channels/${channel.id}/messages/${parent}/replies`;
 
     expect((await signedRequest(app, bob, "GET", path)).status).toBe(403);

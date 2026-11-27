@@ -196,7 +196,7 @@ describe("sendPushToRecipient delivery + cleanup", () => {
       b.db,
       b.config,
       `alice@${DOMAIN}`,
-      { title: "Hi", body: "there", tag: "t", data: { targetUrl: "/dms/x" } },
+      { title: "Hi", body: "there", tag: "t", data: { type: "dm", targetUrl: "/dms/x" } },
       fakeFetch,
     );
     expect(accepted).toBe(1); // the ok endpoint
@@ -221,7 +221,7 @@ describe("sendPushToRecipient delivery + cleanup", () => {
       b.db,
       b.config,
       "bob@other.test", // remote domain
-      { title: "x", body: "y", tag: "t", data: { targetUrl: "/x" } },
+      { title: "x", body: "y", tag: "t", data: { type: "dm", targetUrl: "/x" } },
       fakeFetch,
     );
     expect(accepted).toBe(0);
