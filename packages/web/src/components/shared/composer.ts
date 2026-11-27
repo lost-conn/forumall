@@ -1,13 +1,19 @@
 /**
- * Shared composer logic for the channel chat composer (ChatView) and the DM
- * composer (DmsPage). Both hand-rolled byte-identical attachment-upload state
+ * Shared composer logic for the channel chat composer (ChatComposer) and the DM
+ * composer (DmComposer). Both hand-rolled byte-identical attachment-upload state
  * and near-identical typing throttle/idle bookkeeping; these primitives own that
  * logic so the two composers can't drift (the original cause of the DM composer
  * alignment bug was exactly this kind of copy-paste divergence).
  */
 import type { Attachment } from "@forumall/shared";
-import { createSignal, onCleanup } from "solid-js";
+import { createMemo, createSignal, onCleanup } from "solid-js";
 import { uploadMedia } from "../../lib/chat-api.ts";
+import {
+  type PendingUpload,
+  type Uploader,
+  retargetUploads,
+  uploadFor,
+} from "../../lib/pending-uploads.ts";
 import { sessionClient } from "../../stores/session.ts";
 
 /**
@@ -15,21 +21,35 @@ import { sessionClient } from "../../stores/session.ts";
  * attachments, the in-flight `uploading` flag, and the shared error signal
  * (used for both upload and send failures). `setFileInput` is a ref callback for
  * the hidden file input; `openFilePicker` opens it.
+ *
+ * `target` names the provider that will hold the message being composed (its
+ * canonical authority, §5.8), or `null` while unknown. Each upload is made for
+ * the target current when the file was picked; {@link attachmentsForSend}
+ * re-uploads any that were made for another provider (a DM composer kept
+ * across a switch of conversation) before the message goes out.
  */
-export function useComposerUpload() {
-  const [pendingAttachments, setPendingAttachments] = createSignal<Attachment[]>([]);
+export function useComposerUpload(target: () => string | null) {
+  const [pending, setPending] = createSignal<readonly PendingUpload[]>([]);
   const [uploading, setUploading] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
   let fileInput: HTMLInputElement | undefined;
+  const pendingAttachments = createMemo<Attachment[]>(() => pending().map((p) => p.attachment));
+
+  /** The home-provider uploader, or null without a signed-in session. */
+  const uploader = (): Uploader | null => {
+    const client = sessionClient();
+    return client ? (file, to) => uploadMedia(client, file, { target: to }) : null;
+  };
 
   const onPickFile = async (file: File): Promise<void> => {
-    const client = sessionClient();
-    if (!client) return;
+    const upload = uploader();
+    const to = target();
+    if (!upload || !to) return;
     setUploading(true);
     setError(null);
     try {
-      const att = await uploadMedia(client, file);
-      setPendingAttachments((prev) => [...prev, att]);
+      const entry = await uploadFor(file, to, upload);
+      setPending((prev) => [...prev, entry]);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Upload failed.");
     } finally {
@@ -38,16 +58,36 @@ export function useComposerUpload() {
     }
   };
 
+  /**
+   * The pending attachments, each usable in a message held by the current
+   * target: uploads made for another provider are uploaded again first (§5.8).
+   * Rejects (with `uploading` reset) if the target is unknown or an upload fails.
+   */
+  const attachmentsForSend = async (): Promise<Attachment[]> => {
+    const current = pending();
+    const to = target();
+    const upload = uploader();
+    if (current.length === 0) return [];
+    if (!to || !upload) throw new Error("Cannot attach files to this message.");
+    setUploading(true);
+    try {
+      const ready = await retargetUploads(current, to, upload);
+      setPending(ready);
+      return ready.map((p) => p.attachment);
+    } finally {
+      setUploading(false);
+    }
+  };
+
   return {
     pendingAttachments,
-    setPendingAttachments,
+    attachmentsForSend,
     uploading,
     error,
     setError,
     onPickFile,
-    removeAttachment: (index: number) =>
-      setPendingAttachments((prev) => prev.filter((_, i) => i !== index)),
-    clearAttachments: () => setPendingAttachments([]),
+    removeAttachment: (index: number) => setPending((prev) => prev.filter((_, i) => i !== index)),
+    clearAttachments: () => setPending([]),
     setFileInput: (el: HTMLInputElement) => {
       fileInput = el;
     },

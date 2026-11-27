@@ -77,20 +77,16 @@ import { UnreadBadge } from "../shared/UnreadBadge.tsx";
 import { useComposerTyping, useComposerUpload } from "../shared/composer.ts";
 import { Avatar } from "../social/Avatar.tsx";
 import { PresenceDot } from "../social/PresenceDot.tsx";
+import { DmComposer } from "./DmComposer.tsx";
+import { type ConversationHandle, openConversation } from "./dm-controller.ts";
+import { resolveDeliveryClient } from "./dm-delivery.ts";
 import {
-  type ConversationHandle,
-  DM_TYPING_IDLE_MS,
-  DM_TYPING_THROTTLE_MS,
+  DM_UNCONFIRMED_NOTICE,
+  DM_UNCONFIRMED_SEND_NOTICE,
   DmUnconfirmedError,
-  deleteDm,
-  dmTypingStart,
-  dmTypingStop,
-  editDm,
-  openConversation,
-  retrySendDm,
-  sendDm,
-  toggleDmReaction,
-} from "./dm-controller.ts";
+} from "./dm-errors.ts";
+import { deleteDm, editDm, toggleDmReaction } from "./dm-mutations.ts";
+import { retrySendDm } from "./dm-send.ts";
 
 /**
  * Inbox tabs. DMs, Mentions and Thread-replies are all wired: Mentions/Threads
@@ -233,26 +229,6 @@ async function loadConversations(me: string, sentStore: DmSentStore): Promise<vo
       ...(last ? { lastMessageText: last.content.text ?? "", updatedAt: last.createdAt } : {}),
     });
   }
-}
-
-/**
- * Resolve the client a DM to `counterparty` is delivered through (§7.4): the home
- * client for a same-provider recipient, or a per-host client targeting the
- * recipient's domain for a CROSS-PROVIDER DM (signed by the home key; the
- * recipient's provider resolves it via §4.6). Returns `null` if the session has
- * no signing identity (the caller falls back to the home client).
- */
-async function resolveDeliveryClient(counterparty: string): Promise<OfscpClient | null> {
-  const home = session.host;
-  const actor = session.actor;
-  const keyId = session.keyId;
-  if (!home || !actor || !keyId) return null;
-  if (isLocalActor(counterparty, home)) return null; // same provider → home client
-  const targetHost = domainOf(counterparty);
-  if (!targetHost) return null;
-  const privateKey = await keyStore.getKey(keyId);
-  if (!privateKey) return null;
-  return clientForHost(targetHost, { actor, keyId, privateKey });
 }
 
 export const DmsPage: Component = () => {
@@ -776,26 +752,6 @@ const ThreadView: Component<{
   );
 };
 
-/**
- * Inline notice for an edit/delete whose outcome the provider never confirmed
- * (aborted fetch / network drop / 5xx). The optimistic change is deliberately
- * KEPT in that case (see `DmUnconfirmedError`), so the message stays as the user
- * left it and the server's copy reconciles on the next open — this text says so
- * rather than claiming the action failed.
- */
-const DM_UNCONFIRMED_NOTICE =
-  "Couldn't confirm — this will reconcile when you reopen the conversation.";
-
-/**
- * The same notice for a SEND whose outcome the provider never confirmed. The echo
- * deliberately stays "sending…" rather than flipping to "failed — retry" (see
- * `sendDm`): the message may already be in the recipient's inbox, and asserting a
- * failure we cannot observe is the worse lie. §7.4 reads return the caller's own
- * sent rows, so reopening the conversation shows the provider's copy.
- */
-const DM_UNCONFIRMED_SEND_NOTICE =
-  "Couldn't confirm this send — it may have gone through. Reopen the conversation to see the provider's copy.";
-
 const DmMessageRow: Component<{
   dmId: string;
   message: DmMessage;
@@ -1189,161 +1145,6 @@ function dmTypingText(actors: string[]): string {
   if (names.length === 2) return `${names[0]} and ${names[1]} are typing…`;
   return `${names.length} people are typing…`;
 }
-
-const DmComposer: Component<{
-  dmId: string;
-  counterparty: string;
-  sentStore: () => DmSentStore | null;
-  replyTarget: Accessor<DmMessage | null>;
-  onClearReply: () => void;
-  onSent: () => void;
-}> = (props) => {
-  const [text, setText] = createSignal("");
-  const {
-    pendingAttachments,
-    setPendingAttachments,
-    uploading,
-    error: sendError,
-    setError: setSendError,
-    onPickFile,
-    removeAttachment,
-    setFileInput,
-    openFilePicker,
-  } = useComposerUpload();
-
-  const { notifyTyping, stopTyping } = useComposerTyping({
-    start: () => {
-      const ws = sessionWs();
-      if (ws) dmTypingStart(ws, props.dmId);
-    },
-    stop: () => {
-      const ws = sessionWs();
-      if (ws) dmTypingStop(ws, props.dmId);
-    },
-    throttleMs: DM_TYPING_THROTTLE_MS,
-    idleMs: DM_TYPING_IDLE_MS,
-  });
-
-  const onType = (value: string): void => {
-    setText(value);
-    notifyTyping();
-  };
-
-  const doSend = (): void => {
-    const client = sessionClient();
-    const store = props.sentStore();
-    const me = session.actor;
-    const body = text().trim();
-    const atts = pendingAttachments();
-    if (!client || !store || !me || !props.counterparty) return;
-    if (body.length === 0 && atts.length === 0) return;
-    setSendError(null);
-    setText("");
-    setPendingAttachments([]);
-    const target = props.replyTarget();
-    props.onClearReply();
-    stopTyping();
-    const counterparty = props.counterparty;
-    void resolveDeliveryClient(counterparty)
-      .then((deliveryClient) =>
-        sendDm({
-          client,
-          ...(deliveryClient ? { deliveryClient } : {}),
-          dmId: props.dmId,
-          me,
-          counterparty,
-          text: body,
-          ...(atts.length > 0 ? { attachments: atts } : {}),
-          ...(target ? { reference: { type: "reply", id: target.id } } : {}),
-          sentStore: store,
-        }),
-      )
-      .then(() => props.onSent())
-      .catch((err) => {
-        // An unconfirmed send is NOT a failure: the echo stays pending and the
-        // message may already have landed, so say "couldn't confirm" rather than
-        // "couldn't send" (mirrors the edit/delete notice).
-        if (err instanceof DmUnconfirmedError) {
-          setSendError(DM_UNCONFIRMED_SEND_NOTICE);
-          return;
-        }
-        setSendError(err instanceof Error ? err.message : "Could not send the message.");
-      });
-  };
-
-  return (
-    <div class="border-t border-border px-6 py-3" data-testid="dm-composer">
-      {/* Reply context pill */}
-      <Show when={props.replyTarget()}>
-        {(t) => (
-          <ReplyContextPill
-            name={displayNameFor(t().author)}
-            onCancel={() => props.onClearReply()}
-            testidPrefix="dm-"
-          />
-        )}
-      </Show>
-
-      <AttachmentChips
-        attachments={pendingAttachments()}
-        onRemove={removeAttachment}
-        testid="dm-composer-attachments"
-      />
-
-      <div class="flex items-center gap-2.5 rounded-md border-[1.5px] border-border-strong bg-surface px-3 py-2 focus-within:(outline outline-2 outline-accent outline-offset-1)">
-        <button
-          type="button"
-          class="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-sm text-faint transition-colors hover:text-ink disabled:opacity-50"
-          data-testid="dm-attach-button"
-          disabled={uploading()}
-          onClick={openFilePicker}
-          aria-label="Attach a file"
-        >
-          <Icon name="plus" size={18} />
-        </button>
-        <input
-          ref={setFileInput}
-          type="file"
-          class="hidden"
-          data-testid="dm-file-input"
-          onChange={(e) => {
-            const file = e.currentTarget.files?.[0];
-            if (file) void onPickFile(file);
-          }}
-        />
-        <textarea
-          class="max-h-40 min-h-6 flex-1 resize-none bg-transparent text-sm text-ink outline-none placeholder:text-faint"
-          rows={1}
-          data-testid="dm-composer-input"
-          placeholder={`Message ${props.counterparty ? displayNameFor(props.counterparty) : "…"}…`}
-          value={text()}
-          onInput={(e) => onType(e.currentTarget.value)}
-          onBlur={stopTyping}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              doSend();
-            }
-          }}
-        />
-        <button
-          type="button"
-          class="btn-accent shrink-0 px-4 py-2 text-xs"
-          data-testid="dm-send-button"
-          onClick={doSend}
-        >
-          <Icon name="send" size={14} />
-          Send
-        </button>
-      </div>
-      <Show when={sendError()}>
-        <p class="mt-1 text-xs text-danger" data-testid="dm-composer-error">
-          {sendError()}
-        </p>
-      </Show>
-    </div>
-  );
-};
 
 // ---------------------------------------------------------------------------
 // New-DM modal

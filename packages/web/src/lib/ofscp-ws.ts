@@ -11,6 +11,9 @@
  *    await `authenticated`,
  *  - keeps a subscription registry and (re)issues `subscribe` on connect with
  *    each channel's stored `since` cursor so a reconnect resumes without gaps,
+ *  - sends commands only on an AUTHENTICATED connection ({@link OfscpWsClient.send}):
+ *    a command issued before `authenticated` waits in an ordered outbox (§7.1:
+ *    anything but `authenticate` before it closes the connection with `4001`),
  *  - dispatches inbound events to per-type listeners,
  *  - replies to server `ping` with `pong` (heartbeat), and
  *  - auto-reconnects with exponential backoff, advancing per-channel `since`
@@ -60,6 +63,41 @@ interface SubscriptionEntry {
   since?: string;
 }
 
+/** Options for {@link OfscpWsClient.send}. */
+export interface WsSendOptions {
+  /**
+   * What to do when the connection is not `authenticated` right now:
+   *  - `"queue"` (default): hold the command in an ordered outbox, kept across
+   *    reconnect attempts, and send it once a connection is authenticated
+   *    (after the resume `subscribe`).
+   *  - `"drop"`: discard it. For signals that are stale by the time a
+   *    connection comes back (typing).
+   */
+  whenDisconnected?: "queue" | "drop";
+  /**
+   * The command may safely be sent again on a NEW connection (e.g.
+   * `message.create` with a `clientMessageId`, which the provider treats as
+   * idempotent, §7.1). If the connection closes after it was written but before
+   * any frame correlated to it (`correlationId` = its id) arrived, it goes back
+   * to the front of the outbox and is re-sent, under the same id, once the next
+   * connection is authenticated.
+   */
+  idempotent?: boolean;
+  /**
+   * Called once when the command will never be sent: it was dropped
+   * (`whenDisconnected: "drop"`), or the client closed for good — {@link
+   * OfscpWsClient.close}, close `4003`, or a close with auto-reconnect off —
+   * while it was waiting (or, if idempotent, still unanswered).
+   */
+  onUndelivered?: () => void;
+}
+
+/** A command waiting for an authenticated connection (or, sent, for its reply). */
+interface OutboxEntry {
+  frame: Record<string, unknown> & { id: string };
+  opts: WsSendOptions;
+}
+
 /** A single inbound-event listener; returns nothing. */
 type Listener = (event: WsEnvelope) => void;
 
@@ -99,6 +137,13 @@ export class OfscpWsClient {
   private intentionalClose = false;
   /** Resolves once `authenticated` is received for the CURRENT connection. */
   private authWaiters: { resolve: () => void; reject: (e: Error) => void }[] = [];
+  /** Commands waiting for an authenticated connection, in send order. */
+  private outbox: OutboxEntry[] = [];
+  /**
+   * Idempotent commands written to the CURRENT connection with no correlated
+   * reply yet, in send order (re-queued if the connection drops first).
+   */
+  private readonly unanswered = new Map<string, OutboxEntry>();
 
   constructor(config: OfscpWsConfig) {
     this.config = config;
@@ -178,12 +223,19 @@ export class OfscpWsClient {
       this.authWaiters.push({ resolve, reject });
     });
 
+    // Every handler ignores a socket that is no longer the current one (one
+    // closed by `close()` whose close event arrives after a new `connect()`).
     ws.addEventListener("open", () => {
+      if (this.ws !== ws) return;
       this.setState("authenticating");
       // The server sends `auth.challenge` first; we reply in onMessage.
     });
-    ws.addEventListener("message", (e: MessageEvent) => this.onMessage(e));
-    ws.addEventListener("close", (e: CloseEvent) => this.onClose(e.code));
+    ws.addEventListener("message", (e: MessageEvent) => {
+      if (this.ws === ws) this.onMessage(e);
+    });
+    ws.addEventListener("close", (e: CloseEvent) => {
+      if (this.ws === ws) this.onClose(e.code);
+    });
     ws.addEventListener("error", () => {
       // Surface as a close; the close handler drives reconnect.
     });
@@ -198,6 +250,9 @@ export class OfscpWsClient {
     } catch {
       return;
     }
+    // Any frame correlated to an idempotent command answers it (its result, or
+    // an `error`), so it is no longer re-sent on a reconnect.
+    if (typeof frame.correlationId === "string") this.unanswered.delete(frame.correlationId);
 
     switch (frame.type) {
       case "auth.challenge":
@@ -250,8 +305,10 @@ export class OfscpWsClient {
   private onAuthenticated(): void {
     this.reconnectAttempts = 0;
     this.setState("connected");
-    // Re-issue every remembered subscription with its resume cursor.
+    // Re-issue every remembered subscription with its resume cursor, then the
+    // commands that waited for this connection, in the order they were sent.
     this.resubscribeAll();
+    for (const entry of this.outbox.splice(0)) this.write(entry);
     for (const w of this.authWaiters.splice(0)) w.resolve();
   }
 
@@ -261,10 +318,15 @@ export class OfscpWsClient {
     for (const w of this.authWaiters.splice(0)) {
       w.reject(new Error("connection closed before authenticated"));
     }
+    // Idempotent commands this connection never answered go back to the front
+    // of the outbox (ahead of anything queued since), to be re-sent.
+    this.outbox.unshift(...this.unanswered.values());
+    this.unanswered.clear();
     // 4003: the device key this connection authenticated with was revoked.
     // Retrying with the same credentials cannot succeed, so stop here.
     if (this.intentionalClose || !this.autoReconnect || code === WS_CLOSE_CREDENTIALS_REVOKED) {
       this.setState("closed");
+      this.failOutbox();
       return;
     }
     this.scheduleReconnect();
@@ -293,7 +355,47 @@ export class OfscpWsClient {
     }
     this.ws?.close();
     this.ws = null;
+    for (const w of this.authWaiters.splice(0)) w.reject(new Error("connection closed"));
+    this.outbox.unshift(...this.unanswered.values());
+    this.unanswered.clear();
     this.setState("closed");
+    this.failOutbox();
+  }
+
+  /** The client closed for good: report every waiting command undelivered. */
+  private failOutbox(): void {
+    for (const entry of this.outbox.splice(0)) entry.opts.onUndelivered?.();
+  }
+
+  // -- Commands ------------------------------------------------------------
+
+  /**
+   * Send the command `type` with `data` (§7.1 envelope), returning its frame
+   * `id` so the caller can match the reply's `correlationId` (a correlated
+   * `message.created`, or an `error`).
+   *
+   * A command is written only to an AUTHENTICATED connection: §7.1 closes a
+   * connection that sends anything but `authenticate` before `authenticated`.
+   * Until then it waits (or is dropped) per {@link WsSendOptions}. Once {@link
+   * close} has been called, a command is reported undelivered at once.
+   */
+  send(type: string, data: Record<string, unknown>, opts: WsSendOptions = {}): string {
+    const id = nextFrameId(type.replace(/\W/g, ""));
+    const entry: OutboxEntry = { frame: { id, type, ts: rfc3339Timestamp(), data }, opts };
+    if (this._state === "connected") {
+      this.write(entry);
+    } else if (this._state === "closed" || opts.whenDisconnected === "drop") {
+      opts.onUndelivered?.();
+    } else {
+      this.outbox.push(entry);
+    }
+    return id;
+  }
+
+  /** Write a command to the authenticated socket, tracking an idempotent one's reply. */
+  private write(entry: OutboxEntry): void {
+    if (entry.opts.idempotent) this.unanswered.set(entry.frame.id, entry);
+    this.sendRaw(entry.frame);
   }
 
   // -- Subscriptions -------------------------------------------------------
@@ -349,8 +451,13 @@ export class OfscpWsClient {
     });
   }
 
-  /** Client-initiated ping (the server replies `pong`). */
+  /**
+   * Client-initiated ping (the server replies `pong`). Only on an authenticated
+   * connection, and dropped otherwise: a ping before `authenticated` would close
+   * the connection (§7.1), and a late one measures nothing.
+   */
   ping(): void {
+    if (this._state !== "connected") return;
     this.sendRaw({ id: nextFrameId("ping"), type: "ping", ts: rfc3339Timestamp(), data: {} });
   }
 

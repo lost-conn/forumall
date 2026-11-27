@@ -9,15 +9,10 @@
  */
 import { beforeEach, describe, expect, test } from "bun:test";
 import type { Reaction } from "@forumall/shared";
-import {
-  DM_HISTORY_PAGE_SIZE,
-  DmUnconfirmedError,
-  deleteDm,
-  editDm,
-  retrySendDm,
-  sendDm,
-  sentWindow,
-} from "../src/components/dms/dm-controller.ts";
+import { DM_HISTORY_PAGE_SIZE, sentWindow } from "../src/components/dms/dm-controller.ts";
+import { DmUnconfirmedError } from "../src/components/dms/dm-errors.ts";
+import { deleteDm, editDm } from "../src/components/dms/dm-mutations.ts";
+import { retrySendDm, sendDm } from "../src/components/dms/dm-send.ts";
 import { DmSentStore, type SentDmMessage } from "../src/lib/dm-store.ts";
 import { OfscpClient } from "../src/lib/ofscp-client.ts";
 import {
@@ -655,6 +650,23 @@ describe("sendDm / retrySendDm: one clientMessageId per logical send", () => {
     expect(dmThread(DM)[0]?.clientMessageId).toBe(returned);
     expect(sentStore.list(DM)).toHaveLength(1);
     expect(sentStore.list(DM)[0]?.clientMessageId).toBe(returned);
+  });
+
+  test("`mentions` lists the users the text names; a bare handle is on the recipient's provider", async () => {
+    const { client, bodies } = scriptedClient([stores("msg_1")]);
+    const sentStore = new DmSentStore("me@h", memBackend());
+    await sendDm({
+      ...args(client, sentStore),
+      counterparty: "bob@b.example",
+      text: "ask @carol and @dave@d.example, not mail@x.example",
+    });
+    expect(bodies[0]?.mentions).toEqual(["carol@b.example", "dave@d.example"]);
+  });
+
+  test("text naming nobody sends no `mentions`", async () => {
+    const { client, bodies } = scriptedClient([stores("msg_1")]);
+    await sendDm(args(client, new DmSentStore("me@h", memBackend())));
+    expect(bodies[0] && "mentions" in bodies[0]).toBe(false);
   });
 
   test("a retry re-sends under the ORIGINAL clientMessageId (server dedupes)", async () => {

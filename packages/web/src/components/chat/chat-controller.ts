@@ -25,8 +25,9 @@
  * events it missed (see `reaction-backfill.ts`).
  *
  * The command helpers (`sendMessage`, `editMessage`, `deleteMessage`,
- * `addReaction`, `removeReaction`, typing) emit the matching WS commands and,
- * for sends, manage the optimistic local echo.
+ * `addReactionCmd`, `removeReactionCmd`, typing) emit the matching WS commands
+ * through {@link OfscpWsClient.send}, which holds them until the connection is
+ * authenticated (§7.1), and, for sends, manage the optimistic local echo.
  *
  * Everything here is transport/store wiring — the UI calls these and renders the
  * store; it never touches the WS client directly.
@@ -49,6 +50,7 @@ import {
   fetchReplies,
   newClientMessageId,
 } from "../../lib/chat-api.ts";
+import { mentionedActors } from "../../lib/mentions.ts";
 import type { OfscpClient } from "../../lib/ofscp-client.ts";
 import type { OfscpWsClient } from "../../lib/ofscp-ws.ts";
 import type { ChatMessage } from "../../stores/chat.ts";
@@ -59,6 +61,7 @@ import {
   cursorFor,
   dropOptimistic,
   markOptimisticFailed,
+  messagesFor,
   prependHistory,
   reconcileOptimistic,
   removeReactionAgg,
@@ -68,13 +71,6 @@ import {
   upsertMessage,
 } from "../../stores/chat.ts";
 import { backfillReactions, noteLiveReaction } from "./reaction-backfill.ts";
-
-/** A single client message frame id counter (per session). */
-let frameSeq = 0;
-function frameId(prefix: string): string {
-  frameSeq += 1;
-  return `${prefix}_${Date.now().toString(36)}_${frameSeq.toString(36)}`;
-}
 
 /**
  * Pending `message.create` sends, keyed by the command frame id. The author's
@@ -86,26 +82,6 @@ function frameId(prefix: string): string {
  * sends; entries are short-lived and removed on first match.)
  */
 const pendingSends = new Map<string, { channelId: string; clientMessageId: string }>();
-
-/**
- * Send a raw WS command frame through the client's underlying socket; returns the
- * frame `id` so a caller can correlate a later `error` event (echoed in the
- * error's `correlationId`) back to this command — used to surface an expired
- * edit-window 403, a delete-forbidden, etc.
- */
-function sendCommand(ws: OfscpWsClient, type: string, data: Record<string, unknown>): string {
-  // `OfscpWsClient` doesn't expose a generic command sender, so reach the socket
-  // via a tiny structural cast. The client owns reconnect/auth; we only push
-  // user commands once `connected`.
-  const id = frameId(type.replace(/\W/g, ""));
-  (ws as unknown as { sendRaw(frame: Record<string, unknown>): void }).sendRaw({
-    id,
-    type,
-    ts: rfc3339Timestamp(),
-    data,
-  });
-  return id;
-}
 
 /** History page size for the initial + "load older" loads. */
 export const HISTORY_PAGE_SIZE = 50;
@@ -354,6 +330,12 @@ export interface SendArgs {
   attachments?: import("@forumall/shared").Attachment[];
   /** §5.3 tags (e.g. article topics / a `promoted-from:#channel` lineage marker). */
   tags?: string[];
+  /**
+   * Re-send under an EXISTING idempotency key instead of minting a fresh one —
+   * how {@link retrySend} makes a retry safe: if the first attempt was stored,
+   * the provider answers with that message (§7.1) instead of storing another.
+   */
+  clientMessageId?: string;
 }
 
 /**
@@ -365,7 +347,7 @@ export interface SendArgs {
 export function sendMessage(args: SendArgs): string {
   const { ws, groupId, channelId, author, text, mime, type, reference, attachments, tags } = args;
   const kind = type ?? "message";
-  const clientMessageId = newClientMessageId();
+  const clientMessageId = args.clientMessageId ?? newClientMessageId();
   addOptimistic(channelId, {
     id: `optimistic:${clientMessageId}`,
     author,
@@ -377,8 +359,15 @@ export function sendMessage(args: SendArgs): string {
     createdAt: rfc3339Timestamp(),
     clientMessageId,
   });
-  try {
-    const sentFrameId = sendCommand(ws, "message.create", {
+  // §5.3: the users the text names, as canonical actors. A bare `@handle` names
+  // a user of the provider hosting the channel: the one this socket is to.
+  const mentions = mentionedActors(text, ws.host);
+  // Idempotent (§7.1: `clientMessageId`), so a create the connection dropped
+  // before answering is re-sent on the next one; the provider's duplicate
+  // answer then resolves this pending send like a first one.
+  const sentFrameId = ws.send(
+    "message.create",
+    {
       groupId,
       channelId,
       clientMessageId,
@@ -387,11 +376,17 @@ export function sendMessage(args: SendArgs): string {
       ...(reference ? { reference } : {}),
       ...(attachments && attachments.length > 0 ? { attachments } : {}),
       ...(tags && tags.length > 0 ? { tags } : {}),
-    });
-    pendingSends.set(sentFrameId, { channelId, clientMessageId });
-  } catch {
-    markOptimisticFailed(channelId, clientMessageId);
-  }
+      ...(mentions.length > 0 ? { mentions } : {}),
+    },
+    {
+      idempotent: true,
+      onUndelivered: () => {
+        pendingSends.delete(sentFrameId);
+        markOptimisticFailed(channelId, clientMessageId);
+      },
+    },
+  );
+  pendingSends.set(sentFrameId, { channelId, clientMessageId });
   return clientMessageId;
 }
 
@@ -433,10 +428,42 @@ export async function loadReplies(deps: {
   );
 }
 
-/** Retry a failed optimistic send: drop the failed echo and resend its content. */
-export function retrySend(args: SendArgs & { clientMessageId: string }): void {
-  dropOptimistic(args.channelId, args.clientMessageId);
-  sendMessage(args);
+/**
+ * Retry a failed optimistic send: resend the failed echo's whole message — kind,
+ * body, reply pointer, attachments, tags — under its ORIGINAL `clientMessageId`,
+ * so a send that did land is answered with the stored message (§7.1) rather
+ * than duplicated. Does nothing if no failed echo with that id is in the store.
+ */
+export function retrySend(args: {
+  ws: OfscpWsClient;
+  groupId: string;
+  channelId: string;
+  clientMessageId: string;
+}): void {
+  const { ws, groupId, channelId, clientMessageId } = args;
+  const echo = messagesFor(channelId).find(
+    (m) => m.failed && m.clientMessageId === clientMessageId,
+  );
+  if (!echo) return;
+  dropOptimistic(channelId, clientMessageId);
+  sendMessage({
+    ws,
+    groupId,
+    channelId,
+    author: echo.author,
+    text: echo.content.text ?? "",
+    mime: echo.content.mime,
+    ...(isComposerKind(echo.type) ? { type: echo.type } : {}),
+    ...(echo.reference ? { reference: echo.reference } : {}),
+    ...(echo.attachments && echo.attachments.length > 0 ? { attachments: echo.attachments } : {}),
+    ...(echo.tags && echo.tags.length > 0 ? { tags: echo.tags } : {}),
+    clientMessageId,
+  });
+}
+
+/** The kinds {@link sendMessage} creates. */
+function isComposerKind(type: string | undefined): type is "message" | "memo" | "article" {
+  return type === "message" || type === "memo" || type === "article";
 }
 
 /** Edit a message; returns the command frame id (for `error` correlation). */
@@ -448,7 +475,7 @@ export function editMessage(args: {
   text: string;
   mime?: string;
 }): string {
-  return sendCommand(args.ws, "message.update", {
+  return args.ws.send("message.update", {
     groupId: args.groupId,
     channelId: args.channelId,
     messageId: args.messageId,
@@ -463,7 +490,7 @@ export function deleteMessage(args: {
   channelId: string;
   messageId: string;
 }): string {
-  return sendCommand(args.ws, "message.delete", {
+  return args.ws.send("message.delete", {
     groupId: args.groupId,
     channelId: args.channelId,
     messageId: args.messageId,
@@ -478,7 +505,7 @@ export function addReactionCmd(args: {
   key: string;
   unicode?: string;
 }): void {
-  sendCommand(args.ws, "reaction.add", {
+  args.ws.send("reaction.add", {
     groupId: args.groupId,
     channelId: args.channelId,
     messageId: args.messageId,
@@ -494,7 +521,7 @@ export function removeReactionCmd(args: {
   messageId: string;
   key: string;
 }): void {
-  sendCommand(args.ws, "reaction.remove", {
+  args.ws.send("reaction.remove", {
     groupId: args.groupId,
     channelId: args.channelId,
     messageId: args.messageId,
@@ -502,10 +529,11 @@ export function removeReactionCmd(args: {
   });
 }
 
+/** Typing is a live signal: dropped, never queued, while disconnected. */
 export function typingStart(ws: OfscpWsClient, channelId: string): void {
-  sendCommand(ws, "typing.start", { channelId });
+  ws.send("typing.start", { channelId }, { whenDisconnected: "drop" });
 }
 
 export function typingStop(ws: OfscpWsClient, channelId: string): void {
-  sendCommand(ws, "typing.stop", { channelId });
+  ws.send("typing.stop", { channelId }, { whenDisconnected: "drop" });
 }

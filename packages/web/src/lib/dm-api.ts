@@ -73,6 +73,8 @@ export interface SendDmMessageOptions {
   to?: string;
   attachments?: Attachment[];
   reference?: { type: string; id: string };
+  /** The canonical actors the message mentions (§5.3); omitted when empty. */
+  mentions?: string[];
   /**
    * The §7.1 idempotency key to send under. Pass the id the caller already minted
    * for this logical send — and, on a RETRY, the SAME id as the first attempt:
@@ -107,6 +109,7 @@ export async function sendDmMessage(
       content,
       ...(opts.attachments && opts.attachments.length > 0 ? { attachments: opts.attachments } : {}),
       ...(opts.reference ? { reference: opts.reference } : {}),
+      ...(opts.mentions && opts.mentions.length > 0 ? { mentions: opts.mentions } : {}),
     },
     // `clientMessageId` is the idempotency key (a duplicate returns the existing
     // message, §7.1), so a re-signed retry after a 503 cannot double-send.
