@@ -122,10 +122,14 @@ export function revalidateGroupSubscriptions(
 /**
  * The delivery-time gate `app.ts` installs on the hub (see module docs, point 2).
  * `dm_…` ids are passed through: a `dmId` subscription does carry delivery
- * (§7.4), but who may hold one is fixed by the `dmId` derivation itself (the
- * subscriber is one of the two actors it was derived from), which no later
- * mutation can change. Losing access to a DM is losing the key or federation,
- * and both end the session.
+ * (§7.4), but it is admitted only to a participant (`mayFollowDm`): an actor
+ * the `dmId` derives from together with a local user, or a local user who holds
+ * a consistent conversation row, an inbox message or a pointer (a local↔remote
+ * DM names no second local user). Nothing revokes the derivation. Those rows are
+ * removed or re-keyed only by a guest claim
+ * or merge, which ends the guest's sessions (`terminateHandleSessions`) and moves
+ * the conversation to a new `dmId`. Losing the key or federation ends the
+ * session too, so no delivery-time re-check is needed.
  */
 export function channelDeliveryGate(db: Db): ChannelDeliveryGate {
   // This runs on every fan-out, so the membership lookup is a cached prepared
