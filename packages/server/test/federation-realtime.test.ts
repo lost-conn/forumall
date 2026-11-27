@@ -136,7 +136,10 @@ async function registerBob(fed: Federation, handle = "bob"): Promise<Signer> {
  * group is created directly via the provider helper (owner is a synthetic local
  * actor); the channel tier `group` requires membership, exercising the join.
  */
-function makeGroupChannelOnB(fed: Federation): { groupId: string; channelId: string } {
+function makeGroupChannelOnB(
+  fed: Federation,
+  channelTier: "group" | "public" = "group",
+): { groupId: string; channelId: string } {
   const group = createGroup(fed.b.db, `owner@${fed.b.domain}`, {
     name: "club",
     tier: "public",
@@ -145,7 +148,7 @@ function makeGroupChannelOnB(fed: Federation): { groupId: string; channelId: str
   const channel = createChannel(fed.b.db, group.id, {
     type: "text",
     name: "general",
-    tier: "group",
+    tier: channelTier,
   });
   return { groupId: group.id, channelId: channel.id };
 }
@@ -429,6 +432,63 @@ describe("cross-provider direct-WS channel delivery (§8.2, §8.5)", () => {
       details: { channels: [channelId] },
     });
     client.close();
+  });
+
+  test("a remote non-member subscribes to a public channel and receives live messages (§8.5, §11.3)", async () => {
+    const fed = boot();
+    const { keyId, keypair } = await registerAlice(fed);
+    const alice = `alice@${fed.a.domain}`;
+    const bob = await registerBob(fed);
+    const { groupId, channelId } = makeGroupChannelOnB(fed, "public");
+    const { addMember } = await import("../src/provider/membership.ts");
+    const { getMembership } = await import("../src/provider/permissions.ts");
+    addMember(fed.b.db, groupId, bob.actor, "member");
+    // alice does NOT join: public-tier read access needs no membership (§11.3).
+
+    const { client, nonce } = await connectAndChallenge(fed.b);
+    nonces.set(client, nonce);
+    sendAuthenticate(client, {
+      actor: alice,
+      keyId,
+      privateKey: keypair.privateKey,
+      authority: fed.b.domain,
+    });
+    await client.ofType("authenticated");
+
+    client.send({
+      id: "cli_sub",
+      type: "subscribe",
+      ts: rfc3339Timestamp(),
+      data: { channels: [channelId] },
+    });
+    const sub = await client.ofType("subscribed");
+    expect((sub.data as { channels: string[] }).channels).toEqual([channelId]);
+    // Subscribing does not make alice a member.
+    expect(getMembership(fed.b.db, groupId, alice)).toBeNull();
+
+    const bobConn = await WsClient.open(wsUrl(fed.b));
+    const bChallenge = await bobConn.ofType("auth.challenge");
+    nonces.set(bobConn, (bChallenge.data as { nonce: string }).nonce);
+    sendAuthenticate(bobConn, { ...bob, authority: fed.b.domain });
+    await bobConn.ofType("authenticated");
+    bobConn.send({
+      id: "cli_post_pub",
+      type: "message.create",
+      ts: rfc3339Timestamp(),
+      data: {
+        groupId,
+        channelId,
+        clientMessageId: "cmsg_pub",
+        content: { mime: "text/plain", text: "hello public" },
+      },
+    });
+    const evt = await client.ofType("message.created");
+    const msg = (evt.data as { message: { author: string; content: { text: string } } }).message;
+    expect(msg.author).toBe(bob.actor);
+    expect(msg.content.text).toBe("hello public");
+
+    client.close();
+    bobConn.close();
   });
 
   test("federation policy: B denies a.test → alice's WS handshake rejected (error forbidden + close 4001)", async () => {
