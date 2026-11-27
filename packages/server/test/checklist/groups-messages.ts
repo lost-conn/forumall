@@ -173,9 +173,13 @@ export const GROUPS_MESSAGES: readonly ChecklistEntry[] = [
   {
     item: "Answer an edit of a tombstone `404` (`not_found`), and a repeated delete of one `204` with no second `message.deleted` fanned out (over WebSocket, a `message.deleted` with `correlationId` and no `cursor` to the requester alone), applying the §7.1 order of checks (§7.1)",
     level: "provider-must",
-    covers: [],
-    status: "missing",
-    note: "Not implemented: `authorizeMessageEdit` and `authorizeMessageDelete` (`packages/server/src/http/message-mutations.ts:104`, `:123`) never check `deletedAt`, so a tombstone is edited and `message.updated` fanned out, and a repeated delete re-tombstones and fans out `message.deleted` with a cursor again (`packages/server/src/http/messages.ts:199`, `packages/server/src/http/ws/messages.ts:161`). No test.",
+    covers: [
+      "packages/server/test/message-tombstone-rules.test.ts",
+      "packages/server/test/message-edit-delete.test.ts",
+    ],
+    status: "covered",
+    context:
+      "An edit of a tombstone is `404` before the author check, over REST and WebSocket; a repeated delete is `204` with no fan-out over REST and a correlated, cursor-less `message.deleted` to the requesting connection alone over WebSocket, after the `403` permission check (`message-tombstone-rules.test.ts`).",
   },
   {
     item: "Support channel reactions over `reaction.add`/`reaction.remove` and `PUT`/`DELETE …/reactions/{key}`, with the `…/reactions` listing, in the §7.1 order of checks: answer an add to a tombstone `404` (`not_found`); answer a repeated add with the existing `Reaction`, changing nothing, and over WebSocket send its `reaction.added` with `correlationId` to the requester alone, never fanned out; answer a remove on a tombstone, or one that removes nothing, `204`, and over WebSocket send that no-op's `reaction.removed` with `correlationId` to the requester alone, never fanned out (§7.1)",
@@ -184,29 +188,34 @@ export const GROUPS_MESSAGES: readonly ChecklistEntry[] = [
       "packages/server/test/reactions.test.ts",
       "packages/server/test/reaction-put-body.test.ts",
       "packages/server/test/ws-correlation.test.ts",
+      "packages/server/test/message-tombstone-rules.test.ts",
     ],
-    status: "partial",
-    note: "Behaviour gap: `authorizeReaction` checks only that the message exists (`packages/server/src/http/message-mutations.ts:178`), so an add to a tombstone succeeds; a repeated add is fanned out to every subscriber again (`packages/server/src/http/ws/reactions.ts:56`, `packages/server/src/http/messages.ts:276`). Untested: the tombstone cases and that a repeated add is not fanned out.",
+    status: "covered",
     context:
-      "A no-op remove already answers only the requester over WebSocket (`ws/reactions.ts:109`), and over REST answers `204` with no fan-out; both are tested (`reactions.test.ts:474`, `:529`). A repeated add returns the existing `Reaction` unchanged (`provider/reactions.ts:129`; `reactions.test.ts:316`, `:553`).",
+      "An add to a tombstone is `404` (its body judged after) and a remove on one proceeds; a repeated add returns the existing `Reaction` (`200` over REST) and over WebSocket answers the requesting connection alone; a remove that removes nothing is `204` / requester-only (`message-tombstone-rules.test.ts`, `reactions.test.ts`).",
   },
   {
     item: "Send the connection that issued a successful timeline or reaction command exactly one copy of the resulting event, with `correlationId`, whether or not it is subscribed to the channel (§7.1)",
     level: "provider-must",
-    covers: ["packages/server/test/ws-correlation.test.ts"],
-    status: "partial",
-    note: "Behaviour gap: `Hub.publishToChannel` writes only to the channel's subscribers (`packages/server/src/provider/ws-hub.ts:233`), so a requester not subscribed to the channel gets no copy of its `message.created`, `message.updated`, `message.deleted` or `reaction.added`. Untested: the unsubscribed requester.",
+    covers: [
+      "packages/server/test/ws-requester-copy.test.ts",
+      "packages/server/test/ws-correlation.test.ts",
+    ],
+    status: "covered",
     context:
-      "A subscribed requester gets exactly one correlated copy (`ws-correlation.test.ts:43`).",
+      "Create, update, react, unreact and delete each give the requesting connection exactly one correlated copy, whether unsubscribed, subscribed, or alone in the channel, while other subscribers get it uncorrelated (`ws-requester-copy.test.ts`).",
   },
   {
     item: "Accept `typing.start` only from an actor who can read the channel and holds a `post:<type>` grant there (`not_found` for a missing or unreadable channel, `forbidden` otherwise), send no acknowledgement of a successful one, and send nothing for a `typing.stop` with no active `start` (§7.1)",
     level: "provider-must",
-    covers: ["packages/server/test/typing.test.ts"],
-    status: "partial",
-    note: "Behaviour gap: `typingRefusal` (`packages/server/src/http/ws/typing.ts:46`) requires group membership, not a `post:<type>` grant, so a member with no post grant may type; and a `typing.stop` with no active `start` is fanned out whenever the actor may type (`:276`). Untested: the `forbidden` case and the no-op stop.",
+    covers: [
+      "packages/server/test/typing-permissions.test.ts",
+      "packages/server/test/typing.test.ts",
+      "packages/server/test/reader-participation.test.ts",
+    ],
+    status: "covered",
     context:
-      "A missing or unreadable channel gets `not_found` (`typing.test.ts:419`); a successful `start` gets no correlated reply (it is fanned out uncorrelated).",
+      "A `post:<type>` grant for any one type suffices (a reply-restricted actor holds one); with every grant withheld, or as a non-member reader, the start is `forbidden` and nothing is fanned out; a successful start is not acknowledged; a stop with no active start (never started, expired, already stopped) sends nothing (`typing-permissions.test.ts`, `reader-participation.test.ts`).",
   },
   {
     item: "Serve channel history and replies holding messages only, tombstones included, never reactions (§7.2)",

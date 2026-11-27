@@ -138,10 +138,13 @@ export interface ChannelEditInput {
 }
 
 /**
- * Edit a channel message (WS `message.update` and `PATCH …/messages/{id}`):
- * authorize first (404 missing message / wrong channel or group; 403 not the
- * author or the edit window has passed), then {@link resolveMessageEdit} (400),
- * then store. The caller fans out `message.updated` with the returned record.
+ * Edit a channel message (WS `message.update` and `PATCH …/messages/{id}`) in
+ * the order of §7.1 *Edits and deletes of a tombstone*: a body that is not a
+ * JSON object is `400` before anything else (step 1; REST passes `undefined`
+ * for a body that is not JSON at all); then authorize (404 hidden channel,
+ * missing message, tombstone, wrong channel or group; 403 not the author or the
+ * edit window has passed), then {@link resolveMessageEdit} (400), then store.
+ * The caller fans out `message.updated` with the returned record.
  */
 export function editChannelMessage(
   db: Db,
@@ -149,6 +152,9 @@ export function editChannelMessage(
   input: ChannelEditInput,
 ): { readonly error: MutationError } | { readonly error?: undefined; record: MessageRecord } {
   const { groupId, channelId, messageId, actor } = input;
+  if (!isJsonObject(input.body)) {
+    return { error: badRequestError("edit body must be a JSON object") };
+  }
   const outcome = authorizeMessageEdit(db, groupId, channelId, messageId, actor);
   if (outcome.error) return { error: outcome.error };
   const row = outcome.row;
@@ -160,4 +166,9 @@ export function editChannelMessage(
   const edit = resolveMessageEdit(db, config, actor, target, input.body);
   if (edit.error) return { error: edit.error };
   return { record: updateMessageFields(db, channelId, messageId, edit.patch) };
+}
+
+/** A JSON object: not `null`, an array, a primitive or `undefined` (no JSON body). */
+function isJsonObject(body: unknown): body is Record<string, unknown> {
+  return typeof body === "object" && body !== null && !Array.isArray(body);
 }

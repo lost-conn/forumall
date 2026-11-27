@@ -97,15 +97,6 @@ function getReactionRow(
   );
 }
 
-/**
- * Whether `author` already holds reaction `key` on `messageId`. Used by the REST
- * `PUT` to choose 200 (idempotent repeat) vs 201 (first add) before calling
- * {@link addReaction}.
- */
-export function hasReaction(db: Db, messageId: string, author: string, key: string): boolean {
-  return getReactionRow(db, messageId, author, key) !== null;
-}
-
 /** Arguments to {@link addReaction}. */
 export interface AddReactionInput {
   readonly messageId: string;
@@ -119,15 +110,25 @@ export interface AddReactionInput {
 }
 
 /**
- * Add `author`'s reaction `key` to a message, idempotently (§5.3). If the user
- * already holds that key on the message, the EXISTING reaction is returned
- * unchanged (same `id`, no duplicate row); otherwise a new row is inserted.
- * Returns the canonical `Reaction`. Authorization (channel visibility, message
- * existence) is the caller's responsibility.
+ * What {@link addReaction} did: the canonical `Reaction` now stored, and
+ * whether this call created it (`false` for a repeated add, §7.1).
  */
-export function addReaction(db: Db, input: AddReactionInput): Reaction {
+export interface AddReactionResult {
+  readonly reaction: Reaction;
+  readonly created: boolean;
+}
+
+/**
+ * Add `author`'s reaction `key` to a message, idempotently (§5.3, §7.1 "A
+ * repeated add"). If the user already holds that key on the message, the
+ * EXISTING reaction is returned unchanged (same `id`, `createdAt`, `unicode`
+ * and `image`; no duplicate row) with `created: false`; otherwise a new row is
+ * inserted. Authorization (channel visibility, message existence) is the
+ * caller's responsibility.
+ */
+export function addReaction(db: Db, input: AddReactionInput): AddReactionResult {
   const existing = getReactionRow(db, input.messageId, input.author, input.key);
-  if (existing) return rowToReaction(existing);
+  if (existing) return { reaction: rowToReaction(existing), created: false };
 
   const row: ReactionRow = {
     id: mintReactionId(),
@@ -147,11 +148,11 @@ export function addReaction(db: Db, input: AddReactionInput): Reaction {
     // index. Fall back to the row it inserted and return that.
     if (isUniqueViolation(err)) {
       const winner = getReactionRow(db, input.messageId, input.author, input.key);
-      if (winner) return rowToReaction(winner);
+      if (winner) return { reaction: rowToReaction(winner), created: false };
     }
     throw err;
   }
-  return rowToReaction(row);
+  return { reaction: rowToReaction(row), created: true };
 }
 
 /**

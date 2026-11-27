@@ -8,14 +8,16 @@
  *    duplicate lookup, {@link authorizeReplyTarget} (parent 400, `replyOnlyTo`
  *    403) after it.
  *  - **edit** (`message.update` / `PATCH …/messages/{id}`): a channel the
- *    actor cannot read, or a missing message → 404 (read access first, §11.3,
- *    so an author who lost access cannot edit and a non-reader cannot learn a
- *    message exists); then author-only, and only while `permissions.editUntil`
- *    (the row's `edit_until`) is in the future — with no limit when the
- *    message has none (§7.1); otherwise 403. The body is judged only after
- *    that (`http/message-edit.ts`).
+ *    actor cannot read, or a missing message or a tombstone → 404 (read
+ *    access first, §11.3, so an author who lost access cannot edit and a
+ *    non-reader cannot learn a message exists); then author-only, and only
+ *    while `permissions.editUntil` (the row's `edit_until`) is in the future —
+ *    with no limit when the message has none (§7.1); otherwise 403. The body
+ *    is judged only after that (`http/message-edit.ts`).
  *  - **delete** (`message.delete` / `DELETE …/messages/{id}`): the same 404
- *    step; then the **author** OR a member with the `moderate` role; else 403.
+ *    step, a tombstone included (a repeated delete, which
+ *    `http/message-delete.ts` answers without a second fan-out); then the
+ *    **author** OR a member with the `moderate` role; else 403.
  *  - **reactions** (`reaction.add`/`remove`, `PUT`/`DELETE …/reactions/{key}`):
  *    {@link authorizeReaction}.
  *
@@ -29,7 +31,7 @@
 import type { ChannelPermissions } from "@forumall/shared";
 
 import type { Db } from "../db/index.ts";
-import type { GroupRow, MessageRow } from "../db/schema.ts";
+import type { ChannelRow, MessageRow } from "../db/schema.ts";
 import { getReadableChannel, parseChannelPermissions } from "../provider/channels.ts";
 import { isEditWindowOpen } from "../provider/edit-window.ts";
 import { getGroupRow, rowToGroup } from "../provider/groups.ts";
@@ -93,15 +95,32 @@ function resolveTarget(
   return { row };
 }
 
-/** A group's effective (defaults-filled) permission map, for channel authz. */
-function groupPermissionsOf(groupRow: GroupRow): ChannelAuthzContext["groupPermissions"] {
-  return rowToGroup(groupRow).permissions;
+/**
+ * The channel-authz context of `actor` in a readable `channel` (§5.2.1): their
+ * role, the channel's overrides and the group's effective (defaults-filled)
+ * permission map. `null` for a non-member, who holds no grant there: reading
+ * a channel never implies participating in it (§11).
+ */
+export function memberChannelContext(
+  db: Db,
+  channel: ChannelRow,
+  actor: string,
+): ChannelAuthzContext | null {
+  const membership = getMembership(db, channel.groupId, actor);
+  const groupRow = getGroupRow(db, channel.groupId);
+  if (!membership || !groupRow) return null;
+  return {
+    role: membership.role,
+    channelPermissions: parseChannelPermissions(channel.permissions),
+    groupPermissions: rowToGroup(groupRow).permissions,
+  };
 }
 
 /**
- * Authorize an **edit** (§7.1): author-only and only while `edit_until` is in the
- * future (no limit when it is null). 404 if the message is missing; 403 if not
- * the author or the edit window has passed.
+ * Authorize an **edit** (§7.1 "Edits and deletes of a tombstone"): 404 if the
+ * message is missing or a tombstone (step 3: a soft-deleted message answers as
+ * a missing one, before any author check); then author-only and only while
+ * `edit_until` is in the future (no limit when it is null), else 403 (step 4).
  */
 export function authorizeMessageEdit(
   db: Db,
@@ -113,6 +132,7 @@ export function authorizeMessageEdit(
   const resolved = resolveTarget(db, groupId, channelId, messageId, actor);
   if (resolved.error) return resolved;
   const row = resolved.row;
+  if (row.deletedAt !== null) return messageNotFound();
   if (row.author !== actor) return forbidden("only the author may edit this message");
   if (!isEditWindowOpen(row.editUntil)) {
     return forbidden("the edit window for this message has passed");
@@ -153,6 +173,8 @@ export type ReactionAction = "add" | "remove";
  *     react ({@link canReact}: the channel's `react` override by exact
  *     membership, else any member who can read); otherwise `forbidden` (403);
  *  3. the target message must exist in the channel; otherwise `not_found`.
+ *     An **add** to a tombstone is `not_found` too (a tombstone takes no new
+ *     reactions); a **remove** on one proceeds (§7.1 "Order of checks").
  *
  * Removing is not gated on `react`, which "gates adding reactions" (§5.2.1):
  * an actor who can still read the channel may withdraw their own reaction (a
@@ -171,18 +193,13 @@ export function authorizeReaction(
   const channel = getReadableChannel(db, channelId, actor, groupId);
   if (!channel) return channelNotFound();
   if (action === "add") {
-    const membership = getMembership(db, groupId, actor);
-    const groupRow = getGroupRow(db, groupId);
-    if (!membership || !groupRow) return forbidden("only group members may react in this channel");
-    const ctx: ChannelAuthzContext = {
-      role: membership.role,
-      channelPermissions: parseChannelPermissions(channel.permissions),
-      groupPermissions: groupPermissionsOf(groupRow),
-    };
+    const ctx = memberChannelContext(db, channel, actor);
+    if (!ctx) return forbidden("only group members may react in this channel");
     if (!canReact(ctx)) return forbidden("not authorized to react in this channel");
   }
   const row = getMessageRow(db, channelId, messageId);
   if (!row) return messageNotFound();
+  if (action === "add" && row.deletedAt !== null) return messageNotFound();
   return { row };
 }
 
@@ -229,23 +246,15 @@ export function authorizePostAccess(
   const channel = getReadableChannel(db, channelId, actor, groupId);
   if (!channel) return { error: CHANNEL_NOT_FOUND };
 
-  const membership = getMembership(db, groupId, actor);
-  const groupRow = getGroupRow(db, groupId);
-  if (!membership || !groupRow) return deny("not authorized to post to this channel");
-
-  const channelPermissions = parseChannelPermissions(channel.permissions);
-  const ctx: ChannelAuthzContext = {
-    role: membership.role,
-    channelPermissions,
-    groupPermissions: groupPermissionsOf(groupRow),
-  };
+  const ctx = memberChannelContext(db, channel, actor);
+  if (!ctx) return deny("not authorized to post to this channel");
   if (!canPostKind(ctx, type)) {
     return deny(`not authorized to post ${type}s to this channel`);
   }
-  if (isReplyRestricted(membership.role, channelPermissions) && !hasReference) {
+  if (isReplyRestricted(ctx.role, ctx.channelPermissions) && !hasReference) {
     return deny("you may only post replies in this channel");
   }
-  return { grant: { role: membership.role, channelPermissions } };
+  return { grant: { role: ctx.role, channelPermissions: ctx.channelPermissions } };
 }
 
 /**

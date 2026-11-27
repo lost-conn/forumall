@@ -108,13 +108,12 @@ export const PROVIDER_OPTIONAL: readonly ChecklistEntry[] = [
     item: "Support DM typing for any participant (no `post` grant), answering a non-participant `not_found`, sending no acknowledgement of a successful `typing.start` and nothing for a `typing.stop` with no active `start` (§7.4)",
     level: "provider-may",
     covers: [
-      "packages/server/test/dm-reactions.test.ts",
+      "packages/server/test/dm-typing.test.ts",
       "packages/server/test/dm-subscriptions.test.ts",
     ],
-    status: "partial",
-    note: "Behaviour gap: a `typing.stop { dmId }` from a non-participant is silently dropped instead of answered `not_found`, and one with no active `start` is still delivered to the counterparty (`packages/server/src/http/ws/typing.ts:259`). Untested: the absent acknowledgement of a successful `typing.start`, and both stop cases.",
+    status: "covered",
     context:
-      "Any participant may type, with no group permission (`typing.ts:185`); `typing.start` reaches the counterparty (`dm-reactions.test.ts:442`); a non-participant's `typing.start` answers as an unknown `dmId` (`dm-subscriptions.test.ts:437`).",
+      "The DM is the command's `channelId` (`dm_…`), per §7.4 and `ws/typing-start.json`; a frame with only the non-spec `dmId` field is `bad_request`. Any participant may type with no group permission; a successful start is unacknowledged and not echoed; a stop with no active start, from this connection or another of the actor's, sends nothing; a non-participant's start and stop are `not_found` (`dm-typing.test.ts`); a remote participant types both ways and is answered as an unknown `dmId` when not a participant (`dm-subscriptions.test.ts`).",
   },
   {
     item: "Support DM replies: check the parent only when `reference.provider` is absent or its own (`400` if it is not in the conversation), otherwise require (`400`) a participant's home provider; and serve the reply listing with its `provider` parameter, listing the replies it holds to (`provider`, `{messageId}`) (§7.4)",

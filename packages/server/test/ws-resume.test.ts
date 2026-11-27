@@ -101,7 +101,7 @@ describe("WS resume (§7.1 Resuming after a disconnect)", () => {
     resumer.close();
   });
 
-  test("an edited / deleted message after the cursor is replayed in its current state", async () => {
+  test("an edited / deleted message after the cursor is replayed in its current state, a deleted one as message.created then message.deleted", async () => {
     const b = boot("resume-current-state");
     const alice = await registerUserWithKey(b, "alice");
     const { groupId, channelId } = await makeGroupChannel(b, alice);
@@ -147,12 +147,19 @@ describe("WS resume (§7.1 Resuming after a disconnect)", () => {
     });
     await resumer.ofType("subscribed");
 
-    const e1 = await resumer.ofType("message.created");
+    // The replay, in order: the edit's `message.created` (edited form), the
+    // tombstone's `message.created`, then its `message.deleted` — each event at
+    // the message's own position and cursor (§7.1).
+    const timeline = (f: { type: string }) => f.type.startsWith("message.");
+    const e1 = await resumer.next(timeline);
+    expect(e1.type).toBe("message.created");
     const m1 = (e1.data as { message: { id: string; content: { text: string } } }).message;
     expect(m1.id).toBe(toEdit.messageId);
     expect(m1.content.text).toBe("edited!");
+    expect((e1.data as { cursor: string }).cursor).toBe(toEdit.cursor);
 
-    const e2 = await resumer.ofType("message.created");
+    const e2 = await resumer.next(timeline);
+    expect(e2.type).toBe("message.created");
     const m2 = (
       e2.data as {
         message: { id: string; deletedAt?: string; content: { text: string } };
@@ -161,6 +168,20 @@ describe("WS resume (§7.1 Resuming after a disconnect)", () => {
     expect(m2.id).toBe(toDelete.messageId);
     expect(typeof m2.deletedAt).toBe("string"); // tombstone
     expect(m2.content.text).toBe(""); // content cleared
+    expect((e2.data as { cursor: string }).cursor).toBe(toDelete.cursor);
+
+    const e3 = await resumer.next(timeline);
+    expect(e3.type).toBe("message.deleted");
+    expect(e3.correlationId).toBe("r_sub");
+    expect(e3.data).toEqual({
+      groupId,
+      channelId,
+      messageId: toDelete.messageId,
+      cursor: toDelete.cursor,
+      deletedAt: m2.deletedAt,
+    });
+    // Nothing else is replayed: the edit replays no `message.deleted`.
+    expect(await resumer.none(timeline)).toBe(true);
 
     poster.close();
     resumer.close();
