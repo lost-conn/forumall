@@ -60,7 +60,7 @@ export const GROUPS_MESSAGES: readonly ChecklistEntry[] = [
   {
     item: "Serve a `Reaction` whose `reference.provider`, if present, is its own authority, since a reaction is stored with its message (§7.1)",
     level: "provider-must",
-    covers: ["packages/server/test/reactions.test.ts"],
+    covers: ["packages/server/test/reactions.test.ts", "packages/server/test/dm-reactions.test.ts"],
     status: "partial",
     note: "Untested for DM reactions: no test asserts the `reference` of a served DM `Reaction` (`rowToDmReaction`, `packages/server/src/provider/dm-reactions.ts:82`); `dm-reactions.test.ts` checks keys and authors only.",
     context:
