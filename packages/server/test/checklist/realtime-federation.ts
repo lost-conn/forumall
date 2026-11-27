@@ -163,9 +163,11 @@ export const REALTIME_FEDERATION: readonly ChecklistEntry[] = [
       "packages/server/test/signature.test.ts",
       "packages/server/test/users-anonymous.test.ts",
       "packages/server/test/public-route-signatures.test.ts",
+      "packages/server/test/provider-signed-routes.test.ts",
     ],
-    status: "partial",
-    note: "Untested: a permitted provider's signature (`X-OFSCP-Provider`, no `X-OFSCP-Actor`) on an anonymous-reader route (`optionalSignature()` in actor mode: `GET` group, channels, channel, history, replies, §6 `GET`s) → `401`, never served as an anonymous viewer. Today it gets that `401` only because actor-mode step 1 finds no `X-OFSCP-Actor` (`packages/server/src/http/signature.ts:174`), so a digest mismatch gets `401` rather than the step-5 `400` the spec's steps 1–5 give.",
+    status: "covered",
+    context:
+      "`provider-signed-routes.test.ts` sends a permitted provider's signature, and this provider's own valid one, to every anonymous-reader route: `401`, never served as an anonymous viewer, with no discovery fetch or nonce recorded; a digest mismatch gets the step-5 `400`.",
   },
   {
     item: "Support the `private` tier",

@@ -44,7 +44,7 @@ import { FsStorage, type StorageBackend } from "../provider/storage.ts";
 import { ifNoneMatchMatches } from "./conditional.ts";
 import { AppError } from "./errors.ts";
 import { mediaETag, mediaNotModifiedHeaders, mediaResponseHeaders } from "./media-headers.ts";
-import { optionalActorOrProviderSignature, requireSignature } from "./signature.ts";
+import { optionalSignature, requireSignature } from "./signature.ts";
 import type { AppBindings } from "./types.ts";
 
 export interface MediaRouterOptions {
@@ -142,7 +142,7 @@ export function createMediaRouter(opts: MediaRouterOptions = {}): Hono<AppBindin
   });
 
   // -- GET /api/media/:id (serve the blob; unauthenticated, see file header) -
-  router.get("/:id", optionalActorOrProviderSignature(), async (c) => {
+  router.get("/:id", optionalSignature(), async (c) => {
     const { config, db } = c.var;
     const id = c.req.param("id");
 

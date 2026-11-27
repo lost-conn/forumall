@@ -10,9 +10,13 @@
  *
  * Two identities are supported with one pipeline (§8.1): a **user-signed**
  * request carries `X-OFSCP-Actor` and resolves a device key; a **provider-
- * signed** request carries `X-OFSCP-Provider` and resolves a provider signing
- * key. Pass `{ mode: "provider" }` for the latter (a sibling factory
- * {@link requireProviderSignature} is exported for ergonomics).
+ * signed** request carries `X-OFSCP-Provider` (in place of `X-OFSCP-Actor`;
+ * both → step-1 `401`) and resolves a provider signing key. The request's
+ * headers say which kind signed it; the ROUTE says which kinds it accepts:
+ * user signatures by default (every route of the spec), `{ mode: "provider" }`
+ * / {@link requireProviderSignature} for a provider-signed receiver. A kind the
+ * route does not accept is answered after steps 1–5 and the deny check —
+ * `401`, never verified (§8 *Authorization*).
  *
  * ## Authority binding (§4.5 step 2)
  * The verifier reconstructs the canonical string using **`config.domain`** as the
@@ -33,9 +37,11 @@
  *
  * ## Federation policy (§8 Authorization)
  * For any **remote** signer the §8 allow/deny policy ({@link isProviderAllowed})
- * is checked *before* any network key fetch — a disallowed peer is rejected with
- * a **403** without resolving keys, even if a cached key would match (§4.6).
- * Local actors are unaffected.
+ * is checked after §4.5 steps 1–5 and *before* any network key fetch — a
+ * disallowed peer is rejected with a **403** without resolving keys, even if a
+ * cached key would match (§4.6), on every route whatever signer kind it
+ * accepts. Local actors are unaffected. Neither this `403` nor the not-accepted
+ * kind `401` records a nonce, so both precede the replay warm-up `503`.
  *
  * ## Local vs remote identity (read this before using the handle)
  * Because a remote actor authenticates here just as fully as a local one, the
@@ -80,7 +86,7 @@ export const DEFAULT_TIMESTAMP_SKEW_SECONDS = 300;
 export type { SignatureMode } from "./types.ts";
 
 export interface RequireSignatureOptions {
-  /** `"actor"` (user device key, default) or `"provider"` (provider key). */
+  /** The signer kind the route accepts: `"actor"` (device key, default) or `"provider"`. */
   mode?: SignatureMode;
   /**
    * Replay store override (tests only). Defaults to the single provider-wide
@@ -131,58 +137,148 @@ function rawTarget(c: Context): { path: string; query: string } {
 export function requireSignature(
   opts: RequireSignatureOptions = {},
 ): MiddlewareHandler<AppBindings> {
-  const mode: SignatureMode = opts.mode ?? "actor";
+  const accepts = [opts.mode ?? "actor"] as const;
   const skewSeconds = opts.skewSeconds ?? DEFAULT_TIMESTAMP_SKEW_SECONDS;
   const nonceRetentionMs = opts.nonceRetentionMs ?? retentionForSkew(skewSeconds);
-  const identityHeader = mode === "provider" ? HEADER.PROVIDER : HEADER.ACTOR;
 
   return async (c, next) => {
     await verifyAndSetActor(c, {
-      mode,
+      accepts,
       skewSeconds,
       nonceRetentionMs,
       // Resolved per-request (not captured at construction time) so every
       // instance of this middleware, app-wide, shares one store (#21).
       nonceStore: opts.nonceStore ?? c.var.nonceStore,
-      identityHeader,
     });
     await next();
   };
 }
 
-/** Internal resolved config shared by `requireSignature` + `optionalSignature`. */
+/** Internal resolved config shared by every verification middleware. */
 interface VerifyContext {
-  readonly mode: SignatureMode;
+  /**
+   * The signer kinds this route accepts (§8.1): `["actor"]` for every route of
+   * the spec, `["provider"]` for a receiver of provider-signed requests, both
+   * for a route that takes either. A request signed by a kind not listed is
+   * answered after §4.5 steps 1–5 and the §8 deny check, and never verified.
+   */
+  readonly accepts: readonly SignatureMode[];
   readonly skewSeconds: number;
   readonly nonceRetentionMs: number;
   readonly nonceStore: NonceStore;
+}
+
+/** The six §4.5 step-1 headers of a request, with the signer kind they name. */
+interface SigningHeaders {
+  /** `"provider"` when the request carries `X-OFSCP-Provider` (§8.1), else `"actor"`. */
+  readonly mode: SignatureMode;
+  /** The header that carried the identity (`X-OFSCP-Actor` / `X-OFSCP-Provider`). */
   readonly identityHeader: string;
+  /** Its value. */
+  readonly identity: string;
+  readonly keyId: string;
+  readonly timestamp: string;
+  readonly nonce: string;
+  readonly digest: string;
+  readonly signature: string;
+}
+
+/**
+ * §4.5 step 1: all six signing headers present, with exactly ONE signer
+ * identity → `401` otherwise. The identity header is whichever one the request
+ * carries: `X-OFSCP-Actor` (§4.4) or `X-OFSCP-Provider` in its place (§8.1). A
+ * request carrying both is malformed (§4.4.1, §8.1) and gets this `401`
+ * whichever provider either header names: it never reaches the §8 deny check.
+ * Whether the ROUTE accepts the signer kind is decided later, after step 5.
+ */
+function readSigningHeaders(c: Context): SigningHeaders {
+  const h = (name: string) => c.req.header(name);
+  const actor = h(HEADER.ACTOR);
+  const provider = h(HEADER.PROVIDER);
+  if (actor !== undefined && provider !== undefined) {
+    throw AppError.unauthorized({
+      detail: `a signed request carries exactly one of ${HEADER.ACTOR} and ${HEADER.PROVIDER}`,
+    });
+  }
+  const mode: SignatureMode = provider !== undefined ? "provider" : "actor";
+  const identity = mode === "provider" ? provider : actor;
+  const keyId = h(HEADER.KEY_ID);
+  const timestamp = h(HEADER.TIMESTAMP);
+  const nonce = h(HEADER.NONCE);
+  const digest = h(HEADER.CONTENT_DIGEST);
+  const signature = h(HEADER.SIGNATURE);
+  if (!identity || !keyId || !timestamp || !nonce || !digest || !signature) {
+    throw AppError.unauthorized({
+      detail: "missing one or more required X-OFSCP-* signing headers",
+    });
+  }
+  const identityHeader = mode === "provider" ? HEADER.PROVIDER : HEADER.ACTOR;
+  return { mode, identityHeader, identity, keyId, timestamp, nonce, digest, signature };
+}
+
+/**
+ * §4.5 "Restarts": replay-store warm-up → `503` + `Retry-After`.
+ *
+ * A replay store that does not survive a restart (ours is in-memory) has
+ * forgotten nonces that are still replayable: one recorded just before the
+ * restart may carry a timestamp up to `skew` ahead of that moment. So every
+ * signature timestamped earlier than T₀ + skew is rejected, where T₀ is when
+ * the current store began accepting entries. This is "try again later", not
+ * "bad credentials", hence 503 (never 401), with a Retry-After of at least the
+ * time left until T₀ + skew; the client must re-sign with a fresh timestamp
+ * and nonce.
+ *
+ * Scope (as the spec draws it): only a request whose signature would go on to
+ * be verified. A request rejected at steps 1–5, a denied signer's `403` and a
+ * not-accepted signer kind's `401` record no nonce, so they keep their answer
+ * during warm-up; the caller checks those first. (The WS `authenticate`
+ * handshake is exempt — its challenge nonce is server-issued per connection —
+ * and does not come here.)
+ */
+function assertReplayStoreWarm(
+  nonceStore: NonceStore,
+  tsMillis: number,
+  now: number,
+  skewSeconds: number,
+): void {
+  const t0 = nonceStore.startedAt;
+  if (t0 === null) return;
+  const warmupEnd = t0 + skewSeconds * 1000;
+  if (tsMillis >= warmupEnd) return;
+  // At least the time until T₀ + skew on OUR clock — and, for a client whose
+  // clock lags ours, until ITS clock reaches T₀ + skew (its next timestamp is
+  // ≈ tsMillis + elapsed): so the larger of the two gaps. Rounded up, ≥1s.
+  const remainingMs = Math.max(warmupEnd - now, warmupEnd - tsMillis);
+  const retryAfter = Math.max(1, Math.ceil(remainingMs / 1000));
+  throw AppError.serviceUnavailable({
+    detail:
+      "replay store is warming up after a restart; re-sign the request with a fresh timestamp and nonce after Retry-After",
+    headers: { "Retry-After": String(retryAfter) },
+  });
 }
 
 /**
  * The §4.5 verification core. Runs the ordered checks against the request and,
  * on success, sets `c.var.actor`. Throws an {@link AppError} on the first failed
- * check. Shared by {@link requireSignature} (always required) and
- * {@link optionalSignature} (only invoked when signing headers are present).
+ * check. Shared by {@link requireSignature} (always required),
+ * {@link optionalSignature} (only invoked when signing headers are present) and
+ * {@link requireActorOrProviderSignature}.
+ *
+ * Order: §4.5 steps 1–5; the §8 deny check (`403`); for a signer kind the
+ * route does not accept, `401` (§8 *Authorization*). Those two answers verify
+ * nothing — no key or discovery fetch, no signature check, no nonce recorded —
+ * so they come before the replay warm-up `503`, which §4.5 "Restarts" scopes to
+ * a request the provider would go on to verify. Then the warm-up, step 6 (key
+ * resolution), step 7 (verify), and the nonce is recorded.
  */
 async function verifyAndSetActor(c: Context, vctx: VerifyContext): Promise<void> {
-  const { mode, skewSeconds, nonceRetentionMs, nonceStore, identityHeader } = vctx;
+  const { accepts, skewSeconds, nonceRetentionMs, nonceStore } = vctx;
   {
     const { config, db } = c.var;
-    const h = (name: string) => c.req.header(name);
 
-    // --- §4.5 step 1: all six signing headers present → 401 -----------------
-    const identity = h(identityHeader);
-    const keyId = h(HEADER.KEY_ID);
-    const timestamp = h(HEADER.TIMESTAMP);
-    const nonce = h(HEADER.NONCE);
-    const digest = h(HEADER.CONTENT_DIGEST);
-    const signature = h(HEADER.SIGNATURE);
-    if (!identity || !keyId || !timestamp || !nonce || !digest || !signature) {
-      throw AppError.unauthorized({
-        detail: "missing one or more required X-OFSCP-* signing headers",
-      });
-    }
+    // --- §4.5 step 1: six signing headers, one identity → 401 ---------------
+    const { mode, identityHeader, identity, keyId, timestamp, nonce, digest, signature } =
+      readSigningHeaders(c);
 
     // --- §2.2: the identity header MUST be in canonical form → 401 ----------
     // We REJECT a non-canonical spelling (`Alice@a.test`, `alice@a.test:443`,
@@ -215,34 +311,6 @@ async function verifyAndSetActor(c: Context, vctx: VerifyContext): Promise<void>
       throw AppError.unauthorized({
         detail: `X-OFSCP-Timestamp is outside the allowed ±${skewSeconds}s window`,
       });
-    }
-
-    // --- §4.5 "Restarts": replay-store warm-up → 503 + Retry-After ----------
-    // A replay store that does not survive a restart (ours is in-memory) has
-    // forgotten nonces that are still replayable: one recorded just before the
-    // restart may carry a timestamp up to `skew` ahead of that moment. So every
-    // signature timestamped earlier than T₀ + skew is rejected, where T₀ is when
-    // the current store began accepting entries. This is "try again later", not
-    // "bad credentials", hence 503 (never 401), with a Retry-After of at least
-    // the time left until T₀ + skew; the client must re-sign with a fresh
-    // timestamp and nonce. (The WS `authenticate` handshake is exempt — its
-    // challenge nonce is server-issued per connection — and does not come here.)
-    const t0 = nonceStore.startedAt;
-    if (t0 !== null) {
-      const warmupEnd = t0 + skewSeconds * 1000;
-      if (tsMillis < warmupEnd) {
-        // At least the time until T₀ + skew on OUR clock — and, for a client
-        // whose clock lags ours, until ITS clock reaches T₀ + skew (its next
-        // timestamp is ≈ tsMillis + elapsed): so the larger of the two gaps.
-        // Rounded up, and ≥1s.
-        const remainingMs = Math.max(warmupEnd - now, warmupEnd - tsMillis);
-        const retryAfter = Math.max(1, Math.ceil(remainingMs / 1000));
-        throw AppError.serviceUnavailable({
-          detail:
-            "replay store is warming up after a restart; re-sign the request with a fresh timestamp and nonce after Retry-After",
-          headers: { "Retry-After": String(retryAfter) },
-        });
-      }
     }
 
     // --- §4.5 step 4: (Key-ID, Nonce) not already seen → 401 ----------------
@@ -282,14 +350,33 @@ async function verifyAndSetActor(c: Context, vctx: VerifyContext): Promise<void>
 
     // --- §8 Authorization: federation allow/deny policy → 403 ---------------
     // Applied to REMOTE signers only (a remote actor's home domain or a remote
-    // provider's domain), and BEFORE any remote key fetch so we never resolve
-    // keys for a denied peer. Local identities skip this entirely.
+    // provider's domain), after steps 1–5 and BEFORE any key or discovery
+    // fetch, on every route — one that does not accept this signer kind
+    // included. Local identities (this provider's own authority) skip it.
     const peerDomain = remotePeerDomain(mode, authority, identity);
     if (peerDomain !== null && !isProviderAllowed(config, peerDomain)) {
       throw AppError.forbidden({
         detail: `federation with ${peerDomain} is not permitted by this provider's policy`,
       });
     }
+
+    // --- §8 Authorization: a signer kind the route does not take → 401 -----
+    // E.g. a permitted provider's signature on a user-signature route (every
+    // route of the spec, discovery and the keys endpoint included): answered
+    // without §8.1 step 2 — no discovery fetch, no verification, no nonce
+    // recorded — and never served as an anonymous viewer.
+    if (!accepts.includes(mode)) {
+      throw AppError.unauthorized({
+        detail:
+          mode === "provider"
+            ? "this route does not accept provider-signed requests"
+            : "this route accepts only provider-signed requests",
+      });
+    }
+
+    // --- §4.5 "Restarts": replay-store warm-up → 503 + Retry-After ----------
+    // Only a request we would go on to verify gets here; see the helper.
+    assertReplayStoreWarm(nonceStore, tsMillis, now, skewSeconds);
 
     // --- §4.5 step 6: resolve the signer's key (not revoked) → 401 / 503 ---
     // Remote paths (§4.6 actor, §8.1 provider) verify internally so they can
@@ -347,36 +434,46 @@ async function verifyAndSetActor(c: Context, vctx: VerifyContext): Promise<void>
 }
 
 /**
- * Optional-authentication variant of {@link requireSignature} for routes that
- * are readable both signed and unsigned (e.g. `GET /api/groups/{id}` — public
- * groups are readable by anyone, private groups require an authenticated
- * member). Behavior:
+ * Optional authentication, for every route that serves unsigned callers:
  *
- *  - **No** `X-OFSCP-*` signing headers present → continue with no `c.var.actor`
- *    (the handler decides whether anonymous access is allowed).
- *  - **Any** signing header present → run the full §4.5 verification; a
- *    present-but-invalid signature still fails (401/400), so a forged identity
- *    can never slip through.
+ *  - the §4.5 **anonymous-reader** routes (e.g. `GET /api/groups/{id}`: public
+ *    groups are readable by anyone, private ones need an authenticated member;
+ *    the §6 `GET /api/users/{userRef}/…` endpoints);
+ *  - the **public** routes that never need a caller (discovery §3.1, the keys
+ *    endpoint §4.6, `/api/tiers`, `/api/health`, `/problems/*`, the provider
+ *    profile, media capability URLs, register/login/device-key registration,
+ *    guest creation, …).
  *
+ * Behavior:
+ *
+ *  - **No** `X-OFSCP-*` signing header → continue with no `c.var.actor`: the
+ *    handler answers it as an anonymous viewer / as for anyone (§4.5, §8; the
+ *    §8 policy and the replay warm-up never apply to an unsigned request).
+ *  - **Any** signing header → a signed request, run through §4.5 (a partial
+ *    or invalid signature fails `401`/`400`, never anonymous). §8
+ *    *Authorization* applies the deny policy to it on every route, public ones
+ *    included: a denied peer gets `403` after steps 1–5. These routes take
+ *    user signatures only (no route of the spec accepts provider-signed
+ *    requests, §8), so a permitted provider's signature gets `401` unverified.
+ *
+ * Pass `{ mode: "provider" }` only for a receiver of provider-signed requests.
  * Shares the verification core with {@link requireSignature}, including the
  * ONE provider-wide nonce store on `c.var.nonceStore` (#21).
  */
 export function optionalSignature(
   opts: RequireSignatureOptions = {},
 ): MiddlewareHandler<AppBindings> {
-  const mode: SignatureMode = opts.mode ?? "actor";
+  const accepts = [opts.mode ?? "actor"] as const;
   const skewSeconds = opts.skewSeconds ?? DEFAULT_TIMESTAMP_SKEW_SECONDS;
   const nonceRetentionMs = opts.nonceRetentionMs ?? retentionForSkew(skewSeconds);
-  const identityHeader = mode === "provider" ? HEADER.PROVIDER : HEADER.ACTOR;
 
   return async (c, next) => {
     if (carriesSignatureHeader(c)) {
       await verifyAndSetActor(c, {
-        mode,
+        accepts,
         skewSeconds,
         nonceRetentionMs,
         nonceStore: opts.nonceStore ?? c.var.nonceStore,
-        identityHeader,
       });
     }
     await next();
@@ -385,10 +482,10 @@ export function optionalSignature(
 
 /**
  * Every `X-OFSCP-*` header that makes a request a signed one (§4.5 "Anonymous
- * viewers": a request carrying **any** of them is signed and is checked in
- * full). Both identity headers are listed, so a provider-signed request sent to
- * an actor-mode route is still treated as signed (and fails step 1 with `401`)
- * rather than passing as anonymous.
+ * viewers": a request carrying **any** of them is signed and goes through the
+ * checks). Both identity headers are listed, so a provider-signed request sent
+ * to a user-signature route is still treated as signed (`403` for a denied
+ * provider, else `401`) rather than passing as anonymous.
  */
 const SIGNATURE_HEADERS = [
   HEADER.ACTOR,
@@ -406,81 +503,39 @@ function carriesSignatureHeader(c: Context): boolean {
 }
 
 /**
- * Optional authentication for the **public** routes that never need a caller
- * (discovery §3.1, the keys endpoint §4.6, `/api/tiers`, `/api/health`,
- * `/problems/*`, the provider profile, media capability URLs, …).
- *
- * §8 *Authorization* applies the inbound allow/deny policy to every **signed**
- * request on every route, public ones included, after §4.5 steps 1–5; so such a
- * route still has to run §4.5 when it is signed:
- *
- *  - **No** signature header → continue anonymously (unsigned requests are
- *    answered as for anyone, §8; the replay warm-up never applies to them).
- *  - `X-OFSCP-Provider` present → the full pipeline in provider mode (§8.1);
- *  - any other signature header → the full pipeline in actor mode (§4.5).
- *
- * A denied peer gets `403` at the start of step 6 (§4.5) / §8.1 step 2, a bad
- * signature `401`, a digest mismatch `400`. On success `c.var.actor` and
- * `c.var.signatureMode` are set like the other variants; these handlers ignore
- * them. Shares the ONE provider-wide nonce store (#21).
- */
-export function optionalActorOrProviderSignature(
-  opts: Omit<RequireSignatureOptions, "mode"> = {},
-): MiddlewareHandler<AppBindings> {
-  const skewSeconds = opts.skewSeconds ?? DEFAULT_TIMESTAMP_SKEW_SECONDS;
-  const nonceRetentionMs = opts.nonceRetentionMs ?? retentionForSkew(skewSeconds);
-
-  return async (c, next) => {
-    if (carriesSignatureHeader(c)) {
-      const mode: SignatureMode =
-        c.req.header(HEADER.PROVIDER) !== undefined ? "provider" : "actor";
-      await verifyAndSetActor(c, {
-        mode,
-        skewSeconds,
-        nonceRetentionMs,
-        nonceStore: opts.nonceStore ?? c.var.nonceStore,
-        identityHeader: mode === "provider" ? HEADER.PROVIDER : HEADER.ACTOR,
-      });
-    }
-    await next();
-  };
-}
-
-/**
  * Accept EITHER identity on one route: a **user-signed** request (§4.4, the
  * actor's device key) or a **provider-signed** one (§8.1, the peer's signing
- * key). Needed where the spec defines the same operation with two delivery
- * shapes — e.g. a DM edit/delete (§8.3), which the AUTHOR may deliver directly
- * to the message's home provider (user-signed) *and* which a peer may forward on
- * one of its users' behalf (provider-signed).
+ * key). Mounted only on the `/api/federation/dms` edit/delete/reaction ingest,
+ * which a peer may forward on one of its users' behalf (provider-signed) as
+ * well as the author delivering directly (user-signed). OFSCP defines no route
+ * that takes provider signatures and says DM edits, deletes and reactions are
+ * not forwarded (§7.4, §8), so the provider-signed shape is a Forumall
+ * deviation, slated for removal (audit unit U23).
  *
- * The mode is chosen by which identity header the request carries:
- * `X-OFSCP-Provider` present → provider (§8.1); otherwise the user path (§4.4) —
- * including when NO identity header is present, so a headerless request still
- * fails with the exact §4.5 step-1 401. The full ordered §4.5 pipeline runs
- * either way, sharing the ONE provider-wide nonce store (#21) via
- * `c.var.nonceStore` — namespaced per mode (see {@link nonceKeyId}) so an
- * actor-mode and a provider-mode request on this same route still can't
- * collide with each other. The chosen mode is exposed on `c.var.signatureMode`
- * so the handler can tell whose authority it is acting on: a user-signed
- * request may only act as ITSELF, while a provider-signed one names its user
- * out-of-band (a provider-signed request has no `X-OFSCP-Actor`) and must be
- * trusted only for that provider's own users.
+ * The signer kind is the identity header the request carries (§4.5 step 1:
+ * exactly one of `X-OFSCP-Actor` / `X-OFSCP-Provider`, else `401`). The full
+ * ordered §4.5 pipeline runs either way, sharing the ONE provider-wide nonce
+ * store (#21) via `c.var.nonceStore` — namespaced per kind (see
+ * {@link nonceKeyId}) so an actor and a provider request on this same route
+ * can't collide. The kind is exposed on `c.var.signatureMode` so the handler
+ * can tell whose authority it is acting on: a user-signed request may only act
+ * as ITSELF, while a provider-signed one names its user out-of-band (a
+ * provider-signed request has no `X-OFSCP-Actor`) and must be trusted only for
+ * that provider's own users.
  */
 export function requireActorOrProviderSignature(
   opts: Omit<RequireSignatureOptions, "mode"> = {},
 ): MiddlewareHandler<AppBindings> {
+  const accepts = ["actor", "provider"] as const;
   const skewSeconds = opts.skewSeconds ?? DEFAULT_TIMESTAMP_SKEW_SECONDS;
   const nonceRetentionMs = opts.nonceRetentionMs ?? retentionForSkew(skewSeconds);
 
   return async (c, next) => {
-    const mode: SignatureMode = c.req.header(HEADER.PROVIDER) !== undefined ? "provider" : "actor";
     await verifyAndSetActor(c, {
-      mode,
+      accepts,
       skewSeconds,
       nonceRetentionMs,
       nonceStore: opts.nonceStore ?? c.var.nonceStore,
-      identityHeader: mode === "provider" ? HEADER.PROVIDER : HEADER.ACTOR,
     });
     await next();
   };

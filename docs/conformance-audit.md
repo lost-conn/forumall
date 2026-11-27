@@ -164,8 +164,8 @@ numbers are in the spec at `e94447d`.
 
 | L | Item (short) | Status | Gap | Unit |
 |---|---|---|---|---|
-| 8 (P MUST) | Signature validation, now also both identity headers → step-1 `401` | behaviour | Not rejected: step 1 reads only the route's identity header (`http/signature.ts:174`); the either-identity routes take provider mode whenever `X-OFSCP-Provider` is present (`:427`). | U19 |
-| 10 (P MUST) | Federation deny `403`, now also for a provider-signed request to a user-signature-only route | behaviour | A provider-signed request from a denied provider to a user-only route gets the step-1 `401` (`http/signature.ts:174`, actor mode). The public-route gaps stay (open PR #43). | U4 |
+| 8 (P MUST) | Signature validation, now also both identity headers → step-1 `401` | met (U19) | Step 1 (`http/signature.ts` `readSigningHeaders`) rejects both identity headers with `401` before the deny check, on every route (`provider-signed-routes.test.ts`). The U11 test gaps (full store over HTTP, replayed provider-signed request, concurrent copies) remain. | U19, U11 |
+| 10 (P MUST) | Federation deny `403`, now also for a provider-signed request to a user-signature-only route | met (U22) | A denied provider gets `403` on user-only routes too (`provider-signed-routes.test.ts`). | U22 |
 | 20 (P MUST) | Owner listed as `owner`, `joinedAt` kept, stable member order | tests only | Implemented (`provider/groups.ts:130`, `provider/membership.ts:152`); no test asserts the owner's listed role, the creator's `joinedAt`, or `joinedAt` after a role change or transfer. | U12 |
 | 21 (P MUST) | Repeat `join` → `202` with the pending request unchanged; `leave` by a non-member → `404`, by the owner → `409` | tests only | Repeat with a different `message` and the non-member `404` (`http/membership.ts:141`) untested. | U12 |
 | 22 (P MUST) | Approve/deny on `manage` or `moderate`, no subset rule; approving a member → `200` | tests only | Implemented (`http/membership.ts:409`, `provider/membership.ts:415`); a `moderate`-only approver, the `403`s and the already-a-member approval untested. | U12 |
@@ -225,8 +225,8 @@ unverified `403`/`401` answers. The `L` numbers are in the spec at `8ffa97b`.
 
 | L | Item (short) | Status | Gap | Unit |
 |---|---|---|---|---|
-| 10 (P MUST) | Federation deny `403`; a permitted provider's signature on a user-signature route → `401`, unverified | behaviour | The public routes on `optionalActorOrProviderSignature()` (`http/signature.ts:427`) fetch discovery and verify a provider signature (`:299`), record its nonce (`:325`) and serve it. The warm-up `503` (`:220`) precedes the deny check (`:283`). On user-only routes the `401` comes from actor-mode step 1 (`:174`), so a denied provider gets `401`, not `403` (as before). | U22 |
-| 58 (P MUST) | Anonymous viewers; `401` kept for a permitted provider's signature | tests only | The `401` is there on the anonymous-reader routes, but only via actor-mode step 1 (`http/signature.ts:174`), so a bad digest gets `401`, not `400`. No test sends a provider signature to one. | U22 |
+| 10 (P MUST) | Federation deny `403`; a permitted provider's signature on a user-signature route → `401`, unverified | partial (U22) | Met on every route that takes user signatures only: after steps 1–5 the deny `403`, else `401` for a provider signature, with no discovery fetch, verification or nonce, before the warm-up `503` (`provider-signed-routes.test.ts`). Left: the `/api/federation/dms` edit/delete/reaction routes still accept provider signatures for Forumall's own DM forwarding (`http/dms-federation.ts`, `http/dm-forwarding.ts`). | U23 |
+| 58 (P MUST) | Anonymous viewers; `401` kept for a permitted provider's signature | met (U22) | A permitted provider's signature on an anonymous-reader route gets `401` after steps 1–5 (a digest mismatch `400`), never anonymous (`provider-signed-routes.test.ts`). | U22 |
 
 L58 was `covered` before; it is now `partial`. New unit: U22 (verifier: one
 step-1 identity check that accepts either identity header, then steps 1–5, the
@@ -235,6 +235,14 @@ provider signatures, `401` for a permitted provider with no discovery fetch,
 verification or nonce; tests on public, anonymous-reader and user-only routes,
 in and out of warm-up). U19 (both identity headers → step-1 `401`) lands in
 the same step-1 code and should go with it.
+
+U19 + U22 landed together. They left one gap, on purpose, for its own unit.
+Forumall's home provider forwards DM edits, deletes and reactions for a remote
+counterparty provider-signed, so the `/api/federation/dms` edit/delete/reaction
+routes still accept provider signatures. The spec rules both out: it defines no
+route that takes provider signatures (§8), and "No provider forwards it" (§7.4).
+New unit: U23 (client-direct DM edits, deletes and reactions; forwarding
+removed).
 
 ## Units of work
 
@@ -266,6 +274,7 @@ Each unit is one pull request to `main`. Each updates its area's entries in
 | U20 | Server channel messaging (ofscp#37): tombstone edit `404` and repeat-delete no-op, reaction tombstone and no-op rules, one copy to an unsubscribed requester, typing `post:*` grant and no-op stop, `message.deleted` after a replayed tombstone, cursor interchange tests. | 33–36, 53 (at `e94447d`) |
 | U21 | Server follows and unread counts (ofscp#41): derive the `Follow` `groupId` from the channel, ignore the body's; tests for derivation and a tombstone counted as unread. | 52, 81 (at `31100ef`) |
 | U22 | Verifier (ofscp#42): a provider signature on a route that does not take one → `401` after steps 1–5 and the deny `403`, with no discovery fetch, verification or nonce; the deny check and these answers before the warm-up `503`; tests on public, anonymous-reader and user-only routes. Pairs with U19. | 10, 58 (at `8ffa97b`) |
+| U23 | DM edits, deletes and reactions to a remote counterparty (§7.4, §8.3: no provider forwards them): the web client sends them user-signed straight to the counterparty's provider (`/api/federation/dms/…`); remove `http/dm-forwarding.ts`, the home routes' forwarding branch and provider-signature acceptance (`requireActorOrProviderSignature`) on the federation DM routes, which then answer a permitted provider `401`; tests (server, web, two-provider e2e). Follows U22. | 10 (at `8ffa97b`) |
 
 Order: U0 first (every unit edits the map). U3, U4, U5, U9, U10, U11, U13 and
 U14 touch disjoint files and can run in parallel; U6 follows U4 and U5; U7

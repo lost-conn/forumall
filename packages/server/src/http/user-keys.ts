@@ -30,14 +30,14 @@ import { Hono } from "hono";
 import { resolveActorKeys } from "../provider/device-keys.ts";
 import { HandleSchema } from "../provider/handle.ts";
 import { AppError } from "./errors.ts";
-import { optionalActorOrProviderSignature } from "./signature.ts";
+import { optionalSignature } from "./signature.ts";
 import type { AppBindings } from "./types.ts";
 
 export function createUserKeysRouter() {
   const router = new Hono<AppBindings>();
 
   // Signed requests still run §4.5 so the §8 inbound policy applies (403).
-  router.get("/.well-known/ofscp/users/:handle/keys", optionalActorOrProviderSignature(), (c) => {
+  router.get("/.well-known/ofscp/users/:handle/keys", optionalSignature(), (c) => {
     const { config, db } = c.var;
     // Hono has already percent-decoded the segment once (§2.2: exactly once).
     const handle = c.req.param("handle");

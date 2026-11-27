@@ -15,7 +15,7 @@
 import { Hono } from "hono";
 
 import { AppError, ERROR_CODE_REGISTRY, isRegistryErrorCode } from "./errors.ts";
-import { optionalActorOrProviderSignature } from "./signature.ts";
+import { optionalSignature } from "./signature.ts";
 import type { AppBindings } from "./types.ts";
 
 /** Descriptions never change at runtime; let clients/proxies cache them. */
@@ -42,7 +42,7 @@ export function createProblemsRouter() {
   const router = new Hono<AppBindings>();
 
   // Signed requests still run §4.5 so the §8 inbound policy applies (403).
-  router.get("/problems/:code", optionalActorOrProviderSignature(), (c) => {
+  router.get("/problems/:code", optionalSignature(), (c) => {
     const code = c.req.param("code");
     if (!isRegistryErrorCode(code)) {
       throw AppError.notFound({ detail: "no such problem type" });
