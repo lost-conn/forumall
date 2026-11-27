@@ -206,3 +206,49 @@ describe("/guest always grants role `guest` (§4.8, §5.6)", () => {
     }
   });
 });
+
+describe("an invite whose custom role the group no longer defines (§5.6)", () => {
+  // The spec defines no redeem-time answer, so the invite is refused with the
+  // `400` an unknown role gets at creation; no use is consumed and nobody
+  // joins with a role the group's catalogue no longer lists.
+  test("redeem → 400 for a non-member, no use consumed; a member still gets 200", async () => {
+    const b = freshApp("removed-role");
+    const alice = await registerUserWithKey(b.app, "alice");
+    const bob = await registerUserWithKey(b.app, "bob");
+    const carol = await registerUserWithKey(b.app, "carol");
+    const group = await createGroup(b.app, alice, { name: "G", roles: [{ name: "helper" }] });
+    const invite = await createInvite(b.app, alice, group.id, { role: "helper" });
+    seedMember(b.db, group.id, carol.actor, "member");
+
+    const patch = await signedRequest(b.app, alice, "PATCH", `/api/groups/${group.id}`, {
+      roles: [],
+    });
+    expect(patch.status).toBe(200);
+
+    const res = await redeem(b.app, bob, invite.token);
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { errorCode: string }).errorCode).toBe("bad_request");
+    expect(roleOf(b, group.id, bob.actor)).toBeUndefined();
+    expect(usesOf(b, invite.id)).toBe(0);
+
+    const member = await redeem(b.app, carol, invite.token);
+    expect(member.status).toBe(200);
+    expect(await member.json()).toEqual({ groupId: group.id, role: "member" });
+  });
+
+  test("redeem succeeds again once the role is redefined", async () => {
+    const b = freshApp("restored-role");
+    const alice = await registerUserWithKey(b.app, "alice");
+    const bob = await registerUserWithKey(b.app, "bob");
+    const group = await createGroup(b.app, alice, { name: "G", roles: [{ name: "helper" }] });
+    const invite = await createInvite(b.app, alice, group.id, { role: "helper" });
+    const path = `/api/groups/${group.id}`;
+    expect((await signedRequest(b.app, alice, "PATCH", path, { roles: [] })).status).toBe(200);
+    const restore = { roles: [{ name: "helper" }] };
+    expect((await signedRequest(b.app, alice, "PATCH", path, restore)).status).toBe(200);
+
+    const res = await redeem(b.app, bob, invite.token);
+    expect(res.status).toBe(200);
+    expect(roleOf(b, group.id, bob.actor)).toBe("helper");
+  });
+});
