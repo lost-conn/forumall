@@ -144,6 +144,25 @@ describe("a provider signature on a route that does not take one (§8 Authorizat
     expectUntouched(booted);
   });
 
+  test("positive control: on the either-signer route a permitted provider's key IS fetched", async () => {
+    // Guards `expectUntouched`: the recorders do capture a key resolution.
+    const booted = freshApp();
+    const res = await send(booted.app, EITHER_ROUTE, providerHeaders(PERMITTED, EITHER_ROUTE));
+    await expectProblem(res, 503, "service_unavailable");
+    expect(booted.calls).toEqual([`https://${PERMITTED}/.well-known/ofscp-provider`]);
+
+    // A signature that verifies records its nonce under the `provider:` prefix.
+    const key = getProviderSigningKey(booted.db);
+    const own = providerHeaders(DOMAIN, EITHER_ROUTE, {
+      keyId: key.keyId,
+      privateKey: key.privateKey,
+    });
+    await send(booted.app, EITHER_ROUTE, own);
+    expect(booted.nonces.remembered.filter((k) => k.startsWith("provider:"))).toEqual([
+      `provider:${key.keyId} ${own[HEADER.NONCE]}`,
+    ]);
+  });
+
   test("a valid signature by this provider's own key → 401: never verified, never anonymous", async () => {
     const booted = freshApp();
     const { all } = await seededRoutes(booted);
