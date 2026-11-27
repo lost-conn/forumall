@@ -6,7 +6,7 @@
  * Followed state is tracked in a small module-level cache (the set of followed
  * local channel ids), lazily hydrated once per session from `GET /api/me/follows`
  * so every toggle across the app reflects a consistent state without each control
- * re-fetching. Toggling calls `POST /api/me/follows {channel, groupId}` /
+ * re-fetching. Toggling calls `POST /api/me/follows {channel}` /
  * `DELETE /api/me/follows/{channelRef}` and flips the cache.
  */
 import { type Component, Show, createSignal, onMount } from "solid-js";
@@ -49,7 +49,7 @@ export function resetFollowCache(): void {
   hydrating = null;
 }
 
-export const FollowToggle: Component<{ channelId: string; groupId: string }> = (props) => {
+export const FollowToggle: Component<{ channelId: string }> = (props) => {
   const [following, setFollowing] = createSignal(followedIds.has(props.channelId));
   const [busy, setBusy] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
@@ -67,7 +67,7 @@ export const FollowToggle: Component<{ channelId: string; groupId: string }> = (
     const wantFollow = !following();
     try {
       if (wantFollow) {
-        await addFollow(client, { channel: props.channelId, groupId: props.groupId });
+        await addFollow(client, props.channelId);
         followedIds.add(props.channelId);
       } else {
         await removeFollow(client, props.channelId);

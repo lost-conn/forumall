@@ -71,6 +71,7 @@ import {
   m0017PrivacySettings,
   m0018Presence,
   m0019Follows,
+  m0043FollowsDropGroupId,
 } from "./migrations/social.ts";
 
 export { MigrationDeferred } from "./migration-types.ts";
@@ -135,6 +136,7 @@ export const migrations: readonly Migration[] = [
   m0040DmMessagesTagsMentions,
   m0041DmReactionsUnicodeImage,
   m0042MessagesEditUntilNullable,
+  m0043FollowsDropGroupId,
 ];
 
 const LEDGER_DDL = `

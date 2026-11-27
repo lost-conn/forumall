@@ -556,10 +556,12 @@ describe("live schema validation: presence, privacy, follows (§6, §7.5, §7.6)
 
     const followRes = await signedReq(carol, "POST", "/api/me/follows", {
       channel: fchannel.id,
-      groupId: fgroup.id,
     });
     expect(followRes.status).toBe(201);
-    await expectValid("follow.json", await followRes.json());
+    const follow = await followRes.json();
+    await expectValid("follow.json", follow);
+    // The provider derives the group from the channel (§7.6).
+    expect(follow.groupId).toBe(fgroup.id);
 
     const followsRes = await signedReq(carol, "GET", "/api/me/follows");
     expect(followsRes.status).toBe(200);

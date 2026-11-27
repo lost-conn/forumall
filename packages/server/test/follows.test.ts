@@ -5,7 +5,8 @@
  * and MUST NOT compile or store a feed. These tests cover the follow-list
  * lifecycle over the signed `/api/me/follows` endpoints, the local-channel
  * access check (public → ok; private non-member and unknown → the same 404), a remote
- * channel URI stored as a pointer without a remote access check, the idempotent
+ * channel URI stored as a pointer without a remote access check, the `groupId`
+ * derived from the channel (a body `groupId` ignored), the idempotent
  * follow/unfollow semantics, and an assertion that NO server-side feed table or
  * endpoint exists (the store holds only pointers).
  *
@@ -158,10 +159,8 @@ describe("follow a local public channel (§7.6)", () => {
     const group = await createGroup(app, alice, { name: "G", tier: "public" });
     const pub = await createChannel(app, alice, group.id, { type: "text", tier: "public" });
 
-    const res = await signedRequest(app, bob, "POST", "/api/me/follows", {
-      channel: pub.id,
-      groupId: group.id,
-    });
+    // No `groupId` in the body: the provider derives it from the channel.
+    const res = await signedRequest(app, bob, "POST", "/api/me/follows", { channel: pub.id });
     expect(res.status).toBe(201);
     const follow = (await res.json()) as Follow;
     expect(follow.channel).toBe(pub.id);
@@ -170,6 +169,7 @@ describe("follow a local public channel (§7.6)", () => {
     const list = await listFollows(app, bob);
     expect(list.length).toBe(1);
     expect(list[0]?.channel).toBe(pub.id);
+    expect(list[0]?.groupId).toBe(group.id);
   });
 
   test("idempotent: following the same channel again returns the existing follow, no dup", async () => {
@@ -191,6 +191,115 @@ describe("follow a local public channel (§7.6)", () => {
     // Exactly one row.
     const list = await listFollows(app, alice);
     expect(list.length).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// groupId: derived from the channel, never taken from the body
+// ---------------------------------------------------------------------------
+
+describe("Follow groupId is derived from the channel (§7.6)", () => {
+  test("a body groupId naming another group is ignored, on the answer and the list", async () => {
+    const { app } = freshApp("follows-groupid-ignored");
+    const alice = await registerUserWithKey(app, "alice");
+    const group = await createGroup(app, alice, { name: "G", tier: "public" });
+    const other = await createGroup(app, alice, { name: "Other", tier: "public" });
+    const pub = await createChannel(app, alice, group.id, { type: "text", tier: "public" });
+
+    const res = await signedRequest(app, alice, "POST", "/api/me/follows", {
+      channel: pub.id,
+      groupId: other.id,
+    });
+    expect(res.status).toBe(201);
+    expect(((await res.json()) as Follow).groupId).toBe(group.id);
+    expect((await listFollows(app, alice))[0]?.groupId).toBe(group.id);
+  });
+
+  test("a local channel URI → the group's local id", async () => {
+    const { app } = freshApp("follows-groupid-local-uri");
+    const alice = await registerUserWithKey(app, "alice");
+    const group = await createGroup(app, alice, { name: "G", tier: "public" });
+    const pub = await createChannel(app, alice, group.id, { type: "text", tier: "public" });
+    const uri = `https://${DOMAIN}/api/groups/${group.id}/channels/${pub.id}`;
+
+    const res = await signedRequest(app, alice, "POST", "/api/me/follows", {
+      channel: uri,
+      groupId: `https://${DOMAIN}/api/groups/${group.id}`,
+    });
+    expect(res.status).toBe(201);
+    const follow = (await res.json()) as Follow;
+    expect(follow.channel).toBe(uri);
+    expect(follow.groupId).toBe(group.id);
+  });
+
+  test("a local channel URI naming a group the channel is not in → 404, nothing stored", async () => {
+    const { app } = freshApp("follows-groupid-local-uri-wrong-group");
+    const alice = await registerUserWithKey(app, "alice");
+    const group = await createGroup(app, alice, { name: "G", tier: "public" });
+    const other = await createGroup(app, alice, { name: "Other", tier: "public" });
+    const pub = await createChannel(app, alice, group.id, { type: "text", tier: "public" });
+
+    const res = await signedRequest(app, alice, "POST", "/api/me/follows", {
+      channel: `https://${DOMAIN}/api/groups/${other.id}/channels/${pub.id}`,
+    });
+    const missing = await signedRequest(app, alice, "POST", "/api/me/follows", {
+      channel: "chn_nope",
+    });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual(await missing.json());
+    expect((await listFollows(app, alice)).length).toBe(0);
+  });
+
+  test("a remote channel URI → the group's object URI on the channel's authority", async () => {
+    const { app } = freshApp("follows-groupid-remote");
+    const alice = await registerUserWithKey(app, "alice");
+    const remote = "https://remote.example/api/groups/grp_x/channels/chn_blog";
+
+    const res = await signedRequest(app, alice, "POST", "/api/me/follows", {
+      channel: remote,
+      groupId: "grp_evil",
+    });
+    expect(res.status).toBe(201);
+    expect(((await res.json()) as Follow).groupId).toBe("https://remote.example/api/groups/grp_x");
+    expect((await listFollows(app, alice))[0]?.groupId).toBe(
+      "https://remote.example/api/groups/grp_x",
+    );
+  });
+
+  test("a remote URI not shaped like a channel URI carries no groupId", async () => {
+    const { app } = freshApp("follows-groupid-remote-unshaped");
+    const alice = await registerUserWithKey(app, "alice");
+    const remote = "https://remote.example/c/chn_blog";
+
+    const res = await signedRequest(app, alice, "POST", "/api/me/follows", {
+      channel: remote,
+      groupId: "https://remote.example/api/groups/grp_x",
+    });
+    expect(res.status).toBe(201);
+    const follow = (await res.json()) as Follow;
+    expect(follow.channel).toBe(remote);
+    expect(follow.groupId).toBeUndefined();
+  });
+
+  test("a followed local channel since deleted stays listed, with no groupId", async () => {
+    const { app } = freshApp("follows-groupid-deleted-channel");
+    const alice = await registerUserWithKey(app, "alice");
+    const group = await createGroup(app, alice, { name: "G", tier: "public" });
+    const pub = await createChannel(app, alice, group.id, { type: "text", tier: "public" });
+    await signedRequest(app, alice, "POST", "/api/me/follows", { channel: pub.id });
+
+    const del = await signedRequest(
+      app,
+      alice,
+      "DELETE",
+      `/api/groups/${group.id}/channels/${pub.id}`,
+    );
+    expect(del.status).toBe(204);
+
+    const list = await listFollows(app, alice);
+    expect(list.length).toBe(1);
+    expect(list[0]?.channel).toBe(pub.id);
+    expect(list[0]?.groupId).toBeUndefined();
   });
 });
 
@@ -310,8 +419,14 @@ describe("no server-side feed (§7.6)", () => {
       .all()
       .map((r) => r.name);
 
-    // The follow pointer table exists...
+    // The follow pointer table exists, holding only the pointer (no group: it
+    // is derived from the channel, §7.6)...
     expect(tables).toContain("follows");
+    const columns = db.sqlite
+      .query<{ name: string }, []>("SELECT name FROM pragma_table_info('follows')")
+      .all()
+      .map((r) => r.name);
+    expect(columns).toEqual(["owner", "channel", "created_at", "metadata"]);
     // ...and there is NO compiled-feed table of any kind.
     expect(tables.some((t) => t.includes("feed"))).toBe(false);
   });

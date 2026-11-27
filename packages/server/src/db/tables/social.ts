@@ -131,8 +131,11 @@ export type NewPresenceRow = typeof presence.$inferInsert;
  *  - `owner` is the LOCAL handle who follows.
  *  - `channel` is the channel reference (§2.4): a bare local `chn_…` id, or a
  *    URI for a remote channel (or the canonical local channel URI).
- *  - `group_id` is the optional owning-group ref the client supplied.
  *  - `metadata` is a JSON `MetadataList`.
+ *
+ * No group is stored: the `Follow` `groupId` is derived from the channel each
+ * time it is rendered, never taken from the request (§7.6,
+ * `provider/follows.ts`; the old client-supplied column was dropped in 0043).
  *
  * There is intentionally NO feed table: the only follow state is this pointer.
  */
@@ -143,8 +146,6 @@ export const follows = sqliteTable(
     owner: text("owner").notNull(),
     /** Followed channel ref (§2.4): local `chn_…` id or a URI. */
     channel: text("channel").notNull(),
-    /** Optional owning-group ref supplied with the follow; nullable. */
-    groupId: text("group_id"),
     /** Creation time (epoch millis); rendered as RFC 3339 `createdAt`. */
     createdAt: integer("created_at", { mode: "number" })
       .notNull()

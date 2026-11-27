@@ -89,3 +89,13 @@ export const m0019Follows: Migration = {
     sqlite.exec("CREATE INDEX IF NOT EXISTS idx_follows_owner ON follows (owner);");
   },
 };
+
+export const m0043FollowsDropGroupId: Migration = {
+  // §7.6: a `Follow`'s `groupId` MUST be derived from the channel and a body
+  // `groupId` ignored. The column held the client-supplied value, so it goes;
+  // `provider/follows.ts` derives the group whenever a follow is rendered.
+  id: "0043_follows_drop_group_id",
+  up: (sqlite) => {
+    sqlite.exec("ALTER TABLE follows DROP COLUMN group_id;");
+  },
+};
