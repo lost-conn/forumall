@@ -56,7 +56,7 @@ export const REALTIME_FEDERATION: readonly ChecklistEntry[] = [
     status: "covered",
   },
   {
-    item: "Accept direct-WS connections from remote members — resolve remote keys via §4.6, enforce prior membership + tier at subscribe-time — and advertise `capabilities.federation.realtimeDelivery` (§8.5)",
+    item: "Accept direct-WS connections from remote actors — resolve remote keys via §4.6, enforce effective read access (§11.3) at subscribe-time, requiring membership only where read access does — and advertise `capabilities.federation.realtimeDelivery` (§8.5)",
     level: "provider-must",
     covers: [
       "packages/server/test/federation-realtime.test.ts",
@@ -65,7 +65,7 @@ export const REALTIME_FEDERATION: readonly ChecklistEntry[] = [
       "packages/server/test/federation-actor.test.ts",
     ],
     status: "partial",
-    note: "The `dmId` part of remote subscriptions is tracked under the direct-messages item. No remote-specific test of a member blocked by tier/`view` or of remote `since` resume (both reuse the local path).",
+    note: "Tested: a remote member subscribes and receives live events, a remote non-member is refused a `group`-tier channel and allowed a `public` one. The `dmId` part of remote subscriptions is tracked under the direct-messages item. No remote-specific test of a member blocked by tier/`view` or of remote `since` resume (both reuse the local path).",
   },
   {
     item: "Support the follow list (`GET`/`POST`/`DELETE /api/me/follows`) as pointers only — no server-side feed compilation or content replication — with each `groupId` derived from the channel as a ref, never taken from the request (§7.6)",
