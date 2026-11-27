@@ -93,9 +93,9 @@ describe("markdown — raw HTML is literal text (§5.3 MUST NOT interpret)", () 
 describe("markdown — links (§5.3 allow-list)", () => {
   test("http, https and mailto are active", () => {
     expect(md("[s](https://e.com/a_b)")).toBe('<p><a href="https://e.com/a_b">s</a></p>');
-    expect(md("[s](http://e.com)")).toBe('<p><a href="http://e.com">s</a></p>');
+    expect(md("[s](http://e.com)")).toBe('<p><a href="http://e.com/">s</a></p>');
     expect(md("[m](mailto:x@e.com)")).toBe('<p><a href="mailto:x@e.com">m</a></p>');
-    expect(md("<https://e.com>")).toBe('<p><a href="https://e.com">https://e.com</a></p>');
+    expect(md("<https://e.com>")).toBe('<p><a href="https://e.com/">https://e.com</a></p>');
   });
 
   test("other schemes keep their text and lose the link", () => {
@@ -136,7 +136,7 @@ describe("markdown — links (§5.3 allow-list)", () => {
   });
 
   test("a link label is not split into mentions", () => {
-    expect(md("[@alice](https://e.com)")).toBe('<p><a href="https://e.com">@alice</a></p>');
+    expect(md("[@alice](https://e.com)")).toBe('<p><a href="https://e.com/">@alice</a></p>');
   });
 });
 

@@ -70,7 +70,7 @@ describe("html sanitizer — elements", () => {
 describe("html sanitizer — links and images", () => {
   test("a keeps href only, through the link allow-list", () => {
     expect(html('<a href="https://e.com" target="_top" onclick="x">s</a>')).toBe(
-      '<a href="https://e.com">s</a>',
+      '<a href="https://e.com/">s</a>',
     );
     expect(html('<a href="mailto:a@e.com">m</a>')).toBe('<a href="mailto:a@e.com">m</a>');
     expect(html('<a href="javascript:alert(1)">x</a>')).toBe("x");

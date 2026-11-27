@@ -7,30 +7,70 @@
  * message has no base URL, so a relative reference resolves against nothing the
  * author controls (lost-conn/ofscp#31).
  *
- * The destination is first stripped of ASCII whitespace and C0 controls (plus
- * DEL). That closes a scheme-check bypass: a browser removes those characters
- * while parsing a URL, so `java\u0001script:alert(1)` navigates as
- * `javascript:`. Sanitizing before the check, and returning the sanitized
- * string, means what was validated is exactly what is emitted.
+ * The destination is normalized exactly as the WHATWG URL parser does before
+ * the check (https://url.spec.whatwg.org/#concept-basic-url-parser): leading
+ * and trailing C0 controls and spaces are trimmed, and ASCII tab and newline
+ * (U+0009, U+000A, U+000D) are removed wherever they occur. Nothing else is
+ * removed. That closes the scheme-check bypass (`\tjavascript:` and
+ * `java\nscript:` navigate as `javascript:`) without inventing a URL the author
+ * did not write: any other control character or a space inside the destination
+ * stays where it is (`java\u0001script:` has no scheme at all).
+ *
+ * An `http`/`https`/`mailto` destination must then parse as a URL, and the link
+ * carries its serialization, so what was validated is exactly what a browser
+ * navigates to. An `http`/`https` URL with credentials (userinfo) stays
+ * inactive: in `https://good.com @evil.com` the text before the `@` reads as
+ * the destination, while the URL's host is `evil.com`.
  */
 
 /** Where an allowed link points. */
 export type LinkTarget =
-  /** An `http`, `https` or `mailto` URL, as validated. */
+  /** An `http`, `https` or `mailto` URL, as serialized by the URL parser. */
   | { readonly kind: "url"; readonly href: string }
   /** `attachment:<id>`: one of the message's own attachments (§5.3). */
   | { readonly kind: "attachment"; readonly id: string };
 
-/** Drop every character a browser strips while parsing a URL (≤ 0x20, DEL). */
-function stripUrlControls(raw: string): string {
-  // By code point rather than a regex of literal control characters, which lint
-  // rules (rightly) flag; this reads as what it is: keep printable characters.
-  return [...raw]
-    .filter((ch) => {
-      const code = ch.codePointAt(0) ?? 0;
-      return code > 0x20 && code !== 0x7f;
-    })
-    .join("");
+/** C0 control or space (U+0000 to U+0020), as the URL standard defines it. */
+function isC0ControlOrSpace(code: number): boolean {
+  return code <= 0x20;
+}
+
+/** ASCII tab or newline (U+0009, U+000A, U+000D), as the URL standard defines it. */
+function isAsciiTabOrNewline(code: number): boolean {
+  return code === 0x09 || code === 0x0a || code === 0x0d;
+}
+
+/**
+ * The URL parser's input normalization: trim leading and trailing C0 control
+ * or space, then remove every ASCII tab or newline. By code unit rather than a
+ * regex of literal control characters, which lint rules (rightly) flag.
+ */
+function normalizeUrlInput(raw: string): string {
+  let start = 0;
+  let end = raw.length;
+  while (start < end && isC0ControlOrSpace(raw.charCodeAt(start))) start++;
+  while (end > start && isC0ControlOrSpace(raw.charCodeAt(end - 1))) end--;
+  let out = "";
+  for (let i = start; i < end; i++) {
+    if (!isAsciiTabOrNewline(raw.charCodeAt(i))) out += raw[i];
+  }
+  return out;
+}
+
+/**
+ * Parse a normalized `http`/`https`/`mailto` destination: its serialization, or
+ * `null` when it does not parse or (for `http`/`https`) carries credentials.
+ */
+function serializedUrl(href: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(href);
+  } catch {
+    return null; // Not a URL: a browser would not navigate to it either.
+  }
+  const web = url.protocol === "http:" || url.protocol === "https:";
+  if (web && (url.username !== "" || url.password !== "")) return null;
+  return url.href;
 }
 
 /** The scheme of an absolute URL, lower-cased, or `undefined` when it has none. */
@@ -40,14 +80,16 @@ function schemeOf(href: string): string | undefined {
 
 /**
  * Classify a link destination. Returns `null` for every link that must stay
- * inactive (shown as its text): a disallowed scheme, no scheme, or an
+ * inactive (shown as its text): a disallowed scheme, no scheme, a destination
+ * that does not parse, an `http`/`https` URL with credentials, or an
  * `attachment:` reference with an empty id.
  */
 export function linkTarget(rawHref: string): LinkTarget | null {
-  const href = stripUrlControls(rawHref);
+  const href = normalizeUrlInput(rawHref);
   const scheme = schemeOf(href);
   if (scheme === "http" || scheme === "https" || scheme === "mailto") {
-    return { kind: "url", href };
+    const serialized = serializedUrl(href);
+    return serialized === null ? null : { kind: "url", href: serialized };
   }
   if (scheme === "attachment") {
     const id = href.slice("attachment:".length);
@@ -61,10 +103,11 @@ export function linkTarget(rawHref: string): LinkTarget | null {
  * be used. Attachment metadata is untrusted (§5.8): for an attachment its
  * provider did not check, `url` is whatever the author wrote. Only `http` and
  * `https` are ever used, so a `blob:`, `data:` or `javascript:` URL can never
- * put author-chosen bytes on the client's own origin or run as a page.
+ * put author-chosen bytes on the client's own origin or run as a page. It is
+ * normalized and parsed as a link destination is ({@link linkTarget}).
  */
 export function attachmentFileUrl(rawUrl: string): string | null {
-  const url = stripUrlControls(rawUrl);
+  const url = normalizeUrlInput(rawUrl);
   const scheme = schemeOf(url);
-  return scheme === "http" || scheme === "https" ? url : null;
+  return scheme === "http" || scheme === "https" ? serializedUrl(url) : null;
 }

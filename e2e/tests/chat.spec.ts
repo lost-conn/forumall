@@ -311,7 +311,7 @@ test("article renders as markdown; an unknown type falls back to text (no crash)
   await expect(reading.getByTestId("article-title")).toHaveText("Heading");
   const articleBody = reading.getByTestId("article-body");
   await expect(articleBody.locator("strong")).toHaveText("bold");
-  await expect(articleBody.locator('a[href="https://example.com"]')).toBeVisible();
+  await expect(articleBody.locator('a[href="https://example.com/"]')).toBeVisible();
 
   // Back to the channel stream for the unknown-type assertion below.
   await reading.getByTestId("article-back").click();
@@ -344,7 +344,7 @@ test("message renders inline formatting (bold/italic/code/link) with clickable m
   await expect(body.locator("strong").first()).toHaveText("bold");
   await expect(body.locator("em")).toHaveText("italic");
   await expect(body.locator("code")).toHaveText("code");
-  await expect(body.locator('a[href="https://example.com"]')).toHaveText("link");
+  await expect(body.locator('a[href="https://example.com/"]')).toHaveText("link");
 
   // The mention nested in bold is a clickable token resolved to B's canonical actor.
   const mention = body.locator('strong [data-testid="message-mention"]');
