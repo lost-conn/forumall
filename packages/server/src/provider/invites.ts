@@ -4,11 +4,17 @@
  * Owns the persistence helpers the invite + redemption routers build on, keeping
  * the HTTP layer thin: row ↔ canonical `Invite` translation, invite creation
  * (minting a high-entropy `token`), lookup by id or token, revocation, and the
- * atomic redemption counter (`uses`/`maxUses`). Authorization (group `manage`)
+ * atomic redemption counter (`uses`/`maxUses`).
+ *
+ * Tokens are bearer secrets (§5.6): only their SHA-256 digest is stored
+ * (`invites.token_digest`), so a database leak does not reveal them. The token
+ * itself exists only in the creation response ({@link createInvite} returns it
+ * beside the row); every later lookup digests the presented token. Authorization (group `manage`)
  * and the actual membership mutation are the HTTP/membership layer's concern;
  * this module owns the `invites` row lifecycle and the use-count invariant.
  */
 import { type Invite, InviteSchema, rfc3339Timestamp } from "@forumall/shared";
+import { sha256 } from "@noble/hashes/sha2";
 import { eq, sql } from "drizzle-orm";
 
 import type { Db } from "../db/index.ts";
@@ -44,13 +50,25 @@ function mintInviteToken(): string {
   return toBase64Url(raw);
 }
 
-/** Map a stored invite row to the canonical, schema-valid `Invite` (§5.6). */
+/**
+ * The stored form of an invite token: lowercase hex SHA-256 of its UTF-8
+ * bytes. Migration `0043_invites_token_digest` converted plaintext tokens with
+ * this same encoding.
+ */
+export function inviteTokenDigest(token: string): string {
+  return Buffer.from(sha256(new TextEncoder().encode(token))).toString("hex");
+}
+
+/**
+ * Map a stored invite row to the canonical, schema-valid `Invite` (§5.6). The
+ * row holds no token, so the `Invite` carries none; the creation response adds
+ * it (the only place the spec requires it).
+ */
 export function rowToInvite(row: InviteRow): Invite {
   return InviteSchema.parse({
     id: row.id,
     groupId: row.groupId,
     ...(row.channelId != null ? { channelId: row.channelId } : {}),
-    token: row.token,
     role: row.role,
     grantsGuest: row.grantsGuest,
     ...(row.maxUses != null ? { maxUses: row.maxUses } : {}),
@@ -71,20 +89,28 @@ export interface CreateInviteInput {
   readonly expiresAt?: number | undefined;
 }
 
+/** A freshly created invite: its stored row and the token, never stored. */
+export interface CreatedInvite {
+  readonly row: InviteRow;
+  readonly token: string;
+}
+
 /**
  * Create an invite for `groupId` minted by `createdBy`, applying §5.6 defaults
- * (role `member`, `grantsGuest` false). Returns the stored row.
+ * (role `member`, `grantsGuest` false). Returns the stored row and the token;
+ * the token is not recoverable afterwards, so the caller hands it out now.
  */
 export function createInvite(
   db: Db,
   groupId: string,
   createdBy: string,
   input: CreateInviteInput,
-): InviteRow {
+): CreatedInvite {
+  const token = mintInviteToken();
   const row: InviteRow = {
     id: mintInviteId(),
     groupId,
-    token: mintInviteToken(),
+    tokenDigest: inviteTokenDigest(token),
     channelId: input.channelId ?? null,
     role: input.role ?? "member",
     grantsGuest: input.grantsGuest ?? false,
@@ -95,7 +121,7 @@ export function createInvite(
     createdAt: Date.now(),
   };
   db.drizzle.insert(invites).values(row).run();
-  return row;
+  return { row, token };
 }
 
 /** The raw invite row for `inviteId`, or `null` if there is none. */
@@ -105,10 +131,15 @@ export function getInviteRow(db: Db, inviteId: string): InviteRow | null {
   );
 }
 
-/** The raw invite row for an opaque `token`, or `null` if there is none. */
+/** The raw invite row for a presented opaque `token`, or `null` if there is none. */
 export function getInviteByToken(db: Db, token: string): InviteRow | null {
   return (
-    db.drizzle.select().from(invites).where(eq(invites.token, token)).limit(1).all()[0] ?? null
+    db.drizzle
+      .select()
+      .from(invites)
+      .where(eq(invites.tokenDigest, inviteTokenDigest(token)))
+      .limit(1)
+      .all()[0] ?? null
   );
 }
 
@@ -132,6 +163,11 @@ export function deleteInvite(db: Db, inviteId: string): boolean {
 /** Whether an invite is expired (has an `expires_at` in the past). */
 export function isInviteExpired(row: InviteRow, now = Date.now()): boolean {
   return row.expiresAt != null && now >= row.expiresAt;
+}
+
+/** Whether an invite has used up its `max_uses` (unlimited invites never do). */
+export function isInviteExhausted(row: InviteRow): boolean {
+  return row.maxUses != null && row.uses >= row.maxUses;
 }
 
 /** Outcome of {@link consumeInviteUse}. */

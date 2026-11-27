@@ -22,7 +22,9 @@
  *    owner cannot be kicked. → 204.
  *  - `GET /requests` (signed; `manage`/`moderate`): list pending requests.
  *  - `POST /requests/{requestId}/approve` (signed; `manage`/`moderate`): →
- *    200 Member. `POST /requests/{requestId}/deny`: → 204.
+ *    200 Member; `409` while the group's effective join policy is `invite`
+ *    (checked before the already-a-member case; the request stays pending).
+ *    `POST /requests/{requestId}/deny`: → 204, under any policy.
  *
  * Authorization decisions delegate to `provider/permissions.ts`; storage/shape
  * mapping lives in `provider/membership.ts`.
@@ -49,15 +51,16 @@ import {
   transferOwnership,
 } from "../provider/membership.ts";
 import {
-  CANONICAL_ROLES,
   canActor,
   getMembership,
+  isKnownRole,
   isMember,
   roleHoldsAll,
 } from "../provider/permissions.ts";
 import { effectiveJoinPolicy, tierReadableBy } from "../provider/tiers.ts";
 import type { Hub } from "../provider/ws-hub.ts";
 import { AppError } from "./errors.ts";
+import { refuseGuestOutsideItsGroup } from "./guest-binding.ts";
 import { requireSignature } from "./signature.ts";
 import type { AppBindings } from "./types.ts";
 
@@ -126,6 +129,9 @@ export function createMembershipRouter() {
     // Already a member → return their membership (idempotent, 200).
     const existing = getMemberRow(db, groupId, actor.actor);
     if (existing) return c.json(rowToMember(existing), 200);
+    // A guest is bound to the group it joined (§4.8): no joining, and no join
+    // request, anywhere else.
+    refuseGuestOutsideItsGroup(db, actor);
 
     // The body is optional; only the `request` policy reads `{ message }`.
     const raw = await c.req.json().catch(() => undefined as Record<string, unknown> | undefined);
@@ -267,11 +273,7 @@ export function createMembershipRouter() {
 
     // The assigned role must be known: canonical or in the group's `roles`.
     const group = rowToGroup(groupRow);
-    const knownRoles = new Set<string>([
-      ...CANONICAL_ROLES,
-      ...(group.roles ?? []).map((r) => r.name),
-    ]);
-    if (!knownRoles.has(role)) {
+    if (!isKnownRole(role, group)) {
       throw AppError.badRequest({ detail: `unknown role: ${role}` });
     }
 
@@ -434,7 +436,8 @@ export function createMembershipRouter() {
     const groupId = requireParam(c, "groupId");
     const requestId = requireParam(c, "requestId");
 
-    if (!getGroupRow(db, groupId)) throw AppError.notFound({ detail: "no such group" });
+    const groupRow = getGroupRow(db, groupId);
+    if (!groupRow) throw AppError.notFound({ detail: "no such group" });
     if (
       !canActor(db, "manage", groupId, actor.actor) &&
       !canActor(db, "moderate", groupId, actor.actor)
@@ -445,6 +448,17 @@ export function createMembershipRouter() {
     const row = getJoinRequestRow(db, requestId);
     if (!row || row.groupId !== groupId || row.state !== "pending") {
       throw AppError.notFound({ detail: "no such pending join request" });
+    }
+
+    // A pending request is approvable only while the group takes join requests
+    // (§5.7): its EFFECTIVE policy (`invite` for a `private` tier) is `request`
+    // or `open`. Checked before the already-a-member case, so a requester who
+    // joined through an invite still gets `409`; the request stays `pending`.
+    const policy = effectiveJoinPolicy(groupRow.tier, groupRow.joinPolicy);
+    if (policy !== "request" && policy !== "open") {
+      throw AppError.conflict({
+        detail: "this group is invite-only and no longer takes join requests",
+      });
     }
 
     return c.json(approveJoinRequest(db, row), 200);

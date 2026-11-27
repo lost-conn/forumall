@@ -13,18 +13,22 @@
  *    `null` so the caller can fall through to the 404 handler — the app still
  *    boots cleanly with no web build present.
  *
- *  - The sign-up page at the invite-link path `/register` (§4.1.1: links of the
- *    form `https://{authority}/register?invite={token}`) is sent with
- *    `Referrer-Policy: no-referrer`, so the token in its URL never leaks to
- *    another origin through a `Referer` header.
+ *  - The pages whose URL carries an invite token are sent with
+ *    `Referrer-Policy: no-referrer`, so the token never leaks to another
+ *    origin through a `Referer` header: the sign-up page at `/register`
+ *    (§4.1.1: account-invite links `https://{authority}/register?invite={token}`)
+ *    and the join-link page at `/invite/{token}` (§5.6 group invites).
  *
  * Path traversal (`..`, leading `/`) is normalized away before touching disk.
  */
 import { join, normalize } from "node:path";
 
-/** Whether `pathname` is the §4.1.1 invite-link sign-up page (`/register`). */
-function isSignUpPage(pathname: string): boolean {
-  return pathname === "/register" || pathname === "/register/";
+/**
+ * Whether `pathname` is a page served at an invite link: the §4.1.1 sign-up
+ * page (`/register`) or a §5.6 join-link page (`/invite/{token}`).
+ */
+function isInviteLinkPage(pathname: string): boolean {
+  return pathname === "/register" || pathname === "/register/" || pathname.startsWith("/invite/");
 }
 
 /** Resolve a URL pathname to a safe absolute path inside `webDir`. */
@@ -59,7 +63,7 @@ export function createStaticHandler(webDir: string) {
       return new Response(indexFile, {
         headers: {
           "content-type": "text/html; charset=utf-8",
-          ...(isSignUpPage(pathname) ? { "referrer-policy": "no-referrer" } : {}),
+          ...(isInviteLinkPage(pathname) ? { "referrer-policy": "no-referrer" } : {}),
         },
       });
     }

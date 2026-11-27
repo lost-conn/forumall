@@ -54,6 +54,21 @@ export type MessageKind = "message" | "memo" | "article";
  */
 export const CANONICAL_ROLES = ["owner", "admin", "member", "guest"] as const;
 
+/**
+ * Whether `role` exists in a group (§5.2): a canonical role or one named in its
+ * `roles` catalogue. Backs the role checks of a member's role change and of
+ * invite creation (§5.6, §5.7).
+ */
+export function isKnownRole(
+  role: string,
+  group: { readonly roles?: readonly { readonly name: string }[] | undefined },
+): boolean {
+  return (
+    (CANONICAL_ROLES as readonly string[]).includes(role) ||
+    (group.roles ?? []).some((r) => r.name === role)
+  );
+}
+
 /** The minimal shape of a group needed for an authorization decision. */
 export interface PermissionGroup {
   /** Action → permitted roles map (`group.permissions`). */

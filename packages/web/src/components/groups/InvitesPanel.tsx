@@ -1,7 +1,10 @@
 /**
  * Invite management (P8, §5.6). Managers create invites (role, grantsGuest,
  * maxUses, expiresAt) and get a shareable `/invite/{token}` link; existing
- * invites are listed and revocable. The shareable link points at the app's
+ * invites are listed and revocable. The link is shown once, at creation: the
+ * token is a bearer secret only the creation response carries (the provider
+ * keeps just a digest), so listed invites show their details, not a link. The
+ * shareable link points at the app's
  * in-browser redeem page so the shape works regardless of the server's HTTPS
  * `link` (which assumes the production domain).
  */
@@ -166,7 +169,12 @@ export const InvitesPanel: Component<{ group: Group; enabled: () => boolean }> =
               {(inv) => (
                 <li class="flex items-center gap-3 py-2.5" data-testid="invite-row">
                   <div class="min-w-0 flex-1">
-                    <code class="truncate text-xs text-muted">{inviteLinkFor(inv.token)}</code>
+                    <div class="truncate text-xs text-muted">
+                      Created {new Date(inv.createdAt).toLocaleString()}
+                      {inv.expiresAt
+                        ? ` · expires ${new Date(inv.expiresAt).toLocaleString()}`
+                        : ""}
+                    </div>
                     <div class="text-[11px] text-faint">
                       role {inv.role ?? "member"} · {inv.uses}
                       {inv.maxUses ? `/${inv.maxUses}` : ""} uses

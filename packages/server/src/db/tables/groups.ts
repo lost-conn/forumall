@@ -176,9 +176,10 @@ export type JoinRequestRow = typeof joinRequests.$inferSelect;
 export type NewJoinRequestRow = typeof joinRequests.$inferInsert;
 
 /**
- * Invites / join links (spec §5.6). One row per invite. `token` is a
+ * Invites / join links (spec §5.6). One row per invite. Its token is a
  * high-entropy opaque secret embedded in the shareable link
- * (`https://{domain}/invite/{token}`); redeeming it joins the issuing group (or
+ * (`https://{domain}/invite/{token}`), stored only as `token_digest` and handed
+ * out once, in the creation response; redeeming it joins the issuing group (or
  * a specific `channel_id`) with `role` (default `member`) without per-person
  * approval. An invite MAY be multi-use (`max_uses`), time-limited
  * (`expires_at`), and MAY provision a provider-local guest account
@@ -195,8 +196,13 @@ export const invites = sqliteTable(
     id: text("id").primaryKey(),
     /** FK to `groups.id`. */
     groupId: text("group_id").notNull(),
-    /** High-entropy opaque secret embedded in the join link. Unique. */
-    token: text("token").notNull().unique(),
+    /**
+     * SHA-256 digest (lowercase hex) of the high-entropy opaque secret embedded
+     * in the join link. The token itself is never stored, so a database leak
+     * does not reveal it (§5.6); lookups digest the presented token
+     * (`provider/invites.ts` `inviteTokenDigest`). Unique.
+     */
+    tokenDigest: text("token_digest").notNull().unique(),
     /** Optional FK to `channels.id`: redeem joins this channel's group. */
     channelId: text("channel_id"),
     /** Role granted on redemption (`owner|admin|member|guest`). Default member. */
@@ -217,7 +223,6 @@ export const invites = sqliteTable(
       .$defaultFn(() => Date.now()),
   },
   (t) => ({
-    tokenIdx: index("idx_invites_token").on(t.token),
     groupIdx: index("idx_invites_group_id").on(t.groupId),
   }),
 );

@@ -38,6 +38,7 @@ import {
   m0024GroupRoles,
   m0025GroupMembersDisplayNameOverride,
   m0027GroupsAvatar,
+  m0043InvitesTokenDigest,
 } from "./migrations/groups.ts";
 import {
   m0001AppMeta,
@@ -135,6 +136,7 @@ export const migrations: readonly Migration[] = [
   m0040DmMessagesTagsMentions,
   m0041DmReactionsUnicodeImage,
   m0042MessagesEditUntilNullable,
+  m0043InvitesTokenDigest,
 ];
 
 const LEDGER_DDL = `

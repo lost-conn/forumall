@@ -17,7 +17,8 @@ import {
   type AuthBootstrapResponse,
   type Group,
   type Invite,
-  InviteSchema,
+  type InviteCreateResponse,
+  InviteCreateResponseSchema,
   type UserProfile,
   UserProfileSchema,
   generateKeyPair,
@@ -118,10 +119,10 @@ async function createInvite(
   signer: Signer,
   groupId: string,
   body: Record<string, unknown> = {},
-): Promise<Invite & { link?: string }> {
+): Promise<InviteCreateResponse & { link?: string }> {
   const res = await signedRequest(app, signer, "POST", `/api/groups/${groupId}/invites`, body);
   expect(res.status).toBe(201);
-  return (await res.json()) as Invite & { link?: string };
+  return (await res.json()) as InviteCreateResponse & { link?: string };
 }
 
 // ---------------------------------------------------------------------------
@@ -143,8 +144,8 @@ describe("Invite management (§5.6)", () => {
       role: "member",
     });
     expect(res.status).toBe(201);
-    const invite = (await res.json()) as Invite & { link: string };
-    expect(() => InviteSchema.parse(invite)).not.toThrow();
+    const invite = (await res.json()) as InviteCreateResponse & { link: string };
+    expect(() => InviteCreateResponseSchema.parse(invite)).not.toThrow();
     expect(typeof invite.token).toBe("string");
     expect(invite.token.length).toBeGreaterThan(10);
     expect(invite.link).toBe(`https://${DOMAIN}/invite/${invite.token}`);

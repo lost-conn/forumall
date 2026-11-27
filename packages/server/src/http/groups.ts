@@ -29,6 +29,7 @@ import { canActor } from "../provider/permissions.ts";
 import { tierReadableBy } from "../provider/tiers.ts";
 import { createChannelsRouter } from "./channels.ts";
 import { AppError } from "./errors.ts";
+import { refuseGuestOutsideItsGroup } from "./guest-binding.ts";
 import { createGroupInvitesRouter } from "./invites.ts";
 import { createMembershipRouter } from "./membership.ts";
 import { optionalSignature, requireSignature } from "./signature.ts";
@@ -45,6 +46,10 @@ export function createGroupsRouter() {
     const { config, db } = c.var;
     const actor = c.var.actor;
     if (!actor) throw AppError.unauthorized(); // unreachable: middleware sets it
+
+    // A guest is bound to the group it joined (§4.8); creating a group would
+    // make it the owner of a second one.
+    refuseGuestOutsideItsGroup(db, actor);
 
     // Group-creation policy (Forumall extension): `admin-only` restricts creation
     // to the provider admin; `open` (the default) preserves the historical
