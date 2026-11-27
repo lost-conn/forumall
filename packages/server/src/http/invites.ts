@@ -41,7 +41,7 @@ import {
 import { addMember, getMemberRow } from "../provider/membership.ts";
 import { canActor } from "../provider/permissions.ts";
 import { AppError } from "./errors.ts";
-import { requireSignature } from "./signature.ts";
+import { optionalActorOrProviderSignature, requireSignature } from "./signature.ts";
 import type { AppBindings } from "./types.ts";
 
 /** Read a path param guaranteed present by the mounted route. */
@@ -211,7 +211,7 @@ export function createInvitesRouter() {
   // The guest has no key yet, so this endpoint is unauthenticated; it carries
   // the guest's first device key in the body and provisions a provider-local
   // guest account (§4.8). All subsequent requests are signed (§4.4).
-  router.post("/:token/guest", async (c) => {
+  router.post("/:token/guest", optionalActorOrProviderSignature(), async (c) => {
     const { db, config } = c.var;
     const token = requireParam(c, "token");
 

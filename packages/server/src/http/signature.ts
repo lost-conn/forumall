@@ -369,27 +369,77 @@ export function optionalSignature(
   const nonceRetentionMs = opts.nonceRetentionMs ?? retentionForSkew(skewSeconds);
   const identityHeader = mode === "provider" ? HEADER.PROVIDER : HEADER.ACTOR;
 
-  // A request is "signing" if it carries ANY of the X-OFSCP signing headers; if
-  // so we verify fully (so a partial/invalid set 401s rather than passing as
-  // anonymous). Absent entirely → continue unauthenticated.
-  const SIGNING_HEADERS = [
-    identityHeader,
-    HEADER.KEY_ID,
-    HEADER.TIMESTAMP,
-    HEADER.NONCE,
-    HEADER.CONTENT_DIGEST,
-    HEADER.SIGNATURE,
-  ];
-
   return async (c, next) => {
-    const present = SIGNING_HEADERS.some((name) => c.req.header(name) !== undefined);
-    if (present) {
+    if (carriesSignatureHeader(c)) {
       await verifyAndSetActor(c, {
         mode,
         skewSeconds,
         nonceRetentionMs,
         nonceStore: opts.nonceStore ?? c.var.nonceStore,
         identityHeader,
+      });
+    }
+    await next();
+  };
+}
+
+/**
+ * Every `X-OFSCP-*` header that makes a request a signed one (§4.5 "Anonymous
+ * viewers": a request carrying **any** of them is signed and is checked in
+ * full). Both identity headers are listed, so a provider-signed request sent to
+ * an actor-mode route is still treated as signed (and fails step 1 with `401`)
+ * rather than passing as anonymous.
+ */
+const SIGNATURE_HEADERS = [
+  HEADER.ACTOR,
+  HEADER.PROVIDER,
+  HEADER.KEY_ID,
+  HEADER.TIMESTAMP,
+  HEADER.NONCE,
+  HEADER.CONTENT_DIGEST,
+  HEADER.SIGNATURE,
+] as const;
+
+/** Whether the request carries any §4.5 signature header (i.e. is a signed request). */
+function carriesSignatureHeader(c: Context): boolean {
+  return SIGNATURE_HEADERS.some((name) => c.req.header(name) !== undefined);
+}
+
+/**
+ * Optional authentication for the **public** routes that never need a caller
+ * (discovery §3.1, the keys endpoint §4.6, `/api/tiers`, `/api/health`,
+ * `/problems/*`, the provider profile, media capability URLs, …).
+ *
+ * §8 *Authorization* applies the inbound allow/deny policy to every **signed**
+ * request on every route, public ones included, after §4.5 steps 1–5; so such a
+ * route still has to run §4.5 when it is signed:
+ *
+ *  - **No** signature header → continue anonymously (unsigned requests are
+ *    answered as for anyone, §8; the replay warm-up never applies to them).
+ *  - `X-OFSCP-Provider` present → the full pipeline in provider mode (§8.1);
+ *  - any other signature header → the full pipeline in actor mode (§4.5).
+ *
+ * A denied peer gets `403` at the start of step 6 (§4.5) / §8.1 step 2, a bad
+ * signature `401`, a digest mismatch `400`. On success `c.var.actor` and
+ * `c.var.signatureMode` are set like the other variants; these handlers ignore
+ * them. Shares the ONE provider-wide nonce store (#21).
+ */
+export function optionalActorOrProviderSignature(
+  opts: Omit<RequireSignatureOptions, "mode"> = {},
+): MiddlewareHandler<AppBindings> {
+  const skewSeconds = opts.skewSeconds ?? DEFAULT_TIMESTAMP_SKEW_SECONDS;
+  const nonceRetentionMs = opts.nonceRetentionMs ?? retentionForSkew(skewSeconds);
+
+  return async (c, next) => {
+    if (carriesSignatureHeader(c)) {
+      const mode: SignatureMode =
+        c.req.header(HEADER.PROVIDER) !== undefined ? "provider" : "actor";
+      await verifyAndSetActor(c, {
+        mode,
+        skewSeconds,
+        nonceRetentionMs,
+        nonceStore: opts.nonceStore ?? c.var.nonceStore,
+        identityHeader: mode === "provider" ? HEADER.PROVIDER : HEADER.ACTOR,
       });
     }
     await next();

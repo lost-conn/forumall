@@ -125,7 +125,7 @@ describe("DM conversation pointers: input + federation policy hardening (§7.4, 
   test("PUT refuses a counterparty on a deny-listed provider (403)", async () => {
     const b = boot("dm-pointer-deny", undefined, { FEDERATION_DENY: "evil.example" });
     const alice = await registerUserWithKey(b, "alice");
-    const remote = "x@evil.example";
+    const remote = "xavier@evil.example";
     const dmId = deriveDmId(alice.actor, remote);
 
     const res = await signedReq(b, alice, "PUT", `/api/me/dms/${dmId}`, { with: remote });

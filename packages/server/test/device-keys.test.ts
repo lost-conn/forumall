@@ -239,6 +239,47 @@ describe("GET /.well-known/ofscp/users/{handle}/keys (§4.6)", () => {
     expect(cacheUntil).toBeGreaterThanOrEqual(before + 120 * 1000 - 2000);
     expect(cacheUntil).toBeLessThanOrEqual(Date.now() + 120 * 1000 + 2000);
   });
+
+  test("unknown and registered-but-keyless handles get identical answers", async () => {
+    const { app } = freshApp("keyless-vs-unknown");
+    await registerUser(app, "keyless"); // registered, never added a device key
+    const unknown = await app.request("/.well-known/ofscp/users/unknownuser/keys");
+    const keyless = await app.request("/.well-known/ofscp/users/keyless/keys");
+    expect(unknown.status).toBe(200);
+    expect(keyless.status).toBe(200);
+    const u = UserKeysResponseSchema.parse(await unknown.json());
+    const k = UserKeysResponseSchema.parse(await keyless.json());
+    // Same shape and fields; `actor` is the canonical actor of the requested
+    // handle, `cache_until` the same window from "now" in both.
+    expect(Object.keys(u).sort()).toEqual(Object.keys(k).sort());
+    expect(u.actor).toBe("unknownuser@providera.test");
+    expect(k.actor).toBe("keyless@providera.test");
+    expect(u.keys).toEqual([]);
+    expect(k.keys).toEqual([]);
+    const gap = Math.abs(Date.parse(u.cache_until) - Date.parse(k.cache_until));
+    expect(gap).toBeLessThanOrEqual(1000);
+    expect(unknown.headers.get("content-type")).toBe(keyless.headers.get("content-type"));
+  });
+
+  test("a handle that is not well-formed → 404 not_found, never an empty 200 or a 500", async () => {
+    const { app } = freshApp("invalid-handle");
+    await registerUser(app, "alice");
+    for (const handle of [
+      "Alice", // uppercase: never lowercased into another handle's keys
+      "a%40b", // contains `@`
+      "alice%40providera.test",
+      "a%20b", // whitespace
+      "ab", // too short
+      "a".repeat(33), // too long
+      "a%25", // `a%`
+      "al.ice",
+    ]) {
+      const res = await app.request(`/.well-known/ofscp/users/${handle}/keys`);
+      expect({ handle, status: res.status }).toEqual({ handle, status: 404 });
+      expect(res.headers.get("content-type")).toContain(PROBLEM_CT);
+      expect(((await res.json()) as { errorCode: string }).errorCode).toBe("not_found");
+    }
+  });
 });
 
 describe("revocation + actor-key resolution (§4.7)", () => {

@@ -27,6 +27,7 @@ export const GROUPS_MESSAGES: readonly ChecklistEntry[] = [
     level: "provider-must",
     covers: [
       "packages/server/test/membership.test.ts",
+      "packages/server/test/membership-requests.test.ts",
       "packages/server/test/display-name.test.ts",
       "packages/server/test/conformance.test.ts",
     ],

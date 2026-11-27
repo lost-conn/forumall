@@ -11,7 +11,8 @@ import { getUserRow } from "./guests.ts";
  * Resolve a `userRef` — `handle`, `handle@domain`, or the canonical HTTPS URI
  * `https://{domain}/api/users/{handle}` — to the LOCAL handle of a user this
  * provider (canonical authority `host`) hosts, or `null`: a foreign domain, a
- * malformed reference, or no such local user.
+ * malformed reference, or no such local user. `ref` is the already-decoded
+ * path segment; it is never percent-decoded again (§2.2: decode exactly once).
  */
 export function localHandleOfUserRef(db: Db, host: string, ref: string): string | null {
   let handle = ref;
@@ -22,7 +23,9 @@ export function localHandleOfUserRef(db: Db, host: string, ref: string): string 
       if (canonicalAuthority(u.host) !== host) return null;
       const m = u.pathname.match(/\/api\/users\/([^/]+)$/);
       if (!m) return null;
-      handle = decodeURIComponent(m[1] as string);
+      // Taken literally: the `{userRef}` segment was already decoded once
+      // (§2.2), and a handle (§2.2.1) has no characters that need escaping.
+      handle = m[1] as string;
     } catch {
       return null;
     }

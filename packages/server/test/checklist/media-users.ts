@@ -74,15 +74,21 @@ export const MEDIA_USERS: readonly ChecklistEntry[] = [
       "packages/server/test/privacy.test.ts",
       "packages/server/test/presence.test.ts",
       "packages/server/test/remote-presence-federation.test.ts",
+      "packages/server/test/users-anonymous.test.ts",
+      "packages/server/test/public-route-signatures.test.ts",
     ],
-    status: "partial",
-    note: "Behaviour gaps: all three routes require a signature (anonymous viewers get `401`), the groups list is not filtered by what the viewer may read, and a ref containing `%25` is decoded twice (likely `500`, not the uniform `404`). Untested: identical `404` bodies across unknown, invalid and remote subjects, and the groups route's `404`.",
+    status: "covered",
+    context:
+      "Forumall has no disabled account state. The `denyList` → `allowList` → setting precedence is tested on `canView`, the one resolver all three routes use.",
   },
   {
     item: "Treat `PUT /api/me/presence` as a full replace that rejects `offline` with `400`, and `PUT /api/me/privacy` as a partial update that rejects an actor in both lists, or an over-long list, with `400` (§6.4, §6.6)",
     level: "provider-must",
-    covers: ["packages/server/test/presence.test.ts", "packages/server/test/privacy.test.ts"],
-    status: "partial",
-    note: "Related deviation: privacy lists also accept a user-object URI and convert it to an actor; the ofscp `UserRef` schema takes canonical actors only, so a URI must be `400`.",
+    covers: [
+      "packages/server/test/presence.test.ts",
+      "packages/server/test/privacy.test.ts",
+      "packages/server/test/canonical-authority.test.ts",
+    ],
+    status: "covered",
   },
 ];

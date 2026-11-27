@@ -1,19 +1,20 @@
 /**
  * User profile / account / privacy / membership-listing routers (spec §5.1, §6).
  *
- * Three routers, all signed:
+ * Two routers:
  *
  *  - {@link createMeUserRouter} (mounted at `/api/me`) — the caller-facing
  *    private endpoints: `GET /api/me` (the `UserAccount`), `PATCH /api/me/profile`
  *    (§6.3), and `GET/PUT /api/me/privacy` (§6.6).
  *  - {@link createUsersRouter} (mounted at `/api/users`) — the viewer-facing
  *    reads of another user, filtered by the subject's privacy policy:
- *    `GET /api/users/{userRef}/profile` (§6.2) and
- *    `GET /api/users/{userRef}/groups` (§6.5).
+ *    `GET /api/users/{userRef}/profile` (§6.2), `…/presence` (§6.4) and
+ *    `…/groups` (§6.5). These accept anonymous readers (§4.5, §6.1): an
+ *    unsigned request is an anonymous viewer, a signed one is verified in full.
  *
  * ## Visibility filtering
  * The base `UserProfile` (id/handle/domain/displayName/avatar) is returned to any
- * authenticated caller; the profile **extra** `bio` is gated through the shared
+ * viewer, signed or anonymous; the profile **extra** `bio` is gated through the shared
  * resolver ({@link canView}) using the subject's `profileVisibility`. The group
  * listing is gated as a whole using `membershipVisibility`: when the viewer is
  * not permitted, an empty list is returned (never a 403) so a viewer cannot
@@ -42,7 +43,7 @@ import { isProviderAdmin } from "../provider/admin.ts";
 import { claimGuestAccount } from "../provider/claim.ts";
 import { buildUserProfile, getUserRow, updateUserProfile } from "../provider/guests.ts";
 import { hostedMediaRowForUrl } from "../provider/media.ts";
-import { groupIdsOf } from "../provider/membership.ts";
+import { groupIdsReadableBy } from "../provider/membership.ts";
 import { mergeGuestIntoAccount } from "../provider/merge.ts";
 import {
   fanOutPresence,
@@ -53,9 +54,14 @@ import {
 import { getPrivacySettings, updatePrivacySettings } from "../provider/privacy.ts";
 import { localHandleOfUserRef } from "../provider/user-refs.ts";
 import { canView } from "../provider/visibility.ts";
-import { userRefToCanonicalActor } from "./canonical-fields.ts";
+import { assertCanonicalActorField } from "./canonical-fields.ts";
 import { AppError } from "./errors.ts";
-import { requireLocalActor, requireLocalHandle, requireSignature } from "./signature.ts";
+import {
+  optionalSignature,
+  requireLocalActor,
+  requireLocalHandle,
+  requireSignature,
+} from "./signature.ts";
 import type { AppBindings, AuthenticatedActor } from "./types.ts";
 
 /**
@@ -80,17 +86,27 @@ const MergeRequestSchema = z
   })
   .strict();
 
-/** Read a path param guaranteed present by the mounted route. */
-function requireParam(c: Context<AppBindings>, name: string): string {
-  return decodeURIComponent(c.req.param(name) ?? "");
+/**
+ * The one `404` for every subject these routes do not serve — a user on another
+ * provider, an unknown or invalid local handle — with the same body in every
+ * case, so the answer does not reveal which applies (§6.1 "Subject").
+ */
+function noSuchUser(): AppError {
+  return AppError.notFound({ detail: "no such user" });
 }
 
 /**
- * Resolve a `userRef` path param to a LOCAL handle, or `null` if it is not a
- * local user of this provider (see {@link localHandleOfUserRef}).
+ * Resolve the `{userRef}` path param to the LOCAL handle of a user this provider
+ * hosts, or throw the uniform {@link noSuchUser} `404`. Hono has already
+ * percent-decoded the segment, and §2.2 says to decode it exactly once, so it
+ * is used as is (a second decode would turn `%2540` into `@` and make `%25`
+ * throw).
  */
-function localHandleOfRef(c: Context<AppBindings>, ref: string): string | null {
-  return localHandleOfUserRef(c.var.db, canonicalAuthority(c.var.config.domain), ref);
+function subjectHandleOf(c: Context<AppBindings>): string {
+  const ref = c.req.param("userRef") ?? "";
+  const handle = localHandleOfUserRef(c.var.db, canonicalAuthority(c.var.config.domain), ref);
+  if (handle === null) throw noSuchUser();
+  return handle;
 }
 
 /**
@@ -311,11 +327,13 @@ export function createMeUserRouter() {
       });
     }
 
-    // §2.2: entries are compared against viewer actors verbatim, so each is
-    // stored as a canonical actor: a `UserRef` user URI is converted to its actor,
-    // and a non-canonical actor (or any other URI shape) is rejected (400).
-    const allowList = parsed.data.allowList?.map((x) => userRefToCanonicalActor(x, "allowList"));
-    const denyList = parsed.data.denyList?.map((x) => userRefToCanonicalActor(x, "denyList"));
+    // §2.2/§6.1: entries are actors (the ofscp `UserRef` schema, which the
+    // shared schema mirrors, so a user URI is already a 400), compared against
+    // viewer actors verbatim — so a non-canonical spelling is rejected too.
+    const allowList = parsed.data.allowList;
+    const denyList = parsed.data.denyList;
+    for (const entry of allowList ?? []) assertCanonicalActorField(entry, "allowList");
+    for (const entry of denyList ?? []) assertCanonicalActorField(entry, "denyList");
 
     const settings = updatePrivacySettings(db, requireLocalHandle(c), {
       ...(parsed.data.presenceVisibility !== undefined
@@ -383,39 +401,39 @@ export function createMeUserRouter() {
 }
 
 /**
- * The viewer-facing router: `GET /api/users/{userRef}/profile` (§6.2) and
- * `GET /api/users/{userRef}/groups` (§6.5). Mounted at `/api/users`.
+ * The viewer-facing router: `GET /api/users/{userRef}/profile` (§6.2),
+ * `…/groups` (§6.5) and `…/presence` (§6.4). Mounted at `/api/users`.
+ *
+ * Every route accepts anonymous readers (§4.5, §6.1): an unsigned request is an
+ * anonymous viewer (`viewerOf(undefined)` = `null`), who satisfies only the
+ * `public` visibility and the `public`/`discoverable` tiers and never matches a
+ * privacy list; any `X-OFSCP-*` header makes it a signed request, verified in
+ * full (`401` on failure, `403` for a denied provider, §8).
  */
 export function createUsersRouter() {
   const router = new Hono<AppBindings>();
-  const signed = requireSignature();
+  const viewer = optionalSignature();
 
-  // -- GET /api/users/{userRef}/profile (§6.2 — signed) -------------------
-  // The base UserProfile is visible to any authenticated caller; `bio` is gated
-  // on the subject's profileVisibility. 404 if no such local user.
-  router.get("/:userRef/profile", signed, (c) => {
+  // -- GET /api/users/{userRef}/profile (§6.2) -----------------------------
+  // The base UserProfile is visible to every viewer; `bio` is gated on the
+  // subject's profileVisibility.
+  router.get("/:userRef/profile", viewer, (c) => {
     const { config, db } = c.var;
-    const actor = c.var.actor;
-    if (!actor) throw AppError.unauthorized();
-
     const host = canonicalAuthority(config.domain);
-    const subjectHandle = localHandleOfRef(c, requireParam(c, "userRef"));
-    if (!subjectHandle) throw AppError.notFound({ detail: "no such user" });
+    const subjectHandle = subjectHandleOf(c);
 
     const profile = buildUserProfile(db, host, subjectHandle);
-    if (!profile) throw AppError.notFound({ detail: "no such user" });
+    if (!profile) throw noSuchUser();
 
     const settings = getPrivacySettings(db, subjectHandle);
     const row = getUserRow(db, subjectHandle);
 
-    // Gate the `bio` extra on profileVisibility; the base profile is always
-    // returned to the authenticated caller.
     const bioVisible =
       row?.bio != null &&
       canView(db, {
         subjectHandle,
         subjectDomain: host,
-        viewerActor: viewerOf(actor),
+        viewerActor: viewerOf(c.var.actor),
         policy: settings.profileVisibility,
         allowList: settings.allowList,
         denyList: settings.denyList,
@@ -430,32 +448,29 @@ export function createUsersRouter() {
     );
   });
 
-  // -- GET /api/users/{userRef}/groups (§6.5 — signed) --------------------
-  // Only the subject's groups visible to the viewer per membershipVisibility.
-  // Not permitted → empty list (never a 403), so the viewer can't distinguish
-  // "no groups" from "hidden". Permitted → the subject's group memberships as
-  // `{ id }` HTTPS-URI refs.
-  router.get("/:userRef/groups", signed, (c) => {
+  // -- GET /api/users/{userRef}/groups (§6.5) ------------------------------
+  // Only when membershipVisibility permits the viewer — else the uniform empty
+  // list (never a 403), so "no groups" and "hidden" look the same. Even then,
+  // only the hosted groups the viewer may read under the group's tier (§11.3
+  // condition 1): an anonymous viewer sees only public/discoverable groups.
+  router.get("/:userRef/groups", viewer, (c) => {
     const { config, db } = c.var;
-    const actor = c.var.actor;
-    if (!actor) throw AppError.unauthorized();
-
     const host = canonicalAuthority(config.domain);
-    const subjectHandle = localHandleOfRef(c, requireParam(c, "userRef"));
-    if (!subjectHandle) throw AppError.notFound({ detail: "no such user" });
+    const subjectHandle = subjectHandleOf(c);
 
     const settings = getPrivacySettings(db, subjectHandle);
+    const viewerActor = viewerOf(c.var.actor);
     const allowed = canView(db, {
       subjectHandle,
       subjectDomain: host,
-      viewerActor: viewerOf(actor),
+      viewerActor,
       policy: settings.membershipVisibility,
       allowList: settings.allowList,
       denyList: settings.denyList,
     });
 
     const subjectActor = `${subjectHandle}@${host}`;
-    const ids = allowed ? [...groupIdsOf(db, subjectActor)] : [];
+    const ids = allowed ? groupIdsReadableBy(db, subjectActor, viewerActor?.actor ?? null) : [];
     return c.json(
       UserGroupsResponseSchema.parse({
         groups: ids.map((id) => ({ id: `https://${host}/api/groups/${id}` })),
@@ -465,22 +480,16 @@ export function createUsersRouter() {
     );
   });
 
-  // -- GET /api/users/{userRef}/presence (§6.4 — signed) ------------------
-  // The subject's presence, filtered for the caller EXACTLY as the WS fan-out /
+  // -- GET /api/users/{userRef}/presence (§6.4) ----------------------------
+  // The subject's presence, filtered for the viewer EXACTLY as the WS fan-out /
   // snapshot would be (same `canView` + effective-state derivation, §7.5): a
   // viewer not permitted by the subject's `presenceVisibility` gets a uniform
   // `offline` (no status/lastSeen); a permitted viewer gets the real effective
-  // presence (offline if the subject has no live WS connection). 404 if no such
-  // local user.
-  router.get("/:userRef/presence", signed, (c) => {
+  // presence (offline if the subject has no live WS connection).
+  router.get("/:userRef/presence", viewer, (c) => {
     const { config, db, hub } = c.var;
-    const actor = c.var.actor;
-    if (!actor) throw AppError.unauthorized();
-
-    const subjectHandle = localHandleOfRef(c, requireParam(c, "userRef"));
-    if (!subjectHandle) throw AppError.notFound({ detail: "no such user" });
-
-    const eff = filterPresenceFor(db, hub, config, subjectHandle, viewerOf(actor));
+    const subjectHandle = subjectHandleOf(c);
+    const eff = filterPresenceFor(db, hub, config, subjectHandle, viewerOf(c.var.actor));
     return c.json(toPresence(eff), 200);
   });
 

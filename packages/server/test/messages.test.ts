@@ -195,14 +195,14 @@ describe("createMessage (§5.3)", () => {
     const a = createMessage(db, config, {
       channelId: "c",
       groupId: "g",
-      author: `a@${DOMAIN}`,
+      author: `ann@${DOMAIN}`,
       type: "message",
       content: { text: "1", mime: "text/plain" },
     });
     const b = createMessage(db, config, {
       channelId: "c",
       groupId: "g",
-      author: `a@${DOMAIN}`,
+      author: `ann@${DOMAIN}`,
       type: "message",
       content: { text: "2", mime: "text/plain" },
     });

@@ -58,7 +58,9 @@ function parseList(raw: string): string[] {
       .map((s) => s.trim().toLowerCase())
       .filter((s) => s.length > 0)
       // Senders MUST send actors in canonical form (§2.2): `bob@host:443` → `bob@host`.
-      .map((s) => (s.startsWith("https://") ? s : (canonicalActor(s) ?? s)))
+      // Entries are actors only (§6.1); anything else (e.g. a user URI) is sent
+      // as typed and the provider rejects it with a 400 the form shows.
+      .map((s) => canonicalActor(s) ?? s)
   );
 }
 
