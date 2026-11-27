@@ -323,21 +323,28 @@ describe("GET /api/groups/{groupId}/channels/{channelId} (§5.5, tier)", () => {
     expect(() => ChannelSchema.parse(body)).not.toThrow();
   });
 
-  test("private channel: non-member → 403, member → 200", async () => {
+  test("private channel: non-member → 404 as a missing channel (§11.3), member → 200", async () => {
     const { app, db } = freshApp("chan-get-private");
     const alice = await registerUserWithKey(app, "alice");
     const bob = await registerUserWithKey(app, "bob");
     const group = await createGroup(app, alice, { name: "G", tier: "public" });
     const channel = await createChannel(app, alice, group.id, { type: "text", tier: "private" });
 
-    // Non-member (authenticated) → 403.
-    const forbidden = await signedRequest(
+    // Non-member (authenticated) → the same 404 as a channel that does not exist.
+    const hidden = await signedRequest(
       app,
       bob,
       "GET",
       `/api/groups/${group.id}/channels/${channel.id}`,
     );
-    expect(forbidden.status).toBe(403);
+    const missing = await signedRequest(
+      app,
+      bob,
+      "GET",
+      `/api/groups/${group.id}/channels/chn_nope`,
+    );
+    expect(hidden.status).toBe(404);
+    expect(await hidden.json()).toEqual(await missing.json());
 
     // Member → 200.
     addMember(db, group.id, bob, "member");
@@ -369,11 +376,12 @@ describe("GET /api/groups/{groupId}/channels/{channelId} (§5.5, tier)", () => {
     const channel = await createChannel(app, alice, group.id, { type: "text", tier: "public" });
     const path = `/api/groups/${group.id}/channels/${channel.id}`;
 
+    // Hidden channels answer as missing (§11.3).
     const anon = await app.request(path);
-    expect(anon.status).toBe(403);
+    expect(anon.status).toBe(404);
 
     const nonMember = await signedRequest(app, bob, "GET", path);
-    expect(nonMember.status).toBe(403);
+    expect(nonMember.status).toBe(404);
 
     // A member sees it (channel tier is at least as open as needed; group
     // membership is what actually grants access here).

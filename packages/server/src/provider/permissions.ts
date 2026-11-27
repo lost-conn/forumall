@@ -96,7 +96,7 @@ export function isMember(db: Db, groupId: string, actor: string): boolean {
  * owner may perform it (fail closed).
  */
 export function can(action: Action, role: string, group: PermissionGroup): boolean {
-  return roleMeets(role, group.permissions[action]);
+  return roleListed(role, group.permissions[action]);
 }
 
 /**
@@ -106,7 +106,7 @@ export function can(action: Action, role: string, group: PermissionGroup): boole
  * denies everyone but the owner (fail closed). Shared by group {@link can} and
  * the per-channel resolvers ({@link canPostKind}, {@link canReact}).
  */
-export function roleMeets(role: string, allowed: readonly string[] | undefined): boolean {
+export function roleListed(role: string, allowed: readonly string[] | undefined): boolean {
   if (role === "owner") return true;
   return allowed?.includes(role) ?? false;
 }
@@ -172,22 +172,26 @@ function channelActionRoles(
 /**
  * May the actor post a message of `kind` in the channel (§5.2.1)? Uses the
  * channel's `post:<kind>` override when present, otherwise falls back to the
- * group's `post` action. Exact-membership via {@link roleMeets}.
+ * group's `post` action. Exact-membership via {@link roleListed}.
  */
 export function canPostKind(ctx: ChannelAuthzContext, kind: MessageKind): boolean {
   const channelRoles = channelActionRoles(ctx.channelPermissions, `post:${kind}`);
-  if (channelRoles !== undefined) return roleMeets(ctx.role, channelRoles);
-  return roleMeets(ctx.role, ctx.groupPermissions.post);
+  if (channelRoles !== undefined) return roleListed(ctx.role, channelRoles);
+  return roleListed(ctx.role, ctx.groupPermissions.post);
 }
 
 /**
- * May the actor add a reaction in the channel (§5.2.1)? Uses the channel's
- * `react` override when present, otherwise falls back to the group's `post`.
+ * May the actor — a group **member** who can read the channel — add a reaction
+ * in it (§5.2.1 `react`)? Uses the channel's `react` override when present
+ * (exact membership via {@link roleListed}). When absent, the §5.2.1 fallback
+ * is "any actor permitted to read the channel may react"; reading never implies
+ * reacting for a non-member (§11), so the caller must already have checked
+ * read access and membership, and this answers true.
  */
 export function canReact(ctx: ChannelAuthzContext): boolean {
   const channelRoles = channelActionRoles(ctx.channelPermissions, "react");
-  if (channelRoles !== undefined) return roleMeets(ctx.role, channelRoles);
-  return roleMeets(ctx.role, ctx.groupPermissions.post);
+  if (channelRoles !== undefined) return roleListed(ctx.role, channelRoles);
+  return true;
 }
 
 /**

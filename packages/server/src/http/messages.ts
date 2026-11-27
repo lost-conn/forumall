@@ -4,9 +4,10 @@
  * `:groupId` and `:channelId` are in scope via merged request params.
  *
  *  - `GET /` (optional auth): read a page of the channel timeline. Authorized
- *    via {@link channelVisibleTo} — a public/discoverable channel is readable by
- *    anyone able to read the group; a private/group channel only by a member
- *    (else 403). A missing group/channel → 404. Query: `cursor` (opaque),
+ *    via the §11.3 read gate ({@link requireReadableChannel}) — a
+ *    public/discoverable channel is readable by anyone able to read the group;
+ *    a private/group channel only by a member. A missing group, or a channel
+ *    that is missing or unreadable → the same 404. Query: `cursor` (opaque),
  *    `direction` (`backward` default | `forward`), `limit`. → `{ items, page:
  *    { nextCursor, prevCursor } }` per §7.2, validated against
  *    `MessagesPageSchema`.
@@ -29,10 +30,9 @@ import {
 } from "@forumall/shared";
 import { type Context, Hono } from "hono";
 
-import { canViewChannel, getChannelRow } from "../provider/channels.ts";
-import { getGroupRow } from "../provider/groups.ts";
 import { listMessages, listReplies, tombstoneMessage } from "../provider/messages.ts";
 import { addReaction, hasReaction, listReactions, removeReaction } from "../provider/reactions.ts";
+import { requireReadableChannel } from "./channel-access.ts";
 import { AppError, slugForErrorCode } from "./errors.ts";
 import { createChannelMessage } from "./message-create.ts";
 import { editChannelMessage } from "./message-edit.ts";
@@ -71,18 +71,8 @@ export function createMessagesRouter() {
     const groupId = requireParam(c, "groupId");
     const channelId = requireParam(c, "channelId");
 
-    // 404 before 403: an unknown group/channel is not found, regardless of caller.
-    if (!getGroupRow(db, groupId)) throw AppError.notFound({ detail: "no such group" });
-    const channel = getChannelRow(db, channelId);
-    if (!channel || channel.groupId !== groupId) {
-      throw AppError.notFound({ detail: "no such channel" });
-    }
-
-    // Read gate (§5.2.1): tier + membership, plus any per-channel `view` override.
-    const actor = c.var.actor?.actor ?? null;
-    if (!canViewChannel(db, channel, actor)) {
-      throw AppError.forbidden({ detail: "this channel is private" });
-    }
+    // Read gate (§11.3): an unreadable channel answers exactly as a missing one.
+    requireReadableChannel(db, groupId, channelId, c.var.actor?.actor ?? null);
 
     const cursor = c.req.query("cursor") ?? null;
     const directionRaw = c.req.query("direction");
@@ -103,23 +93,15 @@ export function createMessagesRouter() {
   // -- GET .../messages/:messageId/replies (§7.2, optional auth) -----------
   // Paged list of the replies to a message (its thread). Same read gate +
   // `messages-page` shape as the history read; defaults to oldest-reply-first.
-  // Unknown group/channel → 404; the parent message need not exist (an empty
-  // page is a valid answer), but a private channel → 403.
+  // Unknown group, or a missing or unreadable channel → 404; the parent message
+  // need not exist (an empty page is a valid answer).
   router.get("/:messageId/replies", optional, (c) => {
     const { db } = c.var;
     const groupId = requireParam(c, "groupId");
     const channelId = requireParam(c, "channelId");
     const messageId = requireParam(c, "messageId");
 
-    if (!getGroupRow(db, groupId)) throw AppError.notFound({ detail: "no such group" });
-    const channel = getChannelRow(db, channelId);
-    if (!channel || channel.groupId !== groupId) {
-      throw AppError.notFound({ detail: "no such channel" });
-    }
-    const actor = c.var.actor?.actor ?? null;
-    if (!canViewChannel(db, channel, actor)) {
-      throw AppError.forbidden({ detail: "this channel is private" });
-    }
+    requireReadableChannel(db, groupId, channelId, c.var.actor?.actor ?? null);
 
     const cursor = c.req.query("cursor") ?? null;
     const direction = c.req.query("direction") === "backward" ? "backward" : "forward";
@@ -232,25 +214,16 @@ export function createMessagesRouter() {
   });
 
   // -- GET .../messages/:messageId/reactions (§7.1, optional auth) ----------
-  // Paginated list of `Reaction` objects (history / late-joiners). Channel-
-  // visibility gated exactly like the message-history read: a private channel's
-  // reactions are readable only by a member (else 403); unknown group/channel/
-  // message → 404.
+  // Paginated list of `Reaction` objects (history / late-joiners). Gated
+  // exactly like the message-history read: an unknown group, or a missing or
+  // unreadable channel → 404 (§11.3).
   router.get("/:messageId/reactions", optional, (c) => {
     const { db } = c.var;
     const groupId = requireParam(c, "groupId");
     const channelId = requireParam(c, "channelId");
     const messageId = requireParam(c, "messageId");
 
-    if (!getGroupRow(db, groupId)) throw AppError.notFound({ detail: "no such group" });
-    const channel = getChannelRow(db, channelId);
-    if (!channel || channel.groupId !== groupId) {
-      throw AppError.notFound({ detail: "no such channel" });
-    }
-    const actor = c.var.actor?.actor ?? null;
-    if (!canViewChannel(db, channel, actor)) {
-      throw AppError.forbidden({ detail: "this channel is private" });
-    }
+    requireReadableChannel(db, groupId, channelId, c.var.actor?.actor ?? null);
 
     const cursor = c.req.query("cursor") ?? null;
     const rawLimit = Number.parseInt(c.req.query("limit") ?? "", 10);
@@ -284,7 +257,7 @@ export function createMessagesRouter() {
 
     const body = await readReactionPutBody(c);
 
-    const outcome = authorizeReaction(db, groupId, channelId, messageId, actor.actor);
+    const outcome = authorizeReaction(db, "add", groupId, channelId, messageId, actor.actor);
     if (outcome.error) throw toAppError(outcome.error);
 
     // Idempotency: a repeat add returns the existing reaction (same id) → 200;
@@ -319,7 +292,7 @@ export function createMessagesRouter() {
     const messageId = requireParam(c, "messageId");
     const key = requireParam(c, "key");
 
-    const outcome = authorizeReaction(db, groupId, channelId, messageId, actor.actor);
+    const outcome = authorizeReaction(db, "remove", groupId, channelId, messageId, actor.actor);
     if (outcome.error) throw toAppError(outcome.error);
 
     removeReaction(db, messageId, actor.actor, key);

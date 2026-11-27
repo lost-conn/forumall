@@ -4,11 +4,11 @@
  * Two transports, one model:
  *  - **WS** (real socket via `Bun.serve`, like `ws.test.ts`): `reaction.add` /
  *    `reaction.remove` commands, idempotency, fan-out to other subscribers, two
- *    users sharing a key, and the forbidden (can't-see-channel) path.
+ *    users sharing a key, and the hidden-channel (`not_found`) path.
  *  - **REST** (`app.request`, like `messages.test.ts`): `PUT`/`DELETE`
  *    `…/reactions/{key}` parity (idempotent 201→200, 204), reaching WS
  *    subscribers via the shared hub, the paginated `GET …/reactions` listing,
- *    and the private-channel 403.
+ *    and the hidden-channel 404 (§11.3).
  *
  * Argon2id cost is reduced (TEST-ONLY) so register stays fast.
  */
@@ -30,6 +30,7 @@ import { type AppWithWebSocket, createApp } from "../src/app.ts";
 import { type Argon2Params, type Config, loadConfig } from "../src/config.ts";
 import { openDb } from "../src/db/index.ts";
 import { migrate } from "../src/db/migrate.ts";
+import { groupMembers } from "../src/db/schema.ts";
 import type { Hub } from "../src/provider/ws-hub.ts";
 
 const FAST_ARGON2: Argon2Params = { memoryKib: 1024, iterations: 1, parallelism: 1 };
@@ -187,6 +188,17 @@ async function makeGroupChannelMessage(
   const messageId = (evt.data as { message: { id: string } }).message.id;
   conn.close();
   return { groupId, channelId, messageId };
+}
+
+/**
+ * Make `signer` a `member` of `groupId`. Reacting needs membership: reading a
+ * public channel never implies reacting in it (§11).
+ */
+function addMember(b: Booted, signer: Signer, groupId: string): void {
+  b.db.drizzle
+    .insert(groupMembers)
+    .values({ groupId, user: signer.actor, role: "member", joinedAt: Date.now() })
+    .run();
 }
 
 // ---------------------------------------------------------------------------
@@ -396,6 +408,7 @@ describe("WS reactions (§7.1)", () => {
     const owner = await registerUserWithKey(b, "owner");
     const bob = await registerUserWithKey(b, "bob");
     const { groupId, channelId, messageId } = await makeGroupChannelMessage(b, owner, "public");
+    addMember(b, bob, groupId);
 
     for (const [signer, id] of [
       [owner, "o"],
@@ -421,7 +434,7 @@ describe("WS reactions (§7.1)", () => {
     expect(items.every((r) => r.key === "fire")).toBe(true);
   });
 
-  test("reaction.add to a channel the actor can't see → error forbidden", async () => {
+  test("reaction.add to a channel the actor can't see → error not_found, as a missing channel (§11.3)", async () => {
     const b = boot("rx-forbidden");
     const owner = await registerUserWithKey(b, "owner");
     const bob = await registerUserWithKey(b, "bob"); // not a member
@@ -429,15 +442,15 @@ describe("WS reactions (§7.1)", () => {
 
     const bobConn = await connectAuthenticated(b, bob);
     bobConn.send({
-      id: "rx_forbidden",
+      id: "rx_hidden",
       type: "reaction.add",
       ts: rfc3339Timestamp(),
       data: { groupId, channelId, messageId, key: "heart" },
     });
     const err = await bobConn.ofType("error");
-    expect((err.data as { code: string }).code).toBe("forbidden");
-    expect((err.data as { status: number }).status).toBe(403);
-    expect(err.correlationId).toBe("rx_forbidden");
+    expect((err.data as { code: string }).code).toBe("not_found");
+    expect((err.data as { status: number }).status).toBe(404);
+    expect(err.correlationId).toBe("rx_hidden");
     bobConn.close();
   });
 
@@ -514,6 +527,8 @@ describe("REST reactions (§7.1 equivalents)", () => {
     const u2 = await registerUserWithKey(b, "user2");
     const u3 = await registerUserWithKey(b, "user3");
     const { groupId, channelId, messageId } = await makeGroupChannelMessage(b, owner, "public");
+    addMember(b, u2, groupId);
+    addMember(b, u3, groupId);
     const path = `/api/groups/${groupId}/channels/${channelId}/messages/${messageId}/reactions`;
 
     // Three distinct users each react with a distinct key → three rows.
@@ -549,7 +564,7 @@ describe("REST reactions (§7.1 equivalents)", () => {
     expect(new Set(ids).size).toBe(3);
   });
 
-  test("reading reactions on a private channel as a non-member → 403", async () => {
+  test("reading reactions on a private channel as a non-member → 404, as a missing channel (§11.3)", async () => {
     const b = boot("rx-rest-private");
     const owner = await registerUserWithKey(b, "owner");
     const bob = await registerUserWithKey(b, "bob"); // not a member
@@ -561,10 +576,10 @@ describe("REST reactions (§7.1 equivalents)", () => {
       "GET",
       `/api/groups/${groupId}/channels/${channelId}/messages/${messageId}/reactions`,
     );
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
   });
 
-  test("PUT a reaction in a private channel as a non-member → 403", async () => {
+  test("PUT a reaction in a private channel as a non-member → 404, as a missing channel (§11.3)", async () => {
     const b = boot("rx-rest-put-private");
     const owner = await registerUserWithKey(b, "owner");
     const bob = await registerUserWithKey(b, "bob");
@@ -577,6 +592,6 @@ describe("REST reactions (§7.1 equivalents)", () => {
       `/api/groups/${groupId}/channels/${channelId}/messages/${messageId}/reactions/heart`,
       {},
     );
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
   });
 });

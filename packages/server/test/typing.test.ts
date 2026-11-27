@@ -416,7 +416,7 @@ describe("WS typing indicators (§7.1)", () => {
     bConn.close();
   });
 
-  test("typing.start to a channel the actor can't see → forbidden, no fan-out", async () => {
+  test("typing.start to a channel the actor can't see → not_found as a missing channel (§11.3), no fan-out", async () => {
     const b = boot("ty-forbidden");
     const owner = await registerUserWithKey(b, "owner");
     const bob = await registerUserWithKey(b, "bob"); // not a member
@@ -428,15 +428,15 @@ describe("WS typing indicators (§7.1)", () => {
 
     const bobConn = await connectAuthenticated(b, bob);
     bobConn.send({
-      id: "ty_forbidden",
+      id: "ty_hidden",
       type: "typing.start",
       ts: rfc3339Timestamp(),
       data: { channelId },
     });
     const err = await bobConn.ofType("error");
-    expect((err.data as { code: string }).code).toBe("forbidden");
-    expect((err.data as { status: number }).status).toBe(403);
-    expect(err.correlationId).toBe("ty_forbidden");
+    expect((err.data as { code: string }).code).toBe("not_found");
+    expect((err.data as { status: number }).status).toBe(404);
+    expect(err.correlationId).toBe("ty_hidden");
 
     // No channel.typing reached the channel's legitimate subscriber.
     const noFanout = await ownerConn.none(

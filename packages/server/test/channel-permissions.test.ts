@@ -297,14 +297,15 @@ describe("per-channel permissions (§5.2.1)", () => {
     expect(canViewChannel(db, row, member.actor)).toBe(false);
     expect(canViewChannel(db, row, null)).toBe(false);
 
-    // HTTP history read reflects the same gate: member → 403, admin → 200.
+    // HTTP history read reflects the same gate: member → 404 (hidden channels
+    // answer as missing, §11.3), admin → 200.
     const memberRead = await signedRequest(
       app,
       member,
       "GET",
       `/api/groups/${group.id}/channels/${channel.id}/messages`,
     );
-    expect(memberRead.status).toBe(403);
+    expect(memberRead.status).toBe(404);
     const adminRead = await signedRequest(
       app,
       admin,
@@ -336,15 +337,16 @@ describe("per-channel permissions (§5.2.1)", () => {
       name: "everyone",
     });
 
-    // GET the restricted channel directly: excluded member → 403; included
-    // admin → 200 (its name/topic/tags/metadata are not leaked to the member).
+    // GET the restricted channel directly: excluded member → 404, as for a
+    // missing channel (§11.3); included admin → 200 (its name/topic/tags/
+    // metadata are not leaked to the member).
     const memberGet = await signedRequest(
       app,
       member,
       "GET",
       `/api/groups/${group.id}/channels/${restricted.id}`,
     );
-    expect(memberGet.status).toBe(403);
+    expect(memberGet.status).toBe(404);
     const adminGet = await signedRequest(
       app,
       admin,
@@ -356,7 +358,7 @@ describe("per-channel permissions (§5.2.1)", () => {
 
     // Anonymous is excluded too (no `view` role).
     const anonGet = await app.request(`/api/groups/${group.id}/channels/${restricted.id}`);
-    expect(anonGet.status).toBe(403);
+    expect(anonGet.status).toBe(404);
 
     // List: the member sees only the open channel; the admin sees both — the
     // view-restricted channel's metadata is not listed to the excluded member.

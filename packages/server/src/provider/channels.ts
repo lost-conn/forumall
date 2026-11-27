@@ -10,8 +10,9 @@
  *
  * {@link canViewChannel} is the single decision for "may this actor read this
  * channel" (tier + group tier + the optional per-channel `view` override,
- * §5.2.1) — messaging, WS subscribe, and read-markers all reuse it. It
- * delegates the tier-only half of that question to {@link channelVisibleTo}.
+ * §5.2.1, §11.3) — messaging, WS subscribe, and read-markers all reuse it, and
+ * {@link getReadableChannel} wraps it for every request that names a channel.
+ * It delegates the tier-only half of that question to {@link channelVisibleTo}.
  */
 import {
   type Channel,
@@ -28,7 +29,7 @@ import { eq } from "drizzle-orm";
 import type { Db } from "../db/index.ts";
 import { type ChannelRow, channels, messages, reactions } from "../db/schema.ts";
 import { getGroupRow } from "./groups.ts";
-import { getMembership, roleMeets } from "./permissions.ts";
+import { getMembership, roleListed } from "./permissions.ts";
 import { isPublicTier, tierReadableBy } from "./tiers.ts";
 
 /** `id` prefix per the §5.2 wire examples (`chn_…`). */
@@ -138,13 +139,15 @@ export function channelVisibleTo(
  * read this channel?", honoring an optional per-channel `view` permission.
  *
  *  - When the channel defines a `view` override, only a **member** whose role
- *    rank meets the bar may read — this *overrides* the tier (e.g. restricting a
- *    channel inside a `public` group to admins).
+ *    is listed in it (exact membership; the owner always passes) may read. A
+ *    member passes both tier conditions of §11.3, so this is §11.3's condition
+ *    3 (e.g. restricting a channel inside a `public` group to admins).
  *  - Otherwise it falls back to {@link channelVisibleTo} (tier + membership,
  *    already the more-restrictive-of-group-and-channel rule above).
  *
- * Use this (not the bare tier check) wherever channel read access is gated:
- * channel list/GET, message history, reply listing, WS subscribe, and follows.
+ * Use this (not the bare tier check) wherever channel read access is gated.
+ * A request that names a channel resolves it with {@link getReadableChannel},
+ * which folds this decision into the lookup.
  */
 export function canViewChannel(
   db: Db,
@@ -157,6 +160,29 @@ export function canViewChannel(
     actor,
     (groupId, member) => getMembership(db, groupId, member)?.role ?? null,
   );
+}
+
+/**
+ * The channel `channelId` — in `groupId`, when given — if it exists **and**
+ * `actor` may read it ({@link canViewChannel}, §11.3); otherwise `null`.
+ *
+ * §11.3 "Hidden channels answer as missing": every request naming a channel the
+ * caller cannot read (other than the channel-join alias) must be answered
+ * exactly as for a channel that does not exist. Returning the same `null` for
+ * both is what makes that hold: callers cannot tell them apart, so they cannot
+ * answer them differently. Permission checks (`403`) come only after this, for
+ * an actor who can read the channel.
+ */
+export function getReadableChannel(
+  db: Db,
+  channelId: string,
+  actor: string | null | undefined,
+  groupId?: string,
+): ChannelRow | null {
+  const row = getChannelRow(db, channelId);
+  if (!row) return null;
+  if (groupId !== undefined && row.groupId !== groupId) return null;
+  return canViewChannel(db, row, actor) ? row : null;
 }
 
 /**
@@ -177,7 +203,7 @@ export function canViewChannelWith(
   if (viewRoles && viewRoles.length > 0) {
     if (actor == null) return false;
     const role = roleOf(channel.groupId, actor);
-    return role != null && roleMeets(role, viewRoles);
+    return role != null && roleListed(role, viewRoles);
   }
   // Tier rule, as in {@link channelVisibleTo}: effective read access is the
   // more restrictive of the group's tier and the channel's (#24).
