@@ -31,7 +31,9 @@ export async function relayPeerResponse(c: Context, res: Response): Promise<Resp
  * reaction targets a message stored only in the remote recipient's inbox
  * (storage-follows-message, §8.3), so the authoritative store is the peer. The
  * reacting actor travels in the JSON body (a provider-signed request has no
- * `X-OFSCP-Actor`); the peer re-validates dmId membership.
+ * `X-OFSCP-Actor`) alongside a `PUT`'s optional `unicode`/`image` (§7.1,
+ * `reaction-put-request.json`, which the federation route takes too); the peer
+ * re-validates dmId membership.
  */
 export async function forwardDmReaction(
   db: Db,
@@ -44,11 +46,19 @@ export async function forwardDmReaction(
     key: string;
     counterpartyDomain: string;
     actor: string;
+    /** `PUT` only: the reaction's optional glyph. */
+    unicode?: string;
+    /** `PUT` only: the reaction's optional `https` image URL. */
+    image?: string;
   },
 ): Promise<Response> {
   const path = `/api/federation/dms/${args.dmId}/messages/${args.messageId}/reactions/${encodeURIComponent(args.key)}`;
   const url = `https://${args.counterpartyDomain}${path}`;
-  const body = JSON.stringify({ actor: args.actor });
+  const body = JSON.stringify({
+    actor: args.actor,
+    ...(args.method === "PUT" && args.unicode !== undefined ? { unicode: args.unicode } : {}),
+    ...(args.method === "PUT" && args.image !== undefined ? { image: args.image } : {}),
+  });
   return signedProviderFetch(
     db,
     config,

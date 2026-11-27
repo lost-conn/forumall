@@ -184,6 +184,17 @@ export const ChannelSchema = z
   .passthrough();
 export type Channel = z.infer<typeof ChannelSchema>;
 
+/**
+ * `GET /api/groups/{groupId}/channels` response (`channel-list.json`, §5.5):
+ * the channels the caller can read. Not paginated: there is no `page` object.
+ */
+export const ChannelListSchema = z
+  .object({
+    items: z.array(ChannelSchema),
+  })
+  .passthrough();
+export type ChannelList = z.infer<typeof ChannelListSchema>;
+
 /** POST /api/groups/{groupId}/channels body (`channel-create-request`). */
 export const ChannelCreateRequestSchema = z
   .object({

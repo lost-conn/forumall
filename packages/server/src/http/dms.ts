@@ -82,6 +82,7 @@ import {
   resolveLocalDmOwner,
 } from "./dm-request.ts";
 import { AppError } from "./errors.ts";
+import { reactionExtras, readReactionPutBody } from "./reaction-body.ts";
 import { requireLocalActor, requireLocalHandle, requireSignature } from "./signature.ts";
 import type { AppBindings } from "./types.ts";
 
@@ -297,6 +298,9 @@ export function createDmsRouter() {
     const messageId = requireParam(c, "messageId");
     const key = requireParam(c, "key");
     assertValidReactionKey(key);
+    // The optional body (§7.1, `reaction-put-request.json`): checked here for a
+    // clean 400 before any routing, then stored or forwarded with the reaction.
+    const extras = reactionExtras(await readReactionPutBody(c));
     const authority = canonicalAuthority(config.domain);
 
     // (a) The target lives in the caller's own LOCAL inbox. Its conversation row is
@@ -309,7 +313,13 @@ export function createDmsRouter() {
       me !== undefined && own ? counterpartyOf(db, me, dmId, authority) : null;
     if (own && ownCounterparty !== null) {
       const existed = hasDmReaction(db, dmId, messageId, actor.actor, key);
-      const reaction = addDmReaction(db, { dmId, messageId, author: actor.actor, key });
+      const reaction = addDmReaction(db, {
+        dmId,
+        messageId,
+        author: actor.actor,
+        key,
+        ...extras,
+      });
       fanOutDmReaction(hub, {
         dmId,
         messageId,
@@ -326,7 +336,13 @@ export function createDmsRouter() {
     const owner = resolveLocalDmOwner(db, config, actor.actor, dmId);
     if (owner !== null && getDmMessageRow(db, owner, dmId, messageId)) {
       const existed = hasDmReaction(db, dmId, messageId, actor.actor, key);
-      const reaction = addDmReaction(db, { dmId, messageId, author: actor.actor, key });
+      const reaction = addDmReaction(db, {
+        dmId,
+        messageId,
+        author: actor.actor,
+        key,
+        ...extras,
+      });
       fanOutDmReaction(hub, {
         dmId,
         messageId,
@@ -350,6 +366,7 @@ export function createDmsRouter() {
         key,
         counterpartyDomain: cpDomain,
         actor: actor.actor,
+        ...extras,
       });
       return relayPeerResponse(c, res);
     }

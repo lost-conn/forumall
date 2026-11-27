@@ -75,14 +75,17 @@ function isUniqueViolation(err: unknown): boolean {
 
 /**
  * Map a stored DM-reaction row to the canonical, schema-valid `Reaction` (§5.3).
- * The `reference` is always `{ type: "message", id: <messageId> }`; metadata is
- * an empty list (forward-compatible).
+ * The `reference` is always `{ type: "message", id: <messageId> }`;
+ * `unicode`/`image` are surfaced only when set; metadata is an empty list
+ * (forward-compatible).
  */
 export function rowToDmReaction(row: DmReactionRow): Reaction {
   return ReactionSchema.parse({
     id: row.id,
     author: row.author,
     key: row.key,
+    ...(row.unicode != null ? { unicode: row.unicode } : {}),
+    ...(row.image != null ? { image: row.image } : {}),
     reference: { type: "message", id: row.messageId },
     createdAt: rfc3339Timestamp(new Date(row.createdAt)),
     metadata: [] as MetadataList,
@@ -139,6 +142,10 @@ export interface AddDmReactionInput {
   /** Reacting actor (`handle@domain`). */
   readonly author: string;
   readonly key: string;
+  /** Optional glyph from the `PUT` body (§7.1). */
+  readonly unicode?: string;
+  /** Optional `https` image URL from the `PUT` body (§7.1). */
+  readonly image?: string;
 }
 
 /**
@@ -158,6 +165,8 @@ export function addDmReaction(db: Db, input: AddDmReactionInput): Reaction {
     messageId: input.messageId,
     author: input.author,
     key: input.key,
+    unicode: input.unicode ?? null,
+    image: input.image ?? null,
     createdAt: Date.now(),
   };
   try {

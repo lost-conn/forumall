@@ -14,7 +14,7 @@
  * Argon2id cost is reduced (TEST-ONLY) so register stays fast.
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -30,7 +30,7 @@ import { type AppWithWebSocket, createApp } from "../src/app.ts";
 import { type Argon2Params, type Config, loadConfig } from "../src/config.ts";
 import { openDb } from "../src/db/index.ts";
 import { migrate } from "../src/db/migrate.ts";
-import { type SchemaValidator, makeOfscpCompiler } from "./helpers/ofscp-schemas.ts";
+import { OFSCP_REPO, type SchemaValidator, makeOfscpCompiler } from "./helpers/ofscp-schemas.ts";
 
 const FAST_ARGON2: Argon2Params = { memoryKib: 1024, iterations: 1, parallelism: 1 };
 const DOMAIN = "providera.test";
@@ -47,6 +47,16 @@ const FAST_TIMINGS = {
 // ---------------------------------------------------------------------------
 
 const compile = makeOfscpCompiler();
+
+/**
+ * `channel-list.json` arrived with lost-conn/ofscp#30. CI runs against the spec's
+ * current `main`, so the live channel list is validated against it (and it is a
+ * required schema) whenever the checked-out spec has it; its items are always
+ * validated against `channel.json`.
+ */
+const HAS_CHANNEL_LIST_SCHEMA = existsSync(
+  join(OFSCP_REPO, "schemas", "v0.1", "channel-list.json"),
+);
 const validators = new Map<string, SchemaValidator>();
 
 /** Records every (schemaFile) that was validated against a live response. */
@@ -385,6 +395,15 @@ describe("live schema validation: groups, channels, messaging (§5, §7)", () =>
     expect(cpRes.status).toBe(201);
     await expectValid("channel.json", await cpRes.json());
 
+    // Channel list (§5.5): `{ items: [Channel] }`, not paginated (no `page`).
+    const listRes = await signedReq(alice, "GET", `/api/groups/${group.id}/channels`);
+    expect(listRes.status).toBe(200);
+    const channelList = (await listRes.json()) as { items: unknown[]; page?: unknown };
+    expect(channelList.items.length).toBe(2);
+    expect(channelList.page).toBeUndefined();
+    for (const ch of channelList.items) await expectValid("channel.json", ch);
+    if (HAS_CHANNEL_LIST_SCHEMA) await expectValid("channel-list.json", channelList);
+
     // Invite (§5.6)
     const invRes = await signedReq(alice, "POST", `/api/groups/${group.id}/invites`, {});
     expect(invRes.status).toBe(201);
@@ -600,6 +619,7 @@ describe("conformance coverage summary", () => {
     "problem-details.json",
     "group.json",
     "channel.json",
+    ...(HAS_CHANNEL_LIST_SCHEMA ? ["channel-list.json"] : []),
     "invite.json",
     "member.json",
     "messages-page.json",
