@@ -11,6 +11,7 @@ import {
   editDmMessage,
 } from "../../lib/dm-api.ts";
 import type { DmSentStore } from "../../lib/dm-store.ts";
+import { mentionedActors } from "../../lib/mentions.ts";
 import { type OfscpClient, isDefinitiveRejection } from "../../lib/ofscp-client.ts";
 import {
   addDmReactionAgg,
@@ -196,8 +197,13 @@ export async function editDm(args: {
     editedAt,
   });
 
+  // §5.3 `mentions` is authoritative and §7.1 keeps a field the edit omits, so
+  // resend it recomputed from the new text (`[]` once it names nobody). A bare
+  // `@handle` names a user of the provider holding the message: `target`.
+  const mentions = mentionedActors(text, target.host);
+
   try {
-    await editDmMessage(target, dmId, message.id, content);
+    await editDmMessage(target, dmId, message.id, content, mentions);
   } catch (err) {
     // Unknown outcome (aborted fetch, network drop, 5xx): the server may well
     // have applied the edit, so KEEP the optimistic state — see

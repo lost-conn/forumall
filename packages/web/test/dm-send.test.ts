@@ -133,17 +133,19 @@ describe("sendDm / retrySendDm: one clientMessageId per logical send", () => {
     expect(sentStore.list(DM)).toHaveLength(1);
   });
 
-  test("a 4xx marks the echo failed (the send certainly did not land)", async () => {
-    const { client } = scriptedClient([rejects(400)]);
-    const sentStore = new DmSentStore("me@h", memBackend());
+  for (const status of [400, 403]) {
+    test(`a ${status} marks the echo failed (the send certainly did not land)`, async () => {
+      const { client } = scriptedClient([rejects(status)]);
+      const sentStore = new DmSentStore("me@h", memBackend());
 
-    await expect(sendDm(args(client, sentStore))).rejects.toThrow(/400/);
-    const echo = dmThread(DM)[0];
-    expect(echo?.failed).toBe(true);
-    expect(echo?.pending).toBe(false);
-    // Nothing was stored, so nothing is retained locally either.
-    expect(sentStore.list(DM)).toHaveLength(0);
-  });
+      await expect(sendDm(args(client, sentStore))).rejects.toThrow(new RegExp(String(status)));
+      const echo = dmThread(DM)[0];
+      expect(echo?.failed).toBe(true);
+      expect(echo?.pending).toBe(false);
+      // Nothing was stored, so nothing is retained locally either.
+      expect(sentStore.list(DM)).toHaveLength(0);
+    });
+  }
 
   for (const [label, fail] of [
     ["an aborted fetch", aborts],

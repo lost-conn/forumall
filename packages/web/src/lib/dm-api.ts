@@ -169,17 +169,21 @@ export async function removeDmReaction(
   );
 }
 
-/** Edit a DM message in place via `PATCH …` (author-only, edit window). */
+/**
+ * Edit a DM message in place via `PATCH …` (author-only, edit window). `mentions`
+ * is the full new §5.3 list (`[]` for none): an omitted field would be kept.
+ */
 export async function editDmMessage(
   client: OfscpClient,
   dmId: string,
   messageId: string,
   content: { mime: string; text: string },
+  mentions: string[],
 ): Promise<Message> {
-  // An edit replaces the content wholesale → safe to resend after a 503.
+  // An edit replaces the fields it carries wholesale → safe to resend after a 503.
   const res = await client.patch<Message>(
     `/api/dms/${dmId}/messages/${messageId}`,
-    { content },
+    { content, mentions },
     { idempotent: true },
   );
   return res.data;

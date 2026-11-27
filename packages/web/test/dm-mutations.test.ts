@@ -127,3 +127,66 @@ describe("editDm / deleteDm: revert only on a definitive rejection", () => {
     expect(sentStore.list(DM)[0]?.content.text).toBe("original");
   });
 });
+
+/**
+ * §5.3 `mentions` is authoritative and §7.1 keeps a field an edit omits, so a DM
+ * edit sends the list recomputed from the new text — `[]` once it names nobody —
+ * with bare `@handle`s resolved against the provider holding the message.
+ */
+describe("editDm: resends `mentions` for the new text", () => {
+  beforeEach(() => clearDms());
+
+  /** A client on `host` that records each request body and answers 200. */
+  const recordingClient = (host: string, bodies: unknown[]): OfscpClient =>
+    new OfscpClient({
+      baseUrl: `https://${host}`,
+      fetch: (async (_url: string, init?: RequestInit) => {
+        bodies.push(JSON.parse(String(init?.body)));
+        return new Response(JSON.stringify({ id: "m1" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }) as unknown as typeof fetch,
+    });
+
+  const mine = {
+    id: "m1",
+    author: "me@h",
+    content: { mime: "text/plain", text: "hi @bob" },
+    createdAt: "2026-06-05T00:00:00Z",
+  };
+
+  test("an edit naming users sends their actors, bare handles at the holding provider", async () => {
+    const home: unknown[] = [];
+    const remote: unknown[] = [];
+    await editDm({
+      client: recordingClient("h.example", home),
+      deliveryClient: recordingClient("other.example", remote),
+      dmId: DM,
+      message: mine,
+      me: "me@h",
+      text: "now @carol and @dave@third.example",
+      sentStore: new DmSentStore("me@h", memBackend()),
+    });
+    expect(home).toEqual([]);
+    expect(remote).toEqual([
+      {
+        content: { mime: "text/plain", text: "now @carol and @dave@third.example" },
+        mentions: ["carol@other.example", "dave@third.example"],
+      },
+    ]);
+  });
+
+  test("an edit that drops every mention sends `mentions: []`", async () => {
+    const bodies: unknown[] = [];
+    await editDm({
+      client: recordingClient("h.example", bodies),
+      dmId: DM,
+      message: mine,
+      me: "me@h",
+      text: "never mind",
+      sentStore: new DmSentStore("me@h", memBackend()),
+    });
+    expect(bodies).toEqual([{ content: { mime: "text/plain", text: "never mind" }, mentions: [] }]);
+  });
+});

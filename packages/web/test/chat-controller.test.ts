@@ -8,13 +8,18 @@
  *    pending send: no new message, and the resume cursor does not move,
  *  - a create the connection dropped before answering is re-sent after the
  *    reconnect, and the provider's duplicate answer settles the echo,
- *  - a send that can never be delivered marks its echo failed, and a retry
- *    resends the whole message under its original `clientMessageId`.
+ *  - a send that can never be delivered marks its echo failed (also on a client
+ *    that is already closed), and a retry resends the whole message under its
+ *    original `clientMessageId`,
+ *  - a correlated `error` answering a create (`403`, `400`) marks its echo
+ *    failed and settles the send,
+ *  - an edit resends `mentions` recomputed from the new text (§5.3, §7.1).
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { type Attachment, type Message, generateKeyPair } from "@forumall/shared";
 import {
   type ChannelHandle,
+  editMessage,
   openChannel,
   retrySend,
   sendMessage,
@@ -257,5 +262,101 @@ describe("undeliverable sends and retry", () => {
     expect(messagesFor(CHANNEL)).toHaveLength(1);
     expect(messagesFor(CHANNEL)[0]?.pending).toBe(true);
     expect(messagesFor(CHANNEL)[0]?.failed).toBeFalsy();
+  });
+
+  test("a send on an already-closed client fails its echo without throwing", async () => {
+    const ws = wsClient();
+    ws.close();
+    let cmid = "";
+    expect(() => {
+      cmid = sendMessage({ ws, groupId: GROUP, channelId: CHANNEL, author: ME, text: "late" });
+    }).not.toThrow();
+    // Reported once `send` has returned (a microtask later).
+    await Promise.resolve();
+    expect(messagesFor(CHANNEL)).toHaveLength(1);
+    expect(messagesFor(CHANNEL)[0]).toMatchObject({
+      clientMessageId: cmid,
+      pending: false,
+      failed: true,
+    });
+  });
+});
+
+describe("a correlated `error` answering a create (§7.1)", () => {
+  for (const [status, code] of [
+    [403, "forbidden"],
+    [400, "bad_request"],
+  ] as const) {
+    test(`a ${status} marks the echo failed; a later frame with that id is not its answer`, async () => {
+      const { ws, sock } = await openConnected();
+      const cmid = sendMessage({ ws, groupId: GROUP, channelId: CHANNEL, author: ME, text: "x" });
+      const frame = lastCreate(sock);
+      sock.serverSend({
+        id: "evt_err",
+        type: "error",
+        correlationId: frame.id,
+        data: { code, status, message: "refused" },
+      });
+      expect(messagesFor(CHANNEL)).toHaveLength(1);
+      expect(messagesFor(CHANNEL)[0]).toMatchObject({
+        clientMessageId: cmid,
+        pending: false,
+        failed: true,
+      });
+
+      // The send is settled: a stray `message.created` reusing the frame id no
+      // longer reconciles the (failed) echo; it lands as its own message.
+      sock.serverSend({
+        id: "evt_late",
+        type: "message.created",
+        correlationId: frame.id,
+        data: { channelId: CHANNEL, cursor: CUR_5, message: stored("msg_x", "cmid_x", "other") },
+      });
+      expect(messagesFor(CHANNEL).map((m) => m.id)).toEqual([`optimistic:${cmid}`, "msg_x"]);
+      expect(messagesFor(CHANNEL)[0]?.failed).toBe(true);
+    });
+  }
+
+  test("an uncorrelated `error`, or one for another frame, leaves the echo pending", async () => {
+    const { ws, sock } = await openConnected();
+    sendMessage({ ws, groupId: GROUP, channelId: CHANNEL, author: ME, text: "x" });
+    sock.serverSend({ id: "e1", type: "error", data: { code: "bad_request", status: 400 } });
+    sock.serverSend({
+      id: "e2",
+      type: "error",
+      correlationId: "someone_else",
+      data: { code: "forbidden", status: 403 },
+    });
+    expect(messagesFor(CHANNEL)[0]).toMatchObject({ pending: true });
+    expect(messagesFor(CHANNEL)[0]?.failed).toBeFalsy();
+  });
+});
+
+describe("editMessage resends `mentions` (§5.3 authoritative; §7.1 keeps omitted fields)", () => {
+  const lastUpdate = (sock: FakeWebSocket) =>
+    sock.sent.filter((f) => f.type === "message.update").at(-1);
+
+  test("the new text's mentions, bare handles at the channel's provider", async () => {
+    const { ws, sock } = await openConnected();
+    editMessage({
+      ws,
+      groupId: GROUP,
+      channelId: CHANNEL,
+      messageId: "msg_1",
+      text: "ping @dave and @erin@other.example",
+    });
+    expect(lastUpdate(sock)?.data).toEqual({
+      groupId: GROUP,
+      channelId: CHANNEL,
+      messageId: "msg_1",
+      content: { mime: "text/plain", text: "ping @dave and @erin@other.example" },
+      mentions: [`dave@${HOST}`, "erin@other.example"],
+    });
+  });
+
+  test("an edit that names nobody any more sends `mentions: []`", async () => {
+    const { ws, sock } = await openConnected();
+    editMessage({ ws, groupId: GROUP, channelId: CHANNEL, messageId: "msg_1", text: "no one" });
+    expect((lastUpdate(sock)?.data as { mentions?: unknown }).mentions).toEqual([]);
   });
 });

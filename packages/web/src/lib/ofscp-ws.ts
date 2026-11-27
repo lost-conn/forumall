@@ -88,6 +88,10 @@ export interface WsSendOptions {
    * (`whenDisconnected: "drop"`), or the client closed for good — {@link
    * OfscpWsClient.close}, close `4003`, or a close with auto-reconnect off —
    * while it was waiting (or, if idempotent, still unanswered).
+   *
+   * Never called before {@link OfscpWsClient.send} has returned: a command that
+   * is undeliverable at once (dropped, or sent on a closed client) is reported
+   * in a microtask, so the callback may rely on the frame id `send` returned.
    */
   onUndelivered?: () => void;
 }
@@ -304,11 +308,14 @@ export class OfscpWsClient {
 
   private onAuthenticated(): void {
     this.reconnectAttempts = 0;
-    this.setState("connected");
     // Re-issue every remembered subscription with its resume cursor, then the
-    // commands that waited for this connection, in the order they were sent.
+    // commands that waited for this connection, in the order they were sent —
+    // all BEFORE the state becomes `connected`, so a state listener's own send
+    // (e.g. `presence.subscribe`) goes out after them, never ahead of older
+    // queued commands.
     this.resubscribeAll();
     for (const entry of this.outbox.splice(0)) this.write(entry);
+    this.setState("connected");
     for (const w of this.authWaiters.splice(0)) w.resolve();
   }
 
@@ -377,7 +384,8 @@ export class OfscpWsClient {
    * A command is written only to an AUTHENTICATED connection: §7.1 closes a
    * connection that sends anything but `authenticate` before `authenticated`.
    * Until then it waits (or is dropped) per {@link WsSendOptions}. Once {@link
-   * close} has been called, a command is reported undelivered at once.
+   * close} has been called, a command is reported undelivered straight after
+   * this returns (in a microtask; see {@link WsSendOptions.onUndelivered}).
    */
   send(type: string, data: Record<string, unknown>, opts: WsSendOptions = {}): string {
     const id = nextFrameId(type.replace(/\W/g, ""));
@@ -385,7 +393,9 @@ export class OfscpWsClient {
     if (this._state === "connected") {
       this.write(entry);
     } else if (this._state === "closed" || opts.whenDisconnected === "drop") {
-      opts.onUndelivered?.();
+      // Deferred, so the caller holds the returned id before the callback runs.
+      const onUndelivered = opts.onUndelivered;
+      if (onUndelivered) queueMicrotask(onUndelivered);
     } else {
       this.outbox.push(entry);
     }

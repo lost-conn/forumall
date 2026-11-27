@@ -4,11 +4,12 @@
  *
  *  - no command is written before `authenticated` (the provider would close the
  *    connection with `4001`); commands wait in order and go out after the
- *    resume `subscribe`,
+ *    resume `subscribe`, ahead of anything a `connected` listener sends,
  *  - typing-style commands are dropped, not queued, while disconnected,
  *  - an idempotent command the connection dropped before answering is re-sent,
  *    under the same id, on the next connection; an answered one is not,
  *  - waiting commands are reported undelivered when the client closes for good,
+ *    and a command sent on a closed client only after `send` has returned,
  *  - a drop reconnects with backoff, re-authenticates, and re-subscribes with
  *    the `since` cursor of the last timeline event — which a cursor-less
  *    duplicate-create answer never moves.
@@ -70,6 +71,29 @@ describe("commands wait for `authenticated` (§7.1)", () => {
     expect(sock.sent[2]?.data).toEqual({ channelId: "chn_1", n: 1 });
   });
 
+  test("a `connected` listener's send goes out after the resume subscribe and the queued commands", async () => {
+    const client = makeClient();
+    client.subscribe(["chn_1"]);
+    const queued = client.send("message.create", { channelId: "chn_1" });
+    const fromListener: string[] = [];
+    client.onState((s) => {
+      if (s === "connected")
+        fromListener.push(client.send("presence.subscribe", { users: ["b@x"] }));
+    });
+    const connected = client.connect();
+    const sock = FakeWebSocket.latest();
+    sock.handshake();
+    await connected;
+    expect(sock.sentTypes()).toEqual([
+      "authenticate",
+      "subscribe",
+      "message.create",
+      "presence.subscribe",
+    ]);
+    expect(sock.sent[2]?.id).toBe(queued);
+    expect(sock.sent[3]?.id).toBe(fromListener[0]);
+  });
+
   test("once connected, a command is written at once", async () => {
     const client = makeClient();
     const connected = client.connect();
@@ -114,7 +138,7 @@ describe("commands wait for `authenticated` (§7.1)", () => {
 });
 
 describe("failure on disconnect", () => {
-  test("waiting commands are reported undelivered on close(); later sends at once", () => {
+  test("waiting commands are reported undelivered on close(); later sends just after send returns", async () => {
     const client = makeClient();
     void client.connect().catch(() => undefined);
     const failed: string[] = [];
@@ -122,8 +146,23 @@ describe("failure on disconnect", () => {
     client.send("message.update", { n: 2 }, { onUndelivered: () => failed.push("b") });
     client.close();
     expect(failed).toEqual(["a", "b"]);
-    client.send("message.create", { n: 3 }, { onUndelivered: () => failed.push("c") });
+    // The callback may use the id `send` returns, so it never runs inside `send`
+    // (reading `returnedId` there would throw: it is not yet initialised).
+    let idSeenByCallback: string | undefined;
+    const returnedId = client.send(
+      "message.create",
+      { n: 3 },
+      {
+        onUndelivered: () => {
+          idSeenByCallback = returnedId;
+          failed.push("c");
+        },
+      },
+    );
+    expect(failed).toEqual(["a", "b"]);
+    await Promise.resolve();
     expect(failed).toEqual(["a", "b", "c"]);
+    expect(idSeenByCallback).toBe(returnedId);
   });
 
   test("close 4003 (credentials revoked) reports waiting commands undelivered", async () => {

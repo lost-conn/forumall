@@ -179,6 +179,17 @@ export async function openChannel(deps: OpenChannelDeps): Promise<ChannelHandle>
     upsertMessage(channelId, canonical);
   });
 
+  // A correlated `error` answering one of our `message.create`s (e.g. `403` no
+  // `post:<type>`, `400` a bad body, §7.1) means the provider stored nothing:
+  // settle the pending send and mark its echo failed (retry stays available).
+  const offError = ws.on("error", (e: WsEnvelope) => {
+    const correlationId = e.correlationId;
+    const pending = correlationId ? pendingSends.get(correlationId) : undefined;
+    if (!pending || pending.channelId !== channelId) return;
+    pendingSends.delete(correlationId as string);
+    markOptimisticFailed(channelId, pending.clientMessageId);
+  });
+
   const offUpdated = ws.on("message.updated", (e: WsEnvelope) => {
     const data = (e as WsMessageUpdated).data;
     if (data.channelId !== channelId) return;
@@ -223,6 +234,7 @@ export async function openChannel(deps: OpenChannelDeps): Promise<ChannelHandle>
     lifetime.abort();
     deps.signal?.removeEventListener("abort", close);
     offCreated();
+    offError();
     offUpdated();
     offDeleted();
     offReactionAdded();
@@ -380,6 +392,8 @@ export function sendMessage(args: SendArgs): string {
     },
     {
       idempotent: true,
+      // Runs only after `send` has returned (even on a closed client), so
+      // `sentFrameId` is assigned and the entry set below is the one removed.
       onUndelivered: () => {
         pendingSends.delete(sentFrameId);
         markOptimisticFailed(channelId, clientMessageId);
@@ -466,7 +480,14 @@ function isComposerKind(type: string | undefined): type is "message" | "memo" | 
   return type === "message" || type === "memo" || type === "article";
 }
 
-/** Edit a message; returns the command frame id (for `error` correlation). */
+/**
+ * Edit a message; returns the command frame id (for `error` correlation).
+ *
+ * §5.3 `mentions` is the message's authoritative mention list, and §7.1 keeps
+ * any field an update omits. So the edit always resends `mentions`, recomputed
+ * from the new text — `[]` when it names nobody any more — or the old list
+ * would outlive the text that named those users.
+ */
 export function editMessage(args: {
   ws: OfscpWsClient;
   groupId: string;
@@ -480,6 +501,7 @@ export function editMessage(args: {
     channelId: args.channelId,
     messageId: args.messageId,
     content: { mime: args.mime ?? "text/plain", text: args.text },
+    mentions: mentionedActors(args.text, args.ws.host),
   });
 }
 
