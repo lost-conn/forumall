@@ -24,6 +24,8 @@
  * The channel-join alias (§8.2) is deliberately not walked: it answers as a
  * group join. The read-marker "unknown scope" answer is covered by
  * `read-markers.test.ts`.
+ *
+ * Also here: a provider-defined (unknown) tier fails closed, as `group` (§11).
  */
 import { describe, expect, test } from "bun:test";
 import { type WsEnvelope, rfc3339Timestamp } from "@forumall/shared";
@@ -302,6 +304,45 @@ describe("hidden channels answer as missing on every surface (§11.3)", () => {
       await expectUntouched(f);
     });
   }
+});
+
+describe("unknown tiers fail closed (§11)", () => {
+  test("a provider-defined channel or group tier is treated as `group`: members only", async () => {
+    const b = boot("hidden-unknown-tier");
+    const owner = await registerUserWithKey(b, "owner");
+    const eve = await registerUserWithKey(b, "eve");
+    const mia = await registerUserWithKey(b, "mia");
+
+    for (const tiers of [
+      { group: "public", channel: "members-plus" },
+      { group: "members-plus", channel: "public" },
+    ]) {
+      const g = await signedReq(b, owner, "POST", "/api/groups", { name: "g", tier: tiers.group });
+      expect(g.status).toBe(201);
+      const groupId = ((await g.json()) as { id: string }).id;
+      const ch = await signedReq(b, owner, "POST", `/api/groups/${groupId}/channels`, {
+        type: "text",
+        tier: tiers.channel,
+      });
+      expect(ch.status).toBe(201);
+      const channelId = ((await ch.json()) as { id: string }).id;
+      addMember(b, groupId, mia, "member");
+      const history = `/api/groups/${groupId}/channels/${channelId}/messages`;
+
+      expect({ tiers, status: (await http(b, history, { method: "GET" })).status }).toEqual({
+        tiers,
+        status: 404,
+      });
+      expect({ tiers, status: (await signedReq(b, eve, "GET", history)).status }).toEqual({
+        tiers,
+        status: 404,
+      });
+      expect({ tiers, status: (await signedReq(b, mia, "GET", history)).status }).toEqual({
+        tiers,
+        status: 200,
+      });
+    }
+  });
 });
 
 describe("403 only for a reader who lacks a permission (§11.3)", () => {
