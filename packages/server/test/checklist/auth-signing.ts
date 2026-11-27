@@ -72,7 +72,7 @@ export const AUTH_SIGNING: readonly ChecklistEntry[] = [
     note: "Push delivery to an `http`, private or redirecting endpoint is untested. Notification-target delivery, DM forwarding and the known-providers scrape are only structurally guarded: their tests inject a `federationFetch` that bypasses `guardedFetch`.",
   },
   {
-    item: "Apply federation allow/deny policy to every outbound request and to every signed inbound request (`403` at the start of §4.5 step 6 or §8.1 step 2, before any key or discovery fetch, including for a provider-signed request to a route that defines only user signatures; WebSocket `4001`); answer unsigned requests to public endpoints regardless (§8)",
+    item: "Apply federation allow/deny policy to every outbound request and to every signed inbound request (`403` at the start of §4.5 step 6 or §8.1 step 2, before any key or discovery fetch, including for a provider-signed request to a route that defines only user signatures, which, from a permitted provider, then gets `401` without a discovery fetch or signature check; WebSocket `4001`); answer unsigned requests to public endpoints regardless (§8)",
     level: "provider-must",
     covers: [
       "packages/server/test/federation-actor.test.ts",
@@ -84,7 +84,7 @@ export const AUTH_SIGNING: readonly ChecklistEntry[] = [
       "packages/server/test/public-route-signatures.test.ts",
     ],
     status: "partial",
-    note: "Behaviour gap: a provider-signed request (`X-OFSCP-Provider`, no `X-OFSCP-Actor`) from a denied provider to a route that takes only user signatures (`requireSignature()` / `optionalSignature()` in actor mode, `packages/server/src/http/signature.ts:174`) gets the step-1 `401` instead of `403`. Untested: push delivery to a push host that was denied after the subscription was stored.",
+    note: "Behaviour gaps: (1) a provider-signed request (`X-OFSCP-Provider`, no `X-OFSCP-Actor`) from a denied provider to a route that takes only user signatures (`requireSignature()` / `optionalSignature()` in actor mode, `packages/server/src/http/signature.ts:174`) gets the step-1 `401` instead of `403`. (2) The public routes on `optionalActorOrProviderSignature()` (`packages/server/src/http/signature.ts:427`: discovery, the keys endpoint, `/api/tiers`, `/api/health`, `/problems/*`, the provider profile, media, push public key, discovery feed, invite `/guest`) run the full provider pipeline for a permitted provider (or this provider itself): discovery fetch and verify (`resolveSigner`, `:299`), nonce recorded (`:325`), then `200` (or the handler's answer), never `401`. (3) The replay warm-up `503` (`:220`) runs before the deny check (`:283`), so during warm-up a denied signer gets `503`, not `403`, and a permitted provider's signature on a public route gets `503`, not `401`. Untested: a permitted provider's signature on a user-only route → `401` with no discovery fetch and no recorded nonce; push delivery to a push host that was denied after the subscription was stored.",
     context:
       "Public routes that need no caller run §4.5 only when signed (`optionalActorOrProviderSignature`), so a denied signer of either kind gets `403` there, after steps 1–5, without recording the nonce.",
   },

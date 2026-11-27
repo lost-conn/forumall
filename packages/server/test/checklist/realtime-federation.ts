@@ -153,7 +153,7 @@ export const REALTIME_FEDERATION: readonly ChecklistEntry[] = [
       "`hidden-channels.test.ts` hides one channel three ways (group unreadable, channel tier, `view`) and compares every REST and WS answer with the missing-channel answer. The channel list names only the group, so it answers as `GET /api/groups/{groupId}` does (`403` for an unreadable group, §5.5).",
   },
   {
-    item: "Handle an unsigned request to a route that accepts anonymous readers as an anonymous viewer (`public` access only, never `401`), keeping `401` for signed requests that fail §4.5 (§4.5)",
+    item: "Handle an unsigned request to a route that accepts anonymous readers as an anonymous viewer (`public` access only, never `401`), keeping `401` for signed requests that fail §4.5 and for a permitted provider's signature (§4.5, §8)",
     level: "provider-must",
     covers: [
       "packages/server/test/groups.test.ts",
@@ -164,7 +164,8 @@ export const REALTIME_FEDERATION: readonly ChecklistEntry[] = [
       "packages/server/test/users-anonymous.test.ts",
       "packages/server/test/public-route-signatures.test.ts",
     ],
-    status: "covered",
+    status: "partial",
+    note: "Untested: a permitted provider's signature (`X-OFSCP-Provider`, no `X-OFSCP-Actor`) on an anonymous-reader route (`optionalSignature()` in actor mode: `GET` group, channels, channel, history, replies, §6 `GET`s) → `401`, never served as an anonymous viewer. Today it gets that `401` only because actor-mode step 1 finds no `X-OFSCP-Actor` (`packages/server/src/http/signature.ts:174`), so a digest mismatch gets `401` rather than the step-5 `400` the spec's steps 1–5 give.",
   },
   {
     item: "Support the `private` tier",

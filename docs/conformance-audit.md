@@ -1,7 +1,7 @@
 # OFSCP §12 conformance audit
 
 Audit of Forumall `main` at `1b336ef` against the §12 Compliance Checklist of
-OFSCP `main` at `598e45d` (updated for ofscp#31, `7f3e0e9`, ofscp#34, `300f6fa`, ofscp#35–#40, `e94447d`, and ofscp#41, `31100ef`) (`../ofscp/docs/ofscp_spec.md`). Every checklist line
+OFSCP `main` at `598e45d` (updated for ofscp#31, `7f3e0e9`, ofscp#34, `300f6fa`, ofscp#35–#40, `e94447d`, ofscp#41, `31100ef`, and ofscp#42, `8ffa97b`) (`../ofscp/docs/ofscp_spec.md`). Every checklist line
 was split into its sub-requirements and checked for (a) the behaviour in the
 code and (b) a test that asserts it. The per-item coverage map itself (which
 test files cover which item) lives in `packages/server/test/checklist/` and is
@@ -213,6 +213,29 @@ are in the spec at `31100ef` (unchanged from `e94447d`).
 Both items were `covered` before; both are now `partial`. New unit: U21 (derive the `Follow` `groupId` from the channel and
 ignore the body's; a test that a tombstone still counts as unread).
 
+## ofscp#42 (`8ffa97b`): provider-signed requests to user-signature routes
+
+ofscp#42 reworded two items. A provider-signed request from a permitted
+provider, on a route that does not take provider signatures (every route of
+the spec, discovery and the keys endpoint included), gets `401` after §4.5
+steps 1–5 and the §8 deny check (a denied provider still gets `403`): no
+discovery fetch, no signature check, no nonce recorded, and never an anonymous
+viewer, `GET` group included. The replay warm-up `503` does not apply to these
+unverified `403`/`401` answers. The `L` numbers are in the spec at `8ffa97b`.
+
+| L | Item (short) | Status | Gap | Unit |
+|---|---|---|---|---|
+| 10 (P MUST) | Federation deny `403`; a permitted provider's signature on a user-signature route → `401`, unverified | behaviour | The public routes on `optionalActorOrProviderSignature()` (`http/signature.ts:427`) fetch discovery and verify a provider signature (`:299`), record its nonce (`:325`) and serve it. The warm-up `503` (`:220`) precedes the deny check (`:283`). On user-only routes the `401` comes from actor-mode step 1 (`:174`), so a denied provider gets `401`, not `403` (as before). | U22 |
+| 58 (P MUST) | Anonymous viewers; `401` kept for a permitted provider's signature | tests only | The `401` is there on the anonymous-reader routes, but only via actor-mode step 1 (`http/signature.ts:174`), so a bad digest gets `401`, not `400`. No test sends a provider signature to one. | U22 |
+
+L58 was `covered` before; it is now `partial`. New unit: U22 (verifier: one
+step-1 identity check that accepts either identity header, then steps 1–5, the
+deny check before the warm-up `503`, and, on a route that does not take
+provider signatures, `401` for a permitted provider with no discovery fetch,
+verification or nonce; tests on public, anonymous-reader and user-only routes,
+in and out of warm-up). U19 (both identity headers → step-1 `401`) lands in
+the same step-1 code and should go with it.
+
 ## Units of work
 
 Each unit is one pull request to `main`. Each updates its area's entries in
@@ -242,6 +265,7 @@ Each unit is one pull request to `main`. Each updates its area's entries in
 | U19 | Verifier: a request carrying both `X-OFSCP-Actor` and `X-OFSCP-Provider` → step-1 `401`, before the deny check; tests. | 8 (at `e94447d`) |
 | U20 | Server channel messaging (ofscp#37): tombstone edit `404` and repeat-delete no-op, reaction tombstone and no-op rules, one copy to an unsubscribed requester, typing `post:*` grant and no-op stop, `message.deleted` after a replayed tombstone, cursor interchange tests. | 33–36, 53 (at `e94447d`) |
 | U21 | Server follows and unread counts (ofscp#41): derive the `Follow` `groupId` from the channel, ignore the body's; tests for derivation and a tombstone counted as unread. | 52, 81 (at `31100ef`) |
+| U22 | Verifier (ofscp#42): a provider signature on a route that does not take one → `401` after steps 1–5 and the deny `403`, with no discovery fetch, verification or nonce; the deny check and these answers before the warm-up `503`; tests on public, anonymous-reader and user-only routes. Pairs with U19. | 10, 58 (at `8ffa97b`) |
 
 Order: U0 first (every unit edits the map). U3, U4, U5, U9, U10, U11, U13 and
 U14 touch disjoint files and can run in parallel; U6 follows U4 and U5; U7
