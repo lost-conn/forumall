@@ -269,3 +269,25 @@ export const m0042MessagesEditUntilNullable: Migration = {
     );
   },
 };
+
+export const m0043MediaTargetThumbnail: Migration = {
+  // Upload target and thumbnail (§5.8): `target` is the canonical authority of
+  // a REMOTE upload's target provider, NULL for a local upload — every
+  // existing row was uploaded with no target, so NULL (local) is exactly
+  // right for it. `thumbnail_id` names the uploader's `thumbnail` part, stored
+  // as a `media` row of its own; existing rows have none. Guarded per column so
+  // a re-run is a no-op.
+  id: "0043_media_target_thumbnail",
+  up: (sqlite) => {
+    const cols = sqlite
+      .query<{ name: string }, []>("PRAGMA table_info(media)")
+      .all()
+      .map((c) => c.name);
+    if (!cols.includes("target")) {
+      sqlite.exec("ALTER TABLE media ADD COLUMN target TEXT;");
+    }
+    if (!cols.includes("thumbnail_id")) {
+      sqlite.exec("ALTER TABLE media ADD COLUMN thumbnail_id TEXT REFERENCES media (id);");
+    }
+  },
+};

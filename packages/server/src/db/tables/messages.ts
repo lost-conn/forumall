@@ -3,6 +3,7 @@
  */
 import { sql } from "drizzle-orm";
 import {
+  type AnySQLiteColumn,
   index,
   integer,
   primaryKey,
@@ -183,7 +184,14 @@ export type NewReactionRow = typeof reactions.$inferInsert;
  * are set once at upload (§5.8): from the file's own header when the provider
  * can read it, otherwise from the uploader's validated form parts; each is
  * nullable (absent when neither side supplied it). `owner` is the
- * authenticated actor (`handle@domain`) that uploaded the file.
+ * authenticated actor (`handle@domain`) that uploaded the file. `mime` is the
+ * declared type unless that is an inline type the bytes do not confirm
+ * (`provider/media-type.ts`). `target` is the upload's §5.8 *target*: the
+ * canonical authority of the provider that will hold the messages using it,
+ * NULL for a **local** upload (target = this provider, also when omitted), so
+ * a non-NULL target marks a **remote** upload. `thumbnailId` names the row of
+ * the uploader's `thumbnail` part (a row of its own, with the same owner and
+ * target), NULL when the upload has none.
  */
 export const media = sqliteTable(
   "media",
@@ -206,6 +214,10 @@ export const media = sqliteTable(
     durationMs: integer("duration_ms", { mode: "number" }),
     /** Uploading actor (`handle@domain`). */
     owner: text("owner").notNull(),
+    /** Remote target's canonical authority (§5.8); NULL = local upload. Added in 0043. */
+    target: text("target"),
+    /** The `thumbnail` part's own `media` row; NULL = none. Added in 0043. */
+    thumbnailId: text("thumbnail_id").references((): AnySQLiteColumn => media.id),
     /** Creation time (epoch millis); rendered as RFC 3339 when needed. */
     createdAt: integer("created_at", { mode: "number" })
       .notNull()

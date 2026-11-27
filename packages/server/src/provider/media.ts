@@ -1,7 +1,9 @@
 /**
  * Media store helpers (spec §5.8): id minting, content hashing, best-effort
  * image dimension parsing, the uploader's `width` / `height` / `durationMs`
- * hint parts, and the `media` row ↔ hosted `Attachment` mapping.
+ * hint parts, whether an upload is local (its *target*), and the `media` row ↔
+ * hosted `Attachment` mapping (thumbnail included). Reading and storing an
+ * upload is `media-upload.ts`; its `mime` is `media-type.ts`.
  *
  * The HTTP layer (`http/media.ts`) owns request parsing, signing, and the
  * storage-backend call; this module is the pure-ish provider logic so it can be
@@ -232,6 +234,10 @@ export interface StoreMediaInput {
   readonly durationMs?: number | undefined;
   /** Owning actor (`handle@domain`). */
   readonly owner: string;
+  /** Canonical authority of a remote target (§5.8); `null`/absent = local upload. */
+  readonly target?: string | null | undefined;
+  /** The `media` row of this upload's `thumbnail` part, if any. */
+  readonly thumbnailId?: string | null | undefined;
 }
 
 /** Insert a `media` row for an already-stored blob. */
@@ -246,6 +252,8 @@ export function insertMediaRow(db: Db, input: StoreMediaInput): MediaRow {
     height: input.height ?? null,
     durationMs: input.durationMs ?? null,
     owner: input.owner,
+    target: input.target ?? null,
+    thumbnailId: input.thumbnailId ?? null,
     createdAt: Date.now(),
   };
   db.drizzle.insert(media).values(row).run();
@@ -272,9 +280,18 @@ export function getMediaRow(db: Db, id: string): MediaRow | null {
   return db.drizzle.select().from(media).where(eq(media.id, id)).limit(1).all()[0] ?? null;
 }
 
-/** Map a stored `media` row to the hosted, schema-valid `Attachment` (§5.8). */
-export function rowToAttachment(config: Config, row: MediaRow): Attachment {
-  return AttachmentSchema.parse({
+/**
+ * Whether `row` is a **local** upload (§5.8 *Target*): its target is this
+ * provider. Only a local upload may appear in a message this provider holds
+ * or in a profile it hosts.
+ */
+export function isLocalUpload(row: MediaRow): boolean {
+  return row.target === null;
+}
+
+/** The fields of the hosted `Attachment` for `row`, without its thumbnail. */
+function attachmentFields(config: Config, row: MediaRow) {
+  return {
     id: row.id,
     mime: row.mime,
     url: mediaUrl(config, row.id),
@@ -284,5 +301,30 @@ export function rowToAttachment(config: Config, row: MediaRow): Attachment {
     ...(row.width != null ? { width: row.width } : {}),
     ...(row.height != null ? { height: row.height } : {}),
     ...(row.durationMs != null ? { durationMs: row.durationMs } : {}),
+  };
+}
+
+/**
+ * Map a stored `media` row to the hosted, schema-valid `Attachment` (§5.8),
+ * with `thumbnail` (the row its `thumbnailId` names) as its thumbnail. The
+ * caller passes the thumbnail row; {@link hostedAttachment} looks it up.
+ */
+export function rowToAttachment(
+  config: Config,
+  row: MediaRow,
+  thumbnail: MediaRow | null = null,
+): Attachment {
+  return AttachmentSchema.parse({
+    ...attachmentFields(config, row),
+    ...(thumbnail !== null ? { thumbnail: attachmentFields(config, thumbnail) } : {}),
   });
+}
+
+/**
+ * The hosted `Attachment` for `row`, thumbnail included: the provider's own
+ * record, as its upload response returned it and as a message stores it.
+ */
+export function hostedAttachment(db: Db, config: Config, row: MediaRow): Attachment {
+  const thumbnail = row.thumbnailId !== null ? getMediaRow(db, row.thumbnailId) : null;
+  return rowToAttachment(config, row, thumbnail);
 }

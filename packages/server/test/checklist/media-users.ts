@@ -10,9 +10,14 @@ export const MEDIA_USERS: readonly ChecklistEntry[] = [
   {
     item: "Support single-step media upload at `POST /api/media`, recording its `target` (default: this provider), setting `size` and `hash` from the bytes and `mime` per §5.8 (the declared type is allowed, but an inline type — `image/*` other than SVG, `video/*`, `audio/*` — only when the bytes confirm it, otherwise `application/octet-stream`), and `width`, `height` and `durationMs` from the bytes when they can be determined or from the uploader otherwise, and accepting an uploader's `thumbnail` part; if the provider offers pre-signed uploads, refuse one at completion when its inline `mime` is not confirmed by the bytes (§5.8)",
     level: "provider-must",
-    covers: ["packages/server/test/media.test.ts"],
-    status: "partial",
-    note: "Behaviour gap: the `target` part (stored, canonicalised, `400` for a bad authority) and the `thumbnail` part are not implemented. `mime` must not record an inline-shown type (non-SVG image, video, audio) the bytes do not confirm; today the declared part type is stored unchecked. Forumall offers no pre-signed uploads, so the completion check does not apply.",
+    covers: [
+      "packages/server/test/media.test.ts",
+      "packages/server/test/media-target.test.ts",
+      "packages/server/test/media-type.test.ts",
+    ],
+    status: "covered",
+    context:
+      "The declared type is the part's own `Content-Type`, read from the raw part headers (Bun's `File.type` is a filename guess); an inline type is confirmed by a pure-JS magic-byte sniffer (`provider/media-type.ts`). A remote `target` is stored canonical; a local one (omitted or this provider) is stored as NULL. The `thumbnail` part is stored as its own upload sharing the target. Forumall offers no pre-signed uploads, so the completion check does not apply.",
   },
   {
     item: "Serve attachments as capability URLs: `https`, at least 128 bits of entropy, unlisted, fetchable unsigned, with the §3.4 CORS headers, from any host the provider chooses (§5.8)",
@@ -34,9 +39,12 @@ export const MEDIA_USERS: readonly ChecklistEntry[] = [
       "packages/server/test/message-edit-fields.test.ts",
       "packages/server/test/message-edit-dm.test.ts",
       "packages/shared/test/edits-media-groups.test.ts",
+      "packages/server/test/media-target.test.ts",
+      "packages/server/test/media-target-federation.test.ts",
     ],
-    status: "partial",
-    note: "Behaviour gap: no check that a hosted attachment is a local upload (no upload `target` is recorded). Untested: a remote author's `http` `thumbnail.url` is rejected.",
+    status: "covered",
+    context:
+      "A hosted attachment is stored with the provider's own record, thumbnail included. Forumall never fetches a remote author's attachment URL, so the §8 outbound rule has nothing to apply to.",
   },
   {
     item: "Serve attachments with `Content-Disposition: attachment` (or `Content-Security-Policy: sandbox` where the host can send it) for types other than images (or for SVG), video and audio, and with `X-Content-Type-Options: nosniff` where the host can send it (§5.8)",
@@ -49,9 +57,14 @@ export const MEDIA_USERS: readonly ChecklistEntry[] = [
   {
     item: "Give remote uploads a stable `url` without `expiresAt`, and never treat one as unreferenced because no message or profile it holds references it; use short-lived URLs (such as pre-signed `GET` URLs, with `expiresAt`) only for local uploads in messages; keep a pending local upload postable for at least 24 hours before removing it (§5.8)",
     level: "provider-must",
-    covers: [],
-    status: "missing",
-    note: "No target-aware upload lifecycle exists: remote uploads are not distinguished (no `target`), no short-lived URLs are minted and nothing is ever removed, so the MUSTs hold only vacuously. Untestable until remote uploads and upload removal exist.",
+    covers: [
+      "packages/server/test/media-target.test.ts",
+      "packages/server/test/media-target-federation.test.ts",
+    ],
+    status: "partial",
+    note: "The removal clauses (never treat a remote upload as unreferenced; keep a pending local upload postable for at least 24 hours before removing it) cannot be tested until upload removal exists (unit U7): today no upload is ever removed, so they hold vacuously. U7 must skip remote uploads (`media.target` non-NULL) and honour the 24-hour window, with tests.",
+    context:
+      "Every upload, remote or local, has the one stable `url` its upload returned and never an `expiresAt`: Forumall mints no short-lived URLs (tested).",
   },
   {
     item: "Keep each user's group list at `GET`/`PUT`/`DELETE /api/me/groups` (its own memberships plus unchecked pointers to remote groups) and emit `groups.updated` (§5.7)",
@@ -63,9 +76,14 @@ export const MEDIA_USERS: readonly ChecklistEntry[] = [
   {
     item: 'Answer `PATCH /api/me/profile` with the updated `UserProfile`, clear the avatar on `"avatar": null`, reject a non-`https` `avatar` (SHOULD also reject one it does not host, one whose `mime` is not `image/*`, and a remote upload), and keep a hosted avatar\'s `url` stable, never short-lived (§6.3)',
     level: "provider-must",
-    covers: ["packages/server/test/media.test.ts", "packages/server/test/privacy.test.ts"],
-    status: "partial",
-    note: "Untested: the response is the updated `UserProfile` (schema, advanced `updatedAt`). The SHOULD to reject a remote upload is not implemented (no upload `target`); a hosted avatar's `url` is stable only because all URLs are.",
+    covers: [
+      "packages/server/test/media.test.ts",
+      "packages/server/test/privacy.test.ts",
+      "packages/server/test/media-target.test.ts",
+    ],
+    status: "covered",
+    context:
+      "A hosted avatar's `url` is the upload's stable `url` (Forumall mints no short-lived URLs).",
   },
   {
     item: "Serve `GET /api/users/{userRef}/profile`, `…/presence` and `…/groups` to signed and anonymous viewers, evaluating visibility per §6.1 (subject always; `denyList`, then `allowList`, then the setting); answer a viewer not permitted with the uniform `200` responses (base profile, `offline`, empty groups), never `403`, and every non-hosted, unknown, disabled or invalid subject with the same `404`; list only hosted groups the viewer may read (§6.1–§6.5)",

@@ -45,7 +45,10 @@ const RawEnvFields = z.object({
   /**
    * Maximum attachment upload size in bytes, advertised in discovery as
    * `capabilities.limits.maxUploadBytes` (§3.1, §6) and enforced on upload.
-   * Defaults to 25 MiB.
+   * Defaults to 25 MiB. It also sets the request body limits, applied before
+   * a body is buffered (`http/body-limits.ts`): an upload body may be
+   * 2 × this (file + thumbnail) + 64 KiB, and no request body may exceed the
+   * larger of that and `WS_MAX_FRAME_BYTES`.
    */
   MAX_UPLOAD_BYTES: z.coerce.number().int().min(0).default(26_214_400),
   /**

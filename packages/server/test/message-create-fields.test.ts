@@ -96,6 +96,20 @@ describe("checkMessageAttachments (§5.8)", () => {
     // A local author's attachment must be hosted here.
     expect(check(alice.actor, external).error).toContain("not hosted here");
   });
+
+  test("checked here as well as by the request schemas: https only, no nested thumbnail", async () => {
+    const b = boot("check-remote-shape");
+    const check = (a: Attachment) => checkMessageAttachments(b.db, b.config, REMOTE, [a]).error;
+    const thumb = external.thumbnail;
+    if (thumb === undefined) throw new Error("the external sample has a thumbnail");
+    expect(check({ ...external, url: "http://cdn.elsewhere.test/m/v.mp4" })).toContain("https");
+    expect(check({ ...external, thumbnail: { ...thumb, url: "ftp://x.test/p.jpg" } })).toContain(
+      "https",
+    );
+    expect(check({ ...external, thumbnail: { ...thumb, thumbnail: thumb } })).toContain(
+      "must not itself carry a thumbnail",
+    );
+  });
 });
 
 describe("channel create (§5.3, §5.8, §7.1)", () => {

@@ -20,7 +20,7 @@
  */
 import type { Browser, Page } from "@playwright/test";
 import { registerUser, uniqueHandle } from "../harness/auth.ts";
-import { expect, test } from "../harness/fixtures.ts";
+import { expect, mediaFixture, test } from "../harness/fixtures.ts";
 
 /** Open the create-group form, fill it, submit, and return the new group id. */
 async function createGroup(
@@ -441,11 +441,10 @@ test("attachment upload: A attaches a video → it renders as an attachment-vide
 }) => {
   const { a, b } = await twoUsersInChannel(page, browser, appServer.baseUrl);
 
-  // The composer has no `accept` filter and the server stores any mime, so a
-  // handful of arbitrary bytes with a video/mp4 mime type is enough to exercise
-  // client-side kind classification — this isn't a real, decodable video, and
-  // the assertion below is about which ELEMENT the client renders, not playback.
-  const buffer = Buffer.from("not-real-mp4-bytes");
+  // The server records an inline type such as video/mp4 only when the bytes
+  // confirm it (§5.8), so this is a real (one-frame) MP4. The assertion below
+  // is about which ELEMENT the client renders, not playback.
+  const buffer = mediaFixture("sample.mp4");
 
   await a.getByTestId("file-input").setInputFiles({
     name: "clip.mp4",

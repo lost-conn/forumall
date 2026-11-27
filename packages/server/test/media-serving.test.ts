@@ -14,6 +14,7 @@ import { type Attachment, AttachmentSchema } from "@forumall/shared";
 
 import { contentDisposition, rendersInline } from "../src/http/media-headers.ts";
 import { mintMediaId } from "../src/provider/media.ts";
+import { SAMPLES } from "./helpers/media-samples.ts";
 import { uploadMedia } from "./helpers/media-upload.ts";
 import {
   type Booted,
@@ -59,23 +60,28 @@ function pathOf(att: Attachment): string {
 const PRIVATE_CACHE = "private, max-age=31536000, immutable";
 
 describe("serving headers per media type (§5.8)", () => {
-  // [mime, filename, served inline?]
-  const matrix: readonly (readonly [string, string, boolean])[] = [
-    ["image/png", "pic.png", true],
-    ["image/jpeg", "photo.jpg", true],
+  // [mime, filename, served inline?, sample whose bytes confirm an inline type]
+  const matrix: readonly (readonly [string, string, boolean, string?])[] = [
+    ["image/png", "pic.png", true, "png"],
+    ["image/jpeg", "photo.jpg", true, "jpeg"],
     ["image/svg+xml", "logo.svg", false],
-    ["video/mp4", "clip.mp4", true],
-    ["audio/mpeg", "song.mp3", true],
+    ["video/mp4", "clip.mp4", true, "mp4"],
+    ["audio/mpeg", "song.mp3", true, "mp3Id3"],
     ["text/plain", "notes.txt", false],
     ["text/html", "page.html", false],
     ["application/pdf", "doc.pdf", false],
     ["application/octet-stream", "blob.bin", false],
   ];
 
-  for (const [mime, filename, inline] of matrix) {
+  for (const [mime, filename, inline, sample] of matrix) {
     test(`${mime}: ${inline ? "inline" : "Content-Disposition: attachment"}, sandbox, nosniff, private cache`, async () => {
-      const bytes = new TextEncoder().encode(`<script>alert("${mime}")</script>`);
+      // An inline type is stored only for bytes that confirm it (§5.8); the
+      // other types carry a script, which they are served safely with.
+      const bytes =
+        (sample !== undefined ? SAMPLES[sample]?.bytes : undefined) ??
+        new TextEncoder().encode(`<script>alert("${mime}")</script>`);
       const att = await upload(bytes, filename, mime);
+      expect(att.mime).toBe(mime);
 
       // Fetched with no signature, cookie or other credential.
       const res = await fetch(`${base()}${pathOf(att)}`);
@@ -93,7 +99,7 @@ describe("serving headers per media type (§5.8)", () => {
   }
 
   test("never publicly cacheable: no `public`, no shared-cache directive", async () => {
-    const att = await upload(new Uint8Array([1, 2, 3]), "a.png", "image/png");
+    const att = await upload(SAMPLES.png?.bytes ?? new Uint8Array(), "a.png", "image/png");
     const cc = (await fetch(`${base()}${pathOf(att)}`)).headers.get("cache-control") ?? "";
     const directives = cc.split(",").map((d) => d.trim().split("=")[0]);
     expect(directives).toContain("private");

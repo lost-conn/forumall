@@ -39,19 +39,28 @@ export interface Booted {
   url: string;
 }
 
-/** Boot the app under `dir` (one SQLite file per `name`) with a real WS server. */
-export function boot(dir: string, name: string): Booted {
+/**
+ * Boot the app under `dir` (one SQLite file per `name`) with a real WS server.
+ * `env` adds `loadConfig` overrides (e.g. `MAX_UPLOAD_BYTES`).
+ */
+export function boot(dir: string, name: string, env: Record<string, string> = {}): Booted {
   const base = loadConfig({
     DATA_DIR: dir,
     DB_PATH: join(dir, `${name}.sqlite`),
     WEB_DIR: join(dir, `${name}-web`),
     DOMAIN,
+    ...env,
   });
   const config: Config = Object.freeze({ ...base, argon2: FAST_ARGON2 });
   const db = openDb(config.dbPath);
   migrate(db);
   const app = createApp(config, { testOnlySkipReplayWarmup: true, db, wsTimings: FAST_TIMINGS });
-  const server = Bun.serve({ port: 0, fetch: app.fetch, websocket: app.__websocket });
+  const server = Bun.serve({
+    port: 0,
+    fetch: app.fetch,
+    websocket: app.__websocket,
+    maxRequestBodySize: app.__maxRequestBodySize,
+  });
   const url = `ws://${server.hostname}:${server.port}/api/ws`;
   return { app, db, config, server, url };
 }

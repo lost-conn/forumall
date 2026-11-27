@@ -59,6 +59,7 @@ import {
   m0038MediaDurationMs,
   m0039MessagesMentionsArticle,
   m0042MessagesEditUntilNullable,
+  m0043MediaTargetThumbnail,
 } from "./migrations/messages.ts";
 import {
   m0020NotificationEndpoints,
@@ -135,6 +136,7 @@ export const migrations: readonly Migration[] = [
   m0040DmMessagesTagsMentions,
   m0041DmReactionsUnicodeImage,
   m0042MessagesEditUntilNullable,
+  m0043MediaTargetThumbnail,
 ];
 
 const LEDGER_DDL = `

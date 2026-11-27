@@ -42,7 +42,7 @@ import { terminateHandleSessions } from "../provider/access-revocation.ts";
 import { isProviderAdmin } from "../provider/admin.ts";
 import { claimGuestAccount } from "../provider/claim.ts";
 import { buildUserProfile, getUserRow, updateUserProfile } from "../provider/guests.ts";
-import { hostedMediaRowForUrl } from "../provider/media.ts";
+import { hostedMediaRowForUrl, isLocalUpload } from "../provider/media.ts";
 import { groupIdsReadableBy } from "../provider/membership.ts";
 import { mergeGuestIntoAccount } from "../provider/merge.ts";
 import {
@@ -257,7 +257,9 @@ export function createMeUserRouter() {
     }
 
     // §6.3: `null` removes the avatar; a NEW URL must be an image this provider
-    // hosts (one its own `POST /api/media` returned) — anything else is a 400.
+    // hosts (one its own `POST /api/media` returned) as a local upload (a
+    // remote upload is for messages on another provider, §5.8 *Target*) —
+    // anything else is a 400.
     // Re-sending the avatar already stored is not a change: it is grandfathered,
     // so an avatar set before this check existed (e.g. an external URL) does not
     // block saving the rest of the profile.
@@ -271,6 +273,12 @@ export function createMeUserRouter() {
       }
       if (!hosted.mime.startsWith("image/")) {
         throw AppError.badRequest({ detail: "avatar must be an image (image/*)" });
+      }
+      if (!isLocalUpload(hosted)) {
+        throw AppError.badRequest({
+          detail:
+            "avatar must be uploaded with this provider as its target (it is a remote upload)",
+        });
       }
     }
 

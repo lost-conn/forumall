@@ -11,6 +11,23 @@ const BOUNDARY = "----forumalltestboundary7MA4YWxkTrZu0gW";
 /** Extra text form parts sent beside `file` (`[name, value]`, repeats allowed). */
 export type FormFields = readonly (readonly [string, string])[];
 
+/** An extra file part sent after `file` (e.g. a `thumbnail`). `mime` "" sends no `Content-Type`. */
+export interface FilePart {
+  readonly name: string;
+  readonly filename: string;
+  readonly mime: string;
+  readonly bytes: Uint8Array;
+}
+
+/** The headers of one file part. */
+function filePartHead(name: string, filename: string, mime: string): string {
+  const type = mime === "" ? "" : `Content-Type: ${mime}\r\n`;
+  return (
+    `--${BOUNDARY}\r\n` +
+    `Content-Disposition: form-data; name="${name}"; filename="${filename}"\r\n${type}\r\n`
+  );
+}
+
 /** Anything that answers a request by path: a Hono app, or a wrapper around `fetch`. */
 export interface RequestTarget {
   request(path: string, init: RequestInit): Response | Promise<Response>;
@@ -24,15 +41,17 @@ export interface UploadSigner {
 }
 
 /**
- * Hand-build a `multipart/form-data` body with a `file` part, preceded by any
- * extra text `fields`. Returns the exact bytes (so the signed digest matches)
- * and the content-type header.
+ * Hand-build a `multipart/form-data` body with a `file` part (no
+ * `Content-Type` when `mime` is ""), preceded by any extra text `fields` and
+ * followed by any extra `files`. Returns the exact bytes (so the signed digest
+ * matches) and the content-type header.
  */
 export function buildMultipart(
   fileBytes: Uint8Array,
   filename: string,
   mime: string,
   fields: FormFields = [],
+  files: readonly FilePart[] = [],
 ) {
   const enc = new TextEncoder();
   const fieldParts = fields
@@ -41,16 +60,18 @@ export function buildMultipart(
         `--${BOUNDARY}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`,
     )
     .join("");
-  const filePart =
-    `--${BOUNDARY}\r\n` +
-    `Content-Disposition: form-data; name="file"; filename="${filename}"\r\n` +
-    `Content-Type: ${mime}\r\n\r\n`;
-  const head = enc.encode(`${fieldParts}${filePart}`);
-  const tail = enc.encode(`\r\n--${BOUNDARY}--\r\n`);
-  const body = new Uint8Array(head.length + fileBytes.length + tail.length);
-  body.set(head, 0);
-  body.set(fileBytes, head.length);
-  body.set(tail, head.length + fileBytes.length);
+  const chunks: Uint8Array[] = [enc.encode(fieldParts)];
+  for (const part of [{ name: "file", filename, mime, bytes: fileBytes }, ...files]) {
+    chunks.push(enc.encode(filePartHead(part.name, part.filename, part.mime)), part.bytes);
+    chunks.push(enc.encode("\r\n"));
+  }
+  chunks.push(enc.encode(`--${BOUNDARY}--\r\n`));
+  const body = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0));
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.length;
+  }
   return { body, contentType: `multipart/form-data; boundary=${BOUNDARY}` };
 }
 
@@ -65,22 +86,36 @@ export async function uploadMedia(
   filename: string,
   mime: string,
   fields: FormFields = [],
+  files: readonly FilePart[] = [],
 ): Promise<Response> {
-  const path = "/api/media";
+  const { body, contentType } = buildMultipart(fileBytes, filename, mime, fields, files);
+  return postSignedUpload(target, signer, body, contentType);
+}
+
+/** The signed headers of a `POST /api/media` whose body is `body` (§4.4). */
+export function uploadHeaders(signer: UploadSigner, body: Uint8Array): Record<string, string> {
   const authority = signer.actor.slice(signer.actor.indexOf("@") + 1);
-  const { body, contentType } = buildMultipart(fileBytes, filename, mime, fields);
-  const { headers } = sign({
+  return sign({
     actor: signer.actor,
     keyId: signer.keyId,
     privateKey: signer.privateKey,
     authority,
     method: "POST",
-    path,
+    path: "/api/media",
     body,
-  });
-  return target.request(path, {
+  }).headers;
+}
+
+/** POST an exact, already-built multipart `body` to `/api/media`, signed by `signer`. */
+export async function postSignedUpload(
+  target: RequestTarget,
+  signer: UploadSigner,
+  body: Uint8Array<ArrayBuffer>,
+  contentType: string,
+): Promise<Response> {
+  return target.request("/api/media", {
     method: "POST",
-    headers: { ...headers, "content-type": contentType },
+    headers: { ...uploadHeaders(signer, body), "content-type": contentType },
     body,
   });
 }

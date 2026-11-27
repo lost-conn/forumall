@@ -15,7 +15,7 @@
  * multi-provider (federation) test can request two `bootServer()` instances.
  */
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,6 +25,16 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "..", "..");
 const WEB_DIR = join(REPO_ROOT, "packages", "web", "dist");
 const BOOT_SCRIPT = join(HERE, "boot-server.ts");
+
+/**
+ * A real media file from the server's test fixtures
+ * (`packages/server/test/fixtures/media/`). The server records an inline type
+ * such as `video/mp4` only when the file's structure confirms it (§5.8), so
+ * specs that need one upload real encoder output, not a hand-built header.
+ */
+export function mediaFixture(name: string): Buffer {
+  return readFileSync(join(REPO_ROOT, "packages", "server", "test", "fixtures", "media", name));
+}
 
 /** A booted provider instance. */
 export interface BootedServer {
