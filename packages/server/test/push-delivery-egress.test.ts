@@ -10,7 +10,9 @@
  *
  * The guard's resolver and underlying fetch are injected, so nothing here
  * touches the network; the last cases use the production default transport on
- * targets the guard refuses before any network access.
+ * targets the guard refuses before any network access, with the global `fetch`
+ * replaced by a recorder that would accept the push, so an unguarded default
+ * would be caught delivering.
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -28,6 +30,7 @@ import {
   sendPushToRecipient,
 } from "../src/provider/push-send.ts";
 import { addSubscription, listSubscriptions } from "../src/provider/push.ts";
+import { withRecordingGlobalFetch } from "./helpers/global-fetch-recorder.ts";
 
 const DOMAIN = "providera.test";
 const RECIPIENT = `alice@${DOMAIN}`;
@@ -183,12 +186,17 @@ describe("push delivery follows the federation policy (§8)", () => {
 });
 
 describe("the production default transport is the guarded one", () => {
+  // The global fetch answers 201, so an unguarded default would deliver (and
+  // mark the subscription delivered); the guard refuses before calling it.
   for (const endpoint of ["http://push.example.net/sub/1", "https://127.0.0.1:1/sub/1"]) {
     test(`${endpoint} is refused before any network access`, async () => {
       const { config, db } = withSubscription(endpoint);
-      const started = performance.now();
-      expect(await sendPushToRecipient(db, config, RECIPIENT, PAYLOAD)).toBe(0);
-      expect(performance.now() - started).toBeLessThan(1_000);
+      const { result, urls } = await withRecordingGlobalFetch(
+        () => new Response(null, { status: 201 }),
+        () => sendPushToRecipient(db, config, RECIPIENT, PAYLOAD),
+      );
+      expect(result).toBe(0);
+      expect(urls).toEqual([]);
       expect(listSubscriptions(db, "alice")[0]?.lastDeliveredAt ?? null).toBeNull();
     });
   }

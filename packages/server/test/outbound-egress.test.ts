@@ -8,7 +8,8 @@
  * injected resolver and underlying fetch (no network): `https` only, every
  * resolved address public, a `3xx` returned and never followed. The last cases
  * use the production default transport on targets the guard refuses before any
- * network access.
+ * network access (for the scrape, with the global `fetch` replaced by a
+ * recorder serving a valid peer list, so an unguarded default would be caught).
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -26,6 +27,7 @@ import {
 } from "../src/provider/federation/http.ts";
 import { listKnownProviders, scrapeKnownProviders } from "../src/provider/known-providers.ts";
 import { deliverNotification, registerEndpoint } from "../src/provider/notifications.ts";
+import { withRecordingGlobalFetch } from "./helpers/global-fetch-recorder.ts";
 
 const DOMAIN = "providera.test";
 const PUBLIC = "93.184.216.34";
@@ -189,8 +191,14 @@ describe("the known-providers scrape (§8.6) obeys the outbound-request rules", 
   });
 
   test("the production default transport refuses a private literal peer", async () => {
+    // The global fetch serves a valid peer list, so an unguarded default would
+    // record peers; the guard refuses the literal before calling it.
     const { config, db } = provider();
-    expect(await scrapeKnownProviders(db, config, "127.0.0.1:1")).toEqual([]);
+    const { result, urls } = await withRecordingGlobalFetch(providersDoc, () =>
+      scrapeKnownProviders(db, config, "127.0.0.1:1"),
+    );
+    expect(result).toEqual([]);
+    expect(urls).toEqual([]);
     expect(listKnownProviders(db)).toEqual([]);
   });
 });

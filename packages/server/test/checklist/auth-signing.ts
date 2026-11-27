@@ -85,7 +85,7 @@ export const AUTH_SIGNING: readonly ChecklistEntry[] = [
     status: "partial",
     note: "DM forwarding (`packages/server/src/http/dm-forwarding.ts`, which unit U23 replaces) is only structurally guarded: it uses the app-wide `federationFetch` (policy over `guardedFetch`), but no test drives a forward through the real guard.",
     context:
-      "Push delivery goes through `guardedPushFetch` (`packages/server/src/provider/push-send.ts`, the shared `guardedFetch`); notification-target delivery and the known-providers scrape are driven through the real guard with an injected resolver: `http`, loopback, private, link-local, metadata and mixed-address targets are never contacted, and a `3xx` is returned, not followed.",
+      "Push delivery goes through `guardedPushFetch` (`packages/server/src/provider/push-send.ts`, the shared `guardedFetch`); notification-target delivery and the known-providers scrape are driven through the real guard with an injected resolver: `http`, loopback, private, link-local, metadata and mixed-address targets are never contacted, and a `3xx` is returned, not followed. The production default transports of push and the scrape are shown to be the guard: with the global `fetch` replaced by a recorder that would accept, a refused target never reaches it.",
   },
   {
     item: "Apply federation allow/deny policy to every outbound request and to every signed inbound request (`403` at the start of §4.5 step 6 or §8.1 step 2, before any key or discovery fetch, including for a provider-signed request to a route that defines only user signatures, which, from a permitted provider, then gets `401` without a discovery fetch or signature check; WebSocket `4001`); answer unsigned requests to public endpoints regardless (§8)",
