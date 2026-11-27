@@ -29,7 +29,7 @@ import { reactionsFor } from "../../stores/chat.ts";
 import { type FeedItem, activeFollows, feed, mergedTimeline } from "../../stores/feed.ts";
 import { clearFeed } from "../../stores/feed.ts";
 import { session, sessionClient, sessionWs } from "../../stores/session.ts";
-import { MessageBody } from "../chat/ChatView.tsx";
+import { MessageBody } from "../chat/MessageRow.tsx";
 import { AttachmentList } from "../shared/AttachmentList.tsx";
 import { EmptyState } from "../shared/EmptyState.tsx";
 import { openUserProfile } from "../social/user-profile-store.ts";
