@@ -42,12 +42,12 @@ The old map (28 Provider + 7 Client MUST items) predated the spec PRs #23–#30;
 | L | Item (short) | Status | Gap | Unit |
 |---|---|---|---|---|
 | 5 | Password login, registration by mode (§4.1.1) | covered | Only `open` mode exists, which a provider may choose. | — |
-| 6 | Bootstrap tokens (§4.2) | tests only | No test that a bootstrap token is refused on every other endpoint. | U11 |
-| 7 | Device keys: register, list, revoke, `4003` (§4.7) | tests only | List item fields never asserted or schema-validated. | U11 |
-| 8 | `public_key` encoding, `400` on a bad key (§4.3.2) | partial | Guest creation with a non-32-byte key untested; a verifier drops the whole keys/discovery document when one key is bad (spec question 3). | U11 |
-| 9 | Signature validation, one bounded replay store (§4.5) | tests only | Full store → `503` over HTTP, replay of a provider-signed request, concurrent copies (atomic re-check) untested. | U11 |
-| 10 | Outbound-request rules (§8) | tests only | Push delivery to http/private/redirecting endpoints untested; DM-forward, notification and scrape egress tested only through an injected transport. | U11 |
-| 11 | Federation allow/deny on every route (§8) | behaviour | A signed request from a denied provider to discovery, the keys endpoint, `/api/tiers`, `/api/health`, `/problems/*` is answered `200`, not `403`. Untested: steps 1–5 beat the `403`, a `403`'d nonce is not recorded, unsigned reads still served with a deny list, push to a later-denied host, own authority exempt. | U4 (behaviour), U11 (tests) |
+| 6 | Bootstrap tokens (§4.2) | met (U11) | Refused (`401`) as a Bearer on device-key list/revoke, `/api/me`, `/api/me/dms`, group create/join, presence, and still usable after; response schema, ≥128-bit token and ≤15 min expiry asserted (`device-key-management.test.ts`). | U11 |
+| 7 | Device keys: register, list, revoke, `4003` (§4.7) | met (U11) | `GET /api/auth/device-keys` validated against `device-keys-response.json` with exact item fields; revoke `204`, then gone from the list, its signature `401`, a second revoke `404` (`device-key-management.test.ts`). | U11 |
+| 8 | `public_key` encoding, `400` on a bad key (§4.3.2) | met (U11) | Spec answer 3: a published key that is not 32 bytes or has an unsupported `algorithm` is ignored on its own (`packages/shared/src/published-keys.ts`; the keys/discovery schemas require only strings), so a request naming it re-fetches, then `401`, or `503` when that fetch fails; the other keys stay usable (`published-key-usability.test.ts`). Guest creation and registration with a bad key → `400`, nothing spent (`device-key-management.test.ts`). | U11 |
+| 9 | Signature validation, one bounded replay store (§4.5) | met (U11) | Full store → `503` + `Retry-After` over HTTP (nonce not recorded; a forged request still `401`), replayed provider-signed request → `401`, concurrent copies → one `200`, one `401` (`replay-store-http.test.ts`). The WS handshake is gated byte-for-byte against `ws-signing-vector.json`. | U11 |
+| 10 | Outbound-request rules (§8) | partial (U11) | Push now goes through the shared `guardedFetch` (`guardedPushFetch`); push, notification and scrape egress tested through the real guard (`push-delivery-egress.test.ts`, `outbound-egress.test.ts`). Left: DM forwarding is only structurally guarded; U23 removes it. | U11, U23 |
+| 11 | Federation allow/deny on every route (§8) | partial | Behaviour met (U4, U22) and tested, push to a later-denied host included (U11, `push-delivery-egress.test.ts`). Left: the provider-signed DM forwarding routes (U23). | U4, U22, U11, U23 |
 | 12 | CORS per §3.4 | tests only | No CORS test exists anywhere (`http/cors.ts` is correct by inspection). | U5 |
 | 13 | WS handshake failures mirror REST, `4001` | covered | — | — |
 | 14 | WS envelope and command rules | covered | — | — |
@@ -72,7 +72,7 @@ The old map (28 Provider + 7 Client MUST items) predated the spec PRs #23–#30;
 | 33 | Users' profile/presence/groups visibility (§6.1–§6.5) | behaviour | Routes require a signature, so anonymous viewers get `401`; `…/groups` lists every membership with no tier filter; `requireParam` decodes twice, so `%25` → `500`; uniform `404` bodies untested. | U4 |
 | 34 | `PUT /api/me/presence`, `PUT /api/me/privacy` | behaviour | Related: privacy lists accept a user URI and convert it (`UserRefSchema`); the ofscp schema takes canonical actors only (known gap). | U4 |
 | 35 | Direct messages (§7.4) | behaviour | A remote participant can't subscribe to a `dmId` (known gap), so no `dm.*` delivery or resume for it. Non-participant subscribe → `not_found`, non-participant read → `404` where the spec says `forbidden`/`403` (spec question 8). Untested: `dm.conversation`, non-local `to`, `with` = caller, remote `PUT /api/me/dms`. | U10 |
-| 36 | Contacts (§6.7) | tests only | Federated `remove` untested. | U11 |
+| 36 | Contacts (§6.7) | met (U11) | Federated `remove` (ends a contact, cancels or declines a request, no-op, `403` for a signer ≠ `from`, `404` for a non-local `to`) tested with a real remote actor (`contacts-federation.test.ts`). | U11 |
 | 37 | Provider keys and provider signing (§8.1) | covered | — | — |
 | 38 | Direct-WS from remote members (§8.5) | tests only | No remote-specific test of a member blocked by tier or `view`, or of remote `since` resume (both reuse the local path). | U12 |
 | 39 | Follows as pointers (§7.6) | behaviour | An unreadable channel answers `403` (see L44). | U3 |
@@ -164,7 +164,7 @@ numbers are in the spec at `e94447d`.
 
 | L | Item (short) | Status | Gap | Unit |
 |---|---|---|---|---|
-| 8 (P MUST) | Signature validation, now also both identity headers → step-1 `401` | met (U19) | Step 1 (`http/signature.ts` `readSigningHeaders`) rejects both identity headers with `401` before the deny check, on every route (`provider-signed-routes.test.ts`). The U11 test gaps (full store over HTTP, replayed provider-signed request, concurrent copies) remain. | U19, U11 |
+| 8 (P MUST) | Signature validation, now also both identity headers → step-1 `401` | met (U19) | Step 1 (`http/signature.ts` `readSigningHeaders`) rejects both identity headers with `401` before the deny check, on every route (`provider-signed-routes.test.ts`). The U11 test gaps (full store over HTTP, replayed provider-signed request, concurrent copies) are closed (`replay-store-http.test.ts`). | U19, U11 |
 | 10 (P MUST) | Federation deny `403`, now also for a provider-signed request to a user-signature-only route | met (U22) | A denied provider gets `403` on user-only routes too (`provider-signed-routes.test.ts`). | U22 |
 | 20 (P MUST) | Owner listed as `owner`, `joinedAt` kept, stable member order | tests only | Implemented (`provider/groups.ts:130`, `provider/membership.ts:173`); no test asserts the owner's listed role, the creator's `joinedAt`, or `joinedAt` after a role change or transfer. | U12 |
 | 21 (P MUST) | Repeat `join` → `202` with the pending request unchanged; `leave` by a non-member → `404`, by the owner → `409` | tests only | Repeat with a different `message` and the non-member `404` (`http/membership.ts:162`) untested. | U12 |

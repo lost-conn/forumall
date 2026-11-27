@@ -18,9 +18,14 @@ export const AUTH_SIGNING: readonly ChecklistEntry[] = [
   {
     item: "Issue scoped, short-lived bootstrap tokens on registration/login (§4.2)",
     level: "provider-must",
-    covers: ["packages/server/test/auth.test.ts", "packages/server/test/device-keys.test.ts"],
-    status: "partial",
-    note: "Untested: a bootstrap token sent to any other endpoint (e.g. `GET`/`DELETE /api/auth/device-keys`, `/api/me`) is rejected with `401`; the behaviour holds because only `POST /api/auth/device-keys` reads the bearer. The ≥128-bit entropy is asserted only as `length > 20`.",
+    covers: [
+      "packages/server/test/auth.test.ts",
+      "packages/server/test/device-keys.test.ts",
+      "packages/server/test/device-key-management.test.ts",
+    ],
+    status: "covered",
+    context:
+      "`device-key-management.test.ts` validates the bootstrap response against the spec schema, checks the token carries ≥128 bits and expires within 15 minutes, and sends it as a Bearer to `GET`/`DELETE /api/auth/device-keys`, `/api/me`, `/api/me/dms`, group create/join and presence: `401` each time, and the token still registers a key afterwards.",
   },
   {
     item: "Implement device key registration (bootstrap-authenticated), listing, and revocation, closing revoked keys' WebSocket connections with `4003` (§4.7)",
@@ -31,9 +36,9 @@ export const AUTH_SIGNING: readonly ChecklistEntry[] = [
       "packages/server/test/ws-access-revocation.test.ts",
       "packages/server/test/remote-handle-impersonation.test.ts",
       "packages/server/test/federation-realtime.test.ts",
+      "packages/server/test/device-key-management.test.ts",
     ],
-    status: "partial",
-    note: "The device-key list item shape (`algorithm`, `public_key`, `device_name`, `created_at`) is never asserted and `GET /api/auth/device-keys` is not validated against `device-keys-response.json`.",
+    status: "covered",
   },
   {
     item: "Encode every `public_key` as the raw 32-byte Ed25519 key in padded standard base64, reject (`400`) a registration whose key does not decode to 32 bytes, and, as a verifier, ignore on its own a published key that does not (or whose `algorithm` is unsupported), keeping the document's other keys (`401` for a request signed with it) (§4.3.2)",
@@ -42,9 +47,13 @@ export const AUTH_SIGNING: readonly ChecklistEntry[] = [
       "packages/server/test/device-keys.test.ts",
       "packages/shared/test/schemas.test.ts",
       "packages/server/test/conformance.test.ts",
+      "packages/server/test/device-key-management.test.ts",
+      "packages/shared/test/published-keys.test.ts",
+      "packages/server/test/published-key-usability.test.ts",
     ],
-    status: "partial",
-    note: "Untested: guest creation (§4.8) with a key that is not 32 bytes → `400`, and per-key handling of published keys (behaviour gap: today one key that does not decode to 32 bytes, or has an unsupported `algorithm`, invalidates the whole keys or discovery document, where only that key should be ignored and a request signed with it get `401`).",
+    status: "covered",
+    context:
+      "Published keys are judged one by one (`isUsablePublishedKey` in `packages/shared/src/published-keys.ts`: `algorithm` exactly `Ed25519`, `public_key` padded base64 of 32 bytes); the keys-response and discovery schemas require only strings, so an unusable entry leaves the document and its other keys usable. A request naming an unusable key treats it as absent: re-fetch (§4.6), then `401`, or `503` when that fetch fails or is rate-limited. Submitted keys (registration, guest creation) stay strictly validated (`400`).",
   },
   {
     item: "Validate Ed25519 request signatures over the §4.4.2 canonical string, including authority binding and nonce replay rejection, with one bounded provider-wide replay store that records a nonce only after the signature verifies; reject a request carrying both `X-OFSCP-Actor` and `X-OFSCP-Provider` with `401` at §4.5 step 1, even when a header names a denied provider (§4.5)",
@@ -58,9 +67,9 @@ export const AUTH_SIGNING: readonly ChecklistEntry[] = [
       "packages/server/test/canonical-authority.test.ts",
       "packages/server/test/ws-handshake.test.ts",
       "packages/server/test/provider-signed-routes.test.ts",
+      "packages/server/test/replay-store-http.test.ts",
     ],
-    status: "partial",
-    note: "Untested over HTTP: a full replay store → `503` + `Retry-After` (only the store unit test), a replayed provider-signed (§8.1) request → `401`, and the atomic re-check after step 7 (two concurrent copies → exactly one `200`).",
+    status: "covered",
     context:
       "`provider-signed-routes.test.ts` sends both identity headers (a valid user signature plus `X-OFSCP-Provider`, and a provider signature plus `X-OFSCP-Actor`, naming a denied provider in either slot) to public, anonymous-reader, user-only, either-signer and provider-signed routes: `401` at step 1 each time, with no fetch and no nonce recorded.",
   },
@@ -70,9 +79,13 @@ export const AUTH_SIGNING: readonly ChecklistEntry[] = [
     covers: [
       "packages/server/test/egress-guard.test.ts",
       "packages/server/test/signer-resolution.test.ts",
+      "packages/server/test/push-delivery-egress.test.ts",
+      "packages/server/test/outbound-egress.test.ts",
     ],
     status: "partial",
-    note: "Push delivery to an `http`, private or redirecting endpoint is untested. Notification-target delivery, DM forwarding and the known-providers scrape are only structurally guarded: their tests inject a `federationFetch` that bypasses `guardedFetch`.",
+    note: "DM forwarding (`packages/server/src/http/dm-forwarding.ts`, which unit U23 replaces) is only structurally guarded: it uses the app-wide `federationFetch` (policy over `guardedFetch`), but no test drives a forward through the real guard.",
+    context:
+      "Push delivery goes through `guardedPushFetch` (`packages/server/src/provider/push-send.ts`, the shared `guardedFetch`); notification-target delivery and the known-providers scrape are driven through the real guard with an injected resolver: `http`, loopback, private, link-local, metadata and mixed-address targets are never contacted, and a `3xx` is returned, not followed.",
   },
   {
     item: "Apply federation allow/deny policy to every outbound request and to every signed inbound request (`403` at the start of §4.5 step 6 or §8.1 step 2, before any key or discovery fetch, including for a provider-signed request to a route that defines only user signatures, which, from a permitted provider, then gets `401` without a discovery fetch or signature check; WebSocket `4001`); answer unsigned requests to public endpoints regardless (§8)",
@@ -86,9 +99,11 @@ export const AUTH_SIGNING: readonly ChecklistEntry[] = [
       "packages/server/test/ws-remote-key.test.ts",
       "packages/server/test/public-route-signatures.test.ts",
       "packages/server/test/provider-signed-routes.test.ts",
+      "packages/server/test/push-delivery-egress.test.ts",
+      "packages/server/test/outbound-egress.test.ts",
     ],
     status: "partial",
-    note: "Behaviour gap (unit U23): the `/api/federation/dms/{dmId}/messages/{messageId}` `PATCH`/`DELETE` and `…/reactions/{key}` `PUT`/`DELETE` routes still accept a permitted provider's signature (`requireActorOrProviderSignature`, `packages/server/src/http/dms-federation.ts`) and verify it against discovery, because Forumall's home provider forwards DM edits, deletes and reactions provider-signed (`packages/server/src/http/dm-forwarding.ts`). The spec defines no route that takes provider signatures and has the client deliver these itself, user-signed (§7.4, §8.3). Untested: push delivery to a push host that was denied after the subscription was stored.",
+    note: "Behaviour gap (unit U23): the `/api/federation/dms/{dmId}/messages/{messageId}` `PATCH`/`DELETE` and `…/reactions/{key}` `PUT`/`DELETE` routes still accept a permitted provider's signature (`requireActorOrProviderSignature`, `packages/server/src/http/dms-federation.ts`) and verify it against discovery, because Forumall's home provider forwards DM edits, deletes and reactions provider-signed (`packages/server/src/http/dm-forwarding.ts`). The spec defines no route that takes provider signatures and has the client deliver these itself, user-signed (§7.4, §8.3).",
     context:
       "Every route that serves unsigned callers runs §4.5 only when signed (`optionalSignature`). The verifier (`packages/server/src/http/signature.ts`) answers steps 1–5, then the deny `403`, then `401` for a signer kind the route does not take, and only then the warm-up `503`, key resolution and verification. `provider-signed-routes.test.ts` covers a permitted provider (`401`), this provider's own valid key (`401`, not served) and a denied provider (`403`) on public, anonymous-reader and user-only routes, steps 1–5 first (`401` stale, `400` digest), and the same answers inside the warm-up, with an injected transport and replay store showing no fetch and no recorded nonce.",
   },
