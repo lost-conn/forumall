@@ -21,6 +21,7 @@ import type {
   GroupUpdateRequest,
   Invite,
   InviteCreateRequest,
+  InviteCreateResponse,
   JoinRequest,
   Member,
   TiersResponse,
@@ -249,20 +250,26 @@ export async function denyJoinRequest(
   await client.post(`/api/groups/${groupId}/requests/${requestId}/deny`, {});
 }
 
-/** An invite plus its shareable link (the server adds `link` to the §5.6 body). */
-export type InviteWithLink = Invite & { link?: string };
+/**
+ * A created invite (with its bearer `token`, §5.6) plus its shareable link (the
+ * server adds `link` to the §5.6 body).
+ */
+export type CreatedInvite = InviteCreateResponse & { link?: string };
 
-/** Mint an invite for a group (manage, §5.6). */
+/**
+ * Mint an invite for a group (manage, §5.6). The creation response is the only
+ * place its `token` appears: the provider may keep only a digest of it.
+ */
 export async function createInvite(
   client: OfscpClient,
   groupId: string,
   body: InviteCreateRequest,
-): Promise<InviteWithLink> {
-  const res = await client.post<InviteWithLink>(`/api/groups/${groupId}/invites`, body);
+): Promise<CreatedInvite> {
+  const res = await client.post<CreatedInvite>(`/api/groups/${groupId}/invites`, body);
   return res.data;
 }
 
-/** List a group's invites (manage, §5.6). */
+/** List a group's invites (manage, §5.6). Their `token`s may be omitted. */
 export async function listInvites(client: OfscpClient, groupId: string): Promise<Invite[]> {
   const res = await client.get<{ items: Invite[] }>(`/api/groups/${groupId}/invites`);
   return res.data.items ?? [];

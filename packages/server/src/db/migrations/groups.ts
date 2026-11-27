@@ -2,6 +2,8 @@
  * Migrations for groups, members, channels, join requests, invites, channel permissions and roles. The run order is the
  * `migrations` list in `../migrate.ts`; never edit or rename a shipped one.
  */
+import { sha256 } from "@noble/hashes/sha2";
+
 import type { Migration } from "../migration-types.ts";
 
 export const m0005GroupsAndMembers: Migration = {
@@ -168,5 +170,55 @@ export const m0027GroupsAvatar: Migration = {
     if (!cols.includes("avatar")) {
       sqlite.exec("ALTER TABLE groups ADD COLUMN avatar TEXT;");
     }
+  },
+};
+
+export const m0043InvitesTokenDigest: Migration = {
+  // Invite tokens are bearer secrets (§5.6): store only a SHA-256 digest so a
+  // database leak does not reveal them. `token` becomes `token_digest`
+  // (lowercase hex SHA-256 of the token's UTF-8 bytes, the encoding of
+  // `inviteTokenDigest` in `provider/invites.ts`).
+  //
+  // Existing invites are CONVERTED, not invalidated: each stored plaintext
+  // token is digested, so join links already shared keep working, and the
+  // plaintext is gone once the old table is dropped. SQLite cannot drop a
+  // UNIQUE column in place, so the table is rebuilt (create new → copy → drop
+  // → rename) inside the migration's transaction and the group index
+  // re-created; the UNIQUE constraint indexes `token_digest` lookups.
+  // Nothing references `invites` through a foreign-key constraint.
+  id: "0043_invites_token_digest",
+  up: (sqlite) => {
+    sqlite.exec(`
+      CREATE TABLE invites_new (
+        id           TEXT PRIMARY KEY,
+        group_id     TEXT NOT NULL,
+        token_digest TEXT NOT NULL UNIQUE,
+        channel_id   TEXT,
+        role         TEXT NOT NULL DEFAULT 'member',
+        grants_guest INTEGER NOT NULL DEFAULT 0,
+        max_uses     INTEGER,
+        uses         INTEGER NOT NULL DEFAULT 0,
+        expires_at   INTEGER,
+        created_by   TEXT NOT NULL,
+        created_at   INTEGER NOT NULL
+      ) STRICT;
+    `);
+    const insert = sqlite.prepare(
+      `INSERT INTO invites_new (id, group_id, token_digest, channel_id, role, grants_guest,
+         max_uses, uses, expires_at, created_by, created_at)
+       SELECT id, group_id, ?, channel_id, role, grants_guest,
+         max_uses, uses, expires_at, created_by, created_at
+       FROM invites WHERE id = ?`,
+    );
+    const rows = sqlite
+      .query<{ id: string; token: string }, []>("SELECT id, token FROM invites")
+      .all();
+    for (const row of rows) {
+      const digest = Buffer.from(sha256(new TextEncoder().encode(row.token))).toString("hex");
+      insert.run(digest, row.id);
+    }
+    sqlite.exec("DROP TABLE invites;");
+    sqlite.exec("ALTER TABLE invites_new RENAME TO invites;");
+    sqlite.exec("CREATE INDEX idx_invites_group_id ON invites (group_id);");
   },
 };

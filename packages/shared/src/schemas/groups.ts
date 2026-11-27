@@ -226,13 +226,17 @@ export type ChannelUpdateRequest = z.infer<typeof ChannelUpdateRequestSchema>;
 // Invite / Member / JoinRequest
 // ---------------------------------------------------------------------------
 
-/** A join link / invite token (`Invite`). */
+/**
+ * A join link / invite (`Invite`). Its bearer `token` is optional: only the
+ * creation response must carry it (§5.6, {@link InviteCreateResponseSchema});
+ * a provider may omit it everywhere else, e.g. to keep only a digest of it.
+ */
 export const InviteSchema = z
   .object({
     id: z.string().min(1),
     groupId: z.string().min(1),
     channelId: z.string().min(1).optional(),
-    token: z.string().min(1),
+    token: z.string().min(1).optional(),
     role: RoleSchema.optional(),
     grantsGuest: z.boolean().optional(),
     maxUses: z.number().int().min(1).optional(),
@@ -243,6 +247,15 @@ export const InviteSchema = z
   })
   .passthrough();
 export type Invite = z.infer<typeof InviteSchema>;
+
+/**
+ * `POST /api/groups/{groupId}/invites` response (`invite-create-response`): the
+ * created `Invite`, which MUST carry its bearer `token` (§5.6).
+ */
+export const InviteCreateResponseSchema = InviteSchema.extend({
+  token: z.string().min(1),
+}).passthrough();
+export type InviteCreateResponse = z.infer<typeof InviteCreateResponseSchema>;
 
 /** POST /api/groups/{groupId}/invites body (`invite-create-request`). */
 export const InviteCreateRequestSchema = z
