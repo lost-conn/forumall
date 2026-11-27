@@ -151,7 +151,13 @@ export function signedReq(
   path: string,
   bodyObj?: unknown,
 ): Promise<Response> {
-  return signedRawReq(b, signer, method, path, bodyObj === undefined ? undefined : JSON.stringify(bodyObj));
+  return signedRawReq(
+    b,
+    signer,
+    method,
+    path,
+    bodyObj === undefined ? undefined : JSON.stringify(bodyObj),
+  );
 }
 
 /**
