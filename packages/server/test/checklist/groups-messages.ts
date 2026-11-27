@@ -107,9 +107,9 @@ export const GROUPS_MESSAGES: readonly ChecklistEntry[] = [
       "packages/server/test/ws-correlation.test.ts",
       "packages/server/test/conformance.test.ts",
       "packages/shared/test/message-create-schema.test.ts",
+      "packages/server/test/message-create-semantics.test.ts",
     ],
-    status: "partial",
-    note: "The WebSocket half is thin: `message.create` to an unreadable channel → `not_found`, the `post:<type>` / `replyOnly` / `replyOnlyTo` refusals, and a `memo` or valid reply over WS are untested; so is a REST create in a missing group → `404`.",
+    status: "covered",
   },
   {
     item: "Treat a `reference.provider` as a canonical authority (§2.2), and one equal to its own authority as absent; reject (`400`) a channel reply whose `provider` is not the channel's own provider (§7.1, §7.2)",
@@ -137,9 +137,9 @@ export const GROUPS_MESSAGES: readonly ChecklistEntry[] = [
       "packages/server/test/ws-message-create.test.ts",
       "packages/server/test/dms-send.test.ts",
       "packages/server/test/conformance.test.ts",
+      "packages/server/test/message-create-semantics.test.ts",
     ],
-    status: "partial",
-    note: "Untested: the duplicate answer reflects the message as it now stands (edited or tombstoned), the key is scoped by `channelId`, and a reply-restricted actor's retry without `reference` → `403`.",
+    status: "covered",
   },
   {
     item: "Carry the full canonical `Message` in `message.created`, `message.updated` and `dm.message` (§7.1, §7.4)",
@@ -163,9 +163,11 @@ export const GROUPS_MESSAGES: readonly ChecklistEntry[] = [
       "packages/server/test/ws-correlation.test.ts",
       "packages/shared/test/edits-media-groups.test.ts",
       "packages/server/test/hidden-channels.test.ts",
+      "packages/server/test/message-edit-window.test.ts",
     ],
-    status: "partial",
-    note: '"No limit when `editUntil` is absent" is vacuous: every message is stamped with a 900 s window.',
+    status: "covered",
+    context:
+      "No limit when `editUntil` is absent: an article has no `editUntil` unless `ARTICLE_EDIT_WINDOW_SECONDS` is set, and edits to it are never refused for time (`message-edit-window.test.ts`).",
   },
   {
     item: "Answer an edit of a tombstone `404` (`not_found`), and a repeated delete of one `204` with no second `message.deleted` fanned out (over WebSocket, a `message.deleted` with `correlationId` and no `cursor` to the requester alone), applying the §7.1 order of checks (§7.1)",
@@ -225,8 +227,11 @@ export const GROUPS_MESSAGES: readonly ChecklistEntry[] = [
       "packages/server/test/message-create-fields.test.ts",
       "packages/server/test/message-edit-fields.test.ts",
       "packages/shared/test/edits-media-groups.test.ts",
+      "packages/server/test/message-create-semantics.test.ts",
+      "packages/server/test/message-mentions-notifications.test.ts",
     ],
-    status: "partial",
-    note: "Behaviour gap: mention notifications are still parsed from the text, never from `mentions`; and no server test creates or edits a `text/markdown` `message`, `memo` or `article`. (Forumall offers the §10.1 feed, so the mentions clause binds it.)",
+    status: "covered",
+    context:
+      "Forumall offers the §10.1 feed, so the mentions clause binds it: a stored `mentions` list is exactly who is mentioned (`[]` nobody), and only without one is the text parsed.",
   },
 ];
