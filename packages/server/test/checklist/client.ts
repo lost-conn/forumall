@@ -35,10 +35,14 @@ export const CLIENT: readonly ChecklistEntry[] = [
   {
     item: "Handle the registration-mode errors (`registration_closed`, `invite_required`) when registering or claiming a guest account (§4.1.1)",
     level: "client-must",
-    covers: ["packages/web/test/registration.test.ts", "packages/web/test/provider.test.ts"],
+    covers: [
+      "packages/web/test/registration.test.ts",
+      "packages/web/test/provider.test.ts",
+      "e2e/tests/registration-modes.spec.ts",
+    ],
     status: "covered",
     context:
-      'Register and claim send an optional `inviteToken` (prefilled from a `/register?invite=` link for this provider, whose authority is shown first), each refusal gets its own message read from the problem `errorCode`, the advertised mode shapes the form, and `invite_required` after sending a token retries as a login (§4.1.1 "Retries"). The form wiring itself has no e2e test: this provider is always open.',
+      'Register and claim send an optional `inviteToken` (prefilled from a `/register?invite=` link for this provider, whose authority is shown first, and then stripped from the address bar), each refusal gets its own message read from the problem `errorCode`, the advertised mode shapes the form, and `invite_required` after sending a token retries as a login (§4.1.1 "Retries"). This provider is always open, so the e2e test answers register and claim with each refusal through a route and drives both forms against them.',
   },
   {
     item: "Derive `dmId` per §7.4 (no sender copy is stored server-side)",
