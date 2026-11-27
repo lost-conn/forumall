@@ -161,16 +161,19 @@ describe("thumbnail part (§5.8 Thumbnail)", () => {
     expect(getMediaRow(b.db, att.id)?.thumbnailId).toBe(thumb?.id ?? "");
   });
 
-  test("a thumbnail that is not an image is 400; over the size limit, 413; nothing is stored", async () => {
-    const b = boot("thumb-refused", { MAX_UPLOAD_BYTES: "128" });
+  test("a thumbnail that is not a confirmed image is 400; over the size limit, 413; nothing is stored", async () => {
+    const b = boot("thumb-refused", { MAX_UPLOAD_BYTES: "4096" });
     const alice = await registerUserWithKey(b, "alice");
     const count = () =>
       b.db.sqlite.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM media").get()?.n;
+    const svg = new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg"/>');
     for (const [part, status] of [
       [thumbPart(new TextEncoder().encode("hi"), "text/plain", "a.txt"), 400],
       // An image type its bytes do not confirm is recorded as octet-stream: not an image.
       [thumbPart(SCRIPT_BYTES, "image/png"), 400],
-      [thumbPart(new Uint8Array(129).fill(0x41), "image/png"), 413],
+      // SVG is recorded as declared but never confirmed by bytes or shown inline.
+      [thumbPart(svg, "image/svg+xml", "poster.svg"), 400],
+      [thumbPart(new Uint8Array(4097).fill(0x41), "image/png"), 413],
     ] as const) {
       const res = await upload(b, alice, { files: [part] });
       expect({ mime: part.mime, status: res.status }).toEqual({ mime: part.mime, status });
@@ -184,7 +187,7 @@ describe("thumbnail part (§5.8 Thumbnail)", () => {
   });
 
   test("a file and a thumbnail each up to the limit fit, though together they exceed it", async () => {
-    const limit = 512;
+    const limit = 2048; // above the sample MP4's size
     const b = boot("thumb-sizes", { MAX_UPLOAD_BYTES: String(limit) });
     const alice = await registerUserWithKey(b, "alice");
     const file = new Uint8Array(limit);

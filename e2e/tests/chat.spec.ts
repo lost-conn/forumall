@@ -20,7 +20,7 @@
  */
 import type { Browser, Page } from "@playwright/test";
 import { registerUser, uniqueHandle } from "../harness/auth.ts";
-import { expect, test } from "../harness/fixtures.ts";
+import { expect, mediaFixture, test } from "../harness/fixtures.ts";
 
 /** Open the create-group form, fill it, submit, and return the new group id. */
 async function createGroup(
@@ -442,16 +442,9 @@ test("attachment upload: A attaches a video → it renders as an attachment-vide
   const { a, b } = await twoUsersInChannel(page, browser, appServer.baseUrl);
 
   // The server records an inline type such as video/mp4 only when the bytes
-  // confirm it (§5.8), so the file starts with an MP4 `ftyp` box (size 24,
-  // major brand `isom`, compatible `isom` + `mp41`). That header is all it is:
-  // not a decodable video, and the assertion below is about which ELEMENT the
-  // client renders, not playback.
-  const buffer = Buffer.concat([
-    Buffer.from([0, 0, 0, 24]),
-    Buffer.from("ftypisom"),
-    Buffer.from([0, 0, 2, 0]),
-    Buffer.from("isommp41"),
-  ]);
+  // confirm it (§5.8), so this is a real (one-frame) MP4. The assertion below
+  // is about which ELEMENT the client renders, not playback.
+  const buffer = mediaFixture("sample.mp4");
 
   await a.getByTestId("file-input").setInputFiles({
     name: "clip.mp4",

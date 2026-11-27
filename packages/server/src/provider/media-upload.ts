@@ -18,16 +18,19 @@
  *    (`multipart-headers.ts`), not `File.type`, which Bun derives from the
  *    filename.
  *  - **`thumbnail`** (*Thumbnail*): a second file part, stored as an upload of
- *    its own. One that is not an `image/*` file — by the recorded `mime`, so an
- *    image type its bytes do not confirm counts as not an image — is a `400`;
- *    one over the size limit is a `413`.
+ *    its own. Clients show a thumbnail in place of the file, as an image, so
+ *    it must be an image whose bytes confirm it: its recorded `mime` must be
+ *    an `image/*` type that renders inline ({@link rendersInline}). One that
+ *    is not — a non-image, an image type its bytes do not confirm (recorded
+ *    as `application/octet-stream`), or `image/svg+xml`, which is never
+ *    confirmed by bytes — is a `400`; one over the size limit is a `413`.
  */
 import { canonicalAuthority, isCanonicalAuthority } from "@forumall/shared";
 
 import type { Config } from "../config.ts";
 import type { Db } from "../db/index.ts";
 import type { MediaRow } from "../db/schema.ts";
-import { determineUploadMime } from "./media-type.ts";
+import { determineUploadMime, rendersInline } from "./media-type.ts";
 import {
   type UploaderHints,
   contentHash,
@@ -126,7 +129,15 @@ async function readFilePart(
   return { file: { bytes, mime: determineUploadMime(declaredType, bytes), filename } };
 }
 
-/** `file` with its dimensions: from its own header, else the uploader's hints (§5.8). */
+/**
+ * Whether a recorded `mime` is a bytes-confirmed raster image: `image/*` and
+ * inline. {@link determineUploadMime} records an inline type only when the
+ * bytes confirm it, so this holds exactly for images it confirmed.
+ */
+const isConfirmedImage = (mime: string): boolean =>
+  mime.startsWith("image/") && rendersInline(mime);
+
+/** `file` with its dimensions:from its own header, else the uploader's hints (§5.8). */
 function withDimensions(file: UploadFile, hints: UploaderHints): UploadFile {
   return { ...file, ...resolveMediaDimensions(parseImageDimensions(file.bytes), hints) };
 }
@@ -163,8 +174,8 @@ export async function readUploadForm(
   if (thumbPart.value !== undefined) {
     const thumb = await readFilePart(thumbPart.value, "thumbnail", declared, config);
     if ("refusal" in thumb) return thumb;
-    if (!thumb.file.mime.startsWith("image/")) {
-      return badRequest("`thumbnail` must be an image (image/*) file");
+    if (!isConfirmedImage(thumb.file.mime)) {
+      return badRequest("`thumbnail` must be an image (image/*, not SVG) its bytes confirm");
     }
     // A thumbnail's dimensions come from its own header; the hint parts
     // describe the `file`.
