@@ -6,7 +6,6 @@
 import { z } from "zod";
 
 import {
-  Ed25519PublicKeySchema,
   HttpsUriSchema,
   IceServerSchema,
   MetadataListSchema,
@@ -178,12 +177,18 @@ const ProviderAuthenticationSchema = z
   })
   .passthrough();
 
-/** Provider signing key entry; `created_at` optional here (unlike user keys). */
+/**
+ * Provider signing key entry; `created_at` optional here (unlike user keys).
+ * `algorithm` and `public_key` are only strings, as in
+ * `provider-discovery.json`: an entry a verifier cannot use is ignored on its
+ * own, never the whole document (§4.3.2; `isUsablePublishedKey` in
+ * `published-keys.ts`).
+ */
 const ProviderPublicKeySchema = z
   .object({
     key_id: z.string().min(1),
-    algorithm: z.enum(["Ed25519"]),
-    public_key: Ed25519PublicKeySchema,
+    algorithm: z.string(),
+    public_key: z.string(),
     created_at: Rfc3339DateTimeSchema.optional(),
   })
   .passthrough();

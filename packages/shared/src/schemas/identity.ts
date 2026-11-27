@@ -154,12 +154,17 @@ export const GuestCreateRequestSchema = z
   .passthrough();
 export type GuestCreateRequest = z.infer<typeof GuestCreateRequestSchema>;
 
-/** A public key entry as returned by the user-keys endpoint. */
+/**
+ * A public key entry as returned by the user-keys endpoint. `algorithm` and
+ * `public_key` are only strings here, as in `user-keys-response.json`: an entry
+ * a verifier cannot use is ignored on its own, never the whole document
+ * (§4.3.2; `isUsablePublishedKey` in `published-keys.ts`).
+ */
 export const UserPublicKeySchema = z
   .object({
     key_id: z.string().min(1),
-    algorithm: z.enum(["Ed25519"]),
-    public_key: Ed25519PublicKeySchema,
+    algorithm: z.string(),
+    public_key: z.string(),
     created_at: Rfc3339DateTimeSchema,
   })
   .passthrough();

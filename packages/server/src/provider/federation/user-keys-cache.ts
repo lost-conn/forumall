@@ -11,7 +11,10 @@
  * A keys response is used only if it matches `UserKeysResponseSchema` AND its
  * `actor`, canonicalized (§2.2), equals the actor whose keys were requested.
  * A response naming anyone else is a fetch failure; none of its keys are used.
- * A `404` means "no keys", exactly like an empty `keys` list.
+ * A `404` means "no keys", exactly like an empty `keys` list. Keys are judged
+ * one by one (§4.3.2): an entry that is not Ed25519 or not a raw 32-byte key
+ * is ignored and counts as absent, while the document and its other keys stay
+ * usable.
  *
  * ## Caching + re-fetch (§4.6)
  *  - An entry is valid until the response's `cache_until`, capped at
@@ -52,6 +55,7 @@ import {
   type UserKeysResponse,
   UserKeysResponseSchema,
   canonicalActor,
+  findUsablePublishedKey,
   isCanonicalActor,
 } from "@forumall/shared";
 
@@ -324,9 +328,13 @@ export class RemoteUserKeysCache {
   }
 }
 
-/** Pick the matching active key from a keys-response document. */
+/**
+ * Pick the usable active key named `keyId` from a keys-response document. An
+ * entry that is not Ed25519 or not a raw 32-byte key is ignored on its own and
+ * counts as absent (§4.3.2), so naming it re-fetches like an unknown key.
+ */
 function selectKey(doc: UserKeysResponse, keyId: string): RemoteActorKey | null {
-  const entry = doc.keys.find((k) => k.key_id === keyId);
+  const entry = findUsablePublishedKey(doc.keys, keyId);
   if (!entry) return null;
   return { keyId: entry.key_id, publicKey: entry.public_key, algorithm: entry.algorithm };
 }

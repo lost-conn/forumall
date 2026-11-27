@@ -9,6 +9,9 @@
  *    `ProviderDiscoverySchema` AND whose `provider.domain`, canonicalized
  *    (§2.2), equals the authority it was fetched from is valid (§3.1, §8.1);
  *    anything else — including a `404` — is a fetch failure.
+ *  - Keys are judged one by one (§4.3.2): an entry of `provider.publicKeys`
+ *    that is not Ed25519 or not a raw 32-byte key is ignored and counts as
+ *    absent, while the document and its other keys stay usable.
  *  - An entry is valid for as long as the response's HTTP caching headers
  *    allow it to be used without revalidation (`Cache-Control: max-age`, else
  *    `Expires`; `no-store`/`no-cache` → not at all), capped at `maxTtlMs`, or
@@ -42,6 +45,7 @@ import {
   type ProviderDiscovery,
   ProviderDiscoverySchema,
   canonicalAuthority,
+  findUsablePublishedKey,
   isCanonicalAuthority,
 } from "@forumall/shared";
 
@@ -241,9 +245,13 @@ export class RemoteDiscoveryCache {
   }
 }
 
-/** Pick the matching published key from a discovery document. */
+/**
+ * Pick the usable published key named `keyId` from a discovery document. An
+ * entry that is not Ed25519 or not a raw 32-byte key is ignored on its own and
+ * counts as absent (§4.3.2), so naming it re-fetches like an unknown key.
+ */
 function selectKey(doc: ProviderDiscovery, keyId: string): RemoteProviderKey | null {
-  const entry = doc.provider.publicKeys.find((k) => k.key_id === keyId);
+  const entry = findUsablePublishedKey(doc.provider.publicKeys, keyId);
   if (!entry) return null;
   return { keyId: entry.key_id, publicKey: entry.public_key, algorithm: entry.algorithm };
 }
