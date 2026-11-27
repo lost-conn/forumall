@@ -27,9 +27,9 @@ import { assertCanonicalActorField } from "./canonical-fields.ts";
 import {
   applyDmDelete,
   applyDmEdit,
-  dmMessageEventData,
   fanOutDmReaction,
   publishDmConversation,
+  publishDmMessage,
 } from "./dm-events.ts";
 import {
   assertValidReactionKey,
@@ -121,13 +121,11 @@ export function createFederationDmsRouter() {
       clientMessageId: body.clientMessageId,
     });
 
-    // --- Real-time: deliver `dm.message` to the recipient ONLY -------------
-    // Use publishToActor so every connection of the recipient receives it; only
-    // the recipient's inbox stored it, so only the recipient is notified (§7.4).
-    hub.publishToActor(recipientActor, {
-      type: "dm.message",
-      data: dmMessageEventData(dmId, record.cursor, record.message),
-    });
+    // --- Real-time: `dm.message` (§7.4) -------------------------------------
+    // Implicitly to every connection of the recipient (only their inbox stored
+    // it), and to the author's `dmId` subscriptions here, if any — the sender
+    // follows their sent messages on the recipient's provider that way.
+    publishDmMessage(hub, { dmId, ownerActor: recipientActor, record });
 
     // --- Sender's conversation pointer (§7.4) when the sender is LOCAL -------
     // A remote sender's client records the pointer at its own home provider
@@ -353,9 +351,8 @@ async function handleFederationDmReaction(
   const authority = canonicalAuthority(config.domain);
   const recipientActor = `${owner}@${authority}`;
 
-  if (!getDmMessageRow(db, owner, dmId, messageId)) {
-    throw AppError.notFound({ detail: "no such message" });
-  }
+  const row = getDmMessageRow(db, owner, dmId, messageId);
+  if (!row) throw AppError.notFound({ detail: "no such message" });
 
   if (state === "added") {
     const reaction = addDmReaction(db, {
@@ -372,7 +369,9 @@ async function handleFederationDmReaction(
       author: reactingActor,
       key,
       reaction,
+      messageAuthor: row.author,
       participants: [recipientActor, reactingActor],
+      authority,
     });
     return c.json(ReactionSchema.parse(reaction), 200);
   }
@@ -384,7 +383,9 @@ async function handleFederationDmReaction(
     state: "removed",
     author: reactingActor,
     key,
+    messageAuthor: row.author,
     participants: [recipientActor, reactingActor],
+    authority,
   });
   return c.body(null, 204);
 }

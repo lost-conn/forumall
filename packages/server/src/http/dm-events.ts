@@ -16,7 +16,7 @@ import {
 import type { Config } from "../config.ts";
 import type { Db } from "../db/index.ts";
 import { tombstoneDmMessage, updateDmMessageFields } from "../provider/dm-edits.ts";
-import { getDmConversationItem } from "../provider/dms.ts";
+import { type DmMessageRecord, getDmConversationItem } from "../provider/dms.ts";
 import type { Hub } from "../provider/ws-hub.ts";
 import { domainOf } from "./dm-request.ts";
 import { AppError } from "./errors.ts";
@@ -52,24 +52,56 @@ function dmReactionEventData(args: {
   });
 }
 
-/** The hub surface the DM routes use for fan-out (publish to a specific actor). */
-type DmHub = { publishToActor(actor: string, event: { type: string; data: unknown }): void };
+/**
+ * Fan `dm.message` for a stored DM record (§7.4 "Real-time"): implicitly to
+ * every connection of the inbox owner (always a local user), plus every
+ * connection subscribed to the `dmId` as the message's AUTHOR — the
+ * "following your sent messages" subscription a sender holds on the
+ * recipient's provider (remote via direct-WS, §8.5, or local). Used for the
+ * create and for edits/deletes, which are re-sent as `dm.message`. A
+ * connection reached both ways gets one frame (`Hub.publishToAudience`).
+ */
+export function publishDmMessage(
+  hub: Hub,
+  args: { dmId: string; ownerActor: string; record: DmMessageRecord },
+): void {
+  hub.publishToAudience(
+    {
+      actors: [args.ownerActor],
+      channelId: args.dmId,
+      subscribedActors: [args.record.message.author],
+    },
+    {
+      type: "dm.message",
+      data: dmMessageEventData(args.dmId, args.record.cursor, args.record.message),
+    },
+  );
+}
 
 /**
- * Fan out a `dm.reaction` event to BOTH participants of the conversation
- * (mirroring the `publishToActor`-per-participant DM-send delivery). Dedupes so
- * a fully-local both-parties pair isn't notified twice.
+ * Fan out a `dm.reaction` event (§7.4): implicitly to the conversation's LOCAL
+ * participants (the inbox owner, and the counterparty too when both live on
+ * this provider), plus every connection subscribed to the `dmId` as the
+ * reacted-to message's author. A REMOTE participant has no inbox here, so it
+ * is reached only through its `dmId` subscription; and since every message
+ * held here for a remote participant is one they sent, that subscription
+ * carries every reaction they can see on this provider. Each connection gets
+ * one frame however many ways it qualifies.
  */
 export function fanOutDmReaction(
-  hub: DmHub,
+  hub: Hub,
   args: {
     dmId: string;
     messageId: string;
+    /** Author of the reacted-to message (selects the `dmId` subscribers). */
+    messageAuthor: string;
     state: "added" | "removed";
     author: string;
     key: string;
     reaction?: Reaction;
     participants: string[];
+    /** This provider's canonical authority (decides who is local). */
+    authority: string;
   },
 ): void {
   const data = dmReactionEventData({
@@ -80,13 +112,18 @@ export function fanOutDmReaction(
     key: args.key,
     ...(args.reaction ? { reaction: args.reaction } : {}),
   });
-  for (const actor of new Set(args.participants)) {
-    hub.publishToActor(actor, { type: "dm.reaction", data });
-  }
+  hub.publishToAudience(
+    {
+      actors: args.participants.filter((actor) => domainOf(actor) === args.authority),
+      channelId: args.dmId,
+      subscribedActors: [args.messageAuthor],
+    },
+    { type: "dm.reaction", data },
+  );
 }
 
 /**
- * Apply an edit to a stored inbox DM, then fan `dm.message` to the inbox owner.
+ * Apply an edit to a stored inbox DM, then fan `dm.message` ({@link publishDmMessage}).
  * Shared by the local PATCH path and the federation ingest so both enforce
  * identical §7.1 rules, in order: `row` is the pre-fetched stored row (already
  * asserted to exist, else the caller's 404); a 403 if the acting actor is not
@@ -97,7 +134,7 @@ export function fanOutDmReaction(
 export function applyDmEdit(
   db: Db,
   config: Config,
-  hub: DmHub,
+  hub: Hub,
   args: {
     owner: string;
     ownerActor: string;
@@ -123,15 +160,12 @@ export function applyDmEdit(
   const edit = resolveMessageEdit(db, config, args.actor, target, args.body);
   if (edit.error) throw AppError.badRequest({ detail: edit.error.message });
   const record = updateDmMessageFields(db, args.owner, args.dmId, args.messageId, edit.patch);
-  hub.publishToActor(args.ownerActor, {
-    type: "dm.message",
-    data: dmMessageEventData(args.dmId, record.cursor, record.message),
-  });
+  publishDmMessage(hub, { dmId: args.dmId, ownerActor: args.ownerActor, record });
   return record.message;
 }
 
 /**
- * Tombstone a stored inbox DM, then fan `dm.message` to the inbox owner. Shared
+ * Tombstone a stored inbox DM, then fan `dm.message` ({@link publishDmMessage}). Shared
  * by the local DELETE path and the federation ingest.
  *
  * `requireAuthor` controls the §7.1 authorization: it is `false` for the local
@@ -143,7 +177,7 @@ export function applyDmEdit(
  */
 export function applyDmDelete(
   db: Db,
-  hub: DmHub,
+  hub: Hub,
   args: {
     owner: string;
     ownerActor: string;
@@ -158,10 +192,7 @@ export function applyDmDelete(
     throw AppError.forbidden({ detail: "only the author may delete this message" });
   }
   const record = tombstoneDmMessage(db, args.owner, args.dmId, args.messageId);
-  hub.publishToActor(args.ownerActor, {
-    type: "dm.message",
-    data: dmMessageEventData(args.dmId, record.cursor, record.message),
-  });
+  publishDmMessage(hub, { dmId: args.dmId, ownerActor: args.ownerActor, record });
 }
 
 /** Render a conversation-list item as the wire `DmConversation` for `ownerActor`. */
