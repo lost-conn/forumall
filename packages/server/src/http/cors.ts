@@ -17,7 +17,13 @@ import { HEADER } from "@forumall/shared";
  * Origin changes nothing). We do NOT set `Allow-Credentials` (no cookies), keeping
  * the wildcard origin valid per the Fetch spec. The exposed/allowed headers are
  * exactly the OFSCP signing headers plus the few transport headers the client
- * uses; a preflight `OPTIONS` short-circuits with a 204.
+ * uses; a preflight `OPTIONS` short-circuits with a 204 (§3.4).
+ *
+ * The same headers are sent on every path, including the provider's own
+ * non-standard endpoints: §3.4 allows that, and none of them relies on ambient
+ * authority (the admin API is signature-authed too). WebSocket upgrades are
+ * never checked against `Origin` (§3.4/§7.1): the signed `authenticate`
+ * handshake is the access control.
  */
 import type { MiddlewareHandler } from "hono";
 import type { AppBindings } from "./types.ts";
@@ -48,20 +54,33 @@ const EXPOSE_HEADERS = `${OFSCP_HEADERS}, retry-after, etag`;
  * Permissive, credential-less CORS for the API + cross-provider well-known reads.
  * Applied app-wide before routing; a preflight (`OPTIONS`) returns 204 with the
  * allow headers and never reaches a handler.
+ *
+ * Every response carries the same CORS headers, whether or not the request
+ * had an `Origin`. The value never depends on the caller (it is always `*`, no
+ * credentials), so there is nothing to withhold from an Origin-less request,
+ * and omitting the headers there would be a bug: a cross-origin `<img>` /
+ * `<video>` load is a no-cors request that sends no `Origin`, and its
+ * long-lived cached response (attachments are `immutable` for a year, §5.8)
+ * would then be reused for a later CORS `fetch()` of the same URL (e.g. to
+ * verify `hash`), which fails without `Access-Control-Allow-Origin`.
+ *
+ * `Vary: Origin` is still sent, on every response. §3.4 requires it on a
+ * response to a request with `Origin`, and sending it unconditionally keeps
+ * every response identical whatever the `Origin` (so no cache can store an
+ * Origin-less variant that differs from what a CORS request needs). The cost
+ * is only that a cache may key entries per origin — a miss, never a wrong
+ * answer.
  */
 export function cors(): MiddlewareHandler<AppBindings> {
   return async (c, next) => {
-    const origin = c.req.header("origin");
-    // Only attach CORS headers when there IS an Origin (a same-origin or
-    // server-to-server request has none and needs nothing here).
-    if (origin === undefined) {
-      await next();
-      return;
-    }
-
-    if (c.req.method === "OPTIONS") {
-      // Preflight: answer with the allow set, no body. `*` is valid since we send
-      // no credentials.
+    const isPreflight =
+      c.req.method === "OPTIONS" &&
+      c.req.header("origin") !== undefined &&
+      c.req.header("access-control-request-method") !== undefined;
+    if (isPreflight) {
+      // Preflight (§3.4: `OPTIONS` with `Origin` and `Access-Control-Request-Method`):
+      // answer with the allow set, no body. `*` is valid since we send no
+      // credentials. Any other `OPTIONS` is an ordinary request and is routed.
       return new Response(null, {
         status: 204,
         headers: {
@@ -77,6 +96,22 @@ export function cors(): MiddlewareHandler<AppBindings> {
     await next();
     c.res.headers.set("access-control-allow-origin", "*");
     c.res.headers.set("access-control-expose-headers", EXPOSE_HEADERS);
-    c.res.headers.set("vary", "Origin");
+    addVaryOrigin(c.res.headers);
   };
+}
+
+/**
+ * Add `Origin` to the response's `Vary` list, keeping whatever a handler
+ * already listed there (overwriting it would let a cache serve the wrong
+ * variant). `Vary: *` already covers every request header.
+ */
+export function addVaryOrigin(headers: Headers): void {
+  const current = headers.get("vary");
+  if (current === null || current.trim() === "") {
+    headers.set("vary", "Origin");
+    return;
+  }
+  const fields = current.split(",").map((f) => f.trim().toLowerCase());
+  if (fields.includes("*") || fields.includes("origin")) return;
+  headers.set("vary", `${current}, Origin`);
 }

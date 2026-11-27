@@ -5,7 +5,7 @@
  * interface so the persistence layer is swappable: the self-host default is the
  * zero-dependency {@link FsStorage} (one file per blob on the local filesystem),
  * and a future card can drop in an S3-backed implementation behind the same
- * three methods without touching the upload/serve routes.
+ * few methods without touching the upload/serve routes.
  *
  * The interface is intentionally minimal — content-addressed-ish by the caller's
  * opaque `id` (the attachment id), with the `mime` passed through to `put` so an
@@ -13,7 +13,7 @@
  * stores raw bytes only (the mime lives in the `media` DB row), so it ignores
  * the `mime` argument; it is part of the contract for richer backends.
  */
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 /**
@@ -30,6 +30,11 @@ export interface StorageBackend {
   put(id: string, bytes: Uint8Array, mime: string): Promise<void>;
   /** Read the blob stored under `id`, or `null` if there is none. */
   get(id: string): Promise<Uint8Array | null>;
+  /**
+   * Whether a blob is stored under `id`, without reading it (a conditional
+   * `If-None-Match` revalidation answers `304` only for a blob that exists).
+   */
+  has(id: string): Promise<boolean>;
   /** Delete the blob stored under `id`. A missing blob is not an error. */
   delete(id: string): Promise<void>;
 }
@@ -76,6 +81,16 @@ export class FsStorage implements StorageBackend {
       return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw err;
+    }
+  }
+
+  async has(id: string): Promise<boolean> {
+    const path = this.#safePath(id);
+    try {
+      return (await stat(path)).isFile();
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return false;
       throw err;
     }
   }

@@ -17,9 +17,9 @@ export const PROVIDER_OPTIONAL: readonly ChecklistEntry[] = [
   {
     item: "Not mark attachments publicly cacheable unless all their messages are public, and stop serving a local upload once no current message version or profile it holds references it: remove it within a bounded time, or serve it through short-lived URLs with `expiresAt` (§5.8)",
     level: "provider-should",
-    covers: [],
-    status: "missing",
-    note: "Media is served `Cache-Control: public, max-age=31536000, immutable`, and nothing tracks references or removes a local upload once unreferenced (no short-lived URLs either).",
+    covers: ["packages/server/test/media-serving.test.ts"],
+    status: "partial",
+    note: "Caching is done (`Cache-Control: private, max-age=31536000, immutable`, never public). Nothing tracks references or removes a local upload once unreferenced, and no short-lived URLs are minted.",
   },
   {
     item: "Serve attachments from an origin other than the web client's (§5.8)",

@@ -31,6 +31,7 @@ import { type Argon2Params, type Config, loadConfig } from "../src/config.ts";
 import { openDb } from "../src/db/index.ts";
 import { migrate, migrations, runMigrations } from "../src/db/migrate.ts";
 import { createMessage } from "../src/provider/messages.ts";
+import { type FormFields, uploadMedia } from "./helpers/media-upload.ts";
 
 const FAST_ARGON2: Argon2Params = { memoryKib: 1024, iterations: 1, parallelism: 1 };
 const DOMAIN = "providera.test";
@@ -86,69 +87,6 @@ async function registerUserWithKey(app: App, handle: string): Promise<Signer> {
   expect(res.status).toBe(201);
   const keyId = ((await res.json()) as { key_id: string }).key_id;
   return { keyId, privateKey, actor: `${handle}@${DOMAIN}` };
-}
-
-const BOUNDARY = "----forumalltestboundary7MA4YWxkTrZu0gW";
-
-/** Extra text form parts sent beside `file` (`[name, value]`, repeats allowed). */
-type FormFields = readonly (readonly [string, string])[];
-
-/**
- * Hand-build a `multipart/form-data` body with a `file` part, preceded by any
- * extra text `fields`. Returns the exact bytes (so the signed digest matches)
- * and the content-type header.
- */
-function buildMultipart(
-  fileBytes: Uint8Array,
-  filename: string,
-  mime: string,
-  fields: FormFields = [],
-) {
-  const enc = new TextEncoder();
-  const fieldParts = fields
-    .map(
-      ([name, value]) =>
-        `--${BOUNDARY}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`,
-    )
-    .join("");
-  const filePart =
-    `--${BOUNDARY}\r\n` +
-    `Content-Disposition: form-data; name="file"; filename="${filename}"\r\n` +
-    `Content-Type: ${mime}\r\n\r\n`;
-  const head = enc.encode(`${fieldParts}${filePart}`);
-  const tail = enc.encode(`\r\n--${BOUNDARY}--\r\n`);
-  const body = new Uint8Array(head.length + fileBytes.length + tail.length);
-  body.set(head, 0);
-  body.set(fileBytes, head.length);
-  body.set(tail, head.length + fileBytes.length);
-  return { body, contentType: `multipart/form-data; boundary=${BOUNDARY}` };
-}
-
-/** Upload `fileBytes` as a signed multipart POST /api/media; returns the response. */
-async function uploadMedia(
-  app: App,
-  signer: Signer,
-  fileBytes: Uint8Array,
-  filename: string,
-  mime: string,
-  fields: FormFields = [],
-): Promise<Response> {
-  const path = "/api/media";
-  const { body, contentType } = buildMultipart(fileBytes, filename, mime, fields);
-  const { headers } = sign({
-    actor: signer.actor,
-    keyId: signer.keyId,
-    privateKey: signer.privateKey,
-    authority: DOMAIN,
-    method: "POST",
-    path,
-    body,
-  });
-  return app.request(path, {
-    method: "POST",
-    headers: { ...headers, "content-type": contentType },
-    body,
-  });
 }
 
 /** A 2x3 (width x height) minimal PNG: signature + IHDR header is enough. */

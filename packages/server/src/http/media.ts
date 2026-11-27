@@ -7,8 +7,12 @@
  *    `width` / `height` come from the image header when it can be read;
  *    otherwise, like `durationMs`, from optional form parts of the same names
  *    beside `file` (a malformed one → 400).
- *  - `GET /api/media/:id`: serve the stored bytes with the stored content type.
- *    → 200, or 404 if unknown.
+ *  - `GET /api/media/:id` (and `HEAD`): serve the stored bytes with the stored
+ *    content type and the §5.8 serving headers (`media-headers.ts`:
+ *    disposition, sandbox CSP, nosniff, private caching, strong `ETag`).
+ *    → 200, `304` for a matching `If-None-Match`, or 404 if unknown or its
+ *    blob is gone (conditional or not). There is deliberately no
+ *    `GET /api/media` (§5.8: attachment URLs are unlisted).
  *
  * ## Body buffering + the signature middleware
  * `requireSignature` (§4.5 step 5) reads the raw request body via
@@ -37,7 +41,9 @@ import {
   rowToAttachment,
 } from "../provider/media.ts";
 import { FsStorage, type StorageBackend } from "../provider/storage.ts";
+import { ifNoneMatchMatches } from "./conditional.ts";
 import { AppError } from "./errors.ts";
+import { mediaETag, mediaNotModifiedHeaders, mediaResponseHeaders } from "./media-headers.ts";
 import { requireSignature } from "./signature.ts";
 import type { AppBindings } from "./types.ts";
 
@@ -49,9 +55,6 @@ export interface MediaRouterOptions {
    */
   storage?: StorageBackend;
 }
-
-/** Default `Cache-Control` for served blobs: immutable (content-addressed id). */
-const MEDIA_CACHE_CONTROL = "public, max-age=31536000, immutable";
 
 export function createMediaRouter(opts: MediaRouterOptions = {}): Hono<AppBindings> {
   const router = new Hono<AppBindings>();
@@ -146,11 +149,20 @@ export function createMediaRouter(opts: MediaRouterOptions = {}): Hono<AppBindin
     const row = getMediaRow(db, id);
     if (!row) throw AppError.notFound({ detail: "no such media" });
 
-    const bytes = await storageFor(config.mediaDir).get(id);
-    if (!bytes) {
-      // Row exists but the blob is gone (manual deletion / storage drift).
-      throw AppError.notFound({ detail: "media blob is missing" });
+    const storage = storageFor(config.mediaDir);
+    // A row whose blob is gone (manual deletion / storage drift) is 404.
+    const missingBlob = () => AppError.notFound({ detail: "media blob is missing" });
+
+    // The bytes behind an id never change, so a matching validator needs no
+    // read of the blob, only a check that it still exists: a conditional
+    // request must get the same answer (404) as an unconditional one would.
+    if (ifNoneMatchMatches(c.req.header("if-none-match"), mediaETag(row))) {
+      if (!(await storage.has(id))) throw missingBlob();
+      return new Response(null, { status: 304, headers: mediaNotModifiedHeaders(row) });
     }
+
+    const bytes = await storage.get(id);
+    if (!bytes) throw missingBlob();
 
     // Copy into a fresh ArrayBuffer-backed view so the body is a plain
     // `BodyInit` (the storage backend may hand back a view over an
@@ -158,14 +170,7 @@ export function createMediaRouter(opts: MediaRouterOptions = {}): Hono<AppBindin
     // stored row (the blob is the same size).
     const body = new Uint8Array(bytes.byteLength);
     body.set(bytes);
-    return new Response(body, {
-      status: 200,
-      headers: {
-        "content-type": row.mime,
-        "content-length": String(row.size),
-        "cache-control": MEDIA_CACHE_CONTROL,
-      },
-    });
+    return new Response(body, { status: 200, headers: mediaResponseHeaders(row) });
   });
 
   return router;

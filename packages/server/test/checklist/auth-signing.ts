@@ -88,9 +88,10 @@ export const AUTH_SIGNING: readonly ChecklistEntry[] = [
   {
     item: "Allow cross-origin access per §3.4 (CORS preflight and headers; no `Origin` check on WebSocket upgrades) on every endpoint in §3.4's scope (standard endpoints, `/.well-known/ofscp…`, attachment and pre-signed upload URLs); non-standard ambient-credential endpoints SHOULD stay same-origin",
     level: "provider-must",
-    covers: [],
-    status: "missing",
-    note: "No test asserts CORS: needed are preflights to a standard and a `/.well-known/ofscp…` path, the allow/expose/`Vary` headers on success, error and media responses, and a WebSocket upgrade with a foreign `Origin`. The behaviour exists (global wildcard `http/cors.ts`, no `Origin` check in `http/ws.ts`); there are no pre-signed upload URLs.",
+    covers: ["packages/server/test/cors.test.ts"],
+    status: "covered",
+    context:
+      "`http/cors.ts` is a global, credential-less wildcard, so non-standard endpoints get CORS too; none relies on ambient authority (admin is signature-authed). There are no pre-signed upload URLs.",
   },
   {
     item: "Authenticate WebSocket connections via the signed `auth.challenge`/`authenticate` handshake (§7.1), answering a failure with an `error` whose `code`/`status` mirror the REST answer (`401`; `403` for federation policy; `503` when the keys could not be fetched) and then close code `4001`, never `1013`",
