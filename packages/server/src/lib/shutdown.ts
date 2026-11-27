@@ -7,8 +7,9 @@
  * answer the close handshake, and a client that never answers would keep the
  * process alive forever. So:
  *
- * - after `graceMs` the stop is forced (open connections are dropped), and
- * - a second signal forces it at once.
+ * - after `graceMs` the stop is forced (open connections are dropped),
+ * - a second signal forces it at once (and disarms the grace timer), and
+ * - a stop that rejects is logged and forced, and the process exits with `1`.
  *
  * Under `bun --hot` this module's caller is re-evaluated on every reload. The
  * signal listeners are therefore installed once per process (keyed on
@@ -45,32 +46,67 @@ export function createShutdownHandler(
   const exit = options.exit ?? ((code: number) => process.exit(code));
   const log = options.log ?? ((line: string) => console.log(line));
   let shuttingDown = false;
+  let forcing = false;
+  let failed = false;
   let exited = false;
+  let graceTimer: ReturnType<typeof setTimeout> | undefined;
   const finish = (code: number) => {
     if (exited) return;
     exited = true;
     exit(code);
   };
-  const force = () => target.stop(true).finally(() => finish(0));
+  const exitCode = () => (failed ? 1 : 0);
+  const cancelGraceTimer = () => {
+    if (graceTimer !== undefined) clearTimeout(graceTimer);
+    graceTimer = undefined;
+  };
+  // Forcing happens at most once, whichever of the grace timer, a repeated
+  // signal or a failed graceful stop asks first; a stop rejection is logged
+  // and turns the exit code to 1, never an unhandled rejection.
+  const force = () => {
+    cancelGraceTimer();
+    if (forcing) return;
+    forcing = true;
+    target.stop(true).then(
+      () => finish(exitCode()),
+      (err: unknown) => {
+        failed = true;
+        log(`[server] forced stop failed: ${describe(err)}`);
+        finish(exitCode());
+      },
+    );
+  };
 
   return (signal: string) => {
     if (shuttingDown) {
       log(`[server] ${signal} received again — forcing shutdown`);
-      void force();
+      force();
       return;
     }
     shuttingDown = true;
     log(`[server] ${signal} received — closing connections and shutting down`);
     target.closeWebSockets();
-    const timer = setTimeout(() => {
+    graceTimer = setTimeout(() => {
+      graceTimer = undefined;
       log(`[server] graceful stop exceeded ${graceMs} ms — forcing shutdown`);
-      void force();
+      force();
     }, graceMs);
-    void target.stop().finally(() => {
-      clearTimeout(timer);
-      finish(0);
-    });
+    target.stop().then(
+      () => {
+        cancelGraceTimer();
+        finish(exitCode());
+      },
+      (err: unknown) => {
+        failed = true;
+        log(`[server] graceful stop failed: ${describe(err)} — forcing shutdown`);
+        force();
+      },
+    );
   };
+}
+
+function describe(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 const CURRENT = Symbol.for("forumall.shutdown.current");
