@@ -6,8 +6,10 @@
  * (`# <title>` + body) and tags to the caller, which posts an `article` message.
  */
 import { type Component, For, Show, createSignal } from "solid-js";
-import { renderMarkdown } from "../../lib/markdown.ts";
+import { COMPOSED_MIME, parseBody } from "../../lib/content/body.ts";
+import { session } from "../../stores/session.ts";
 import { Icon, type IconName } from "../Icon.tsx";
+import { BodyContent } from "../shared/BodyContent.tsx";
 import { Toggle } from "../shared/Toggle.tsx";
 
 interface ToolItem {
@@ -53,6 +55,9 @@ export const ArticleEditorOverlay: Component<{
 
   const previewMarkdown = () =>
     `${title().trim() ? `# ${title().trim()}\n\n` : ""}${body()}` || "Nothing written yet.";
+  /** The preview, rendered exactly as the published `text/markdown` body will be. */
+  const previewBody = () =>
+    parseBody({ mime: COMPOSED_MIME, text: previewMarkdown() }, session.actor?.split("@")[1] ?? "");
 
   const applyTool = (t: ToolItem): void => {
     const el = textarea;
@@ -147,10 +152,11 @@ export const ArticleEditorOverlay: Component<{
             <Show
               when={mode() === "write"}
               fallback={
-                <div
-                  class="prose-chat text-sm text-ink"
-                  data-testid="article-editor-preview"
-                  innerHTML={renderMarkdown(previewMarkdown())}
+                <BodyContent
+                  body={previewBody()}
+                  attachments={[]}
+                  class="text-sm text-ink"
+                  testid="article-editor-preview"
                 />
               }
             >

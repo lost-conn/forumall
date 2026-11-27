@@ -55,9 +55,9 @@ Notes marked "spec question" point at wording in the spec that needs clarifying 
 | Provider MUST | 58 | 26 | 27 | 5 |
 | Provider SHOULD | 4 | 1 | 1 | 2 |
 | Provider MAY (optional) | 10 | 5 | 5 | 0 |
-| Client MUST | 14 | 8 | 4 | 2 |
-| Client SHOULD | 8 | 3 | 1 | 4 |
-| **Total** | 94 | 43 | 38 | 13 |
+| Client MUST | 14 | 11 | 2 | 1 |
+| Client SHOULD | 8 | 3 | 2 | 3 |
+| **Total** | 94 | 46 | 37 | 11 |
 
 ## §12 Compliance Checklist coverage map
 
@@ -313,14 +313,15 @@ Notes marked "spec question" point at wording in the spec that needs clarifying 
 11. **covered**: Upload every attachment to the home provider, including for posts to remote channels and DMs, naming as `target` the provider that will hold the message, and reusing an upload only in messages on its target, uploading again for any other provider (§5.8)
     - Tests: `packages/web/test/media-upload.test.ts`, `e2e/tests/chat.spec.ts`, `e2e/tests/dms.spec.ts`
     - Context: The holding provider is the channel's home for a channel message and the recipient's provider for a DM. Composer uploads remember their target and are uploaded again when sent to another provider.
-12. **partial**: Render `text/plain` and CommonMark `text/markdown`, showing raw HTML in Markdown as text; render `text/html` only through the §5.3 allow-list sanitizer (or as text with tags removed); make only `http`, `https`, `mailto` and `attachment:` links active (§5.3)
-    - Tests: `packages/web/test/markdown.test.ts`, `packages/web/test/inline.test.ts`
-    - Note: Behaviour gaps: rendering ignores `content.mime` (`text/plain` gets inline formatting, non-article `text/markdown` gets only the inline subset, `text/html` is neither sanitised nor tag-stripped), the Markdown renderer is a CommonMark subset, and `attachment:` links are inert; `mailto:` being active is untested. Scheme-less and relative links must be inactive (a message has no base URL); today they pass `safeHref`.
-13. **missing**: Resolve `attachment:<id>` references against the message's own attachments, show unreferenced attachments after the body, and, when an article has no `title`, use its body's first block as the title if that block is a level-1 heading (ATX or Setext, or `<h1>`) (§5.3)
-    - Note: Not implemented: no `attachment:<id>` resolution, the article view ignores `title` and renders no attachments, and the title fallback takes any `#`–`###` heading or the first line. The e2e tests that touch article titles do not assert the spec rules; spec question: is an article with no `title` and no H1 first block untitled?
-14. **partial**: Treat attachment metadata and files as untrusted, never opening a fetched file as an active document: a plain link to its `url` is allowed, `blob:`/`data:` URLs, `srcdoc` and frames are not (§5.8)
-    - Tests: `packages/web/test/chat-api.test.ts`
-    - Note: Untested: a `text/html` or `image/svg+xml` attachment never renders inline as a document. A plain link to the `url` is allowed; `blob:`/`data:` URLs, `srcdoc` and frames must not be used for attachments.
+12. **covered**: Render `text/plain` and CommonMark `text/markdown`, showing raw HTML in Markdown as text; render `text/html` only through the §5.3 allow-list sanitizer (or as text with tags removed); make only `http`, `https`, `mailto` and `attachment:` links active (§5.3)
+    - Tests: `packages/web/test/content-markdown.test.ts`, `packages/web/test/content-html.test.ts`, `packages/web/test/content-links.test.ts`, `packages/web/test/content-body.test.ts`, `e2e/tests/rendering.spec.ts`
+    - Context: Dispatch is on `content.mime`; an unrecognised mime renders as `text/plain`. Markdown is CommonMark (markdown-it, raw HTML off) with soft line breaks shown as breaks. `text/html` goes through the §5.3 allow-list (parse5, no `innerHTML`). Scheme-less and relative links are inactive (a message has no base URL, ofscp#31).
+13. **covered**: Resolve `attachment:<id>` references against the message's own attachments, show unreferenced attachments after the body, and, when an article has no `title`, use its body's first block as the title if that block is a level-1 heading (ATX or Setext, or `<h1>`) (§5.3)
+    - Tests: `packages/web/test/content-body.test.ts`, `packages/web/test/content-markdown.test.ts`, `packages/web/test/content-html.test.ts`, `e2e/tests/rendering.spec.ts`
+    - Context: An `attachment:` id the message lacks renders as its caption or link text. An article with no `title` and no leading level-1 heading is shown as untitled. An article's `cover` is shown above the body and not repeated after it.
+14. **covered**: Treat attachment metadata and files as untrusted, never opening a fetched file as an active document: a plain link to its `url` is allowed, `blob:`/`data:` URLs, `srcdoc` and frames are not (§5.8)
+    - Tests: `packages/web/test/content-links.test.ts`, `packages/web/test/chat-api.test.ts`, `e2e/tests/rendering.spec.ts`
+    - Context: Only `http`/`https` attachment URLs are used, as plain top-level links or `<img>`/`<video>`/`<audio>` elements; any other URL shows the file name with no link. A `text/html` or `image/svg+xml` attachment is a link or an `<img>`, never framed, and no `blob:`/`data:`/`srcdoc` is ever used (asserted in the browser).
 
 ### Client SHOULD (8 items)
 
@@ -333,8 +334,10 @@ Notes marked "spec question" point at wording in the spec that needs clarifying 
 4. **partial**: Name the DM recipient in `to`, record a conversation pointer at the home provider after a cross-provider send, and read sent history from the counterparty's provider (§7.4)
     - Tests: `e2e/tests/dms.spec.ts`, `e2e/tests/federation.spec.ts`
     - Note: Behaviour gap: sent history is never read from the counterparty's provider, so a second device has none for a cross-provider DM. Untested: `to` on the wire and the home pointer after a cross-provider send.
-5. **missing**: Not load remote content a message body names, or the attachments of an author on another provider than the message's, without a user action (§5.3)
-    - Note: Attachments of authors on other providers auto-load (`<img>`/`<video>`/`<audio>`) with no user action. Body-named remote images are never loaded (no image syntax), but that is untested.
+5. **partial**: Not load remote content a message body names, or the attachments of an author on another provider than the message's, without a user action (§5.3)
+    - Tests: `packages/web/test/content-markdown.test.ts`, `e2e/tests/rendering.spec.ts`
+    - Note: Attachments of authors on other providers auto-load (`<img>`/`<video>`/`<audio>`) with no user action.
+    - Context: A body-named remote image renders as a link to it and is never loaded (asserted in the browser); `text/html` `<img>` without `data-attachment` renders as its alt text.
 6. **covered**: Set `mentions` on messages that mention users (§5.3), and in a DM write `@handle@domain` (or set `mentions`) for a user who is not on the recipient's home provider, since a bare `@handle` there names a user of that provider (§10.1)
     - Tests: `packages/web/test/mentions.test.ts`, `packages/web/test/chat-controller.test.ts`, `packages/web/test/dm-send.test.ts`, `packages/web/test/dm-mutations.test.ts`
     - Context: Channel and DM creates and edits set `mentions` from the text (an edit resends them, `[]` when none remain, since §7.1 keeps a field an edit omits). A bare `@handle` names a user of the provider hosting the message (§10.1); for a DM this client takes that to be the recipient's provider, which holds the message.

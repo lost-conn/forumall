@@ -17,8 +17,10 @@ import {
   createSignal,
   on,
 } from "solid-js";
+import { COMPOSED_MIME } from "../../lib/content/body.ts";
 import { listMembers } from "../../lib/groups-api.ts";
 import { detectActiveMentionQuery, mentionRefFor } from "../../lib/mentions.ts";
+import { PROMOTE_TAG_PREFIX } from "../../lib/promote-tag.ts";
 import type { ChatMessage } from "../../stores/chat.ts";
 import { displayNameForInGroup } from "../../stores/profiles.ts";
 import { session, sessionClient, sessionWs } from "../../stores/session.ts";
@@ -29,7 +31,6 @@ import { useComposerTyping, useComposerUpload } from "../shared/composer.ts";
 import { Avatar } from "../social/Avatar.tsx";
 import { ArticleEditorOverlay } from "./ArticleEditorOverlay.tsx";
 import { sendMessage, typingStart, typingStop } from "./chat-controller.ts";
-import { PROMOTE_TAG_PREFIX } from "./promote.ts";
 
 /** Throttle window for `typing.start` re-emits while composing (ms). */
 const TYPING_THROTTLE_MS = 2500;
@@ -175,7 +176,7 @@ export const ChatComposer: Component<{
       author: session.actor ?? "",
       text: md,
       type: "article",
-      mime: "text/markdown",
+      mime: COMPOSED_MIME,
       ...(tags.length > 0 ? { tags } : {}),
     });
     setEditorOpen(false);
@@ -227,7 +228,7 @@ export const ChatComposer: Component<{
           author: session.actor ?? "",
           text: body,
           type: k,
-          mime: "text/plain",
+          mime: COMPOSED_MIME,
           ...(target ? { reference: { type: "reply", id: target.id } } : {}),
           attachments: atts,
         });

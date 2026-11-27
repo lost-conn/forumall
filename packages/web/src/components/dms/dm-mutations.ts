@@ -3,7 +3,7 @@
  * addressed to the provider that HOLDS the message ({@link deliveryClientFor}).
  */
 import type { Attachment, Reaction } from "@forumall/shared";
-import { rfc3339Timestamp } from "@forumall/shared";
+import { MessageSchema, rfc3339Timestamp } from "@forumall/shared";
 import {
   addDmReaction as apiAddDmReaction,
   removeDmReaction as apiRemoveDmReaction,
@@ -12,8 +12,10 @@ import {
 } from "../../lib/dm-api.ts";
 import type { DmSentStore } from "../../lib/dm-store.ts";
 import { mentionedActors } from "../../lib/mentions.ts";
+import { type LocalVersion, localVersionOf } from "../../lib/merge-message.ts";
 import { type OfscpClient, isDefinitiveRejection } from "../../lib/ofscp-client.ts";
 import {
+  type DmMessage,
   addDmReactionAgg,
   applyDmEdit,
   removeDmReactionAgg,
@@ -141,6 +143,13 @@ function deliveryClientFor(
  * drop, 5xx — is an unknown outcome: the optimistic state is KEPT and a
  * {@link DmUnconfirmedError} is thrown for the UI to distinguish.
  *
+ * The optimistic copy is marked as a local version (`localVersion`, based on the
+ * server version it edits), so the client's clock never orders it: the
+ * provider's answer — the stored message, with the provider's `editedAt` — is
+ * merged into both stores and replaces it however fast or slow the client's
+ * clock runs, while a stale copy (an older history page) still cannot undo it
+ * (`lib/merge-message.ts`). Any later server copy of the edit does the same.
+ *
  * The request goes to the provider that HOLDS the message ({@link deliveryClientFor}):
  * for a message the caller SENT that is the recipient's provider (the same
  * delivery target `sendDm` uses, §8.3), otherwise the caller's home provider.
@@ -163,18 +172,22 @@ export async function editDm(args: {
   const { client, dmId, message, me, text, mime, sentStore } = args;
   const target = deliveryClientFor(client, args.deliveryClient, message.author, me);
   const content = { mime: mime ?? message.content.mime ?? "text/plain", text };
-  /** The pre-edit snapshot, captured before the optimistic apply overwrites it. */
+  // The pre-edit snapshot (content, attachments, reference, version marks),
+  // captured before the optimistic apply overwrites it.
   const priorContent = {
     mime: message.content.mime ?? "text/plain",
     text: message.content.text ?? "",
   };
+  /** Display only: the copy is ordered by `localVersion`, never by this stamp. */
   const editedAt = rfc3339Timestamp();
+  const localVersion = localVersionOf(message);
   const mine = message.author === me;
   const attachmentsPart =
     message.attachments && message.attachments.length > 0
       ? { attachments: message.attachments }
       : {};
   const referencePart = message.reference ? { reference: message.reference } : {};
+  const priorVersionPart = priorVersionOf(message);
 
   // Optimistic apply: in-memory thread + local sent-store (survives reload).
   applyDmEdit(dmId, {
@@ -185,6 +198,7 @@ export async function editDm(args: {
     ...referencePart,
     createdAt: message.createdAt,
     editedAt,
+    localVersion,
     mine,
   });
   sentStore.append(dmId, {
@@ -195,6 +209,7 @@ export async function editDm(args: {
     ...referencePart,
     createdAt: message.createdAt,
     editedAt,
+    localVersion,
   });
 
   // §5.3 `mentions` is authoritative and §7.1 keeps a field the edit omits, so
@@ -202,8 +217,9 @@ export async function editDm(args: {
   // `@handle` names a user of the provider holding the message: `target`.
   const mentions = mentionedActors(text, target.host);
 
+  let answer: unknown;
   try {
-    await editDmMessage(target, dmId, message.id, content, mentions);
+    answer = await editDmMessage(target, dmId, message.id, content, mentions);
   } catch (err) {
     // Unknown outcome (aborted fetch, network drop, 5xx): the server may well
     // have applied the edit, so KEEP the optimistic state — see
@@ -219,7 +235,7 @@ export async function editDm(args: {
       content: priorContent,
       ...attachmentsPart,
       ...referencePart,
-      ...(message.editedAt !== undefined ? { editedAt: message.editedAt } : {}),
+      ...priorVersionPart,
     });
     sentStore.restore(dmId, {
       id: message.id,
@@ -228,13 +244,42 @@ export async function editDm(args: {
       ...attachmentsPart,
       ...referencePart,
       createdAt: message.createdAt,
-      ...(message.editedAt !== undefined ? { editedAt: message.editedAt } : {}),
+      ...priorVersionPart,
       ...(message.clientMessageId !== undefined
         ? { clientMessageId: message.clientMessageId }
         : {}),
     });
     throw err;
   }
+
+  // The edit landed: merge the provider's stored copy, which confirms the local
+  // version. An answer that is not this message leaves the local version to be
+  // confirmed by the next server copy (a live `dm.message`, a history page).
+  const confirmed = storedCopy(answer, message.id, mine);
+  if (confirmed) {
+    applyDmEdit(dmId, confirmed);
+    sentStore.mergeCopy(dmId, confirmed);
+  }
+}
+
+/**
+ * The thread copy of a provider's answer to an edit of `messageId`: the stored
+ * §5.3 message, or `null` when the answer is not a valid copy of it.
+ */
+function storedCopy(answer: unknown, messageId: string, mine: boolean): DmMessage | null {
+  const parsed = MessageSchema.safeParse(answer);
+  if (!parsed.success || parsed.data.id !== messageId) return null;
+  const m = parsed.data;
+  return {
+    id: m.id,
+    author: m.author,
+    content: m.content,
+    ...(m.attachments && m.attachments.length > 0 ? { attachments: m.attachments } : {}),
+    ...(m.reference ? { reference: m.reference } : {}),
+    createdAt: m.createdAt,
+    ...(m.editedAt ? { editedAt: m.editedAt } : {}),
+    mine,
+  };
 }
 
 /**
@@ -269,6 +314,7 @@ export async function deleteDm(args: {
       ? { attachments: message.attachments }
       : {};
   const referencePart = message.reference ? { reference: message.reference } : {};
+  const priorVersionPart = priorVersionOf(message);
 
   // Optimistic tombstone: in-memory thread + local sent-store (survives reload).
   tombstoneDmMessage(dmId, message.id, deletedAt);
@@ -294,7 +340,7 @@ export async function deleteDm(args: {
       content: priorContent,
       ...attachmentsPart,
       ...referencePart,
-      ...(message.editedAt !== undefined ? { editedAt: message.editedAt } : {}),
+      ...priorVersionPart,
     });
     sentStore.restore(dmId, {
       id: message.id,
@@ -303,13 +349,25 @@ export async function deleteDm(args: {
       ...attachmentsPart,
       ...referencePart,
       createdAt: message.createdAt,
-      ...(message.editedAt !== undefined ? { editedAt: message.editedAt } : {}),
+      ...priorVersionPart,
       ...(message.clientMessageId !== undefined
         ? { clientMessageId: message.clientMessageId }
         : {}),
     });
     throw err;
   }
+}
+
+/**
+ * The version marks (`editedAt`, `localVersion`) a rewind restores, copied out
+ * of `message` up front: `message` may be the thread's own stored object, which
+ * the optimistic apply merges into in place.
+ */
+function priorVersionOf(message: DmMessageLike): Pick<DmMessageLike, "editedAt" | "localVersion"> {
+  return {
+    ...(message.editedAt !== undefined ? { editedAt: message.editedAt } : {}),
+    ...(message.localVersion !== undefined ? { localVersion: { ...message.localVersion } } : {}),
+  };
 }
 
 /** The fields {@link editDm} / {@link deleteDm} read off the current message. */
@@ -326,6 +384,8 @@ export interface DmMessageLike {
    * clearing the marker off a message that legitimately had one.
    */
   editedAt?: string;
+  /** Set when the current copy is itself an unconfirmed local edit. */
+  localVersion?: LocalVersion;
   /** Echo linkage on the retained sent copy — preserved across a revert. */
   clientMessageId?: string;
 }

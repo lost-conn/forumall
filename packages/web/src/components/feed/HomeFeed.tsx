@@ -9,7 +9,7 @@
  * newest-first and de-duped by id — so a live message, an in-place edit, or a
  * tombstone on ANY followed channel updates here automatically. Each item is
  * rendered with the **same layout as a channel message** ({@link MessageBody}
- * from the chat view plus the shared {@link AttachmentList}) so Home reads
+ * from the chat view, which also lays out the attachments) so Home reads
  * identically to a channel, plus a source channel/group badge for context.
  */
 import { useNavigate } from "@solidjs/router";
@@ -29,8 +29,7 @@ import { reactionsFor } from "../../stores/chat.ts";
 import { type FeedItem, activeFollows, feed, mergedTimeline } from "../../stores/feed.ts";
 import { clearFeed } from "../../stores/feed.ts";
 import { session, sessionClient, sessionWs } from "../../stores/session.ts";
-import { MessageBody } from "../chat/MessageRow.tsx";
-import { AttachmentList } from "../shared/AttachmentList.tsx";
+import { MessageBody } from "../chat/MessageBody.tsx";
 import { EmptyState } from "../shared/EmptyState.tsx";
 import { openUserProfile } from "../social/user-profile-store.ts";
 import { type FeedHandle, startFeed } from "./feed-controller.ts";
@@ -200,10 +199,6 @@ const FeedRow: Component<{ item: FeedItem }> = (props) => {
             <MessageBody message={item()} onOpenArticle={openSource} />
           </Match>
         </Switch>
-
-        <Show when={!isDeleted() && (item().attachments?.length ?? 0) > 0}>
-          <AttachmentList attachments={item().attachments ?? []} />
-        </Show>
 
         <Show when={reactions().length > 0}>
           <div class="fa-rx">

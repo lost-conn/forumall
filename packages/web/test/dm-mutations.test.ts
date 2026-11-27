@@ -76,6 +76,41 @@ describe("editDm / deleteDm: revert only on a definitive rejection", () => {
     expect(retained?.editedAt).toBeUndefined();
   });
 
+  test("a 403 edit of the thread's own stored object still rewinds its version marks", async () => {
+    // The row hands editDm the store's object, which the optimistic apply
+    // merges into in place: the rewind must use the marks captured before it.
+    const sentStore = seed();
+    upsertDmMessage(DM, { ...message, editedAt: "2026-06-05T00:01:00Z", mine: true });
+    sentStore.restore(
+      DM,
+      sent({
+        id: "m1",
+        author: "me@h",
+        content: message.content,
+        editedAt: "2026-06-05T00:01:00Z",
+      }),
+    );
+    const stored = dmThread(DM)[0];
+    if (!stored) throw new Error("seeded message missing");
+    await expect(
+      editDm({
+        client: failingClient(rejects(403)),
+        dmId: DM,
+        message: stored,
+        me: "me@h",
+        text: "nope",
+        sentStore,
+      }),
+    ).rejects.toThrow(/403/);
+
+    const inThread = dmThread(DM)[0];
+    expect(inThread?.content.text).toBe("original");
+    expect(inThread?.editedAt).toBe("2026-06-05T00:01:00Z");
+    expect(inThread?.localVersion).toBeUndefined();
+    expect(sentStore.list(DM)[0]?.editedAt).toBe("2026-06-05T00:01:00Z");
+    expect(sentStore.list(DM)[0]?.localVersion).toBeUndefined();
+  });
+
   for (const [label, fail] of [
     ["an aborted fetch", aborts],
     ["a network drop", drops],

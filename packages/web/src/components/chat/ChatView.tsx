@@ -7,10 +7,10 @@
  * affordances. Wires the live {@link OfscpWsClient} into the chat store via
  * {@link openChannel} and the command helpers.
  *
- * Each message renders through `MessageRow.tsx`. Message-type rendering
- * (§5.3 / §2.3 forward-compat):
- *  - `message` / `memo` → plain text, `article` → sanitized markdown,
- *  - unknown `type` → generic best-effort text fallback (never crashes).
+ * Each message renders through `MessageRow.tsx`. Bodies render by
+ * `content.mime`, never by message type (§5.3): the type only picks the frame
+ * (a chat line, a memo card, an article card), and an unknown `type` (§2.3
+ * forward-compat) renders as a chat line.
  *
  * Replies (§7.2):
  *  - a reply carries `reference = { type: "reply", id }`;
