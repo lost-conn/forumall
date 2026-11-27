@@ -28,6 +28,8 @@ import {
   sign,
 } from "@forumall/shared";
 
+import { and, eq } from "drizzle-orm";
+
 import { createApp } from "../src/app.ts";
 import { type Argon2Params, type Config, loadConfig } from "../src/config.ts";
 import { openDb } from "../src/db/index.ts";
@@ -228,7 +230,8 @@ describe("Follow groupId is derived from the channel (§7.6)", () => {
     });
     expect(res.status).toBe(201);
     const follow = (await res.json()) as Follow;
-    expect(follow.channel).toBe(uri);
+    // §2.2: its own URI is treated exactly like the local id — stored as it.
+    expect(follow.channel).toBe(pub.id);
     expect(follow.groupId).toBe(group.id);
   });
 
@@ -279,6 +282,37 @@ describe("Follow groupId is derived from the channel (§7.6)", () => {
     const follow = (await res.json()) as Follow;
     expect(follow.channel).toBe(remote);
     expect(follow.groupId).toBeUndefined();
+  });
+
+  test("a channel the owner can no longer read answers exactly as a deleted one (§11.3)", async () => {
+    const { app, db } = freshApp("follows-groupid-lost-access");
+    const alice = await registerUserWithKey(app, "alice");
+    const bob = await registerUserWithKey(app, "bob");
+    const group = await createGroup(app, alice, { name: "G", tier: "private" });
+    const chan = await createChannel(app, alice, group.id, { type: "text", tier: "group" });
+    addMember(db, group.id, bob, "member");
+    const res = await signedRequest(app, bob, "POST", "/api/me/follows", { channel: chan.id });
+    expect(res.status).toBe(201);
+    expect(((await res.json()) as Follow).groupId).toBe(group.id);
+
+    // bob is removed from the group: the channel is now hidden from him.
+    db.drizzle
+      .delete(groupMembers)
+      .where(and(eq(groupMembers.groupId, group.id), eq(groupMembers.user, bob.actor)))
+      .run();
+    const whileHidden = await listFollows(app, bob);
+    expect(whileHidden).toEqual([expect.objectContaining({ channel: chan.id })]);
+    expect(whileHidden[0]?.groupId).toBeUndefined();
+
+    // Its deletion changes nothing bob can see.
+    const del = await signedRequest(
+      app,
+      alice,
+      "DELETE",
+      `/api/groups/${group.id}/channels/${chan.id}`,
+    );
+    expect(del.status).toBe(204);
+    expect(await listFollows(app, bob)).toEqual(whileHidden);
   });
 
   test("a followed local channel since deleted stays listed, with no groupId", async () => {
@@ -404,6 +438,94 @@ describe("unfollow (§7.6)", () => {
       `/api/me/follows/${encodeURIComponent("chn_never")}`,
     );
     expect(del.status).toBe(204);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Channel refs (§2.2): one follow per channel, malformed refs rejected
+// ---------------------------------------------------------------------------
+
+describe("channel refs (§2.2)", () => {
+  test("a local id and this provider's URI for it are one follow, either way round", async () => {
+    const { app } = freshApp("follows-ref-local-uri-one-follow");
+    const alice = await registerUserWithKey(app, "alice");
+    const group = await createGroup(app, alice, { name: "G", tier: "public" });
+    const a = await createChannel(app, alice, group.id, { type: "text", tier: "public" });
+    const b = await createChannel(app, alice, group.id, { type: "text", tier: "public" });
+    const uriOf = (id: string) => `https://${DOMAIN}/api/groups/${group.id}/channels/${id}`;
+
+    // By id, then by URI: the second is the existing follow (200).
+    const byId = await signedRequest(app, alice, "POST", "/api/me/follows", { channel: a.id });
+    expect(byId.status).toBe(201);
+    const byUri = await signedRequest(app, alice, "POST", "/api/me/follows", {
+      channel: uriOf(a.id),
+    });
+    expect(byUri.status).toBe(200);
+    expect(await byUri.json()).toEqual(await byId.json());
+
+    // By URI, then by id.
+    expect(
+      (await signedRequest(app, alice, "POST", "/api/me/follows", { channel: uriOf(b.id) })).status,
+    ).toBe(201);
+    expect(
+      (await signedRequest(app, alice, "POST", "/api/me/follows", { channel: b.id })).status,
+    ).toBe(200);
+    expect((await listFollows(app, alice)).map((f) => f.channel)).toEqual([a.id, b.id]);
+
+    // Unfollow by the other spelling removes the follow.
+    const delA = `/api/me/follows/${encodeURIComponent(uriOf(a.id))}`;
+    expect((await signedRequest(app, alice, "DELETE", delA)).status).toBe(204);
+    expect((await signedRequest(app, alice, "DELETE", `/api/me/follows/${b.id}`)).status).toBe(204);
+    expect(await listFollows(app, alice)).toEqual([]);
+  });
+
+  test("unfollowing by a local URI naming another group removes nothing", async () => {
+    const { app } = freshApp("follows-ref-delete-wrong-group");
+    const alice = await registerUserWithKey(app, "alice");
+    const group = await createGroup(app, alice, { name: "G", tier: "public" });
+    const other = await createGroup(app, alice, { name: "Other", tier: "public" });
+    const pub = await createChannel(app, alice, group.id, { type: "text", tier: "public" });
+    await signedRequest(app, alice, "POST", "/api/me/follows", { channel: pub.id });
+
+    const wrong = `https://${DOMAIN}/api/groups/${other.id}/channels/${pub.id}`;
+    const del = await signedRequest(
+      app,
+      alice,
+      "DELETE",
+      `/api/me/follows/${encodeURIComponent(wrong)}`,
+    );
+    expect(del.status).toBe(204);
+    expect((await listFollows(app, alice)).map((f) => f.channel)).toEqual([pub.id]);
+  });
+
+  test("a non-https URI, a query or fragment, or a non-ref → 400; nothing stored", async () => {
+    const { app } = freshApp("follows-ref-malformed");
+    const alice = await registerUserWithKey(app, "alice");
+    const group = await createGroup(app, alice, { name: "G", tier: "public" });
+    const pub = await createChannel(app, alice, group.id, { type: "text", tier: "public" });
+    const path = `/api/groups/${group.id}/channels/${pub.id}`;
+    const bad = [
+      `http://${DOMAIN}${path}`,
+      "http://remote.example/api/groups/grp_x/channels/chn_blog",
+      `https://${DOMAIN}${path}?x=1`,
+      `https://${DOMAIN}${path}#top`,
+      "https://remote.example/api/groups/grp_x/channels/chn_blog?x=1",
+      "https://remote.example/api/groups/grp_x/channels/chn_blog#",
+      "ftp://remote.example/chn_blog",
+      "not a ref",
+    ];
+    for (const channel of bad) {
+      const res = await signedRequest(app, alice, "POST", "/api/me/follows", { channel });
+      expect({ channel, status: res.status }).toEqual({ channel, status: 400 });
+      const del = await signedRequest(
+        app,
+        alice,
+        "DELETE",
+        `/api/me/follows/${encodeURIComponent(channel)}`,
+      );
+      expect({ channel, status: del.status }).toEqual({ channel, status: 400 });
+    }
+    expect(await listFollows(app, alice)).toEqual([]);
   });
 });
 

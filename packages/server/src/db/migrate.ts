@@ -72,6 +72,7 @@ import {
   m0018Presence,
   m0019Follows,
   m0043FollowsDropGroupId,
+  m0044FollowsCanonicalChannelRefs,
 } from "./migrations/social.ts";
 
 export { MigrationDeferred } from "./migration-types.ts";
@@ -137,6 +138,7 @@ export const migrations: readonly Migration[] = [
   m0041DmReactionsUnicodeImage,
   m0042MessagesEditUntilNullable,
   m0043FollowsDropGroupId,
+  m0044FollowsCanonicalChannelRefs,
 ];
 
 const LEDGER_DDL = `

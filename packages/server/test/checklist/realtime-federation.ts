@@ -70,7 +70,11 @@ export const REALTIME_FEDERATION: readonly ChecklistEntry[] = [
   {
     item: "Support the follow list (`GET`/`POST`/`DELETE /api/me/follows`) as pointers only — no server-side feed compilation or content replication — with each `groupId` derived from the channel as a ref, never taken from the request (§7.6)",
     level: "provider-must",
-    covers: ["packages/server/test/follows.test.ts", "packages/server/test/conformance.test.ts"],
+    covers: [
+      "packages/server/test/follows.test.ts",
+      "packages/server/test/follows-migrations.test.ts",
+      "packages/server/test/conformance.test.ts",
+    ],
     status: "covered",
   },
   {
