@@ -23,7 +23,7 @@ export const REALTIME_FEDERATION: readonly ChecklistEntry[] = [
       "packages/server/test/remote-handle-impersonation.test.ts",
     ],
     status: "partial",
-    note: "Behaviour gap: a remote participant cannot subscribe to a `dmId` (no participant check, no delivery of their sent messages, no resume). Untested: `dm.conversation` emission; spec question: a non-participant `dmId` subscribe or read answers `not_found` / `404` where the spec says `forbidden` / `403`.",
+    note: "Behaviour gap: a remote participant cannot subscribe to a `dmId` (no participant check, no delivery of their sent messages, no resume). Untested: `dm.conversation` emission, and that a non-participant gets the same `404` / `not_found` as an unknown `dmId` on every DM path.",
   },
   {
     item: "Support the explicit contacts model (request/accept/remove, local and federated) backing the `contacts` visibility tier (§6.7)",
@@ -163,10 +163,9 @@ export const REALTIME_FEDERATION: readonly ChecklistEntry[] = [
     status: "covered",
   },
   {
-    item: "Provide metadata schema registry (optional entries allowed)",
+    item: "On create, store `metadata` as given, rejecting (`400`) an invalid metadata object (§5.4, §7.1)",
     level: "provider-must",
-    covers: ["packages/shared/test/schemas.test.ts", "packages/server/test/message-create.test.ts"],
+    covers: ["packages/server/test/message-create.test.ts", "packages/shared/test/schemas.test.ts"],
     status: "covered",
-    note: 'Spec question: the spec body never defines a "metadata schema registry" (§5.4 only asks a feature to publish a JSON Schema; §13 lists registry governance as future work), so this is covered only as far as metadata round-trips.',
   },
 ];

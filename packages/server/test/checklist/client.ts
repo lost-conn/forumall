@@ -101,7 +101,7 @@ export const CLIENT: readonly ChecklistEntry[] = [
     level: "client-must",
     covers: ["packages/web/test/markdown.test.ts", "packages/web/test/inline.test.ts"],
     status: "partial",
-    note: "Behaviour gaps: rendering ignores `content.mime` (`text/plain` gets inline formatting, non-article `text/markdown` gets only the inline subset, `text/html` is neither sanitised nor tag-stripped), the Markdown renderer is a CommonMark subset, and `attachment:` links are inert; `mailto:` being active is untested. Spec question: may scheme-less relative links be active?",
+    note: "Behaviour gaps: rendering ignores `content.mime` (`text/plain` gets inline formatting, non-article `text/markdown` gets only the inline subset, `text/html` is neither sanitised nor tag-stripped), the Markdown renderer is a CommonMark subset, and `attachment:` links are inert; `mailto:` being active is untested. Scheme-less and relative links must be inactive (a message has no base URL); today they pass `safeHref`.",
   },
   {
     item: "Resolve `attachment:<id>` references against the message's own attachments, show unreferenced attachments after the body, and, when an article has no `title`, use its body's first block as the title if that block is a level-1 heading (ATX or Setext, or `<h1>`) (§5.3)",
@@ -111,11 +111,11 @@ export const CLIENT: readonly ChecklistEntry[] = [
     note: "Not implemented: no `attachment:<id>` resolution, the article view ignores `title` and renders no attachments, and the title fallback takes any `#`–`###` heading or the first line. The e2e tests that touch article titles do not assert the spec rules; spec question: is an article with no `title` and no H1 first block untitled?",
   },
   {
-    item: "Treat attachment metadata and files as untrusted, never opening a fetched file as an active document (§5.8)",
+    item: "Treat attachment metadata and files as untrusted, never opening a fetched file as an active document: a plain link to its `url` is allowed, `blob:`/`data:` URLs, `srcdoc` and frames are not (§5.8)",
     level: "client-must",
     covers: ["packages/web/test/chat-api.test.ts"],
     status: "partial",
-    note: "Untested: a `text/html` or `image/svg+xml` attachment never renders inline as a document. Spec question: does a new-tab link to a non-media file count as opening it as an active document (if so it needs `download`)?",
+    note: "Untested: a `text/html` or `image/svg+xml` attachment never renders inline as a document. A plain link to the `url` is allowed; `blob:`/`data:` URLs, `srcdoc` and frames must not be used for attachments.",
   },
   {
     item: "Render metadata extensions when schemas known",

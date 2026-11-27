@@ -84,7 +84,7 @@ export const GROUPS_MESSAGES: readonly ChecklistEntry[] = [
     note: 'Behaviour gap: edit/delete in a channel the caller cannot read is not answered `404` first, so an author who lost access can still edit or delete and a non-author gets a `403` that leaks existence. "No limit when `editUntil` is absent" is vacuous: every message is stamped with a 900 s window.',
   },
   {
-    item: "Accept `text/plain` and `text/markdown` bodies for every message type; store the article fields `title`, `summary` and `cover` (rejecting a `cover` that names none of the message's attachments) and ignore them on other types; store `mentions` and use it in place of text parsing when present (§5.3, §10.1)",
+    item: "Accept `text/plain` and `text/markdown` bodies for every message type; store the article fields `title`, `summary` and `cover` (rejecting a `cover` that names none of the message's attachments) and ignore them on other types; store `mentions` (§5.3) and, if the provider offers the §10.1 feed, take a message's mentions from it in place of text parsing when present (§10.1)",
     level: "provider-must",
     covers: [
       "packages/server/test/message-create-fields.test.ts",
@@ -92,6 +92,6 @@ export const GROUPS_MESSAGES: readonly ChecklistEntry[] = [
       "packages/shared/test/edits-media-groups.test.ts",
     ],
     status: "partial",
-    note: "Behaviour gap: mention notifications are still parsed from the text, never from `mentions`; and no server test creates or edits a `text/markdown` `message`, `memo` or `article`. Spec question: §10.1 is optional, so is using `mentions` binding only on providers that implement it?",
+    note: "Behaviour gap: mention notifications are still parsed from the text, never from `mentions`; and no server test creates or edits a `text/markdown` `message`, `memo` or `article`. (Forumall offers the §10.1 feed, so the mentions clause binds it.)",
   },
 ];

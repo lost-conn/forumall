@@ -1,7 +1,7 @@
 # OFSCP §12 conformance audit
 
 Audit of Forumall `main` at `1b336ef` against the §12 Compliance Checklist of
-OFSCP `main` at `598e45d` (`../ofscp/docs/ofscp_spec.md`). Every checklist line
+OFSCP `main` at `598e45d` (updated for ofscp#31, `7f3e0e9`) (`../ofscp/docs/ofscp_spec.md`). Every checklist line
 was split into its sub-requirements and checked for (a) the behaviour in the
 code and (b) a test that asserts it. The per-item coverage map itself (which
 test files cover which item) lives in `packages/server/test/checklist/` and is
@@ -24,7 +24,7 @@ the gaps are grouped into pull requests.
 
 | Level | Items | covered | partial / tests only | behaviour | spec question |
 |---|---|---|---|---|---|
-| Provider MUST | 44 | 15 | 15 | 13 | 1 |
+| Provider MUST | 44 | 16 | 15 | 13 | 0 |
 | Provider SHOULD | 4 | 0 | 0 | 4 | 0 |
 | Provider MAY | 6 | 6 | 0 | 0 | 0 |
 | Client MUST | 13 | 5 | 6 | 2 | 0 |
@@ -80,7 +80,7 @@ The old map (28 Provider + 7 Client MUST items) predated the spec PRs #23–#30;
 | 45 | Unsigned → anonymous viewer, never `401` (§4.5) | behaviour | `/api/users/{userRef}/{profile,groups,presence}` require a signature. Anonymous replies and a bad signature on an anonymous route untested. | U4 |
 | 46 | `private` tier | covered | — | — |
 | 47 | `GET /api/tiers` | covered | — | — |
-| 48 | Metadata schema registry | spec question | No normative text defines a registry (spec question 1). Forward-compatible metadata is tested. | — |
+| 48 | Store `metadata` as given, `400` for an invalid object (§5.4) | covered | (Was "metadata schema registry" until ofscp#31.) | — |
 
 ## Provider SHOULD
 
@@ -156,21 +156,35 @@ Order: U0 first (every unit edits the map). U3, U4, U5, U9, U10, U11, U13 and
 U14 touch disjoint files and can run in parallel; U6 follows U4 and U5; U7
 follows U6; U8, U12 and U15 follow U3.
 
-## Open questions
+## Spec questions and answers
 
-Spec questions (sent to the OFSCP oracle, not guessed):
+Nine questions went to the OFSCP oracle. Answers (ofscp#31, merged as
+`7f3e0e9`, plus Joe's decisions, which a second spec PR records):
 
-1. L48: the "metadata schema registry" has no normative anchor.
-2. L16: the `actor` in the empty keys answer for an invalid handle, or `404`.
-3. L8: does one undecodable key invalidate only itself or the whole document?
-4. L19: answer for the channel list (and `GET`) of an unreadable group.
-5. L26: must `mime` be sniffed from the bytes?
-6. L78: are scheme-less relative links active?
-7. L80: does a new-tab link to an `text/html` attachment count as opening it?
-8. L35: non-participant `dmId` subscribe `forbidden` / read `403`, versus answering as unknown.
-9. L25: `mentions` MUST although §10.1 feeds are optional.
+1. L48: there is no registry in v0.1; the item now reads "On create, store
+   `metadata` as given, rejecting (`400`) an invalid metadata object".
+2. L16: an invalid or non-canonical handle on the keys endpoint gets `404`.
+3. L8 (Joe): per key. A published key that isn't 32 bytes is ignored on its
+   own; a request signed with it gets `401`, like an unknown key.
+4. L19: `GET …/channels` answers like `GET` group: `404` unknown, `403`
+   unreadable; channels inside stay `404`. Forumall already does this.
+5. L26 (Joe): the declared part type may be recorded, but not an inline-shown
+   type (non-SVG image, video, audio) the bytes don't confirm; otherwise
+   `application/octet-stream`.
+6. L78: scheme-less and relative links are inactive.
+7. L80: a plain link to an attachment is fine; `blob:`/`data:`, `srcdoc` and
+   frames are not.
+8. L35 (Joe): a non-participant gets the same answer as an unknown `dmId` on
+   every DM path (`404` / `not_found`), which is what Forumall does today.
+9. L25: using `mentions` in place of parsing binds only providers that offer
+   §10.1 feeds (Forumall does).
 
-Design decisions for Joe:
+Also from ofscp#31: `GET /api/groups/{groupId}/members` is not an
+anonymous-reader route (unsigned → `401`). Forumall answers anonymous callers
+today; folded into U4.
+
+## Design decisions for Joe
+
 
 - L54 (SHOULD): serve attachments from a separate origin. It conflicts with
   the one-process, one-port self-host goal; an optional `MEDIA_ORIGIN` could

@@ -12,7 +12,7 @@ export const MEDIA_USERS: readonly ChecklistEntry[] = [
     level: "provider-must",
     covers: ["packages/server/test/media.test.ts"],
     status: "partial",
-    note: "Behaviour gap: the `target` part (stored, canonicalised, `400` for a bad authority) and the `thumbnail` part are not implemented. Spec question: must `mime` be derived from the bytes, or is the declared part type acceptable?",
+    note: "Behaviour gap: the `target` part (stored, canonicalised, `400` for a bad authority) and the `thumbnail` part are not implemented. `mime` must not record an inline-shown type (non-SVG image, video, audio) the bytes do not confirm; today the declared part type is stored unchecked.",
   },
   {
     item: "Serve attachments as capability URLs: `https`, at least 128 bits of entropy, unlisted, fetchable unsigned, with the §3.4 CORS headers, from any host the provider chooses (§5.8)",
@@ -77,6 +77,6 @@ export const MEDIA_USERS: readonly ChecklistEntry[] = [
     level: "provider-must",
     covers: ["packages/server/test/presence.test.ts", "packages/server/test/privacy.test.ts"],
     status: "covered",
-    note: "Spec question: privacy lists also accept a user-object URI and convert it to an actor; does §2.2's conversion of non-canonical actor spellings extend to a URI form, or should it be `400`?",
+    note: "Related deviation: privacy lists also accept a user-object URI and convert it to an actor; the ofscp `UserRef` schema takes canonical actors only, so a URI must be `400`.",
   },
 ];

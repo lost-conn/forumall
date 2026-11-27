@@ -74,7 +74,7 @@ Notes marked "spec question" point at wording in the spec that needs clarifying 
     - Note: The device-key list item shape (`algorithm`, `public_key`, `device_name`, `created_at`) is never asserted and `GET /api/auth/device-keys` is not validated against `device-keys-response.json`.
 4. **partial**: Encode every `public_key` as the raw 32-byte Ed25519 key in padded standard base64, and reject (`400`) a registration whose key does not decode to 32 bytes (§4.3.2)
     - Tests: `packages/server/test/device-keys.test.ts`, `packages/shared/test/schemas.test.ts`, `packages/server/test/conformance.test.ts`
-    - Note: Untested: guest creation (§4.8) with a key that is not 32 bytes → `400`, and a verifier treating a published key that does not decode to 32 bytes as unusable (today one bad key invalidates the whole keys or discovery document). Spec question: should one bad key invalidate only itself or the whole document?
+    - Note: Untested: guest creation (§4.8) with a key that is not 32 bytes → `400`, and a verifier treating a published key that does not decode to 32 bytes as unusable (per key: today one bad key invalidates the whole keys or discovery document, where only that key should be ignored).
 5. **partial**: Validate Ed25519 request signatures over the §4.4.2 canonical string, including authority binding and nonce replay rejection, with one bounded provider-wide replay store that records a nonce only after the signature verifies (§4.5)
     - Tests: `packages/shared/test/conformance.test.ts`, `packages/shared/test/signing.test.ts`, `packages/server/test/signature.test.ts`, `packages/server/test/nonce-store.test.ts`, `packages/server/test/replay-warmup.test.ts`, `packages/server/test/canonical-authority.test.ts`, `packages/server/test/ws-handshake.test.ts`
     - Note: Untested over HTTP: a full replay store → `503` + `Retry-After` (only the store unit test), a replayed provider-signed (§8.1) request → `401`, and the atomic re-check after step 7 (two concurrent copies → exactly one `200`).
@@ -94,9 +94,9 @@ Notes marked "spec question" point at wording in the spec that needs clarifying 
 11. **covered**: Subscribe the readable channels of a partially refused `subscribe` and refuse the rest with one `not_found` `error` naming them in `details.channels` (only the `error` when none is readable); refuse a `subscribe` that would exceed the subscription cap as a whole with `subscription_limit` (a provider may do this without evaluating access when the list names more distinct channels than the cap); never answer `bad_request` to a well-formed `subscribe` because its list is long (§7.1)
     - Tests: `packages/server/test/ws-subscriptions.test.ts`, `packages/server/test/dms-send.test.ts`, `packages/server/test/federation-realtime.test.ts`
     - Note: The optional early refusal (without evaluating access) of an over-long list is not implemented.
-12. **partial**: Serve user public keys via the `/.well-known/ofscp/users/{handle}/keys` endpoint (`200` + `keys: []` for any well-formed unknown, disabled or keyless handle, §4.6)
+12. **partial**: Serve user public keys via the `/.well-known/ofscp/users/{handle}/keys` endpoint (`200` + `keys: []` for any well-formed unknown, disabled or keyless handle, and `404` for a handle that is not well-formed, §4.6)
     - Tests: `packages/server/test/device-keys.test.ts`, `packages/server/test/conformance.test.ts`
-    - Note: Untested: the unknown-handle and keyless (never-added-a-key) answers are identical, `cache_until` included. Defect outside the MUST: a handle containing `@` or whitespace answers `500`; spec question: what `actor` should the empty `200` carry for an invalid handle such as `Alice`?
+    - Note: Behaviour gap: a handle that is not well-formed must get `404`; today one containing `@` or whitespace answers `500` and a non-canonical one such as `Alice` an empty `200`. Untested: the unknown-handle and keyless (never-added-a-key) answers are identical, `cache_until` included.
 13. **covered**: Re-fetch keys or discovery on an unknown `key_id` before rejecting; answer `503`, not `401`, when they cannot be fetched (§4.6, §8.1)
     - Tests: `packages/server/test/signer-resolution.test.ts`, `packages/server/test/federation-actor.test.ts`, `packages/server/test/federation.test.ts`, `packages/server/test/key-lookup-expiry.test.ts`
 14. **covered**: Reject a keys response whose `actor` is not the requested actor, and a discovery document whose `provider.domain` is not the authority it was fetched from (§3.1, §4.6); answer `403` for a denied signer and `401` when the outbound-request rules forbid the fetch (§4.6, §8)
@@ -118,12 +118,12 @@ Notes marked "spec question" point at wording in the spec that needs clarifying 
 20. **partial**: Support message edit (author-only; within `editUntil` when set, with no limit when absent) replacing any of `content`, `attachments`, `tags`, `mentions` and the article fields, and tombstone delete (§7.1)
     - Tests: `packages/server/test/message-edit-delete.test.ts`, `packages/server/test/message-edit-fields.test.ts`, `packages/server/test/message-edit-dm.test.ts`, `packages/server/test/ws-correlation.test.ts`, `packages/shared/test/edits-media-groups.test.ts`
     - Note: Behaviour gap: edit/delete in a channel the caller cannot read is not answered `404` first, so an author who lost access can still edit or delete and a non-author gets a `403` that leaks existence. "No limit when `editUntil` is absent" is vacuous: every message is stamped with a 900 s window.
-21. **partial**: Accept `text/plain` and `text/markdown` bodies for every message type; store the article fields `title`, `summary` and `cover` (rejecting a `cover` that names none of the message's attachments) and ignore them on other types; store `mentions` and use it in place of text parsing when present (§5.3, §10.1)
+21. **partial**: Accept `text/plain` and `text/markdown` bodies for every message type; store the article fields `title`, `summary` and `cover` (rejecting a `cover` that names none of the message's attachments) and ignore them on other types; store `mentions` (§5.3) and, if the provider offers the §10.1 feed, take a message's mentions from it in place of text parsing when present (§10.1)
     - Tests: `packages/server/test/message-create-fields.test.ts`, `packages/server/test/message-edit-fields.test.ts`, `packages/shared/test/edits-media-groups.test.ts`
-    - Note: Behaviour gap: mention notifications are still parsed from the text, never from `mentions`; and no server test creates or edits a `text/markdown` `message`, `memo` or `article`. Spec question: §10.1 is optional, so is using `mentions` binding only on providers that implement it?
+    - Note: Behaviour gap: mention notifications are still parsed from the text, never from `mentions`; and no server test creates or edits a `text/markdown` `message`, `memo` or `article`. (Forumall offers the §10.1 feed, so the mentions clause binds it.)
 22. **partial**: Support single-step media upload at `POST /api/media`, recording its `target` (default: this provider) and setting `mime`, `size` and `hash`, and `width`, `height` and `durationMs` from the bytes when it can determine them or from the uploader otherwise, and accepting an uploader's `thumbnail` part (§5.8)
     - Tests: `packages/server/test/media.test.ts`
-    - Note: Behaviour gap: the `target` part (stored, canonicalised, `400` for a bad authority) and the `thumbnail` part are not implemented. Spec question: must `mime` be derived from the bytes, or is the declared part type acceptable?
+    - Note: Behaviour gap: the `target` part (stored, canonicalised, `400` for a bad authority) and the `thumbnail` part are not implemented. `mime` must not record an inline-shown type (non-SVG image, video, audio) the bytes do not confirm; today the declared part type is stored unchecked.
 23. **partial**: Serve attachments as capability URLs: `https`, at least 128 bits of entropy, unlisted, fetchable unsigned, with the §3.4 CORS headers, from any host the provider chooses (§5.8)
     - Tests: `packages/server/test/media.test.ts`
     - Note: Behaviour present but untested: ≥128 bits of entropy in the id, that uploads are unlisted (no `GET /api/media` listing), and the §3.4 CORS headers on the media `GET`.
@@ -144,10 +144,10 @@ Notes marked "spec question" point at wording in the spec that needs clarifying 
     - Note: Behaviour gaps: all three routes require a signature (anonymous viewers get `401`), the groups list is not filtered by what the viewer may read, and a ref containing `%25` is decoded twice (likely `500`, not the uniform `404`). Untested: identical `404` bodies across unknown, invalid and remote subjects, and the groups route's `404`.
 30. **covered**: Treat `PUT /api/me/presence` as a full replace that rejects `offline` with `400`, and `PUT /api/me/privacy` as a partial update that rejects an actor in both lists, or an over-long list, with `400` (§6.4, §6.6)
     - Tests: `packages/server/test/presence.test.ts`, `packages/server/test/privacy.test.ts`
-    - Note: Spec question: privacy lists also accept a user-object URI and convert it to an actor; does §2.2's conversion of non-canonical actor spellings extend to a URI form, or should it be `400`?
+    - Note: Related deviation: privacy lists also accept a user-object URI and convert it to an actor; the ofscp `UserRef` schema takes canonical actors only, so a URI must be `400`.
 31. **partial**: Support direct messages: deterministic `dmId` derivation, inbox-only storage (no sender copy), the `{dmId}`/`to` verification on delivery, conversation pointers and `dm.conversation`, conversation listing/reading, `dm.message` real-time delivery, and `dmId` subscriptions from a remote participant (§7.4)
     - Tests: `packages/shared/test/dm.test.ts`, `packages/shared/test/conformance.test.ts`, `packages/server/test/dms-send.test.ts`, `packages/server/test/dms-pointers.test.ts`, `packages/server/test/dms-read.test.ts`, `packages/server/test/dms-federation.test.ts`, `packages/server/test/dm-pointer-hygiene.test.ts`, `packages/server/test/message-create.test.ts`, `packages/server/test/canonical-authority.test.ts`, `packages/server/test/remote-handle-impersonation.test.ts`
-    - Note: Behaviour gap: a remote participant cannot subscribe to a `dmId` (no participant check, no delivery of their sent messages, no resume). Untested: `dm.conversation` emission; spec question: a non-participant `dmId` subscribe or read answers `not_found` / `404` where the spec says `forbidden` / `403`.
+    - Note: Behaviour gap: a remote participant cannot subscribe to a `dmId` (no participant check, no delivery of their sent messages, no resume). Untested: `dm.conversation` emission, and that a non-participant gets the same `404` / `not_found` as an unknown `dmId` on every DM path.
 32. **partial**: Support the explicit contacts model (request/accept/remove, local and federated) backing the `contacts` visibility tier (§6.7)
     - Tests: `packages/server/test/contacts.test.ts`, `packages/server/test/privacy.test.ts`, `packages/server/test/presence.test.ts`
     - Note: A federated `action: "remove"` is untested; only `request` and `accept` are sent to `/api/federation/contacts`.
@@ -180,9 +180,8 @@ Notes marked "spec question" point at wording in the spec that needs clarifying 
     - Tests: `packages/server/test/groups.test.ts`, `packages/server/test/channels.test.ts`, `packages/server/test/membership.test.ts`, `packages/server/test/server.test.ts`
 43. **covered**: Expose `GET /api/tiers` endpoint
     - Tests: `packages/server/test/server.test.ts`, `packages/server/test/conformance.test.ts`
-44. **covered**: Provide metadata schema registry (optional entries allowed)
-    - Tests: `packages/shared/test/schemas.test.ts`, `packages/server/test/message-create.test.ts`
-    - Note: Spec question: the spec body never defines a "metadata schema registry" (§5.4 only asks a feature to publish a JSON Schema; §13 lists registry governance as future work), so this is covered only as far as metadata round-trips.
+44. **covered**: On create, store `metadata` as given, rejecting (`400`) an invalid metadata object (§5.4, §7.1)
+    - Tests: `packages/server/test/message-create.test.ts`, `packages/shared/test/schemas.test.ts`
 
 ### Provider SHOULD (4 items)
 
@@ -241,12 +240,12 @@ Notes marked "spec question" point at wording in the spec that needs clarifying 
     - Note: Behaviour gap: `uploadMedia` never sends a `target` part, so cross-provider DM attachments upload as home-local uploads, and nothing tracks an upload's target for reuse. The existing tests cover same-provider upload only.
 11. **partial**: Render `text/plain` and CommonMark `text/markdown`, showing raw HTML in Markdown as text; render `text/html` only through the §5.3 allow-list sanitizer (or as text with tags removed); make only `http`, `https`, `mailto` and `attachment:` links active (§5.3)
     - Tests: `packages/web/test/markdown.test.ts`, `packages/web/test/inline.test.ts`
-    - Note: Behaviour gaps: rendering ignores `content.mime` (`text/plain` gets inline formatting, non-article `text/markdown` gets only the inline subset, `text/html` is neither sanitised nor tag-stripped), the Markdown renderer is a CommonMark subset, and `attachment:` links are inert; `mailto:` being active is untested. Spec question: may scheme-less relative links be active?
+    - Note: Behaviour gaps: rendering ignores `content.mime` (`text/plain` gets inline formatting, non-article `text/markdown` gets only the inline subset, `text/html` is neither sanitised nor tag-stripped), the Markdown renderer is a CommonMark subset, and `attachment:` links are inert; `mailto:` being active is untested. Scheme-less and relative links must be inactive (a message has no base URL); today they pass `safeHref`.
 12. **missing**: Resolve `attachment:<id>` references against the message's own attachments, show unreferenced attachments after the body, and, when an article has no `title`, use its body's first block as the title if that block is a level-1 heading (ATX or Setext, or `<h1>`) (§5.3)
     - Note: Not implemented: no `attachment:<id>` resolution, the article view ignores `title` and renders no attachments, and the title fallback takes any `#`–`###` heading or the first line. The e2e tests that touch article titles do not assert the spec rules; spec question: is an article with no `title` and no H1 first block untitled?
-13. **partial**: Treat attachment metadata and files as untrusted, never opening a fetched file as an active document (§5.8)
+13. **partial**: Treat attachment metadata and files as untrusted, never opening a fetched file as an active document: a plain link to its `url` is allowed, `blob:`/`data:` URLs, `srcdoc` and frames are not (§5.8)
     - Tests: `packages/web/test/chat-api.test.ts`
-    - Note: Untested: a `text/html` or `image/svg+xml` attachment never renders inline as a document. Spec question: does a new-tab link to a non-media file count as opening it as an active document (if so it needs `download`)?
+    - Note: Untested: a `text/html` or `image/svg+xml` attachment never renders inline as a document. A plain link to the `url` is allowed; `blob:`/`data:` URLs, `srcdoc` and frames must not be used for attachments.
 
 ### Client SHOULD (8 items)
 

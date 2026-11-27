@@ -43,7 +43,7 @@ export const AUTH_SIGNING: readonly ChecklistEntry[] = [
       "packages/server/test/conformance.test.ts",
     ],
     status: "partial",
-    note: "Untested: guest creation (§4.8) with a key that is not 32 bytes → `400`, and a verifier treating a published key that does not decode to 32 bytes as unusable (today one bad key invalidates the whole keys or discovery document). Spec question: should one bad key invalidate only itself or the whole document?",
+    note: "Untested: guest creation (§4.8) with a key that is not 32 bytes → `400`, and a verifier treating a published key that does not decode to 32 bytes as unusable (per key: today one bad key invalidates the whole keys or discovery document, where only that key should be ignored).",
   },
   {
     item: "Validate Ed25519 request signatures over the §4.4.2 canonical string, including authority binding and nonce replay rejection, with one bounded provider-wide replay store that records a nonce only after the signature verifies (§4.5)",
@@ -127,14 +127,14 @@ export const AUTH_SIGNING: readonly ChecklistEntry[] = [
     note: "The optional early refusal (without evaluating access) of an over-long list is not implemented.",
   },
   {
-    item: "Serve user public keys via the `/.well-known/ofscp/users/{handle}/keys` endpoint (`200` + `keys: []` for any well-formed unknown, disabled or keyless handle, §4.6)",
+    item: "Serve user public keys via the `/.well-known/ofscp/users/{handle}/keys` endpoint (`200` + `keys: []` for any well-formed unknown, disabled or keyless handle, and `404` for a handle that is not well-formed, §4.6)",
     level: "provider-must",
     covers: [
       "packages/server/test/device-keys.test.ts",
       "packages/server/test/conformance.test.ts",
     ],
     status: "partial",
-    note: "Untested: the unknown-handle and keyless (never-added-a-key) answers are identical, `cache_until` included. Defect outside the MUST: a handle containing `@` or whitespace answers `500`; spec question: what `actor` should the empty `200` carry for an invalid handle such as `Alice`?",
+    note: "Behaviour gap: a handle that is not well-formed must get `404`; today one containing `@` or whitespace answers `500` and a non-canonical one such as `Alice` an empty `200`. Untested: the unknown-handle and keyless (never-added-a-key) answers are identical, `cache_until` included.",
   },
   {
     item: "Re-fetch keys or discovery on an unknown `key_id` before rejecting; answer `503`, not `401`, when they cannot be fetched (§4.6, §8.1)",
