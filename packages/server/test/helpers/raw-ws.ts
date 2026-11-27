@@ -6,7 +6,9 @@
  * option.) Text frames only; enough for the OFSCP JSON envelope.
  */
 import { randomBytes } from "node:crypto";
-import type { WsEnvelope } from "@forumall/shared";
+import { type WsEnvelope, WsEnvelopeSchema } from "@forumall/shared";
+
+import { at } from "./at.ts";
 
 /** The `Sec-WebSocket-Accept` GUID (RFC 6455 §1.3). */
 const WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
@@ -144,7 +146,7 @@ export class RawWsClient {
     this.buffered = concat(this.buffered, chunk);
     const { texts, used } = decodeFrames(this.buffered);
     this.buffered = this.buffered.slice(used);
-    for (const t of texts) this.frames.push(JSON.parse(t) as WsEnvelope);
+    for (const t of texts) this.frames.push(WsEnvelopeSchema.parse(JSON.parse(t)));
     if (texts.length > 0) this.wake?.();
   }
 
@@ -158,7 +160,7 @@ export class RawWsClient {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
       const i = this.frames.findIndex((f) => f.type === type);
-      if (i !== -1) return this.frames.splice(i, 1)[0] as WsEnvelope;
+      if (i !== -1) return at(this.frames.splice(i, 1), 0);
       const left = deadline - Date.now();
       if (left <= 0) throw new Error(`timeout waiting for ${type}`);
       await new Promise<void>((resolve) => {
