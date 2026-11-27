@@ -278,8 +278,10 @@ export async function openConversation(deps: OpenConversationDeps): Promise<Conv
 
   // 2) Wire the live `dm.message` listener BEFORE subscribing so no event is
   // missed. Filter to THIS conversation by `dmId` (the event carries `dmId`, not
-  // a `channelId`). Received messages are authored by the counterparty; our own
-  // sent messages never come back over this channel (no sender copy). The live
+  // a `channelId`). Our own sent messages can come back over this channel too (a
+  // local DM's recipient inbox is on our provider, and our dmId subscription
+  // receives it); `upsertDmMessage` matches on `clientMessageId` / `id`, so the
+  // echo reconciles with the locally retained copy instead of duplicating. The live
   // event now also carries attachments / reply reference / editedAt / deletedAt
   // (parity with channel `message.created`) — reconcile edits + tombstones in
   // place, exactly like the chat store does.

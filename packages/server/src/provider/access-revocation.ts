@@ -121,8 +121,11 @@ export function revalidateGroupSubscriptions(
 
 /**
  * The delivery-time gate `app.ts` installs on the hub (see module docs, point 2).
- * `dm_…` ids are passed through: DM delivery is per-actor (`publishToActor`) and
- * a DM "subscription" is only an acknowledged opt-in.
+ * `dm_…` ids are passed through: a `dmId` subscription does carry delivery
+ * (§7.4), but who may hold one is fixed by the `dmId` derivation itself (the
+ * subscriber is one of the two actors it was derived from), which no later
+ * mutation can change. Losing access to a DM is losing the key or federation,
+ * and both end the session.
  */
 export function channelDeliveryGate(db: Db): ChannelDeliveryGate {
   // This runs on every fan-out, so the membership lookup is a cached prepared
