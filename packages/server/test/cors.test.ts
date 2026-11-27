@@ -1,7 +1,7 @@
 /**
  * Cross-origin access (spec §3.4) on a real server: preflights to standard
  * `/api/…` and `/.well-known/ofscp…` paths, the headers on ordinary, error
- * (problem+json) and attachment responses to a request with `Origin`, never
+ * (problem+json) and attachment responses to a request with or without `Origin`, never
  * `Access-Control-Allow-Credentials`, and a WebSocket upgrade with a foreign
  * `Origin` that still connects and authenticates (§3.4/§7.1: no Origin check).
  */
@@ -168,33 +168,77 @@ describe("responses to a request with Origin (§3.4)", () => {
   });
 
   test("an attachment GET, and its 304", async () => {
-    const up = await uploadMedia(
-      { request: (p, init) => fetch(url(p), init) },
-      alice,
-      new TextEncoder().encode("x"),
-      "x.txt",
-      "text/plain",
-    );
-    expect(up.status).toBe(201);
-    const att: Attachment = AttachmentSchema.parse(await up.json());
-    const path = new URL(att.url).pathname;
+    const path = await uploadAttachment();
 
     const res = await fetch(url(path), { headers: { origin: ORIGIN } });
     expect(res.status).toBe(200);
     expectCorsResponse(res);
 
     const revalidated = await fetch(url(path), {
-      headers: { origin: ORIGIN, "if-none-match": `"${att.hash}"` },
+      headers: { origin: ORIGIN, "if-none-match": await etagOf(path) },
+    });
+    expect(revalidated.status).toBe(304);
+    expectCorsResponse(revalidated);
+  });
+});
+
+/**
+ * Responses to a request without `Origin` carry the same headers: a no-cors
+ * `<img>`/`<video>` load sends none, and its cached response must still
+ * satisfy a later CORS `fetch()` of the same URL.
+ */
+describe("responses to a request without Origin", () => {
+  test("an attachment GET (as a no-cors <img> load), and its 304", async () => {
+    const path = await uploadAttachment();
+
+    const res = await fetch(url(path));
+    expect(res.status).toBe(200);
+    expectCorsResponse(res);
+
+    const revalidated = await fetch(url(path), {
+      headers: { "if-none-match": await etagOf(path) },
     });
     expect(revalidated.status).toBe(304);
     expectCorsResponse(revalidated);
   });
 
-  test("a request without Origin gets no CORS headers", async () => {
+  test("a standard endpoint", async () => {
     const res = await fetch(url("/.well-known/ofscp-provider"));
-    expect(res.headers.has("access-control-allow-origin")).toBe(false);
+    expect(res.status).toBe(200);
+    expectCorsResponse(res);
+  });
+
+  test("an OPTIONS without Origin is not a preflight", async () => {
+    const res = await fetch(url("/api/groups"), {
+      method: "OPTIONS",
+      headers: { "access-control-request-method": "POST" },
+    });
+    expect(res.status).not.toBe(204);
+    expect(res.headers.has("access-control-allow-methods")).toBe(false);
+    expectCorsResponse(res);
   });
 });
+
+/** Upload a small attachment as alice; its served path. */
+async function uploadAttachment(): Promise<string> {
+  const up = await uploadMedia(
+    { request: (p, init) => fetch(url(p), init) },
+    alice,
+    new TextEncoder().encode("x"),
+    "x.txt",
+    "text/plain",
+  );
+  expect(up.status).toBe(201);
+  const att: Attachment = AttachmentSchema.parse(await up.json());
+  return new URL(att.url).pathname;
+}
+
+/** The `ETag` a served attachment answers with. */
+async function etagOf(path: string): Promise<string> {
+  const etag = (await fetch(url(path), { method: "HEAD" })).headers.get("etag");
+  expect(etag).not.toBeNull();
+  return etag ?? "";
+}
 
 describe("Vary: Origin is added, never overwriting", () => {
   test("addVaryOrigin", () => {

@@ -76,6 +76,8 @@ export class RawWsClient {
   private buffered = new Uint8Array(0);
   private frames: WsEnvelope[] = [];
   private wake: (() => void) | null = null;
+  /** Why no further frames can arrive (a bad frame, or the socket ended); `ofType` rethrows it. */
+  private failure: Error | null = null;
 
   private constructor(
     private readonly socket: Bun.Socket<undefined>,
@@ -84,7 +86,8 @@ export class RawWsClient {
 
   /**
    * Open `ws://host:port{path}` sending `headers` with the upgrade request.
-   * Resolves once the response head arrives, whatever its status.
+   * Resolves once the response head arrives, whatever its status; rejects if
+   * the socket closes, errors or fails to connect before it does.
    */
   static async open(
     host: string,
@@ -97,9 +100,16 @@ export class RawWsClient {
     let client: RawWsClient | undefined;
     let pending = new Uint8Array(0);
     let resolveOpen: (c: RawWsClient) => void = () => {};
-    const opened = new Promise<RawWsClient>((resolve) => {
+    let rejectOpen: (err: Error) => void = () => {};
+    const opened = new Promise<RawWsClient>((resolve, reject) => {
       resolveOpen = resolve;
+      rejectOpen = reject;
     });
+    /** End the connection with `err`: fails `open()` before the head, `ofType` after. */
+    const fail = (err: Error): void => {
+      if (client) client.fail(err);
+      else rejectOpen(err);
+    };
 
     const socket = await Bun.connect({
       hostname: host,
@@ -126,8 +136,22 @@ export class RawWsClient {
             headers: fields,
             acceptValid: fields.get("sec-websocket-accept") === expectedAccept,
           });
-          client.receive(pending.subarray(end + 4));
           resolveOpen(client);
+          client.receive(pending.subarray(end + 4));
+        },
+        close(_sock, err) {
+          fail(
+            new Error(
+              `raw WS ${path}: socket closed${client ? "" : " before the response head"}` +
+                (err ? `: ${err.message}` : ""),
+            ),
+          );
+        },
+        error(_sock, err) {
+          fail(new Error(`raw WS ${path}: socket error: ${err.message}`));
+        },
+        connectError(_sock, err) {
+          fail(new Error(`raw WS ${path}: connect failed: ${err.message}`));
         },
       },
     });
@@ -142,12 +166,36 @@ export class RawWsClient {
     return opened;
   }
 
+  /**
+   * Buffer `chunk` and queue every complete text frame. A frame that is not a
+   * valid envelope ends the client: the error is kept for the waiting (or
+   * next) `ofType` rather than thrown into the socket callback, where no test
+   * would see it.
+   */
   private receive(chunk: Uint8Array): void {
+    if (this.failure) return;
     this.buffered = concat(this.buffered, chunk);
     const { texts, used } = decodeFrames(this.buffered);
     this.buffered = this.buffered.slice(used);
-    for (const t of texts) this.frames.push(WsEnvelopeSchema.parse(JSON.parse(t)));
+    for (const t of texts) {
+      try {
+        this.frames.push(WsEnvelopeSchema.parse(JSON.parse(t)));
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        this.fail(
+          new Error(`raw WS: received a frame that is not a valid envelope: ${t}\n${reason}`),
+        );
+        return;
+      }
+    }
     if (texts.length > 0) this.wake?.();
+  }
+
+  /** Record the first reason no more frames will arrive, and wake a waiting `ofType`. */
+  private fail(err: Error): void {
+    if (this.failure) return;
+    this.failure = err;
+    this.wake?.();
   }
 
   /** Send one JSON text frame. */
@@ -161,6 +209,7 @@ export class RawWsClient {
     for (;;) {
       const i = this.frames.findIndex((f) => f.type === type);
       if (i !== -1) return at(this.frames.splice(i, 1), 0);
+      if (this.failure) throw new Error(`waiting for ${type}: ${this.failure.message}`);
       const left = deadline - Date.now();
       if (left <= 0) throw new Error(`timeout waiting for ${type}`);
       await new Promise<void>((resolve) => {

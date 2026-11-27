@@ -7,6 +7,7 @@
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Attachment, AttachmentSchema } from "@forumall/shared";
@@ -185,6 +186,24 @@ describe("ETag revalidation (§5.8 caching)", () => {
       const res = await get({ "if-none-match": inm });
       expect(res.status).toBe(200);
       expect(await res.text()).toBe("cache me");
+    }
+  });
+
+  test("a row whose blob is gone is 404 whether or not the request is conditional", async () => {
+    const gone = await upload(new TextEncoder().encode("soon gone"), "g.txt", "text/plain");
+    const id = pathOf(gone).split("/").at(-1) ?? "";
+    await rm(join(b.config.mediaDir, id));
+    const etag = `"${gone.hash}"`;
+    const conditions: Record<string, string>[] = [
+      {},
+      { "if-none-match": etag },
+      { "if-none-match": "*" },
+    ];
+    for (const headers of conditions) {
+      for (const method of ["GET", "HEAD"]) {
+        const res = await fetch(`${base()}${pathOf(gone)}`, { method, headers });
+        expect(res.status).toBe(404);
+      }
     }
   });
 

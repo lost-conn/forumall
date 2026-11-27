@@ -10,8 +10,9 @@
  *  - `GET /api/media/:id` (and `HEAD`): serve the stored bytes with the stored
  *    content type and the §5.8 serving headers (`media-headers.ts`:
  *    disposition, sandbox CSP, nosniff, private caching, strong `ETag`).
- *    → 200, `304` for a matching `If-None-Match`, or 404 if unknown. There is
- *    deliberately no `GET /api/media` (§5.8: attachment URLs are unlisted).
+ *    → 200, `304` for a matching `If-None-Match`, or 404 if unknown or its
+ *    blob is gone (conditional or not). There is deliberately no
+ *    `GET /api/media` (§5.8: attachment URLs are unlisted).
  *
  * ## Body buffering + the signature middleware
  * `requireSignature` (§4.5 step 5) reads the raw request body via
@@ -148,17 +149,20 @@ export function createMediaRouter(opts: MediaRouterOptions = {}): Hono<AppBindin
     const row = getMediaRow(db, id);
     if (!row) throw AppError.notFound({ detail: "no such media" });
 
+    const storage = storageFor(config.mediaDir);
+    // A row whose blob is gone (manual deletion / storage drift) is 404.
+    const missingBlob = () => AppError.notFound({ detail: "media blob is missing" });
+
     // The bytes behind an id never change, so a matching validator needs no
-    // storage read.
+    // read of the blob, only a check that it still exists: a conditional
+    // request must get the same answer (404) as an unconditional one would.
     if (ifNoneMatchMatches(c.req.header("if-none-match"), mediaETag(row))) {
+      if (!(await storage.has(id))) throw missingBlob();
       return new Response(null, { status: 304, headers: mediaNotModifiedHeaders(row) });
     }
 
-    const bytes = await storageFor(config.mediaDir).get(id);
-    if (!bytes) {
-      // Row exists but the blob is gone (manual deletion / storage drift).
-      throw AppError.notFound({ detail: "media blob is missing" });
-    }
+    const bytes = await storage.get(id);
+    if (!bytes) throw missingBlob();
 
     // Copy into a fresh ArrayBuffer-backed view so the body is a plain
     // `BodyInit` (the storage backend may hand back a view over an

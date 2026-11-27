@@ -54,18 +54,30 @@ const EXPOSE_HEADERS = `${OFSCP_HEADERS}, retry-after, etag`;
  * Permissive, credential-less CORS for the API + cross-provider well-known reads.
  * Applied app-wide before routing; a preflight (`OPTIONS`) returns 204 with the
  * allow headers and never reaches a handler.
+ *
+ * Every response carries the same CORS headers, whether or not the request
+ * had an `Origin`. The value never depends on the caller (it is always `*`, no
+ * credentials), so there is nothing to withhold from an Origin-less request,
+ * and omitting the headers there would be a bug: a cross-origin `<img>` /
+ * `<video>` load is a no-cors request that sends no `Origin`, and its
+ * long-lived cached response (attachments are `immutable` for a year, §5.8)
+ * would then be reused for a later CORS `fetch()` of the same URL (e.g. to
+ * verify `hash`), which fails without `Access-Control-Allow-Origin`.
+ *
+ * `Vary: Origin` is still sent, on every response. §3.4 requires it on a
+ * response to a request with `Origin`, and sending it unconditionally keeps
+ * every response identical whatever the `Origin` (so no cache can store an
+ * Origin-less variant that differs from what a CORS request needs). The cost
+ * is only that a cache may key entries per origin — a miss, never a wrong
+ * answer.
  */
 export function cors(): MiddlewareHandler<AppBindings> {
   return async (c, next) => {
-    const origin = c.req.header("origin");
-    // Only attach CORS headers when there IS an Origin (a same-origin or
-    // server-to-server request has none and needs nothing here).
-    if (origin === undefined) {
-      await next();
-      return;
-    }
-
-    if (c.req.method === "OPTIONS" && c.req.header("access-control-request-method") !== undefined) {
+    const isPreflight =
+      c.req.method === "OPTIONS" &&
+      c.req.header("origin") !== undefined &&
+      c.req.header("access-control-request-method") !== undefined;
+    if (isPreflight) {
       // Preflight (§3.4: `OPTIONS` with `Origin` and `Access-Control-Request-Method`):
       // answer with the allow set, no body. `*` is valid since we send no
       // credentials. Any other `OPTIONS` is an ordinary request and is routed.
