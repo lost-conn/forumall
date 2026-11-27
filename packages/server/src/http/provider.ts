@@ -17,7 +17,7 @@ import { getBranding, setBranding } from "../provider/branding.ts";
 import { type GroupCreationPolicy, getGroupCreationPolicy } from "../provider/group-policy.ts";
 import { requireAdmin } from "./admin-guard.ts";
 import { AppError } from "./errors.ts";
-import { requireSignature } from "./signature.ts";
+import { optionalActorOrProviderSignature, requireSignature } from "./signature.ts";
 import type { AppBindings } from "./types.ts";
 
 /** Shape of the public branding response. */
@@ -35,7 +35,7 @@ export function createProviderRouter(): Hono<AppBindings> {
   const signed = requireSignature();
 
   /** GET /api/provider — public branding read. */
-  router.get("/", (c) => {
+  router.get("/", optionalActorOrProviderSignature(), (c) => {
     const { config, db } = c.var;
     const branding = getBranding(db, config);
     const body: BrandingResponse = {

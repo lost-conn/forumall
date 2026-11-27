@@ -30,14 +30,19 @@ import { createNotificationsRouter } from "./notifications.ts";
 import { createProviderRouter } from "./provider.ts";
 import { createPushRouter } from "./push.ts";
 import { createMeReadMarkersRouter } from "./read-markers.ts";
+import { optionalActorOrProviderSignature } from "./signature.ts";
 import type { AppBindings } from "./types.ts";
 import { createMeUserRouter, createUsersRouter } from "./users.ts";
 
 export function createApiRouter() {
   const api = new Hono<AppBindings>();
+  // The public probes below need no caller, but a SIGNED request to them still
+  // runs §4.5 so the §8 inbound federation policy applies (403); unsigned ones
+  // (e.g. a health check during the replay warm-up) are served as for anyone.
+  const publicSig = optionalActorOrProviderSignature();
 
   /** Liveness + provider identity probe. */
-  api.get("/health", (c) => {
+  api.get("/health", publicSig, (c) => {
     const { config } = c.var;
     return c.json({
       status: "ok",
@@ -47,7 +52,7 @@ export function createApiRouter() {
   });
 
   /** Tier discovery (§11.1): canonical access/discoverability levels. */
-  api.get("/tiers", (c) => c.json(TIERS));
+  api.get("/tiers", publicSig, (c) => c.json(TIERS));
 
   /** Local auth: register + login → bootstrap tokens (§4.1, §4.2). */
   api.route("/auth", createAuthRouter());

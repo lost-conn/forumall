@@ -31,8 +31,10 @@ import {
   type GroupMemberRow,
   type JoinRequestRow,
   groupMembers,
+  groups,
   joinRequests,
 } from "../db/schema.ts";
+import { tierReadableBy } from "./tiers.ts";
 
 /** `id` prefix for a join request per the §5.2 id convention (`jrq_…`). */
 const JOIN_REQUEST_ID_PREFIX = "jrq_";
@@ -192,6 +194,25 @@ export function groupIdsOf(db: Db, user: string): Set<string> {
     .where(eq(groupMembers.user, user))
     .all();
   return new Set(rows.map((r) => r.groupId));
+}
+
+/**
+ * The ids of the groups `user` belongs to that `viewer` may read, for the §6.5
+ * listing: every membership row is of a group this provider hosts, and a group
+ * is kept only when its `tier` lets the viewer read it (§11, §11.3 condition 1)
+ * — `public`/`discoverable` for anyone, `private`/`group` only for a member.
+ * `viewer` is the viewing actor, or `null` for an anonymous viewer (§4.5), who
+ * therefore sees only `public`/`discoverable` groups. Ordered by group id.
+ */
+export function groupIdsReadableBy(db: Db, user: string, viewer: string | null): string[] {
+  const rows = db.drizzle
+    .select({ groupId: groupMembers.groupId, tier: groups.tier })
+    .from(groupMembers)
+    .innerJoin(groups, eq(groups.id, groupMembers.groupId))
+    .where(eq(groupMembers.user, user))
+    .orderBy(groupMembers.groupId)
+    .all();
+  return rows.filter((r) => tierReadableBy(db, r.groupId, r.tier, viewer)).map((r) => r.groupId);
 }
 
 /**

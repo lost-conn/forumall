@@ -22,13 +22,14 @@ import { Hono } from "hono";
 import { compileDiscoverPage } from "../provider/discover.ts";
 import { listKnownProviders } from "../provider/known-providers.ts";
 import { AppError } from "./errors.ts";
+import { optionalActorOrProviderSignature } from "./signature.ts";
 import type { AppBindings } from "./types.ts";
 
 /** `GET /api/providers` — the known-providers list (§8.6). */
 export function createProvidersRouter() {
   const router = new Hono<AppBindings>();
 
-  router.get("/", (c) => {
+  router.get("/", optionalActorOrProviderSignature(), (c) => {
     const { config, db } = c.var;
     // Off → the provider maintains no shareable list: 404 (§8.6). Matches the
     // discovery doc's `sharesKnownProviders: false`.
@@ -47,7 +48,7 @@ export function createProvidersRouter() {
 export function createDiscoverRouter() {
   const router = new Hono<AppBindings>();
 
-  router.get("/", (c) => {
+  router.get("/", optionalActorOrProviderSignature(), (c) => {
     const { config, db } = c.var;
     // Off → no discovery feed offered: 404 (§11.2). Matches the discovery doc's
     // `discoverFeed: false`.

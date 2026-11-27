@@ -324,25 +324,35 @@ describe("aliased / junk authorities are never canonical (review of #23)", () =>
 });
 
 describe("privacy lists store canonical actors only (review of #23)", () => {
-  test("a user-URI entry is converted to its actor; other URI shapes → 400", async () => {
+  test("a canonical actor is stored as is; a user URI or non-canonical spelling → 400", async () => {
     const { app } = freshApp();
     const alice = await registerUserWithKey(app, "alice");
     const ok = await signedJson(app, alice, "PUT", "/api/me/privacy", {
-      denyList: ["https://b.test/api/users/mallory"],
+      denyList: ["mallory@b.test"],
     });
     expect(ok.status).toBe(200);
     expect(((await ok.json()) as { denyList: string[] }).denyList).toEqual(["mallory@b.test"]);
+    // §6.1 list entries are actors (the ofscp `UserRef` schema): a user object
+    // URI is a different identifier form (§2.2) and is not converted.
     for (const bad of [
+      "https://b.test/api/users/mallory",
       "https://b.test/api/groups/g",
       "https://B.test/api/users/mallory",
-      "https://b.test:0443/api/users/mallory",
-      "https://b.test/api/users/mallory?x=1",
-      "https://x@b.test/api/users/mallory",
-      "https://b.test/api/users/Mallory",
+      "Mallory@b.test",
+      "mallory@B.test",
+      "mallory@b.test:443",
+      "mallory@b.test.",
     ]) {
       const res = await signedJson(app, alice, "PUT", "/api/me/privacy", { denyList: [bad] });
       expect(res.status).toBe(400);
+      const allow = await signedJson(app, alice, "PUT", "/api/me/privacy", { allowList: [bad] });
+      expect(allow.status).toBe(400);
     }
+    // Nothing invalid was stored (an empty partial PUT echoes the settings).
+    const after = await signedJson(app, alice, "PUT", "/api/me/privacy", {});
+    const settings = (await after.json()) as { allowList: string[]; denyList: string[] };
+    expect(settings.denyList).toEqual(["mallory@b.test"]);
+    expect(settings.allowList).toEqual([]);
   });
 });
 

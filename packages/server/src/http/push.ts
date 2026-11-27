@@ -23,7 +23,7 @@ import { addSubscription, getVapidKey, removeSubscription } from "../provider/pu
 import { assertCanonicalUriAuthority } from "./canonical-fields.ts";
 import { AppError } from "./errors.ts";
 import {
-  optionalSignature,
+  optionalActorOrProviderSignature,
   requireLocalActor,
   requireLocalHandle,
   requireSignature,
@@ -40,7 +40,7 @@ export function createPushRouter() {
 
   // -- GET /public-key (public) -------------------------------------------
   // The VAPID application-server public key. Generated + persisted on first use.
-  router.get("/public-key", optionalSignature(), (c) => {
+  router.get("/public-key", optionalActorOrProviderSignature(), (c) => {
     const { db } = c.var;
     const key = getVapidKey(db);
     return c.json({ publicKey: key.publicKey }, 200);
@@ -51,7 +51,7 @@ export function createPushRouter() {
   // IP family (raw TCP per family + the real fetch path). Hosts are hard-coded,
   // so there is no SSRF surface. Use it to tell "IPv6 black-hole" (force IPv4)
   // from "egress blocked entirely" (needs a proxy) on a constrained deploy.
-  router.get("/_egress-check", async (c) => {
+  router.get("/_egress-check", optionalActorOrProviderSignature(), async (c) => {
     const { config } = c.var;
     const report = await egressCheck(
       config.dnsResultOrder,
