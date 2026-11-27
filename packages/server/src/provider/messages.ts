@@ -610,8 +610,8 @@ export function listMessages(
  * Read one page of the replies to `messageId` in `channelId` (§7.2) — the
  * messages whose `reference.id` is `messageId` — over the same `seq` cursor
  * space as {@link listMessages} (so a thread interleaves with the timeline).
- * `direction` defaults to `forward` (oldest reply first), the natural thread
- * reading order. Authorization (channel read access) is the caller's job.
+ * Paging is §7.2's unchanged: `direction` defaults to `backward` (newest reply
+ * first). Authorization (channel read access) is the caller's job.
  */
 export function listReplies(
   db: Db,
@@ -620,5 +620,5 @@ export function listReplies(
   opts: ListMessagesOptions = {},
 ): MessagePage {
   const base = and(eq(messages.channelId, channelId), eq(messages.replyTo, messageId));
-  return pageBySeq(db, channelId, base, { direction: "forward", ...opts });
+  return pageBySeq(db, channelId, base, opts);
 }

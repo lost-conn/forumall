@@ -101,7 +101,9 @@ export function createMessagesRouter() {
 
   // -- GET .../messages/:messageId/replies (§7.2, optional auth) -----------
   // Paged list of the replies to a message (its thread). Same read gate +
-  // `messages-page` shape as the history read; defaults to oldest-reply-first.
+  // `messages-page` shape as the history read, and its paging unchanged: the
+  // default `direction` is `backward` (newest reply first), as is any value
+  // other than `forward`.
   // Unknown group, or a missing or unreadable channel → 404; the parent message
   // need not exist (an empty page is a valid answer).
   router.get("/:messageId/replies", optional, (c) => {
@@ -113,7 +115,7 @@ export function createMessagesRouter() {
     requireReadableChannel(db, groupId, channelId, c.var.actor?.actor ?? null);
 
     const cursor = c.req.query("cursor") ?? null;
-    const direction = c.req.query("direction") === "backward" ? "backward" : "forward";
+    const direction = c.req.query("direction") === "forward" ? "forward" : "backward";
     const rawLimit = Number.parseInt(c.req.query("limit") ?? "", 10);
     const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : undefined;
 
