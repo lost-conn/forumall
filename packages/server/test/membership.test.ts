@@ -92,7 +92,9 @@ function signedRequest(app: App, signer: Signer, method: string, path: string, b
     privateKey: signer.privateKey,
     authority: DOMAIN,
     method,
-    path,
+    // The canonical string carries the query on its own line (§4.4.2).
+    path: path.split("?")[0] as string,
+    query: path.includes("?") ? path.slice(path.indexOf("?") + 1) : "",
     ...(body !== undefined ? { body } : {}),
   });
   return app.request(path, {
@@ -297,7 +299,7 @@ describe("GET /api/groups/{groupId}/members (§5.7, §7.2)", () => {
     const expected = new Set<string>([alice.actor]);
     const base = Date.now();
     for (let i = 0; i < 11; i++) {
-      const actor = `m${i}@${DOMAIN}`;
+      const actor = `mem${i}@${DOMAIN}`;
       // Two members share a joinedAt to exercise the tie-break.
       seedMember(db, group.id, actor, "member", base + Math.floor(i / 2));
       expected.add(actor);
@@ -309,7 +311,7 @@ describe("GET /api/groups/{groupId}/members (§5.7, §7.2)", () => {
     let pages = 0;
     do {
       const url = `/api/groups/${group.id}/members?limit=${pageSize}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`;
-      const res = await app.request(url);
+      const res = await signedRequest(app, alice, "GET", url);
       expect(res.status).toBe(200);
       const body = (await res.json()) as {
         items: Member[];
@@ -332,16 +334,41 @@ describe("GET /api/groups/{groupId}/members (§5.7, §7.2)", () => {
     expect(new Set(seen)).toEqual(expected);
   });
 
-  test("private group: non-member → 403", async () => {
+  test("not an anonymous-reader route: unsigned → 401 even for a public group (§4.5, §5.7)", async () => {
+    const { app } = freshApp("members-unsigned");
+    const alice = await registerUserWithKey(app, "alice");
+    for (const tier of ["public", "discoverable", "private", "group"]) {
+      const group = await createGroup(app, alice, { name: tier, tier });
+      const res = await app.request(`/api/groups/${group.id}/members`);
+      expect({ tier, status: res.status }).toEqual({ tier, status: 401 });
+      expect(((await res.json()) as { errorCode: string }).errorCode).toBe("unauthorized");
+    }
+  });
+
+  test("public/discoverable group: a signed non-member may list members", async () => {
+    const { app } = freshApp("members-public-nonmember");
+    const alice = await registerUserWithKey(app, "alice");
+    const bob = await registerUserWithKey(app, "bob");
+    for (const tier of ["public", "discoverable"]) {
+      const group = await createGroup(app, alice, { name: tier, tier });
+      const res = await signedRequest(app, bob, "GET", `/api/groups/${group.id}/members`);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { items: Member[] };
+      expect(body.items.map((m) => m.user)).toEqual([alice.actor]);
+    }
+  });
+
+  test("private group: signed non-member → 403", async () => {
     const { app } = freshApp("members-private");
     const alice = await registerUserWithKey(app, "alice");
     const bob = await registerUserWithKey(app, "bob");
     const group = await createGroup(app, alice, { name: "Secret", tier: "private" });
 
-    const anon = await app.request(`/api/groups/${group.id}/members`);
-    expect(anon.status).toBe(403);
     const res = await signedRequest(app, bob, "GET", `/api/groups/${group.id}/members`);
     expect(res.status).toBe(403);
+    // A member of the private group may.
+    const own = await signedRequest(app, alice, "GET", `/api/groups/${group.id}/members`);
+    expect(own.status).toBe(200);
   });
 });
 

@@ -7,8 +7,10 @@
  *    idempotent while pending); `invite` → 403 (redeem an invite, §5.6).
  *  - `POST /leave` (signed): remove own membership (204). The owner MUST transfer
  *    ownership first, else 409.
- *  - `GET /members` (optional auth): paginated `{ items, page: { nextCursor } }`
- *    (§7.2). Visible to members; public/discoverable groups expose it publicly.
+ *  - `GET /members` (signed): paginated `{ items, page: { nextCursor } }`
+ *    (§7.2). Visible to members; for public/discoverable groups also to any
+ *    signed non-member. NOT an anonymous-reader route (§4.5, §5.7): unsigned →
+ *    401 at §4.5 step 1.
  *  - `PATCH /members/{userRef}` (signed; `manage`): change a member's role. The
  *    subset rule (§5.7) applies to both the current and the assigned role (the
  *    caller must hold every permission each holds); the assigned role must be
@@ -56,7 +58,7 @@ import {
 import { effectiveJoinPolicy, tierReadableBy } from "../provider/tiers.ts";
 import type { Hub } from "../provider/ws-hub.ts";
 import { AppError } from "./errors.ts";
-import { optionalSignature, requireSignature } from "./signature.ts";
+import { requireSignature } from "./signature.ts";
 import type { AppBindings } from "./types.ts";
 
 /** Max length of a per-group display-name override (mirrors a sane name limit). */
@@ -110,7 +112,6 @@ function decodeUserRef(raw: string): string {
 export function createMembershipRouter() {
   const router = new Hono<AppBindings>();
   const signed = requireSignature();
-  const optional = optionalSignature();
 
   // -- POST /api/groups/{groupId}/join (§5.7, signed) ----------------------
   router.post("/join", signed, async (c) => {
@@ -174,16 +175,21 @@ export function createMembershipRouter() {
     return c.body(null, 204);
   });
 
-  // -- GET /api/groups/{groupId}/members (§5.7, §7.2, optional auth) --------
-  router.get("/members", optional, (c) => {
+  // -- GET /api/groups/{groupId}/members (§5.7, §7.2, signed) --------------
+  // Not among the §4.5 anonymous-reader routes: an unsigned request is a
+  // missing signature (401), even though a public/discoverable group's list is
+  // shown to any signed non-member (the §5.7 MAY).
+  router.get("/members", signed, (c) => {
     const { db } = c.var;
     const groupId = requireParam(c, "groupId");
 
     const group = getGroupRow(db, groupId);
     if (!group) throw AppError.notFound({ detail: "no such group" });
 
-    // Visible to members; public/discoverable groups MAY expose it publicly.
-    const viewer = c.var.actor?.actor ?? null;
+    // Visible to members; public/discoverable groups expose it to any signed
+    // caller (§5.7 MAY). A signed non-member of any other group → 403.
+    const viewer = c.var.actor?.actor;
+    if (viewer === undefined) throw AppError.unauthorized(); // unreachable: `signed`
     if (!tierReadableBy(db, groupId, group.tier, viewer)) {
       throw AppError.forbidden({ detail: "the member list is visible to members only" });
     }
