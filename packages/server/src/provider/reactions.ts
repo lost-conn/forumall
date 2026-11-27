@@ -29,7 +29,7 @@ import { and, eq, or, sql } from "drizzle-orm";
 
 import type { Db } from "../db/index.ts";
 import { type ReactionRow, reactions } from "../db/schema.ts";
-import { decodeCursor, encodeCursor } from "./membership.ts";
+import { decodeCursor, encodeCursor } from "./cursor.ts";
 
 /** `id` prefix per the §5.3 wire examples (`rct_…`). */
 const REACTION_ID_PREFIX = "rct_";

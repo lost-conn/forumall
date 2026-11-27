@@ -39,7 +39,7 @@ import {
   users,
 } from "../db/schema.ts";
 import { canViewChannel, getChannelRow } from "./channels.ts";
-import { decodeCursor, encodeCursor } from "./membership.ts";
+import { decodeCursor, encodeCursor } from "./cursor.ts";
 import { getEffectiveMode } from "./notification-prefs.ts";
 
 /** `id` prefix for a notification (`ntf_<base64url>`). */

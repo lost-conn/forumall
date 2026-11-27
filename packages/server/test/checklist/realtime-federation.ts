@@ -27,9 +27,9 @@ export const REALTIME_FEDERATION: readonly ChecklistEntry[] = [
       "packages/server/test/read-markers-http.test.ts",
     ],
     status: "partial",
-    note: "Behaviour gap: `GET /api/dms/{dmId}/messages` and `…/replies` (`packages/server/src/http/dms.ts:76`, `:104`) decide participation from stored rows only (`isDmThreadParticipant`, `packages/server/src/provider/dms.ts:333`), not by derivation, so a participant with nothing stored yet (a remote caller, or a local caller whose counterparty is local) gets `404` instead of an empty page. Untested: those two reads for such a participant.",
+    note: "Behaviour gap: `GET /api/dms/{dmId}/messages` and `…/replies` (`packages/server/src/http/dms.ts:77`, `:105`) decide participation from stored rows only (`isDmThreadParticipant`, `packages/server/src/provider/dms.ts:333`), not by derivation, so a participant with nothing stored yet (a remote caller, or a local caller whose counterparty is local) gets `404` instead of an empty page. Untested: those two reads for such a participant.",
     context:
-      "`dmId` subscribe and typing decide by derivation (`resolveLocalDmOwner`, `packages/server/src/http/dm-request.ts:42`), and a local caller whose counterparty is remote by its consistent conversation row (an inbox message or a pointer), as §7.4 says; reactions and edits name a message, which exists only once stored. `dm.typing` is delivered to a remote participant's `dmId` subscription (a MAY).",
+      "`dmId` subscribe and typing decide by derivation (`resolveLocalDmOwner`, `packages/server/src/http/dm-request.ts:29`), and a local caller whose counterparty is remote by its consistent conversation row (an inbox message or a pointer), as §7.4 says; reactions and edits name a message, which exists only once stored. `dm.typing` is delivered to a remote participant's `dmId` subscription (a MAY).",
   },
   {
     item: "Support the explicit contacts model (request/accept/remove, local and federated) backing the `contacts` visibility tier (§6.7)",

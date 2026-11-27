@@ -43,8 +43,9 @@ import { listDmReplies, withDmReactions } from "../provider/dm-reactions.ts";
 import { type DmViewer, isDmThreadParticipant } from "../provider/dms.ts";
 import { registerDmEditRoutes } from "./dm-edit-routes.ts";
 import { registerDmReactionRoutes } from "./dm-reaction-routes.ts";
-import { dmViewerOf, pageQuery, requireParam } from "./dm-request.ts";
+import { dmViewerOf, requireParam } from "./dm-request.ts";
 import { AppError } from "./errors.ts";
+import { pageQuery } from "./page-query.ts";
 import { requireSignature } from "./signature.ts";
 import type { AppBindings } from "./types.ts";
 

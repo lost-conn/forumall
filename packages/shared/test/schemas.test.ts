@@ -45,7 +45,10 @@ import {
   GuestUpgradeResponseSchema,
   InviteCreateRequestSchema,
   InviteSchema,
+  InvitesPageSchema,
+  JoinCreateRequestSchema,
   JoinRequestSchema,
+  JoinRequestsPageSchema,
   MemberSchema,
   MessageCreateRequestSchema,
   MessageSchema,
@@ -199,6 +202,10 @@ const SAMPLE_SCHEMAS: Record<string, z.ZodTypeAny> = {
   "invite-create-request": InviteCreateRequestSchema,
   member: MemberSchema,
   "join-request": JoinRequestSchema,
+  "join-requests-page": JoinRequestsPageSchema,
+  "join-create-request": JoinCreateRequestSchema,
+  "join-create-request.empty": JoinCreateRequestSchema,
+  "invites-page": InvitesPageSchema,
   "tiers-response": TiersResponseSchema,
   "providers-response": ProvidersResponseSchema,
   "group-pointer": GroupPointerSchema,
@@ -633,5 +640,19 @@ describe("notifications-feed schemas (provider-local extension)", () => {
 
   test("notification.created is a known WS type", () => {
     expect(isKnownWsType("notification.created")).toBe(true);
+  });
+});
+
+describe("JoinCreateRequest: the optional join body (§5.7)", () => {
+  test("`{}` and a string message are accepted", () => {
+    expect(JoinCreateRequestSchema.safeParse({}).success).toBe(true);
+    expect(JoinCreateRequestSchema.safeParse({ message: "hi" }).success).toBe(true);
+  });
+
+  test("a null or non-string message and a non-object body are rejected", () => {
+    expect(JoinCreateRequestSchema.safeParse({ message: null }).success).toBe(false);
+    expect(JoinCreateRequestSchema.safeParse({ message: 5 }).success).toBe(false);
+    expect(JoinCreateRequestSchema.safeParse(null).success).toBe(false);
+    expect(JoinCreateRequestSchema.safeParse([]).success).toBe(false);
   });
 });

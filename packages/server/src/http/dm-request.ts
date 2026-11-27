@@ -1,6 +1,6 @@
 /**
- * Request-side helpers shared by the DM routers (§7.4, §8.3): path/paging
- * params, local inbox-owner resolution, viewer scoping and reaction-key
+ * Request-side helpers shared by the DM routers (§7.4, §8.3): path params,
+ * local inbox-owner resolution, viewer scoping and reaction-key
  * validation.
  */
 import { canonicalActor, canonicalAuthority, deriveDmId } from "@forumall/shared";
@@ -18,19 +18,6 @@ const MAX_REACTION_KEY_LENGTH = 64;
 /** Read a path param guaranteed present by the mounted route. */
 export function requireParam(c: Context<AppBindings>, name: string): string {
   return c.req.param(name) ?? "";
-}
-
-/** Parse `cursor` / `direction` / `limit` query params for a paged read. */
-export function pageQuery(c: Context<AppBindings>): {
-  cursor: string | null;
-  direction: "backward" | "forward";
-  limit?: number;
-} {
-  const cursor = c.req.query("cursor") ?? null;
-  const direction = c.req.query("direction") === "forward" ? "forward" : "backward";
-  const rawLimit = Number.parseInt(c.req.query("limit") ?? "", 10);
-  const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : undefined;
-  return { cursor, direction, ...(limit !== undefined ? { limit } : {}) };
 }
 
 /**

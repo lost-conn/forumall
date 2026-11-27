@@ -10,12 +10,11 @@
  * `join_requests` row lifecycle and the single-owner invariant on transfer.
  *
  * ## Pagination
- * {@link encodeCursor} / {@link decodeCursor} implement the §7.2 opaque cursor as
- * a base64url-encoded keyset position. They are generic over the keyset tuple so
- * later message/DM cards reuse the same helper rather than re-deriving a cursor
- * scheme. For members the keyset is `(joinedAt, user)` — a stable, total order
- * (the unique `user` breaks `joinedAt` ties), so paging never overlaps or skips
- * even when many members share a `joinedAt`.
+ * Listings page per §7.2 with the opaque cursor codec in `cursor.ts`. For
+ * members the keyset is `(joinedAt, user)` — a stable, total order (the unique
+ * `user` breaks `joinedAt` ties), so paging never overlaps or skips even when
+ * many members share a `joinedAt`. Pending join requests page over
+ * `(requestedAt, id)` with the shared `keyset-page.ts` pager.
  */
 import {
   type JoinRequest,
@@ -34,6 +33,13 @@ import {
   groups,
   joinRequests,
 } from "../db/schema.ts";
+import { decodeCursor, encodeCursor } from "./cursor.ts";
+import {
+  type KeysetPageInfo,
+  type KeysetPageOptions,
+  keysetPage,
+  keysetQuery,
+} from "./keyset-page.ts";
 import { tierReadableBy } from "./tiers.ts";
 
 /** `id` prefix for a join request per the §5.2 id convention (`jrq_…`). */
@@ -54,35 +60,6 @@ function mintJoinRequestId(): string {
   const raw = new Uint8Array(JOIN_REQUEST_ID_BYTES);
   crypto.getRandomValues(raw);
   return `${JOIN_REQUEST_ID_PREFIX}${toBase64Url(raw)}`;
-}
-
-// ---------------------------------------------------------------------------
-// Opaque cursor (§7.2) — reusable keyset codec for later message/DM cards.
-// ---------------------------------------------------------------------------
-
-/**
- * Encode an arbitrary keyset position as an opaque base64url cursor (§7.2).
- * The position is JSON-serialized then base64url-encoded, so the cursor is an
- * opaque string to clients but a stable, decodable keyset to the server. Reuse
- * this for any keyset-paginated list (members, messages, DMs).
- */
-export function encodeCursor(position: unknown): string {
-  return toBase64Url(new TextEncoder().encode(JSON.stringify(position)));
-}
-
-/**
- * Decode an opaque cursor produced by {@link encodeCursor} back into its keyset
- * position, or `null` if it is malformed (a forged/garbage cursor is treated as
- * "no cursor" by the caller rather than crashing).
- */
-export function decodeCursor<T>(cursor: string): T | null {
-  try {
-    const b64 = cursor.replace(/-/g, "+").replace(/_/g, "/");
-    const json = Buffer.from(b64, "base64").toString("utf8");
-    return JSON.parse(json) as T;
-  } catch {
-    return null;
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -388,15 +365,35 @@ export function requestToJoin(
   return rowToJoinRequest(row);
 }
 
-/** All pending join requests for `groupId`, oldest first. */
-export function listPendingJoinRequests(db: Db, groupId: string): JoinRequest[] {
-  return db.drizzle
+/** A page of pending join requests plus the §7.2 cursor pair. */
+export interface JoinRequestPage {
+  readonly items: JoinRequest[];
+  readonly page: KeysetPageInfo;
+}
+
+/**
+ * One §7.2 page of `groupId`'s pending join requests, ordered by
+ * `(requestedAt, id)`: newest first for `backward` (the default), oldest first
+ * for `forward`. Approved and denied requests are never listed.
+ */
+export function listPendingJoinRequestsPage(
+  db: Db,
+  groupId: string,
+  opts: KeysetPageOptions,
+): JoinRequestPage {
+  const query = keysetQuery(joinRequests.requestedAt, joinRequests.id, opts);
+  const rows = db.drizzle
     .select()
     .from(joinRequests)
-    .where(and(eq(joinRequests.groupId, groupId), eq(joinRequests.state, "pending")))
-    .orderBy(joinRequests.requestedAt)
-    .all()
-    .map(rowToJoinRequest);
+    .where(and(eq(joinRequests.groupId, groupId), eq(joinRequests.state, "pending"), query.where))
+    .orderBy(...query.orderBy)
+    .limit(query.fetch)
+    .all();
+  const { rows: pageRows, page } = keysetPage(rows, query, (r) => ({
+    t: r.requestedAt,
+    id: r.id,
+  }));
+  return { items: pageRows.map(rowToJoinRequest), page };
 }
 
 /**

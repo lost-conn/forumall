@@ -2,7 +2,10 @@
  * `/api/groups/:groupId/...` membership router (spec §5.7). Mounted under the
  * groups router so every route is group-scoped via the `:groupId` param.
  *
- *  - `POST /join` (signed): join by the group's `joinPolicy` — `open` →
+ *  - `POST /join` (signed): join by the group's `joinPolicy`. The body is
+ *    optional; a non-empty body that is not JSON is 400 on every join, and it
+ *    is checked against `join-create-request` (400) only for a non-member
+ *    under the `request` policy, where `message` is read. `open` →
  *    immediate `member` (201 Member); `request` → pending `JoinRequest` (202,
  *    idempotent while pending); `invite` → 403 (redeem an invite, §5.6).
  *  - `POST /leave` (signed): remove own membership (204). The owner MUST transfer
@@ -20,7 +23,9 @@
  *  - `DELETE /members/{userRef}` (signed; `moderate`): kick; the subset rule
  *    (§5.7) applies (caller must hold every permission the target holds); the
  *    owner cannot be kicked. → 204.
- *  - `GET /requests` (signed; `manage`/`moderate`): list pending requests.
+ *  - `GET /requests` (signed; `manage`/`moderate`): pending requests as a §7.2
+ *    page (`join-requests-page`), by `requestedAt` newest first for `backward`
+ *    (the default), ties by id.
  *  - `POST /requests/{requestId}/approve` (signed; `manage`/`moderate`): →
  *    200 Member. `POST /requests/{requestId}/deny`: → 204.
  *
@@ -29,20 +34,18 @@
  */
 import { type Context, Hono } from "hono";
 
-import type { Member } from "@forumall/shared";
+import { JoinRequestsPageSchema, type Member } from "@forumall/shared";
 import { revalidateGroupSubscriptions } from "../provider/access-revocation.ts";
 import { listChannelRows } from "../provider/channels.ts";
 import { getGroupRow, rowToGroup } from "../provider/groups.ts";
 import {
-  addMember,
   approveJoinRequest,
   denyJoinRequest,
   getJoinRequestRow,
   getMemberRow,
   listMembersPage,
-  listPendingJoinRequests,
+  listPendingJoinRequestsPage,
   removeMember,
-  requestToJoin,
   rowToMember,
   setMemberDisplayName,
   setMemberRole,
@@ -55,9 +58,11 @@ import {
   isMember,
   roleHoldsAll,
 } from "../provider/permissions.ts";
-import { effectiveJoinPolicy, tierReadableBy } from "../provider/tiers.ts";
+import { tierReadableBy } from "../provider/tiers.ts";
 import type { Hub } from "../provider/ws-hub.ts";
 import { AppError } from "./errors.ts";
+import { joinGroup } from "./group-join.ts";
+import { pageQuery } from "./page-query.ts";
 import { requireSignature } from "./signature.ts";
 import type { AppBindings } from "./types.ts";
 
@@ -114,40 +119,13 @@ export function createMembershipRouter() {
   const signed = requireSignature();
 
   // -- POST /api/groups/{groupId}/join (§5.7, signed) ----------------------
-  router.post("/join", signed, async (c) => {
+  router.post("/join", signed, (c) => {
     const { db } = c.var;
-    const actor = c.var.actor;
-    if (!actor) throw AppError.unauthorized(); // unreachable: middleware sets it
     const groupId = requireParam(c, "groupId");
 
     const group = getGroupRow(db, groupId);
     if (!group) throw AppError.notFound({ detail: "no such group" });
-
-    // Already a member → return their membership (idempotent, 200).
-    const existing = getMemberRow(db, groupId, actor.actor);
-    if (existing) return c.json(rowToMember(existing), 200);
-
-    // The body is optional; only the `request` policy reads `{ message }`.
-    const raw = await c.req.json().catch(() => undefined as Record<string, unknown> | undefined);
-    const message =
-      raw && typeof raw === "object" && typeof raw.message === "string" ? raw.message : undefined;
-
-    switch (effectiveJoinPolicy(group.tier, group.joinPolicy)) {
-      case "open": {
-        const member = addMember(db, groupId, actor.actor, "member");
-        return c.json(member, 201);
-      }
-      case "request": {
-        const request = requestToJoin(db, groupId, actor.actor, message);
-        return c.json(request, 202);
-      }
-      default: {
-        // `invite` (and any unknown policy): must redeem an invite (§5.6).
-        throw AppError.forbidden({
-          detail: "this group is invite-only; redeem an invite to join",
-        });
-      }
-    }
+    return joinGroup(c, group);
   });
 
   // -- POST /api/groups/{groupId}/leave (§5.7, signed) ---------------------
@@ -423,7 +401,8 @@ export function createMembershipRouter() {
       throw AppError.forbidden({ detail: "you may not view this group's join requests" });
     }
 
-    return c.json({ items: listPendingJoinRequests(db, groupId) });
+    const page = listPendingJoinRequestsPage(db, groupId, pageQuery(c));
+    return c.json(JoinRequestsPageSchema.parse(page));
   });
 
   // -- POST .../requests/{requestId}/approve (§5.7, signed; manage/moderate) -

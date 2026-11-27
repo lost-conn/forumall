@@ -28,6 +28,8 @@ export const GROUPS_MESSAGES: readonly ChecklistEntry[] = [
     covers: [
       "packages/server/test/membership.test.ts",
       "packages/server/test/membership-requests.test.ts",
+      "packages/server/test/group-listings.test.ts",
+      "packages/server/test/join-body.test.ts",
       "packages/server/test/display-name.test.ts",
       "packages/server/test/conformance.test.ts",
     ],
@@ -41,32 +43,32 @@ export const GROUPS_MESSAGES: readonly ChecklistEntry[] = [
     status: "partial",
     note: "Untested: `GET …/members` lists the owner with role `owner` (`membership.test.ts:290` checks users only; `groups.test.ts:145` reads the stored row), the creator's `joinedAt` equals the group's `createdAt`, and `joinedAt` is unchanged after a role change or an ownership transfer (`membership.test.ts:372`, `:412` check roles only).",
     context:
-      "The behaviour is there: the creator's row is stamped with the group's `createdAt` (`packages/server/src/provider/groups.ts:122`, `:130`), role changes and transfers update only `role` (`provider/membership.ts:242`, `:277`), and the listing pages by the total order (`joinedAt`, `user`) (`provider/membership.ts:173`), which `membership.test.ts:290` walks without skip or repeat.",
+      "The behaviour is there: the creator's row is stamped with the group's `createdAt` (`packages/server/src/provider/groups.ts:122`, `:130`), role changes and transfers update only `role` (`provider/membership.ts:240`, `:275`), and the listing pages by the total order (`joinedAt`, `user`) (`provider/membership.ts:152`), which `membership.test.ts:290` walks without skip or repeat.",
   },
   {
     item: "Answer a repeat `join` under the `request` policy with `202` and the caller's existing pending `JoinRequest`, unchanged; answer `leave` from a non-member with `404` (and from the owner with `409`) (§5.7)",
     level: "provider-must",
     covers: ["packages/server/test/membership.test.ts"],
     status: "partial",
-    note: "Untested: a repeat `join` carrying a different `message` leaves the pending request unchanged (`membership.test.ts:178` repeats with no body and compares `id` only), and `leave` from a non-member → `404` (`packages/server/src/http/membership.ts:162`).",
+    note: "Untested: a repeat `join` carrying a different `message` leaves the pending request unchanged (`membership.test.ts:178` repeats with no body and compares `id` only), and `leave` from a non-member → `404` (`packages/server/src/http/membership.ts:141`).",
     context:
-      "`requestToJoin` returns the existing pending row as stored (`packages/server/src/provider/membership.ts:355`); the owner's `409` is tested (`membership.test.ts:257`).",
+      "`requestToJoin` returns the existing pending row as stored (`packages/server/src/provider/membership.ts:354`); the owner's `409` is tested (`membership.test.ts:257`).",
   },
   {
     item: "Gate join-request approve and deny on `manage` or `moderate`, without the subset rule; give an approved requester role `member`, and answer an approval for someone already a member with `200` and the existing `Member`, marking the request `approved` (§5.7)",
     level: "provider-must",
     covers: ["packages/server/test/membership.test.ts"],
     status: "partial",
-    note: "Untested: approve and deny by a role holding only `moderate`, and their `403` for a caller holding neither (only the listing's `403` is, `membership.test.ts:678`); an approval for a requester who is already a member → `200` with the existing `Member` unchanged and the request `approved` (`packages/server/src/provider/membership.ts:395`).",
+    note: "Untested: approve and deny by a role holding only `moderate`, and their `403` for a caller holding neither (only the listing's `403` is, `membership.test.ts:678`); an approval for a requester who is already a member → `200` with the existing `Member` unchanged and the request `approved` (`packages/server/src/provider/membership.ts:415`).",
     context:
-      "Approve and deny check `manage` or `moderate` and apply no subset rule (`packages/server/src/http/membership.ts:432`, `:456`); the owner's approval → `member` is tested (`membership.test.ts:611`).",
+      "Approve and deny check `manage` or `moderate` and apply no subset rule (`packages/server/src/http/membership.ts:409`, `:433`); the owner's approval → `member` is tested (`membership.test.ts:611`).",
   },
   {
     item: "Keep pending join requests across tier and `joinPolicy` changes; reject an approval with `409` `conflict` while the effective join policy is `invite` (including a group whose tier makes it invite-only, such as `private`), leaving the request `pending`, and check this first, before the already-a-member case, so a requester who is already a member still gets `409`; still allow deny (§5.7)",
     level: "provider-must",
     covers: [],
     status: "missing",
-    note: "Not implemented: approve (`packages/server/src/http/membership.ts:424`) never checks `effectiveJoinPolicy`, so a request is approved after the group becomes invite-only or `private`. No test of any part: approve after a tier or `joinPolicy` change, the `409`, deny after such a change.",
+    note: "Not implemented: approve (`packages/server/src/http/membership.ts:409`) never checks `effectiveJoinPolicy`, so a request is approved after the group becomes invite-only or `private`. No test of any part: approve after a tier or `joinPolicy` change, the `409`, deny after such a change.",
     context:
       "Pending requests already survive tier and `joinPolicy` changes: only deleting the group removes them (`packages/server/src/provider/groups.ts:173`).",
   },
@@ -75,16 +77,16 @@ export const GROUPS_MESSAGES: readonly ChecklistEntry[] = [
     level: "provider-must",
     covers: ["packages/server/test/conformance.test.ts", "packages/server/test/invites.test.ts"],
     status: "partial",
-    note: "Behaviour gaps: `POST …/invites` (`packages/server/src/http/invites.ts:94`) checks only `manage`. `role` is any non-empty string (`RoleSchema`, `packages/shared/src/schemas/groups.ts:21`), so `owner` or an unknown role is stored; `channelId` is never checked against the group's channels; and there is no `roleHoldsAll` subset check of the granted role (`member` when absent) against the creator. Tokens are stored in plaintext (`invites.token`, `packages/server/src/db/tables/groups.ts:199`) and looked up as given (`packages/server/src/provider/invites.ts:109`). Nothing sends `Referrer-Policy: no-referrer`: the `/invite/{token}` join-link page is the web bundle's static fallback. Untested: the `400`/`403` checks, the token's entropy, and the header.",
+    note: "Behaviour gaps: `POST …/invites` (`packages/server/src/http/invites.ts:103`) checks only `manage`. `role` is any non-empty string (`RoleSchema`, `packages/shared/src/schemas/groups.ts:22`), so `owner` or an unknown role is stored; `channelId` is never checked against the group's channels; and there is no `roleHoldsAll` subset check of the granted role (`member` when absent) against the creator. Tokens are stored in plaintext (`invites.token`, `packages/server/src/db/tables/groups.ts:199`) and looked up as given (`packages/server/src/provider/invites.ts:115`). Nothing sends `Referrer-Policy: no-referrer`: the `/invite/{token}` join-link page is the web bundle's static fallback. Untested: the `400`/`403` checks, the token's entropy, and the header.",
     context:
-      "The `201` carries `token`, validated against `invite-create-response.json` (`conformance.test.ts:413`). Tokens are 256 bits from `crypto.getRandomValues` (`provider/invites.ts:21`, `:40`). No code logs a token. The listing also returns `token`, which the spec allows.",
+      "The `201` carries `token`, validated against `invite-create-response.json` (`conformance.test.ts:413`). Tokens are 256 bits from `crypto.getRandomValues` (`provider/invites.ts:27`, `:46`). No code logs a token. The listing also returns `token`, which the spec allows.",
   },
   {
     item: "On `redeem`, check the invite first (`404` unknown or expired, `409` exhausted, whoever the caller is); answer a valid invite redeemed by a caller who is already a member (the owner included) with `200`, the invite's `channelId` and their current role, changing no role and consuming no use of the invite; let a redemption whose invite names a since-deleted channel succeed, omitting `channelId` (§5.6)",
     level: "provider-must",
     covers: ["packages/server/test/invites.test.ts"],
     status: "partial",
-    note: "Behaviour gap: an exhausted invite redeemed by an existing member gets `200`, not `409`, because the membership short-circuit (`packages/server/src/http/invites.ts:181`) runs before `consumeInviteUse` (`:194`). A redemption whose channel was since deleted still echoes its `channelId` (`:186`, `:203`): deleting a channel leaves `invites.channel_id` set. Untested: a member's or the owner's redeem → `200` with the invite's `channelId` and their current role, role and `uses` unchanged; the deleted-channel case.",
+    note: "Behaviour gap: an exhausted invite redeemed by an existing member gets `200`, not `409`, because the membership short-circuit (`packages/server/src/http/invites.ts:191`) runs before `consumeInviteUse` (`:204`). A redemption whose channel was since deleted still echoes its `channelId` (`:196`, `:213`): deleting a channel leaves `invites.channel_id` set. Untested: a member's or the owner's redeem → `200` with the invite's `channelId` and their current role, role and `uses` unchanged; the deleted-channel case.",
     context:
       "Tested: an expired invite → `404` (`invites.test.ts:241`), a revoked (so unknown) token → `404` (`:157`), an exhausted one → `409` for a non-member (`:222`).",
   },
@@ -93,9 +95,9 @@ export const GROUPS_MESSAGES: readonly ChecklistEntry[] = [
     level: "provider-must",
     covers: ["packages/server/test/invites.test.ts"],
     status: "partial",
-    note: "Behaviour gap: `/guest` maps only `member` to `guest` and otherwise keeps the invite's role (`packages/server/src/http/invites.ts:261`), so an invite with role `admin` or a custom role provisions a guest holding it. Only the default-role case is tested (`invites.test.ts:263`); so is no invite naming a since-deleted channel.",
+    note: "Behaviour gap: `/guest` maps only `member` to `guest` and otherwise keeps the invite's role (`packages/server/src/http/invites.ts:271`), so an invite with role `admin` or a custom role provisions a guest holding it. Only the default-role case is tested (`invites.test.ts:263`); so is no invite naming a since-deleted channel.",
     context:
-      "`/guest` joins the group without looking at the invite's channel (`http/invites.ts:275`), so a deleted channel does not block it.",
+      "`/guest` joins the group without looking at the invite's channel (`http/invites.ts:285`), so a deleted channel does not block it.",
   },
   {
     item: 'Support message creation of every type (`message`, `memo`, `article`) with `attachments`, `reference`, `tags` and `metadata`, over both `message.create` and `POST …/messages`, gated by `post:<type>` and by `replyOnly` / `replyOnlyTo` (which only a valid reply, `reference.type` `"reply"` naming an existing message in the channel, satisfies), answering `404` for a channel the actor cannot read (§5.2.1, §7.1)',

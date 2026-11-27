@@ -7,7 +7,10 @@
  *    `:groupId` is in scope; every route requires the group `manage` role:
  *      - `POST   /invites`            (signed): mint an invite → 201 `Invite`
  *                                      (+ a shareable `link`).
- *      - `GET    /invites`            (signed): list the group's invites.
+ *      - `GET    /invites`            (signed): the group's invites as a §7.2
+ *                                      page (`invites-page`), by `createdAt`
+ *                                      newest first for `backward` (default),
+ *                                      ties by id.
  *      - `DELETE /invites/{inviteId}` (signed): revoke → 204.
  *
  *  - {@link createInvitesRouter} is mounted at **`/api/invites`** and handles
@@ -22,7 +25,12 @@
  * `provider/membership.ts`; guest accounts + the `UserProfile` builder live in
  * `provider/guests.ts`.
  */
-import { GuestCreateRequestSchema, type Invite, InviteCreateRequestSchema } from "@forumall/shared";
+import {
+  GuestCreateRequestSchema,
+  type Invite,
+  InviteCreateRequestSchema,
+  InvitesPageSchema,
+} from "@forumall/shared";
 import { type Context, Hono } from "hono";
 
 import { isValidEd25519PublicKey, registerDeviceKey } from "../provider/device-keys.ts";
@@ -35,12 +43,13 @@ import {
   getInviteByToken,
   getInviteRow,
   isInviteExpired,
-  listInvites,
+  listInvitesPage,
   rowToInvite,
 } from "../provider/invites.ts";
 import { addMember, getMemberRow } from "../provider/membership.ts";
 import { canActor } from "../provider/permissions.ts";
 import { AppError } from "./errors.ts";
+import { pageQuery } from "./page-query.ts";
 import { optionalActorOrProviderSignature, requireSignature } from "./signature.ts";
 import type { AppBindings } from "./types.ts";
 
@@ -122,7 +131,8 @@ export function createGroupInvitesRouter() {
       throw AppError.forbidden({ detail: "you may not view this group's invites" });
     }
 
-    return c.json({ items: listInvites(db, groupId) });
+    const page = listInvitesPage(db, groupId, pageQuery(c));
+    return c.json(InvitesPageSchema.parse(page));
   });
 
   // -- DELETE /api/groups/{groupId}/invites/{inviteId} (§5.6, signed) ------

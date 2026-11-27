@@ -27,6 +27,28 @@ import type {
 } from "@forumall/shared";
 import type { OfscpClient } from "./ofscp-client.ts";
 
+/** Largest page a §7.2 listing serves; whole-list reads ask for this. */
+const MAX_PAGE_LIMIT = 100;
+
+/**
+ * Read every item of a §7.2 paged listing at `path`, following `nextCursor`
+ * in the default (`backward`) direction until the last page.
+ */
+async function listAllPages<T>(client: OfscpClient, path: string): Promise<T[]> {
+  const items: T[] = [];
+  let cursor: string | undefined;
+  do {
+    const query = new URLSearchParams({ limit: String(MAX_PAGE_LIMIT) });
+    if (cursor !== undefined) query.set("cursor", cursor);
+    const res = await client.get<{ items?: T[]; page?: { nextCursor?: string | null } }>(
+      `${path}?${query.toString()}`,
+    );
+    items.push(...(res.data.items ?? []));
+    cursor = res.data.page?.nextCursor ?? undefined;
+  } while (cursor !== undefined);
+  return items;
+}
+
 /** Encode an actor `handle@domain` for a `{userRef}` path segment (the `@`). */
 export function encodeUserRef(actor: string): string {
   return encodeURIComponent(actor);
@@ -173,10 +195,7 @@ export async function leaveGroup(client: OfscpClient, groupId: string): Promise<
 
 /** List a group's members (first page; §5.7/§7.2). */
 export async function listMembers(client: OfscpClient, groupId: string): Promise<Member[]> {
-  const res = await client.get<{ items: Member[]; page?: { nextCursor?: string | null } }>(
-    `/api/groups/${groupId}/members`,
-  );
-  return res.data.items ?? [];
+  return listAllPages<Member>(client, `/api/groups/${groupId}/members`);
 }
 
 /** Change a member's role (manage; owner transfer is owner-only, §5.7). */
@@ -221,13 +240,12 @@ export async function removeMember(
   await client.delete(`/api/groups/${groupId}/members/${encodeUserRef(userRef)}`);
 }
 
-/** List pending join requests (manage/moderate, §5.7). */
+/** List every pending join request, newest first (manage/moderate, §5.7). */
 export async function listJoinRequests(
   client: OfscpClient,
   groupId: string,
 ): Promise<JoinRequest[]> {
-  const res = await client.get<{ items: JoinRequest[] }>(`/api/groups/${groupId}/requests`);
-  return res.data.items ?? [];
+  return listAllPages<JoinRequest>(client, `/api/groups/${groupId}/requests`);
 }
 
 /** Approve a pending join request (manage/moderate, §5.7). */
@@ -262,10 +280,9 @@ export async function createInvite(
   return res.data;
 }
 
-/** List a group's invites (manage, §5.6). */
+/** List every invite of a group, newest first (manage, §5.6). */
 export async function listInvites(client: OfscpClient, groupId: string): Promise<Invite[]> {
-  const res = await client.get<{ items: Invite[] }>(`/api/groups/${groupId}/invites`);
-  return res.data.items ?? [];
+  return listAllPages<Invite>(client, `/api/groups/${groupId}/invites`);
 }
 
 /** Revoke an invite (manage, §5.6). */

@@ -9,10 +9,16 @@
  * this module owns the `invites` row lifecycle and the use-count invariant.
  */
 import { type Invite, InviteSchema, rfc3339Timestamp } from "@forumall/shared";
-import { eq, sql } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 
 import type { Db } from "../db/index.ts";
 import { type InviteRow, invites } from "../db/schema.ts";
+import {
+  type KeysetPageInfo,
+  type KeysetPageOptions,
+  keysetPage,
+  keysetQuery,
+} from "./keyset-page.ts";
 
 /** `id` prefix per the §5.2 id convention (`inv_…`). */
 const INVITE_ID_PREFIX = "inv_";
@@ -112,15 +118,27 @@ export function getInviteByToken(db: Db, token: string): InviteRow | null {
   );
 }
 
-/** All invites for `groupId`, newest first. */
-export function listInvites(db: Db, groupId: string): Invite[] {
-  return db.drizzle
+/** A page of invites plus the §7.2 cursor pair. */
+export interface InvitePage {
+  readonly items: Invite[];
+  readonly page: KeysetPageInfo;
+}
+
+/**
+ * One §7.2 page of `groupId`'s invites, ordered by `(createdAt, id)`: newest
+ * first for `backward` (the default), oldest first for `forward`.
+ */
+export function listInvitesPage(db: Db, groupId: string, opts: KeysetPageOptions): InvitePage {
+  const query = keysetQuery(invites.createdAt, invites.id, opts);
+  const rows = db.drizzle
     .select()
     .from(invites)
-    .where(eq(invites.groupId, groupId))
-    .orderBy(sql`${invites.createdAt} DESC`)
-    .all()
-    .map(rowToInvite);
+    .where(and(eq(invites.groupId, groupId), query.where))
+    .orderBy(...query.orderBy)
+    .limit(query.fetch)
+    .all();
+  const { rows: pageRows, page } = keysetPage(rows, query, (r) => ({ t: r.createdAt, id: r.id }));
+  return { items: pageRows.map(rowToInvite), page };
 }
 
 /** Revoke (delete) `inviteId`. Returns true if a row was removed. */

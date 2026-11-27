@@ -14,8 +14,9 @@ import { listDmConversations, upsertDmPointer } from "../provider/dms.ts";
 import { isProviderAllowed } from "../provider/federation/policy.ts";
 import { assertCanonicalActorField } from "./canonical-fields.ts";
 import { publishDmConversation, wireConversation } from "./dm-events.ts";
-import { pageQuery, requireParam } from "./dm-request.ts";
+import { requireParam } from "./dm-request.ts";
 import { AppError } from "./errors.ts";
+import { pageQuery } from "./page-query.ts";
 import { requireLocalActor, requireLocalHandle, requireSignature } from "./signature.ts";
 import type { AppBindings } from "./types.ts";
 

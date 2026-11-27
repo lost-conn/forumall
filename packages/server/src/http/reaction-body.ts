@@ -12,7 +12,7 @@
 import { type ReactionPutRequest, ReactionPutRequestSchema } from "@forumall/shared";
 import type { Context } from "hono";
 
-import { AppError, parseRequestBody } from "./errors.ts";
+import { readOptionalBody } from "./optional-body.ts";
 import type { AppBindings } from "./types.ts";
 
 /**
@@ -22,15 +22,7 @@ import type { AppBindings } from "./types.ts";
  * from it). Throws `400` when the body is not JSON or does not match.
  */
 export async function readReactionPutBody(c: Context<AppBindings>): Promise<ReactionPutRequest> {
-  const text = await c.req.text();
-  if (text.trim().length === 0) return {};
-  let raw: unknown;
-  try {
-    raw = JSON.parse(text);
-  } catch {
-    throw AppError.badRequest({ detail: "reaction body is not valid JSON" });
-  }
-  return parseRequestBody(ReactionPutRequestSchema, raw, "reaction body");
+  return (await readOptionalBody(c, ReactionPutRequestSchema, "reaction body")) ?? {};
 }
 
 /** The `unicode`/`image` of a validated body, with absent fields left out. */

@@ -45,8 +45,8 @@ import type { Config } from "../config.ts";
 import type { Db } from "../db/index.ts";
 import { type ChannelRow, channels, messages } from "../db/schema.ts";
 import { canViewChannel } from "./channels.ts";
+import { decodeCursor, encodeCursor } from "./cursor.ts";
 import { listFeaturedGroupIds } from "./discover-features.ts";
-import { decodeCursor, encodeCursor } from "./membership.ts";
 
 /** The tier eligible for the discovery feed (§11.1, §11.2). */
 const DISCOVERABLE_TIER = "discoverable";

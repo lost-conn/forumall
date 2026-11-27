@@ -46,8 +46,8 @@ import { type SQL, and, eq, inArray, sql } from "drizzle-orm";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/index.ts";
 import { type MessageRow, messages } from "../db/schema.ts";
+import { decodeCursor, encodeCursor } from "./cursor.ts";
 import { editWindowEnd } from "./edit-window.ts";
-import { decodeCursor, encodeCursor } from "./membership.ts";
 
 /** `id` prefix per the §5.3 wire examples (`msg_…`). */
 const MESSAGE_ID_PREFIX = "msg_";

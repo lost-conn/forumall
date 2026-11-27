@@ -12,6 +12,7 @@ import {
   TierSchema,
   UserRefSchema,
 } from "./common.ts";
+import { PageInfoSchema } from "./messaging.ts";
 
 // ---------------------------------------------------------------------------
 // Enums / shared (defs/groups.json)
@@ -286,6 +287,43 @@ export const JoinRequestSchema = z
   })
   .passthrough();
 export type JoinRequest = z.infer<typeof JoinRequestSchema>;
+
+/**
+ * GET /api/groups/{groupId}/invites response (`invites-page`, §5.6): a §7.2
+ * page of the group's invites, ordered by `createdAt` (ties by `id`).
+ */
+export const InvitesPageSchema = z
+  .object({
+    items: z.array(InviteSchema),
+    page: PageInfoSchema,
+  })
+  .passthrough();
+export type InvitesPage = z.infer<typeof InvitesPageSchema>;
+
+/**
+ * GET /api/groups/{groupId}/requests response (`join-requests-page`, §5.7): a
+ * §7.2 page of the group's pending join requests, ordered by `requestedAt`
+ * (ties by `id`).
+ */
+export const JoinRequestsPageSchema = z
+  .object({
+    items: z.array(JoinRequestSchema),
+    page: PageInfoSchema,
+  })
+  .passthrough();
+export type JoinRequestsPage = z.infer<typeof JoinRequestsPageSchema>;
+
+/**
+ * POST /api/groups/{groupId}/join body (`join-create-request`, §5.7). The body
+ * is optional: an absent body and `{}` are both valid. `message` (read only by
+ * a `request`-policy group) is a string when present; `null` is refused.
+ */
+export const JoinCreateRequestSchema = z
+  .object({
+    message: z.string().optional(),
+  })
+  .passthrough();
+export type JoinCreateRequest = z.infer<typeof JoinCreateRequestSchema>;
 
 // ---------------------------------------------------------------------------
 // My groups (§5.7): group-pointer, group-pointer-request, group-pointers-response
