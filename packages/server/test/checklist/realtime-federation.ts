@@ -79,13 +79,13 @@ export const REALTIME_FEDERATION: readonly ChecklistEntry[] = [
     level: "provider-must",
     covers: [
       "packages/server/test/ws-resume.test.ts",
+      "packages/server/test/cursor-interchange.test.ts",
       "packages/server/test/ws-envelope-rules.test.ts",
       "packages/server/test/dm-subscriptions.test.ts",
     ],
-    status: "partial",
-    note: "Behaviour gap: a since-deleted message replays only as a `message.created` carrying the tombstone, with no `message.deleted` after it (`packages/server/src/http/ws/subscriptions.ts:168`; `ws-resume.test.ts:104` asserts just the tombstone). Untested: a channel event cursor used as the REST history or reply-listing `cursor`, a listing cursor used as `since`, and the same for DM cursors (`dm-subscriptions.test.ts:199` covers DM resume only).",
+    status: "covered",
     context:
-      "Channel and DM cursors all encode the one global `seq` (`encodeMessageCursor`), so they should be interchangeable.",
+      "A since-deleted message replays as `message.created` with the tombstone then `message.deleted`, same cursor (`ws-resume.test.ts`). Channel event cursors page history and replies, and both listings' page cursors resume a subscription; likewise for a DM conversation's `dm.message` cursors and listings (`cursor-interchange.test.ts`). `ping`/`pong`: `ws-envelope-rules.test.ts`.",
   },
   {
     item: "Support real-time presence over WebSocket: `presence.subscribe`/`set`, `presence.update` fan-out, connection-derived online/offline, and §6.1 visibility filtering consistent with the REST presence endpoint (§7.5)",
