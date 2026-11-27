@@ -29,37 +29,46 @@ export const GROUPS_MESSAGES: readonly ChecklistEntry[] = [
       "packages/server/test/membership.test.ts",
       "packages/server/test/membership-requests.test.ts",
       "packages/server/test/display-name.test.ts",
+      "packages/server/test/membership-rules.test.ts",
+      "packages/server/test/member-updated.test.ts",
+      "packages/server/test/membership-listing.test.ts",
       "packages/server/test/conformance.test.ts",
     ],
-    status: "partial",
-    note: "Untested: nickname validation (>64 chars → `400`, blank clears) and its `404`, the role-change subset rule against the target's current role, and `member.updated` to the affected member's own connections.",
+    status: "covered",
+    context:
+      "A nickname's 64-character limit counts code points (JSON Schema's string length), so 64 emoji fit. `member.updated` goes to the group's channel subscribers and the member's own connections, local or remote over direct-WS (`federation-realtime-access.test.ts`); join, leave and kick emit none.",
   },
   {
     item: "List the owner among the members with role `owner`, keep `joinedAt` across role changes and ownership transfers, and keep the member list's order stable for cursor paging (§5.7)",
     level: "provider-must",
-    covers: ["packages/server/test/membership.test.ts", "packages/server/test/groups.test.ts"],
-    status: "partial",
-    note: "Untested: `GET …/members` lists the owner with role `owner` (`membership.test.ts:290` checks users only; `groups.test.ts:145` reads the stored row), the creator's `joinedAt` equals the group's `createdAt`, and `joinedAt` is unchanged after a role change or an ownership transfer (`membership.test.ts:372`, `:412` check roles only).",
+    covers: [
+      "packages/server/test/membership-listing.test.ts",
+      "packages/server/test/membership.test.ts",
+      "packages/server/test/groups.test.ts",
+    ],
+    status: "covered",
     context:
-      "The behaviour is there: the creator's row is stamped with the group's `createdAt` (`packages/server/src/provider/groups.ts:122`, `:130`), role changes and transfers update only `role` (`provider/membership.ts:242`, `:277`), and the listing pages by the total order (`joinedAt`, `user`) (`provider/membership.ts:173`), which `membership.test.ts:290` walks without skip or repeat.",
+      "The listing pages by the total order (`joinedAt`, `user`); `membership-listing.test.ts` pages through it while members join, leave and change role between pages. A forged cursor reads as the first page (`provider/cursor.ts` validates the decoded position).",
   },
   {
     item: "Answer a repeat `join` under the `request` policy with `202` and the caller's existing pending `JoinRequest`, unchanged; answer `leave` from a non-member with `404` (and from the owner with `409`) (§5.7)",
     level: "provider-must",
-    covers: ["packages/server/test/membership.test.ts"],
-    status: "partial",
-    note: "Untested: a repeat `join` carrying a different `message` leaves the pending request unchanged (`membership.test.ts:178` repeats with no body and compares `id` only), and `leave` from a non-member → `404` (`packages/server/src/http/membership.ts:162`).",
-    context:
-      "`requestToJoin` returns the existing pending row as stored (`packages/server/src/provider/membership.ts:355`); the owner's `409` is tested (`membership.test.ts:257`).",
+    covers: [
+      "packages/server/test/membership.test.ts",
+      "packages/server/test/membership-rules.test.ts",
+    ],
+    status: "covered",
   },
   {
     item: "Gate join-request approve and deny on `manage` or `moderate`, without the subset rule; give an approved requester role `member`, and answer an approval for someone already a member with `200` and the existing `Member`, marking the request `approved` (§5.7)",
     level: "provider-must",
-    covers: ["packages/server/test/membership.test.ts"],
-    status: "partial",
-    note: "Untested: approve and deny by a role holding only `moderate`, and their `403` for a caller holding neither (only the listing's `403` is, `membership.test.ts:678`); an approval for a requester who is already a member → `200` with the existing `Member` unchanged and the request `approved` (`packages/server/src/provider/membership.ts:395`).",
+    covers: [
+      "packages/server/test/membership-requests.test.ts",
+      "packages/server/test/membership-rules.test.ts",
+    ],
+    status: "covered",
     context:
-      "Approve and deny check `manage` or `moderate` and apply no subset rule (`packages/server/src/http/membership.ts:432`, `:456`); the owner's approval → `member` is tested (`membership.test.ts:611`).",
+      "The moderate-only approver in `membership-rules.test.ts` lacks a permission the approved `member` role holds, so the approval shows the subset rule is not applied.",
   },
   {
     item: "Keep pending join requests across tier and `joinPolicy` changes; reject an approval with `409` `conflict` while the effective join policy is `invite` (including a group whose tier makes it invite-only, such as `private`), leaving the request `pending`, and check this first, before the already-a-member case, so a requester who is already a member still gets `409`; still allow deny (§5.7)",
