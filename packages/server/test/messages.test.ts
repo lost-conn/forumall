@@ -412,7 +412,7 @@ function seedReply(
 }
 
 describe("replies (§7.2)", () => {
-  test("GET .../replies returns only the thread, oldest-first", async () => {
+  test("GET .../replies returns only the thread, newest-first by default (§7.2 paging)", async () => {
     const { app, config, db } = freshApp("replies-list");
     const alice = await registerUserWithKey(app, "alice");
     const group = await createGroup(app, alice, { name: "G", tier: "public" });
@@ -426,16 +426,21 @@ describe("replies (§7.2)", () => {
     // A reply to a different message must not leak into parent's thread.
     seedReply(db, config, group.id, channel.id, alice.actor, other, "re other");
 
-    const res = await app.request(
-      `/api/groups/${group.id}/channels/${channel.id}/messages/${parent}/replies`,
-    );
+    const path = `/api/groups/${group.id}/channels/${channel.id}/messages/${parent}/replies`;
+    const res = await app.request(path);
     expect(res.status).toBe(200);
     const body = (await res.json()) as Page;
     expect(() => MessagesPageSchema.parse(body)).not.toThrow();
-    expect(body.items.map((m) => m.id)).toEqual([r1, r2]);
+    expect(body.items.map((m) => m.id)).toEqual([r2, r1]);
     for (const m of body.items) {
       expect(m.reference).toEqual({ type: "reply", id: parent });
     }
+
+    // `forward` walks oldest-first; any other value is treated as `backward`.
+    const forward = (await (await app.request(`${path}?direction=forward`)).json()) as Page;
+    expect(forward.items.map((m) => m.id)).toEqual([r1, r2]);
+    const unknown = (await (await app.request(`${path}?direction=sideways`)).json()) as Page;
+    expect(unknown.items.map((m) => m.id)).toEqual([r2, r1]);
   });
 
   test("history stamps an advisory replyCount on parents", async () => {
@@ -495,7 +500,9 @@ describe("replies (§7.2)", () => {
     assertMessagesOnly(history);
     expect(history.items.map((m) => m.id)).toEqual([parent, r1, r2]);
 
-    const replies = (await (await app.request(`${base}/${parent}/replies`)).json()) as Page;
+    const replies = (await (
+      await app.request(`${base}/${parent}/replies?direction=forward`)
+    ).json()) as Page;
     assertMessagesOnly(replies);
     expect(replies.items.map((m) => m.id)).toEqual([r1, r2]);
     // The tombstoned reply stays in the reply listing, as a tombstone.

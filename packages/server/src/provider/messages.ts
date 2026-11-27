@@ -144,6 +144,11 @@ export function rowToMessage(row: MessageRow): Message {
   });
 }
 
+/** A stored row as a {@link MessageRecord}: the message, its `seq` and cursor. */
+export function rowToRecord(row: MessageRow): MessageRecord {
+  return { message: rowToMessage(row), seq: row.seq, cursor: encodeMessageCursor(row.seq) };
+}
+
 /** The raw stored row for `messageId` in `channelId`, or `null` if none. */
 export function getMessageRow(db: Db, channelId: string, messageId: string): MessageRow | null {
   return (
@@ -189,7 +194,7 @@ export function getMessageByClientId(
       .limit(1)
       .all()[0] ?? null;
   if (!row) return null;
-  return { message: rowToMessage(row), seq: row.seq, cursor: encodeMessageCursor(row.seq) };
+  return rowToRecord(row);
 }
 
 /** Arguments to {@link createMessage}. */
@@ -279,7 +284,7 @@ export function createMessage(db: Db, config: Config, input: CreateMessageInput)
     db.drizzle.insert(messages).values(row).run();
   })();
 
-  return { message: rowToMessage(row), seq: row.seq, cursor: encodeMessageCursor(row.seq) };
+  return rowToRecord(row);
 }
 
 /**
@@ -355,7 +360,7 @@ export function updateMessageFields(
     .run();
   const row = getMessageRow(db, channelId, messageId);
   if (!row) throw new Error(`updateMessageFields: no such message ${messageId}`);
-  return { message: rowToMessage(row), seq: row.seq, cursor: encodeMessageCursor(row.seq) };
+  return rowToRecord(row);
 }
 
 /**
@@ -375,7 +380,7 @@ export function tombstoneMessage(db: Db, channelId: string, messageId: string): 
     .run();
   const row = getMessageRow(db, channelId, messageId);
   if (!row) throw new Error(`tombstoneMessage: no such message ${messageId}`);
-  return { message: rowToMessage(row), seq: row.seq, cursor: encodeMessageCursor(row.seq) };
+  return rowToRecord(row);
 }
 
 /**
@@ -605,8 +610,8 @@ export function listMessages(
  * Read one page of the replies to `messageId` in `channelId` (§7.2) — the
  * messages whose `reference.id` is `messageId` — over the same `seq` cursor
  * space as {@link listMessages} (so a thread interleaves with the timeline).
- * `direction` defaults to `forward` (oldest reply first), the natural thread
- * reading order. Authorization (channel read access) is the caller's job.
+ * Paging is §7.2's unchanged: `direction` defaults to `backward` (newest reply
+ * first). Authorization (channel read access) is the caller's job.
  */
 export function listReplies(
   db: Db,
@@ -615,5 +620,5 @@ export function listReplies(
   opts: ListMessagesOptions = {},
 ): MessagePage {
   const base = and(eq(messages.channelId, channelId), eq(messages.replyTo, messageId));
-  return pageBySeq(db, channelId, base, { direction: "forward", ...opts });
+  return pageBySeq(db, channelId, base, opts);
 }

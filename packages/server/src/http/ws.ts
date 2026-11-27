@@ -85,6 +85,7 @@ import {
 import { handleReactionAdd, handleReactionRemove } from "./ws/reactions.ts";
 import { checkRemoteKey, stopRemoteKeyWatch } from "./ws/remote-key-watch.ts";
 import { handleSubscribe, handleUnsubscribe } from "./ws/subscriptions.ts";
+import { TypingRegistry } from "./ws/typing-registry.ts";
 import {
   clearAllDmTyping,
   clearAllTyping,
@@ -194,6 +195,8 @@ export function createWsHandlers(deps: WsHandlerDeps): WsHandlers {
     timings: { ...DEFAULT_WS_TIMINGS, ...deps.timings },
     authority: canonicalAuthority(deps.config.domain),
     issueChallengeNonce: deps.mintChallengeNonce ?? mintChallengeNonce,
+    channelTyping: new TypingRegistry(),
+    dmTyping: new TypingRegistry(),
   };
   const { config, db, hub, presenceRegistry, nonceStore, timings } = ctx;
 
@@ -220,12 +223,12 @@ export function createWsHandlers(deps: WsHandlerDeps): WsHandlers {
     state.closed = true;
     if (state.authTimer) clearTimeout(state.authTimer);
     if (state.heartbeatTimer) clearInterval(state.heartbeatTimer);
-    // Emit a `stop` for every channel this connection was typing in BEFORE we
-    // drop it from the hub (so the fan-out still reaches the channel's other
-    // subscribers), then clear its timers (§7.1: a dropped connection must not
-    // leave a stuck indicator).
-    clearAllTyping(ctx, state, true);
-    clearAllDmTyping(ctx, state, true);
+    // Drop this connection's typing starts BEFORE removing it from the hub, so
+    // the `stop` fanned out where the actor no longer types still reaches the
+    // channel's other subscribers (§7.1: a dropped connection must not leave a
+    // stuck indicator).
+    clearAllTyping(ctx, state);
+    clearAllDmTyping(ctx, state);
     stopRemoteKeyWatch(state);
 
     const hubConn = state.hubConn;
@@ -265,8 +268,6 @@ export function createWsHandlers(deps: WsHandlerDeps): WsHandlers {
         lastSeen: now,
         terminated: false,
         closed: false,
-        typingTimers: new Map(),
-        dmTypingTimers: new Map(),
       };
       stateBySocket.set(keyOf(ws), state);
       openSockets.set(keyOf(ws), ws);

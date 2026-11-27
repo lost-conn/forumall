@@ -30,10 +30,9 @@ describe("command envelope: `ts` is optional and its value ignored", () => {
   });
 
   test("a command whose `ts` is not a timestamp still parses", () => {
+    const stop = { id: "cli_002", type: "typing.stop", data: { channelId: "chn_general" } };
     for (const ts of ["not a timestamp", 42, null]) {
-      expect(WsTypingStopSchema.safeParse({ ...subscribe, type: "typing.stop", ts }).success).toBe(
-        true,
-      );
+      expect(WsTypingStopSchema.safeParse({ ...stop, ts }).success).toBe(true);
     }
   });
 

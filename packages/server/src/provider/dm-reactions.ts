@@ -291,7 +291,8 @@ export interface DmReplyPage {
  * DM messages whose `reference.id` is `parentMessageId` and `reference.type` is
  * `reply`, over the same `seq` cursor space, scoped to the same union as
  * {@link listDmMessages} (sent ∪, when local, received). `direction` defaults to
- * `forward` (oldest-reply-first). Reactions are embedded onto each reply.
+ * `backward` (newest reply first), as §7.2 paging does. Reactions are embedded
+ * onto each reply.
  * Authorization (participation) is the caller's responsibility.
  */
 export function listDmReplies(
@@ -301,7 +302,7 @@ export function listDmReplies(
   viewer: DmViewer,
   opts: ListDmMessagesOptions = {},
 ): DmReplyPage {
-  const direction: PageDirection = opts.direction === "backward" ? "backward" : "forward";
+  const direction: PageDirection = opts.direction === "forward" ? "forward" : "backward";
   const limit =
     opts.limit && Number.isFinite(opts.limit) && opts.limit > 0
       ? Math.min(Math.floor(opts.limit), MAX_PAGE_SIZE)

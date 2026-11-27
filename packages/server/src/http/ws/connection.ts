@@ -13,6 +13,7 @@ import type { PresenceRegistry } from "../../provider/presence.ts";
 import type { Hub, HubConnection, HubSocket, OutboundEvent } from "../../provider/ws-hub.ts";
 import { type RegistryErrorCode, errorCodeStatus } from "../errors.ts";
 import type { RemoteKeyWatch } from "./remote-key-watch.ts";
+import type { TypingRegistry } from "./typing-registry.ts";
 
 /**
  * Application close code (§7.1 "Close codes"): authentication failed, the
@@ -147,20 +148,6 @@ export interface ConnState {
   authTimer?: ReturnType<typeof setTimeout>;
   /** Periodic server-`ping` + idle-timeout sweep. */
   heartbeatTimer?: ReturnType<typeof setInterval>;
-  /**
-   * Active typing indicators for THIS connection, keyed by channel id. Each
-   * entry is the auto-expiry timer that fans out a `stop` if no refreshing
-   * `typing.start` arrives within {@link Config.typingTimeoutMs}. A new
-   * `typing.start` resets the channel's timer; an explicit `typing.stop`,
-   * expiry, or disconnect removes the entry. Ephemeral — never persisted.
-   */
-  typingTimers: Map<string, ReturnType<typeof setTimeout>>;
-  /**
-   * Active DM typing indicators for THIS connection, keyed by `dmId`. Like
-   * {@link typingTimers} but DM-scoped: each entry holds the auto-expiry timer
-   * and the `counterparty` actor to fan a `dm.typing` stop to (§7.4). Ephemeral.
-   */
-  dmTypingTimers: Map<string, { timer: ReturnType<typeof setTimeout>; counterparty: string }>;
 }
 
 /**
@@ -228,6 +215,10 @@ export interface WsCtx {
   /** This provider's canonical authority — what `authenticate` signatures bind. */
   readonly authority: string;
   readonly issueChallengeNonce: () => string;
+  /** Every actor's active channel `typing.start`s (§7.1), across connections. */
+  readonly channelTyping: TypingRegistry;
+  /** Every actor's active DM `typing.start`s by `dmId` (§7.4), across connections. */
+  readonly dmTyping: TypingRegistry;
 }
 
 /**

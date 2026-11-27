@@ -12,7 +12,9 @@
  *    the group's `post` action.
  *  - `react` gates adding; withdrawing one's own reaction needs read access
  *    only (e.g. after leaving the group).
- *  - Typing has no permission of its own in §5.2.1, so membership is the bar.
+ *  - Typing needs read access and a `post:<type>` grant (§7.1), which a
+ *    non-member never holds; the grant rule itself is in
+ *    `typing-permissions.test.ts`.
  */
 import { describe, expect, test } from "bun:test";
 import { rfc3339Timestamp } from "@forumall/shared";
@@ -23,6 +25,7 @@ import {
   type Booted,
   type Signer,
   type WsClient,
+  addMember,
   connectAuthenticated,
   registerUserWithKey,
   signedReq,
@@ -31,13 +34,6 @@ import {
 } from "./helpers/ws-harness.ts";
 
 const boot = useWsBoot("forumall-reader-participation-");
-
-function addMember(b: Booted, groupId: string, signer: Signer, role: string): void {
-  b.db.drizzle
-    .insert(groupMembers)
-    .values({ groupId, user: signer.actor, role, joinedAt: Date.now() })
-    .run();
-}
 
 interface Fixture {
   b: Booted;
@@ -136,7 +132,7 @@ describe("a non-member reader of a public channel may not react or type (§11)",
     watcher.close();
   });
 
-  test("a member of any role may type (membership is the bar)", async () => {
+  test("membership alone is not the bar: a member with no `post` grant may not type (§7.1)", async () => {
     const f = await publicChannel("rp-typing-guest");
     const gus = await registerUserWithKey(f.b, "gus");
     addMember(f.b, f.groupId, gus, "guest"); // `guest` cannot post by default
@@ -145,11 +141,9 @@ describe("a non-member reader of a public channel may not react or type (§11)",
 
     const conn = await connectAuthenticated(f.b, gus);
     sendCommand(conn, "ty", "typing.start", { channelId: f.channelId });
-    const evt = await watcher.ofType("channel.typing");
-    expect(evt.data).toEqual({ channelId: f.channelId, user: gus.actor, state: "start" });
+    expect(await errorFor(conn, "ty")).toMatchObject({ code: "forbidden", status: 403 });
     sendCommand(conn, "ts", "typing.stop", { channelId: f.channelId });
-    const stop = await watcher.ofType("channel.typing");
-    expect((stop.data as { state: string }).state).toBe("stop");
+    expect(await watcher.none((e) => e.type === "channel.typing")).toBe(true);
     conn.close();
     watcher.close();
   });

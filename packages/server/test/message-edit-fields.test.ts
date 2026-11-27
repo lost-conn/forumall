@@ -255,7 +255,7 @@ describe("channel PATCH (§7.1, §5.8): the create's checks apply to the edited 
 });
 
 describe("channel PATCH (§7.1): 404 and 403 come before the body is judged", () => {
-  test("missing message → 404 and non-author → 403, whatever the body; the author's bad body → 400", async () => {
+  test("missing message → 404 and non-author → 403, whatever the object body; the author's bad body → 400", async () => {
     const b = boot("rest-order");
     const alice = await registerUserWithKey(b, "alice");
     const bob = await registerUserWithKey(b, "bob");
@@ -263,13 +263,18 @@ describe("channel PATCH (§7.1): 404 and 403 come before the body is judged", ()
     addMember(b, m.groupId, bob, "member");
     const missing = { ...m, path: m.path.replace(m.messageId, "msg_missing") };
 
-    for (const body of [{}, { title: "T" }, { attachments: [{ id: "x" }] }, "junk"]) {
+    for (const body of [{}, { title: "T" }, { attachments: [{ id: "x" }] }]) {
       await patch(b, alice, missing, body, 404);
       await patch(b, bob, m, body, 403);
       await patch(b, alice, m, body, 400);
     }
+    // A body that is not a JSON object is 400 at step 1, before 404 and 403.
+    for (const body of ["junk", ["x"], null]) {
+      await patch(b, alice, missing, body, 400);
+      await patch(b, bob, m, body, 400);
+    }
     const raw = await signedReq(b, bob, "PATCH", m.path, undefined, "{not json");
-    expect(raw.status).toBe(403);
+    expect(raw.status).toBe(400);
   });
 });
 

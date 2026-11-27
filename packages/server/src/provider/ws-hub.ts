@@ -219,32 +219,35 @@ export class Hub {
   }
 
   /**
-   * Fan out `event` to every connection subscribed to `channelId`. No-op if the
-   * channel has no subscribers. Used by message/reaction/typing/call cards.
+   * Fan out `event` to every connection subscribed to `channelId`.
    *
-   * `reply` names the connection whose command caused the event: only that
-   * connection's copy carries `reply.correlationId` (§7.1 — "the requesting
-   * connection's copy carries the command's `id`"); every other subscriber,
-   * the same actor's other connections included, gets the event uncorrelated.
-   * Both copies share one frame `id` and `ts`. `event.correlationId` itself is
-   * ignored when `reply` is given.
+   * `reply` names the connection whose command caused the event (§7.1 "The
+   * requester's own copy"): that connection gets exactly one copy, carrying
+   * `reply.correlationId`, whether or not it is subscribed to the channel —
+   * never a second, uncorrelated one. Every other subscriber, the same actor's
+   * other connections included, gets the event uncorrelated. All copies share
+   * one frame `id` and `ts`. `event.correlationId` itself is ignored when
+   * `reply` is given. The requester's copy skips the delivery gate: the
+   * command that produced the event has just checked its read access.
+   *
+   * Without `reply`, a channel with no subscribers is a no-op.
    */
   publishToChannel(channelId: string, event: OutboundEvent, reply?: CorrelatedReply): void {
-    const subs = this.byChannel.get(channelId);
-    if (!subs) return;
+    const subs = this.byChannel.get(channelId) ?? new Set<HubConnection>();
     const { correlationId: _ignored, ...base } = event;
     const stamped: OutboundEvent = reply
       ? { ...base, id: event.id ?? mintEventId(), ts: event.ts ?? rfc3339Timestamp() }
       : event;
+    if (reply) {
+      const replyFrame = this.frame({ ...stamped, correlationId: reply.correlationId });
+      this.write(reply.conn.socket, replyFrame);
+    }
+    const others = [...subs].filter((conn) => conn !== reply?.conn);
+    if (others.length === 0) return;
     const frame = this.frame(stamped);
-    const replyFrame = reply
-      ? this.frame({ ...stamped, correlationId: reply.correlationId })
-      : null;
-    const frameFor = (conn: HubConnection): string =>
-      replyFrame !== null && conn === reply?.conn ? replyFrame : frame;
     const mayRead = this.gate?.(channelId) ?? null;
     if (!mayRead) {
-      for (const conn of subs) this.write(conn.socket, frameFor(conn));
+      for (const conn of others) this.write(conn.socket, frame);
       return;
     }
     // Defence in depth: re-check readability per subscriber (memoised per actor
@@ -252,13 +255,13 @@ export class Hub {
     // subscription is revoked — after the loop, since revoking mutates `subs`.
     const verdicts = new Map<string, boolean>();
     const denied: HubConnection[] = [];
-    for (const conn of subs) {
+    for (const conn of others) {
       let ok = verdicts.get(conn.actor);
       if (ok === undefined) {
         ok = mayRead(conn.actor);
         verdicts.set(conn.actor, ok);
       }
-      if (ok) this.write(conn.socket, frameFor(conn));
+      if (ok) this.write(conn.socket, frame);
       else denied.push(conn);
     }
     for (const conn of denied) this.revoke(conn, [channelId]);

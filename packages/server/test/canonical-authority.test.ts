@@ -564,14 +564,27 @@ describe("request vs. output validation failures (review of #23)", () => {
   test("a malformed reaction PUT body → 400, not 500", async () => {
     const { app } = freshApp();
     const alice = await registerUserWithKey(app, "alice");
-    // The body is validated before the reaction is authorized, so any target works.
-    const res = await signedJson(
-      app,
-      alice,
-      "PUT",
-      "/api/groups/grp_x/channels/chn_x/messages/msg_x/reactions/heart",
-      { image: "http://not-https.example/x.png" },
-    );
+    // §7.1 judges the body only after the target resolves (a missing message
+    // is 404 first), so the PUT names a real message.
+    const group = await signedJson(app, alice, "POST", "/api/groups", {
+      name: "g",
+      tier: "public",
+    });
+    const groupId = ((await group.json()) as { id: string }).id;
+    const channel = await signedJson(app, alice, "POST", `/api/groups/${groupId}/channels`, {
+      type: "text",
+      tier: "public",
+    });
+    const channelId = ((await channel.json()) as { id: string }).id;
+    const messages = `/api/groups/${groupId}/channels/${channelId}/messages`;
+    const message = await signedJson(app, alice, "POST", messages, {
+      content: { mime: "text/plain", text: "hi" },
+    });
+    expect(message.status).toBe(201);
+    const messageId = ((await message.json()) as { id: string }).id;
+    const res = await signedJson(app, alice, "PUT", `${messages}/${messageId}/reactions/heart`, {
+      image: "http://not-https.example/x.png",
+    });
     expect(res.status).toBe(400);
   });
 

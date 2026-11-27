@@ -30,6 +30,7 @@ import { type AppWithWebSocket, createApp } from "../../src/app.ts";
 import { type Argon2Params, type Config, loadConfig } from "../../src/config.ts";
 import { openDb } from "../../src/db/index.ts";
 import { migrate } from "../../src/db/migrate.ts";
+import { groupMembers } from "../../src/db/schema.ts";
 import type { WsTimings } from "../../src/http/ws.ts";
 import type { Hub } from "../../src/provider/ws-hub.ts";
 
@@ -150,7 +151,26 @@ export function signedReq(
   path: string,
   bodyObj?: unknown,
 ): Promise<Response> {
-  const body = bodyObj === undefined ? undefined : JSON.stringify(bodyObj);
+  return signedRawReq(
+    b,
+    signer,
+    method,
+    path,
+    bodyObj === undefined ? undefined : JSON.stringify(bodyObj),
+  );
+}
+
+/**
+ * {@link signedReq} with the body sent exactly as given (labelled
+ * `application/json`), so a test can send a body that is not JSON at all.
+ */
+export function signedRawReq(
+  b: Booted,
+  signer: Signer,
+  method: string,
+  path: string,
+  body?: string,
+): Promise<Response> {
   // The query string is a distinct signed line (§4.4.2); split it off the path.
   const qIdx = path.indexOf("?");
   const query = qIdx === -1 ? undefined : path.slice(qIdx + 1);
@@ -195,6 +215,14 @@ export async function makeGroupChannel(
   expect(cRes.status).toBe(201);
   const channelId = ((await cRes.json()) as { id: string }).id;
   return { groupId, channelId };
+}
+
+/** Insert a membership row directly (the membership flow is tested elsewhere). */
+export function addMember(b: Booted, groupId: string, signer: Signer, role: string): void {
+  b.db.drizzle
+    .insert(groupMembers)
+    .values({ groupId, user: signer.actor, role, joinedAt: Date.now() })
+    .run();
 }
 
 // ---------------------------------------------------------------------------
@@ -248,7 +276,13 @@ export class WsClient {
     const queued = this.queue.findIndex(pred);
     if (queued !== -1) return Promise.resolve(this.queue.splice(queued, 1)[0] as WsEnvelope);
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error("timeout waiting for frame")), timeoutMs);
+      const timer = setTimeout(() => {
+        // Stop waiting: a later frame must stay queued for the next read, not
+        // be swallowed by this abandoned one.
+        const at = this.waiters.indexOf(waiter);
+        if (at !== -1) this.waiters.splice(at, 1);
+        reject(new Error("timeout waiting for frame"));
+      }, timeoutMs);
       const waiter = (f: WsEnvelope) => {
         if (!pred(f)) {
           this.queue.push(f); // not ours; requeue and keep waiting
