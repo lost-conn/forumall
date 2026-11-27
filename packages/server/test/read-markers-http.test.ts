@@ -23,6 +23,7 @@ import {
   boot,
   connectAuthenticated,
   registerUserWithKey,
+  signedReq,
 } from "./helpers/provider-harness.ts";
 import {
   dmTo,
@@ -76,6 +77,36 @@ describe("GET /api/me/read-markers", () => {
       groupId,
     });
     expect(scopes.find((s) => s.scopeId === dmId)).toEqual({ scopeId: dmId, unreadCount: 1 });
+  });
+
+  test("unreadCount is exact past any badge cap and counts a tombstone deleted over REST", async () => {
+    const { b, alice, bob, groupId, channelId } = await fixture("rm-get-exact-tombstone");
+    const read = post(b, groupId, channelId, bob, "read");
+    await markRead(b, alice, [{ scopeId: channelId, lastReadMessageId: read.id }]);
+    const UNREAD = 1001;
+    // One transaction: a thousand separate commits are slow on a loaded disk.
+    const posted = b.db.sqlite.transaction(() =>
+      Array.from({ length: UNREAD }, (_, i) => post(b, groupId, channelId, bob, `m${i}`)),
+    )();
+
+    // Bob deletes one of his unread messages: it stays a tombstone at its
+    // timeline position (§7.1), so the count does not drop (§7.7).
+    const doomed = posted[500];
+    if (!doomed) throw new Error("fixture posted too few messages");
+    const del = await signedReq(
+      b,
+      bob,
+      "DELETE",
+      `/api/groups/${groupId}/channels/${channelId}/messages/${doomed.id}`,
+    );
+    expect(del.status).toBe(204);
+
+    expect(await markerFor(b, alice, channelId)).toEqual({
+      scopeId: channelId,
+      lastReadMessageId: read.id,
+      unreadCount: UNREAD,
+      groupId,
+    });
   });
 });
 
