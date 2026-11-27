@@ -66,7 +66,7 @@ The old map (28 Provider + 7 Client MUST items) predated the spec PRs #23–#30;
 | 27 | Capability URLs (§5.8) | tests only | Entropy, unlisted, CORS on the media GET untested. | U5 |
 | 28 | Attachment checks in a stored message (§5.8) | covered | Met (U6): a hosted attachment must be a local upload and is stored with the provider's own thumbnail record; a remote author's non-`https` `thumbnail.url` is rejected (tested across two providers). | — |
 | 29 | `Content-Disposition` / CSP `sandbox` / `nosniff` | behaviour | `GET /api/media/{id}` sends none of them. | U5 |
-| 30 | Remote uploads stable; short-lived URLs only for local; 24 h pending | covered | Met (U6): remote uploads exist (`target`) and keep their one stable `url`, no `expiresAt`. Nothing is removed yet; U7's removal must skip remote uploads. | U7 (keep it met) |
+| 30 | Remote uploads stable; short-lived URLs only for local; 24 h pending | partial | Stable `url`, no `expiresAt` met and tested (U6). The removal clauses (remote uploads never unreferenced, 24 h pending window) are untestable until U7 adds removal; U7 must skip remote uploads. | U7 |
 | 31 | `/api/me/groups` + `groups.updated` (§5.7) | behaviour | Not implemented (known gap). | U8 |
 | 32 | `PATCH /api/me/profile` avatar rules (§6.3) | covered | Met (U6): a remote-upload avatar is `400`; the response is a schema-valid `UserProfile` with an advanced `updatedAt` (tested). | — |
 | 33 | Users' profile/presence/groups visibility (§6.1–§6.5) | behaviour | Routes require a signature, so anonymous viewers get `401`; `…/groups` lists every membership with no tier filter; `requireParam` decodes twice, so `%25` → `500`; uniform `404` bodies untested. | U4 |

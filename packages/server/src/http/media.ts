@@ -3,8 +3,9 @@
  *
  *  - `POST /api/media` (signed, §4.4): single-step `multipart/form-data` upload.
  *    Stores the blob via the injected {@link StorageBackend} and returns the
- *    hosted `Attachment`. → 201. Enforces `config.maxUploadBytes` on each file
- *    part → 413. Reading the form (`provider/media-upload.ts`): the optional
+ *    hosted `Attachment`. → 201. A body over the upload limit is a 413 before
+ *    it is buffered (`body-limits.ts`); each file part is then held to
+ *    `config.maxUploadBytes` → 413. Reading the form (`provider/media-upload.ts`): the optional
  *    `target` part (recorded; a remote one makes a remote upload), the
  *    optional `thumbnail` part (stored as its own upload, returned as
  *    `thumbnail`), the guarded `mime` (`provider/media-type.ts`), and
@@ -24,6 +25,7 @@
  * body, so `c.req.parseBody()` / `c.req.formData()` downstream still work — they
  * re-parse the same cached bytes. The digest is verified over the **raw**
  * multipart bytes (exactly what the client signed), before we touch the parts.
+ * Because it buffers, the upload size limit runs before it (`uploadBodyLimit`).
  *
  * ## Read authorization
  * `GET /api/media/:id` is intentionally **unauthenticated**: attachment URLs are
@@ -34,11 +36,11 @@
  */
 import { Hono } from "hono";
 
-import type { Config } from "../config.ts";
 import { readUploadForm, storeUpload } from "../provider/media-upload.ts";
 import { getMediaRow, hostedAttachment } from "../provider/media.ts";
-import { multipartPartHeaders } from "../provider/multipart-headers.ts";
+import { type PartHeaders, multipartPartHeaders } from "../provider/multipart-headers.ts";
 import { FsStorage, type StorageBackend } from "../provider/storage.ts";
+import { uploadBodyLimit } from "./body-limits.ts";
 import { ifNoneMatchMatches } from "./conditional.ts";
 import { AppError } from "./errors.ts";
 import { mediaETag, mediaNotModifiedHeaders, mediaResponseHeaders } from "./media-headers.ts";
@@ -54,20 +56,10 @@ export interface MediaRouterOptions {
   storage?: StorageBackend;
 }
 
-/**
- * Room in a multipart body for everything but the file bytes: part headers,
- * boundaries and the small text parts (`target`, `width`, `height`,
- * `durationMs`). Generous, since it only gates the early `Content-Length`
- * reject; each file part is then held to the exact limit.
- */
-const MULTIPART_ENVELOPE_BYTES = 64 * 1024;
-
-/**
- * The largest body an acceptable upload can have: a `file` and a `thumbnail`
- * each at the limit, plus the envelope. Larger is a `413` before parsing.
- */
-function maxUploadBodyBytes(config: Config): number {
-  return 2 * config.maxUploadBytes + MULTIPART_ENVELOPE_BYTES;
+/** Whether `declared` names exactly `form`'s parts, in the same order. */
+function sameParts(declared: readonly PartHeaders[], form: FormData): boolean {
+  const names = [...form.keys()];
+  return names.length === declared.length && names.every((n, i) => declared[i]?.name === n);
 }
 
 export function createMediaRouter(opts: MediaRouterOptions = {}): Hono<AppBindings> {
@@ -78,20 +70,11 @@ export function createMediaRouter(opts: MediaRouterOptions = {}): Hono<AppBindin
   const storageFor = (mediaDir: string): StorageBackend => opts.storage ?? new FsStorage(mediaDir);
 
   // -- POST /api/media (§5.8, signed) --------------------------------------
-  router.post("/", signed, async (c) => {
+  // The body limit runs first: the signature middleware buffers the whole body.
+  router.post("/", uploadBodyLimit(), signed, async (c) => {
     const { config, db } = c.var;
     const actor = c.var.actor;
     if (!actor) throw AppError.unauthorized(); // unreachable: middleware sets it
-
-    // Early reject on Content-Length when present: avoids buffering/parsing a
-    // body we will reject anyway. The signature middleware has already buffered
-    // the raw bytes, but the multipart parse + storage write are still skipped.
-    const contentLength = Number(c.req.header("content-length"));
-    if (Number.isFinite(contentLength) && contentLength > maxUploadBodyBytes(config)) {
-      throw AppError.payloadTooLarge({
-        detail: `upload exceeds the ${config.maxUploadBytes}-byte limit`,
-      });
-    }
 
     // Parse the multipart body. The §4.5 middleware already consumed the request
     // stream via `c.req.arrayBuffer()` to verify the content-digest; that result
@@ -111,6 +94,11 @@ export function createMediaRouter(opts: MediaRouterOptions = {}): Hono<AppBindin
         throw AppError.badRequest({ detail: "request body must be multipart/form-data" });
       });
     const declared = multipartPartHeaders(new Uint8Array(rawBody), contentType);
+    // The declared types are paired with Bun's parts by name, so both parsers
+    // must see the same named parts; a body they read differently is refused.
+    if (!sameParts(declared, form)) {
+      throw AppError.badRequest({ detail: "multipart body is malformed" });
+    }
     const read = await readUploadForm(form, declared, config);
     if (read.refusal !== undefined) {
       const { status, detail } = read.refusal;

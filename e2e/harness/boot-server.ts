@@ -111,6 +111,7 @@ const server = Bun.serve({
   hostname: "127.0.0.1",
   fetch: app.fetch,
   websocket: app.__websocket,
+  maxRequestBodySize: app.__maxRequestBodySize,
 });
 
 const baseUrl = `http://localhost:${server.port}`;

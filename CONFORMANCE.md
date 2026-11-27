@@ -52,12 +52,12 @@ Notes marked "spec question" point at wording in the spec that needs clarifying 
 
 | Level | Items | Covered | Partial | Missing |
 |---|---|---|---|---|
-| Provider MUST | 58 | 35 | 20 | 3 |
+| Provider MUST | 58 | 34 | 21 | 3 |
 | Provider SHOULD | 4 | 1 | 1 | 2 |
 | Provider MAY (optional) | 10 | 6 | 4 | 0 |
 | Client MUST | 14 | 8 | 4 | 2 |
 | Client SHOULD | 8 | 3 | 1 | 4 |
-| **Total** | 94 | 53 | 30 | 11 |
+| **Total** | 94 | 52 | 31 | 11 |
 
 ## §12 Compliance Checklist coverage map
 
@@ -183,9 +183,10 @@ Notes marked "spec question" point at wording in the spec that needs clarifying 
 39. **covered**: Serve attachments with `Content-Disposition: attachment` (or `Content-Security-Policy: sandbox` where the host can send it) for types other than images (or for SVG), video and audio, and with `X-Content-Type-Options: nosniff` where the host can send it (§5.8)
     - Tests: `packages/server/test/media-serving.test.ts`
     - Context: Both `Content-Disposition: attachment` and `Content-Security-Policy: sandbox` are sent (the sandbox on every type, as defence in depth), plus `nosniff` on every response.
-40. **covered**: Give remote uploads a stable `url` without `expiresAt`, and never treat one as unreferenced because no message or profile it holds references it; use short-lived URLs (such as pre-signed `GET` URLs, with `expiresAt`) only for local uploads in messages; keep a pending local upload postable for at least 24 hours before removing it (§5.8)
+40. **partial**: Give remote uploads a stable `url` without `expiresAt`, and never treat one as unreferenced because no message or profile it holds references it; use short-lived URLs (such as pre-signed `GET` URLs, with `expiresAt`) only for local uploads in messages; keep a pending local upload postable for at least 24 hours before removing it (§5.8)
     - Tests: `packages/server/test/media-target.test.ts`, `packages/server/test/media-target-federation.test.ts`
-    - Context: Every upload, remote or local, has the one stable `url` its upload returned and never an `expiresAt`: Forumall mints no short-lived URLs. No upload is ever removed, so a remote upload is never treated as unreferenced and a pending local upload stays postable indefinitely; any future removal of unreferenced uploads must skip remote uploads (`media.target` non-NULL).
+    - Note: The removal clauses (never treat a remote upload as unreferenced; keep a pending local upload postable for at least 24 hours before removing it) cannot be tested until upload removal exists (unit U7): today no upload is ever removed, so they hold vacuously. U7 must skip remote uploads (`media.target` non-NULL) and honour the 24-hour window, with tests.
+    - Context: Every upload, remote or local, has the one stable `url` its upload returned and never an `expiresAt`: Forumall mints no short-lived URLs (tested).
 41. **missing**: Keep each user's group list at `GET`/`PUT`/`DELETE /api/me/groups` (its own memberships plus unchecked pointers to remote groups) and emit `groups.updated` (§5.7)
     - Note: Not implemented: no `/api/me/groups` route, pointer storage or `groups.updated` emission in the server; only the shared schemas exist (`packages/shared/test/edits-media-groups.test.ts`).
 42. **covered**: Answer `PATCH /api/me/profile` with the updated `UserProfile`, clear the avatar on `"avatar": null`, reject a non-`https` `avatar` (SHOULD also reject one it does not host, one whose `mime` is not `image/*`, and a remote upload), and keep a hosted avatar's `url` stable, never short-lived (§6.3)

@@ -123,11 +123,13 @@ const app = createApp(config, { db });
 // Bun's WebSocket support needs the server's `websocket` handler object
 // alongside `fetch` (§7.1). `createApp` builds it and attaches it as
 // `app.__websocket`; the upgrade route lives on the app, and Bun routes accepted
-// upgrades into this handler.
+// upgrades into this handler. `maxRequestBodySize` refuses a body larger than
+// any route accepts while Bun reads it (`http/body-limits.ts`).
 const server = Bun.serve({
   port: config.port,
   fetch: app.fetch,
   websocket: app.__websocket,
+  maxRequestBodySize: app.__maxRequestBodySize,
 });
 
 // Shutdown (§7.1 "Close codes"): close every WebSocket with 1001 so clients

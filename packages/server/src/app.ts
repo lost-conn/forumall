@@ -30,6 +30,7 @@ import { canonicalAuthority } from "@forumall/shared";
 import type { Config } from "./config.ts";
 import type { Db } from "./db/index.ts";
 import { createApiRouter } from "./http/api.ts";
+import { maxRequestBodyBytes } from "./http/body-limits.ts";
 import { cors } from "./http/cors.ts";
 import { createDiscoveryRouter } from "./http/discovery.ts";
 import { createProblemHandlers } from "./http/errors.ts";
@@ -133,6 +134,12 @@ export type AppWithWebSocket = Hono<AppBindings> & {
   readonly __nonceStore: NonceStore;
   /** The shared auth rate limiters (for tests / later wiring). */
   readonly __rateLimits: RateLimits;
+  /**
+   * The largest request body any route accepts, bytes (`http/body-limits.ts`):
+   * pass it to `Bun.serve` as `maxRequestBodySize` so a larger body is refused
+   * while it is read, before any middleware buffers it.
+   */
+  readonly __maxRequestBodySize: number;
 };
 
 export function createApp(config: Config, deps: AppDeps): AppWithWebSocket {
@@ -275,5 +282,6 @@ export function createApp(config: Config, deps: AppDeps): AppWithWebSocket {
     __userKeysCache: userKeysCache,
     __nonceStore: nonceStore,
     __rateLimits: rateLimits,
+    __maxRequestBodySize: maxRequestBodyBytes(config),
   });
 }

@@ -88,21 +88,34 @@ export async function uploadMedia(
   fields: FormFields = [],
   files: readonly FilePart[] = [],
 ): Promise<Response> {
-  const path = "/api/media";
-  const authority = signer.actor.slice(signer.actor.indexOf("@") + 1);
   const { body, contentType } = buildMultipart(fileBytes, filename, mime, fields, files);
-  const { headers } = sign({
+  return postSignedUpload(target, signer, body, contentType);
+}
+
+/** The signed headers of a `POST /api/media` whose body is `body` (§4.4). */
+export function uploadHeaders(signer: UploadSigner, body: Uint8Array): Record<string, string> {
+  const authority = signer.actor.slice(signer.actor.indexOf("@") + 1);
+  return sign({
     actor: signer.actor,
     keyId: signer.keyId,
     privateKey: signer.privateKey,
     authority,
     method: "POST",
-    path,
+    path: "/api/media",
     body,
-  });
-  return target.request(path, {
+  }).headers;
+}
+
+/** POST an exact, already-built multipart `body` to `/api/media`, signed by `signer`. */
+export async function postSignedUpload(
+  target: RequestTarget,
+  signer: UploadSigner,
+  body: Uint8Array<ArrayBuffer>,
+  contentType: string,
+): Promise<Response> {
+  return target.request("/api/media", {
     method: "POST",
-    headers: { ...headers, "content-type": contentType },
+    headers: { ...uploadHeaders(signer, body), "content-type": contentType },
     body,
   });
 }

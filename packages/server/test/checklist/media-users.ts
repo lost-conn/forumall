@@ -61,9 +61,10 @@ export const MEDIA_USERS: readonly ChecklistEntry[] = [
       "packages/server/test/media-target.test.ts",
       "packages/server/test/media-target-federation.test.ts",
     ],
-    status: "covered",
+    status: "partial",
+    note: "The removal clauses (never treat a remote upload as unreferenced; keep a pending local upload postable for at least 24 hours before removing it) cannot be tested until upload removal exists (unit U7): today no upload is ever removed, so they hold vacuously. U7 must skip remote uploads (`media.target` non-NULL) and honour the 24-hour window, with tests.",
     context:
-      "Every upload, remote or local, has the one stable `url` its upload returned and never an `expiresAt`: Forumall mints no short-lived URLs. No upload is ever removed, so a remote upload is never treated as unreferenced and a pending local upload stays postable indefinitely; any future removal of unreferenced uploads must skip remote uploads (`media.target` non-NULL).",
+      "Every upload, remote or local, has the one stable `url` its upload returned and never an `expiresAt`: Forumall mints no short-lived URLs (tested).",
   },
   {
     item: "Keep each user's group list at `GET`/`PUT`/`DELETE /api/me/groups` (its own memberships plus unchecked pointers to remote groups) and emit `groups.updated` (§5.7)",

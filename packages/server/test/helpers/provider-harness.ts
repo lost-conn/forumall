@@ -55,7 +55,12 @@ export function boot(dir: string, name: string, env: Record<string, string> = {}
   const db = openDb(config.dbPath);
   migrate(db);
   const app = createApp(config, { testOnlySkipReplayWarmup: true, db, wsTimings: FAST_TIMINGS });
-  const server = Bun.serve({ port: 0, fetch: app.fetch, websocket: app.__websocket });
+  const server = Bun.serve({
+    port: 0,
+    fetch: app.fetch,
+    websocket: app.__websocket,
+    maxRequestBodySize: app.__maxRequestBodySize,
+  });
   const url = `ws://${server.hostname}:${server.port}/api/ws`;
   return { app, db, config, server, url };
 }
