@@ -1,7 +1,7 @@
 # OFSCP §12 conformance audit
 
 Audit of Forumall `main` at `1b336ef` against the §12 Compliance Checklist of
-OFSCP `main` at `598e45d` (updated for ofscp#31, `7f3e0e9`) (`../ofscp/docs/ofscp_spec.md`). Every checklist line
+OFSCP `main` at `598e45d` (updated for ofscp#31, `7f3e0e9`, and ofscp#34, `300f6fa`) (`../ofscp/docs/ofscp_spec.md`). Every checklist line
 was split into its sub-requirements and checked for (a) the behaviour in the
 code and (b) a test that asserts it. The per-item coverage map itself (which
 test files cover which item) lives in `packages/server/test/checklist/` and is
@@ -24,10 +24,10 @@ the gaps are grouped into pull requests.
 
 | Level | Items | covered | partial / tests only | behaviour | spec question |
 |---|---|---|---|---|---|
-| Provider MUST | 44 | 12 | 15 | 17 | 0 |
+| Provider MUST | 46 | 12 | 16 | 18 | 0 |
 | Provider SHOULD | 4 | 0 | 0 | 4 | 0 |
-| Provider MAY | 6 | 5 | 1 | 0 | 0 |
-| Client MUST | 13 | 4 | 3 | 6 | 0 |
+| Provider MAY | 7 | 5 | 1 | 1 | 0 |
+| Client MUST | 14 | 4 | 3 | 7 | 0 |
 | Client SHOULD | 8 | 1 | 2 | 5 | 0 |
 
 The `covered` column matches the coverage map (`CONFORMANCE.md`), which is the
@@ -133,6 +133,25 @@ and only local channels are compiled.
 | 90 | Membership pointer after remote join/leave | behaviour | No remote-group join, no pointer. | U15 |
 | 91 | Refresh a failing attachment `url` | behaviour | Not handled. | U15 |
 
+## ofscp#34 (`300f6fa`): `reference.provider`
+
+ofscp#34 added four items: a message `reference` may name the provider holding
+the parent, which matters for DM replies (each DM is held by its recipient's
+provider). The `L` numbers are in the spec at `300f6fa`; ofscp#34 shifted the
+lines after L20 in the tables above, which keep their audited numbers.
+
+| L | Item (short) | Status | Gap | Unit |
+|---|---|---|---|---|
+| 21 (P MUST) | Canonical `reference.provider`; channel reply naming another provider → `400` | behaviour | `MessageReferenceSchema` has no `provider`; `authorizeReplyTarget` (`http/message-mutations.ts:254`) ignores it, so another provider is accepted and stored verbatim. No test. | U16 |
+| 22 (P MUST) | Served `Reaction.reference.provider` is own authority | tests only | Never set (SHOULD omit), so met; the DM `Reaction` `reference` is never asserted (channel one is, `reactions.test.ts:337`, `:571`). | U16 |
+| 65 (P MAY) | DM replies: parent check or participant home provider; listing `provider` parameter | behaviour | DM send stores `reference` unchecked (`http/dms-federation.ts:119`); listing has no `provider` and matches bare `reference.id` (`provider/dm-reactions.ts:318`). Same-provider listing tested only. | U16 |
+| 74 (C MUST) | Key by (holding provider, `id`); set `reference.provider`; show unresolved parents | behaviour | DM store keys messages and reactions by bare id (`stores/dms.ts:148`, `:162`, `:317`); replies sent without `provider` (`DmsPage.tsx:1257`). An unresolved parent renders as "a message", untested. | U17 |
+
+U16 (server: `reference.provider` in the shared schema, canonicalization, the
+channel `400`, DM reply checks and the listing parameter, DM reaction test)
+and U17 (client keying by provider and DM reply `provider`; follows U15's
+cross-provider DM history) are new units.
+
 ## Units of work
 
 Each unit is one pull request to `main`. Each updates its area's entries in
@@ -156,6 +175,8 @@ Each unit is one pull request to `main`. Each updates its area's entries in
 | U13 | Client protocol: commands wait for `authenticated`; registration-mode errors; upload `target`; `mentions`; duplicate-create and reconnect tests. | 69, 70, 75, 77, 86, 89 |
 | U14 | Client rendering by `mime`, `attachment:` links, article title, untrusted attachments. | 78, 79, 80 |
 | U15 | Client remote channels and groups, cross-provider DM history, remote-author attachments, attachment refresh. | 72, 87, 88, 90, 91 |
+| U16 | Server `reference.provider`: shared schema field, §2.2 canonicalization, channel `400`, DM reply checks, DM reply listing `provider` parameter, DM `Reaction.reference` test. | 21, 22, 65 (at `300f6fa`) |
+| U17 | Client keying by (holding provider, `id`), DM reply `provider`, unresolved-parent test. Follows U15. | 74 (at `300f6fa`) |
 
 Order: U0 first (every unit edits the map). U3, U4, U5, U9, U10, U11, U13 and
 U14 touch disjoint files and can run in parallel; U6 follows U4 and U5; U7

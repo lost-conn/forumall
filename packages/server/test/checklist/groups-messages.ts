@@ -49,6 +49,24 @@ export const GROUPS_MESSAGES: readonly ChecklistEntry[] = [
     note: "The WebSocket half is thin: `message.create` to an unreadable channel → `not_found`, the `post:<type>` / `replyOnly` / `replyOnlyTo` refusals, and a `memo` or valid reply over WS are untested; so is a REST create in a missing group → `404`.",
   },
   {
+    item: "Treat a `reference.provider` as a canonical authority (§2.2), and one equal to its own authority as absent; reject (`400`) a channel reply whose `provider` is not the channel's own provider (§7.1, §7.2)",
+    level: "provider-must",
+    covers: [],
+    status: "missing",
+    note: "Not implemented: `MessageReferenceSchema` (`packages/shared/src/schemas/messaging.ts:37`) has no `provider` field, so it passes through unchecked; `authorizeReplyTarget` (`packages/server/src/http/message-mutations.ts:254`) looks the parent up by `reference.id` alone, so a channel reply naming another provider is accepted, and the reference is stored and served verbatim, never canonicalized (`packages/server/src/provider/messages.ts:255`). No test sends a `reference.provider`.",
+    context:
+      "A `provider` equal to the channel's own authority already behaves as absent, but only because the field is ignored.",
+  },
+  {
+    item: "Serve a `Reaction` whose `reference.provider`, if present, is its own authority, since a reaction is stored with its message (§7.1)",
+    level: "provider-must",
+    covers: ["packages/server/test/reactions.test.ts"],
+    status: "partial",
+    note: "Untested for DM reactions: no test asserts the `reference` of a served DM `Reaction` (`rowToDmReaction`, `packages/server/src/provider/dm-reactions.ts:82`); `dm-reactions.test.ts` checks keys and authors only.",
+    context:
+      "Both mappers build `reference` as `{ type: \"message\", id }` with no `provider` (`provider/reactions.ts:71`, `provider/dm-reactions.ts:89`), taking the spec's SHOULD-omit option. The channel `Reaction`'s exact `reference` is asserted over WS and REST (`reactions.test.ts:337`, `:571`).",
+  },
+  {
     item: "Treat `(author, channelId, clientMessageId)` as idempotent, running only authentication, visibility and the actor's permission checks before the duplicate lookup and returning the existing message on a duplicate (over WebSocket as a `message.created` with no `cursor`); echo `clientMessageId` on the author's `message.created`, live or replayed, and on every create response (§7.1, §7.4)",
     level: "provider-must",
     covers: [
