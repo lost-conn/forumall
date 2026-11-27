@@ -207,11 +207,10 @@ are in the spec at `31100ef` (unchanged from `e94447d`).
 
 | L | Item (short) | Status | Gap | Unit |
 |---|---|---|---|---|
-| 52 (P MUST) | Follow list as pointers, `groupId` derived from the channel | behaviour | The body's `groupId` is stored as given (`http/follows.ts:128`, `:158`); nothing derives it, so a follow without one has none. `follows.test.ts:161` asserts the echo. | U21 |
-| 81 (P MAY) | Read markers by message id; `unreadCount` exact, tombstones counted | tests only | An uncapped `COUNT(*)` with no `deleted_at` filter (`provider/read-markers.ts:164`, `:183`); no test counts a tombstone. | U21 |
+| 52 (P MUST) | Follow list as pointers, `groupId` derived from the channel | met (U21) | Derived when a follow is rendered (`provider/follows.ts` `deriveFollowGroupId`): the local channel's group id, or the group URI on a remote channel's authority; the body's `groupId` is ignored and no longer stored (migration 0043). `follows.test.ts` tests derivation, a mismatched body `groupId`, local/remote URIs and a deleted channel. | U21 |
+| 81 (P MAY) | Read markers by message id; `unreadCount` exact, tombstones counted | met (U21) | Uncapped `COUNT(*)` with no `deleted_at` filter (`provider/read-markers.ts`). Tombstones counted in `read-markers.test.ts` (channel + DM) and over HTTP in `read-markers-http.test.ts` (1001 unread, one deleted via REST `DELETE`). | U21 |
 
-Both items were `covered` before; both are now `partial`. New unit: U21 (derive the `Follow` `groupId` from the channel and
-ignore the body's; a test that a tombstone still counts as unread).
+Both items were `covered` before and `partial` after ofscp#41; U21 brought both back to `covered`.
 
 ## ofscp#42 (`8ffa97b`): provider-signed requests to user-signature routes
 

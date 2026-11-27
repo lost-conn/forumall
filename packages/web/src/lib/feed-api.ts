@@ -7,7 +7,7 @@
  * These wrappers are the thin REST layer:
  *
  *  - `GET /api/me/follows`         → the caller's follow pointers (§7.6),
- *  - `POST /api/me/follows`        → start following `{ channel, groupId }` (§7.6),
+ *  - `POST /api/me/follows`        → start following `{ channel }` (§7.6),
  *  - `DELETE /api/me/follows/{ref}`→ stop following (idempotent 204, §7.6),
  *  - `GET /api/discover`           → paged discoverable channel pointers (§11.2),
  *    which **404s** when the provider has the feature disabled — surfaced as a
@@ -29,16 +29,11 @@ export async function fetchFollows(client: OfscpClient): Promise<Follow[]> {
 /**
  * Start following a channel (§7.6). `channel` is a channel ref (a bare `chn_…`
  * id for a local channel, or a URI). Idempotent server-side: an already-followed
- * channel returns 200, a new follow 201 — both yield the `Follow` pointer.
+ * channel returns 200, a new follow 201 — both yield the `Follow` pointer. No
+ * `groupId` is sent: the provider ignores one and derives it from the channel.
  */
-export async function addFollow(
-  client: OfscpClient,
-  body: { channel: string; groupId?: string },
-): Promise<Follow> {
-  const res = await client.post<Follow>("/api/me/follows", {
-    channel: body.channel,
-    ...(body.groupId ? { groupId: body.groupId } : {}),
-  });
+export async function addFollow(client: OfscpClient, channel: string): Promise<Follow> {
+  const res = await client.post<Follow>("/api/me/follows", { channel });
   return res.data;
 }
 
@@ -146,6 +141,32 @@ export function groupIdFromChannelRef(ref: string): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * The local id of a group ref (§2.2): the ref itself for a bare id, or the
+ * `{groupId}` of a group object URI (`https://{domain}/api/groups/{groupId}`);
+ * `null` for a URI not shaped like one.
+ */
+export function localGroupId(ref: string): string | null {
+  if (!(ref.startsWith("https://") || ref.startsWith("http://"))) return ref;
+  try {
+    const m = new URL(ref).pathname.match(/^\/api\/groups\/([^/]+)\/?$/);
+    return m ? decodeURIComponent(m[1] as string) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The followed channel's group, as the local id its own provider uses in paths
+ * (`…/groups/{groupId}/…`). The `Follow`'s `groupId` (§7.6) is a local id for a
+ * channel on the follow's provider and the group's object URI for a remote one;
+ * a follow without one falls back to the group a channel URI names.
+ */
+export function followGroupId(follow: Follow): string | null {
+  if (follow.groupId !== undefined) return localGroupId(follow.groupId);
+  return groupIdFromChannelRef(follow.channel);
 }
 
 /**

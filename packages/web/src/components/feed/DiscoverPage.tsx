@@ -92,10 +92,7 @@ const DiscoverRow: Component<{ item: DiscoverItem }> = (props) => {
     setBusy(true);
     setError(null);
     try {
-      await addFollow(client, {
-        channel: item().channel,
-        ...(item().groupId ? { groupId: item().groupId } : {}),
-      });
+      await addFollow(client, item().channel);
       setFollowed(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not follow this channel.");

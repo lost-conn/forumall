@@ -350,8 +350,11 @@ test("a deferred INDEPENDENT migration is skipped: later ones still apply; it re
   expect(runMigrations(db, list)).toEqual(["t1_independent_defers"]);
 });
 
-test("only 0036 is marked independent, and a later migration applies while it defers", async () => {
-  expect(migrations.filter((m) => m.independent).map((m) => m.id)).toEqual([MIGRATION]);
+test("only the data migrations 0036 and 0044 are independent, and a later migration applies while 0036 defers", async () => {
+  expect(migrations.filter((m) => m.independent).map((m) => m.id)).toEqual([
+    MIGRATION,
+    "0044_follows_canonical_channel_refs",
+  ]);
   const { db } = freshApp("hygiene-0036-defers-later-applies");
   insertRawConversation(db, "alice", "dm_x", "bob@remote.example");
   db.sqlite.query("DELETE FROM _migrations WHERE id = ?").run(MIGRATION);

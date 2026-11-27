@@ -434,7 +434,7 @@ export const ChatView: Component<{
                   <span class="truncate text-xs text-faint">— {props.channel.topic}</span>
                 </Show>
                 <div class="ml-auto flex items-center gap-2">
-                  <FollowToggle channelId={props.channel.id} groupId={props.channel.groupId} />
+                  <FollowToggle channelId={props.channel.id} />
                 </div>
               </div>
 

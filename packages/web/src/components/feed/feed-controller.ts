@@ -1,10 +1,5 @@
 import { clientForHost } from "../../lib/federation.ts";
-import {
-  channelIdFromRef,
-  fetchFollows,
-  groupIdFromChannelRef,
-  hostForRef,
-} from "../../lib/feed-api.ts";
+import { channelIdFromRef, fetchFollows, followGroupId, hostForRef } from "../../lib/feed-api.ts";
 import { fetchChannel, fetchGroup } from "../../lib/groups-api.ts";
 import { keyStore } from "../../lib/key-store.ts";
 import type { OfscpClient } from "../../lib/ofscp-client.ts";
@@ -145,9 +140,10 @@ export async function startFeed(deps: FeedDeps): Promise<FeedHandle> {
       // The bare channel id (the source provider's WS `channelId` + chat-store key)
       // works for a bare local id, a local channel URI, AND a remote channel URI.
       const channelId = channelIdFromRef(follow.channel) ?? follow.channel;
-      // Owning group: the follow pointer carries it for a local follow; a remote
-      // follow URI encodes it in the path (`…/groups/{g}/channels/{c}`).
-      const groupId = follow.groupId ?? groupIdFromChannelRef(follow.channel) ?? undefined;
+      // Owning group, as the channel's own provider names it: the pointer's
+      // derived `groupId` (a local id, or a group URI for a remote channel), else
+      // the group a channel URI names (`…/groups/{g}/channels/{c}`).
+      const groupId = followGroupId(follow) ?? undefined;
       return {
         channelId,
         ref: follow.channel,
