@@ -48,6 +48,7 @@ import {
 } from "../src/db/schema.ts";
 import { addDmReaction } from "../src/provider/dm-reactions.ts";
 import { storeDmMessage, upsertDmPointer } from "../src/provider/dms.ts";
+import { addMember } from "../src/provider/membership.ts";
 import { createMessage } from "../src/provider/messages.ts";
 import { addReaction } from "../src/provider/reactions.ts";
 import { setReadMarkers } from "../src/provider/read-markers.ts";
@@ -171,29 +172,6 @@ async function provisionGuest(
   return { keyId: body.key_id, privateKey, actor: body.actor, handle: body.profile.handle };
 }
 
-/** Have `signer` join `groupId` via a member invite minted by the owner. */
-async function joinViaInvite(
-  app: App,
-  ownerSigner: Signer,
-  joiner: Signer,
-  groupId: string,
-  role = "member",
-): Promise<void> {
-  const inviteRes = await signedRequest(
-    app,
-    ownerSigner,
-    "POST",
-    `/api/groups/${groupId}/invites`,
-    {
-      role,
-    },
-  );
-  expect(inviteRes.status).toBe(201);
-  const invite = (await inviteRes.json()) as { token: string };
-  const redeem = await signedRequest(app, joiner, "POST", `/api/invites/${invite.token}/redeem`);
-  expect(redeem.status).toBe(200);
-}
-
 // ---------------------------------------------------------------------------
 // Happy path: conflict-aware identity merge
 // ---------------------------------------------------------------------------
@@ -221,7 +199,9 @@ test("merge: folds the guest into an existing account with conflict resolution",
   const channel = (await chRes.json()) as { id: string };
 
   // A SECOND group H that alice does NOT belong to (owned by carol) — the guest
-  // will join it so the membership cleanly transfers.
+  // also holds a membership there, so it cleanly transfers. A guest cannot JOIN
+  // a second group (§4.8, `guest-binding.test.ts`), so that membership is seeded
+  // directly: merge must still move every membership a guest row holds.
   const groupH = await createGroup(app, carol, {
     name: "H",
     tier: "public",
@@ -232,7 +212,7 @@ test("merge: folds the guest into an existing account with conflict resolution",
   const guest = await provisionGuest(app, alice, groupG.id, "guest");
   const oldHandle = guest.handle;
   const oldActor = guest.actor;
-  await joinViaInvite(app, carol, guest, groupH.id, "member");
+  addMember(db, groupH.id, oldActor, "member");
 
   // alice's role in G before the merge (her own membership — must be preserved).
   const aliceRoleBefore = db.drizzle
