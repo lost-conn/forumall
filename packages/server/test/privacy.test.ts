@@ -339,7 +339,7 @@ describe("privacy settings (§6.6)", () => {
   test("a list longer than the provider maximum → 400", async () => {
     const b = boot("privacy-list-max");
     const alice = await registerUserWithKey(b, "alice");
-    const list = (n: number) => Array.from({ length: n }, (_, i) => `u${i}@${DOMAIN}`);
+    const list = (n: number) => Array.from({ length: n }, (_, i) => `user${i}@${DOMAIN}`);
     const over = await signedReq(b, alice, "PUT", "/api/me/privacy", {
       denyList: list(MAX_PRIVACY_LIST_ENTRIES + 1),
     });

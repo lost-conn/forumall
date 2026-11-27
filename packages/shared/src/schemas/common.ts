@@ -86,16 +86,17 @@ export type VisibilityPolicy = z.infer<typeof VisibilityPolicySchema>;
 // ---------------------------------------------------------------------------
 
 /**
- * User reference. Canonical actor form is `handle@domain` (no leading `@`); an
- * HTTPS URI MAY also be used. Clients MUST treat the value as opaque, so we
- * accept either shape and otherwise keep it a string.
+ * User reference = an **actor** (`identity.json#/$defs/UserRef`, §2.2):
+ * `handle@domain`, the handle per §2.2.1 and the domain the lowercased home
+ * provider authority (`:port` only if non-default). Every user-valued field uses
+ * this form; a user object URI is NOT an actor and is rejected here, as the
+ * ofscp schema does. The pattern is the ofscp one, which is looser than the §2.2
+ * canonical-form rule (e.g. it admits `a.test.` or `:443`); receivers that must
+ * reject non-canonical spellings also check `isCanonicalActor`.
  */
-export const UserRefSchema = z.union([
-  HttpsUriSchema,
-  z.string().regex(/^[^@\s]+@[^@\s]+$/, {
-    message: "must be handle@domain or an https URI",
-  }),
-]);
+export const UserRefSchema = z.string().regex(/^[a-z0-9_-]{3,32}@[a-z0-9.-]+(:[0-9]{1,5})?$/, {
+  message: "must be an actor handle@domain (OFSCP §2.2)",
+});
 export type UserRef = z.infer<typeof UserRefSchema>;
 
 // ---------------------------------------------------------------------------

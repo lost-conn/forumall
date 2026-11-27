@@ -128,6 +128,7 @@ import {
   NotificationsResponseSchema,
   WsNotificationCreatedSchema,
 } from "../src/schemas/index.ts";
+import { UserRefSchema } from "../src/schemas/index.ts";
 import { generateKeyPair } from "../src/signing.ts";
 
 // The canonical OFSCP samples live in the sibling ofscp repo. Reference by
@@ -376,6 +377,49 @@ describe("Ed25519PublicKey: raw 32-byte key in padded standard base64 (§4.3.2)"
     const nonCanonical = `${key.slice(0, 42)}d=`;
     expect(Buffer.from(nonCanonical, "base64").length).toBe(32);
     expect(Ed25519PublicKeySchema.safeParse(nonCanonical).success).toBe(false);
+  });
+});
+
+describe("UserRef is an actor only, as identity.json#/$defs/UserRef (§2.2)", () => {
+  test("handle@domain actors are accepted", () => {
+    for (const ok of [
+      "jane@a.com",
+      "guest_0a1b2c3d@a.test",
+      "bob-1@localhost:8443",
+      "amy@xn--bcher-kva.example",
+    ]) {
+      expect(UserRefSchema.safeParse(ok).success).toBe(true);
+    }
+  });
+
+  test("a user URI, a bare handle or an invalid handle/domain is rejected", () => {
+    for (const bad of [
+      "https://a.com/api/users/jane",
+      "jane",
+      "Jane@a.com",
+      "jane@A.com",
+      "ja@a.com", // handle shorter than 3
+      "jane doe@a.com",
+      "jane@a.com/x",
+      "jane@@a.com",
+    ]) {
+      expect(UserRefSchema.safeParse(bad).success).toBe(false);
+    }
+  });
+
+  test("actor fields reject a URI (privacy lists, keys `actor`)", () => {
+    const uri = "https://a.com/api/users/jane";
+    expect(PrivacySettingsUpdateRequestSchema.safeParse({ denyList: [uri] }).success).toBe(false);
+    expect(
+      PrivacySettingsUpdateRequestSchema.safeParse({ allowList: ["jane@a.com"] }).success,
+    ).toBe(true);
+    expect(
+      UserKeysResponseSchema.safeParse({
+        actor: uri,
+        keys: [],
+        cache_until: "2026-01-01T00:00:00Z",
+      }).success,
+    ).toBe(false);
   });
 });
 

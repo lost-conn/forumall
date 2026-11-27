@@ -126,16 +126,16 @@ describe("RemoteUserKeysCache bounds", () => {
       refetchIntervalMs: 0,
       maxCachedDocuments: 2,
     });
-    for (const handle of ["r1", "r2", "r1", "r3"]) {
+    for (const handle of ["usr1", "usr2", "usr1", "usr3"]) {
       expect((await cache.lookupActorKey(`${handle}@a.test`, "k1")).kind).toBe("found");
     }
-    // r1 was a cache hit (read = use), so r2 was evicted when r3 was stored.
-    expect(calls).toEqual(["r1", "r2", "r3"]);
-    await cache.lookupActorKey("r1@a.test", "k1");
-    await cache.lookupActorKey("r3@a.test", "k1");
-    expect(calls).toEqual(["r1", "r2", "r3"]);
-    await cache.lookupActorKey("r2@a.test", "k1");
-    expect(calls).toEqual(["r1", "r2", "r3", "r2"]);
+    // usr1 was a cache hit (read = use), so usr2 was evicted when usr3 was stored.
+    expect(calls).toEqual(["usr1", "usr2", "usr3"]);
+    await cache.lookupActorKey("usr1@a.test", "k1");
+    await cache.lookupActorKey("usr3@a.test", "k1");
+    expect(calls).toEqual(["usr1", "usr2", "usr3"]);
+    await cache.lookupActorKey("usr2@a.test", "k1");
+    expect(calls).toEqual(["usr1", "usr2", "usr3", "usr2"]);
   });
 
   test("a body larger than maxDocumentBytes is a fetch failure, streamed or declared", async () => {
@@ -203,13 +203,13 @@ describe("RemoteUserKeysCache bounds", () => {
       refetchIntervalMs: 0,
       maxCachedDocuments: 1,
     });
-    await cache.lookupActorKey("r1@a.test", "k1");
-    expect(cache.lastCompletedFetch("r1@a.test", "k1")).toMatchObject({
+    await cache.lookupActorKey("usr1@a.test", "k1");
+    expect(cache.lastCompletedFetch("usr1@a.test", "k1")).toMatchObject({
       key: { keyId: "k1" },
       expiresAt: START + 3_600_000,
     });
-    await cache.lookupActorKey("r2@a.test", "k1"); // evicts r1's document
-    expect(cache.lastCompletedFetch("r1@a.test", "k1")).toMatchObject({
+    await cache.lookupActorKey("usr2@a.test", "k1"); // evicts usr1's document
+    expect(cache.lastCompletedFetch("usr1@a.test", "k1")).toMatchObject({
       key: { keyId: "k1" },
       expiresAt: null,
     });
