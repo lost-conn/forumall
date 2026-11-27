@@ -430,16 +430,19 @@ export const ChatView: Component<{
 
   // ---- Read state: "New messages" divider + auto-mark-read (§7.7) -------
   // The divider is placed once per opened channel from the marker as it stood
-  // on open. Auto-mark-read advances the marker to the newest loaded message
-  // while the view is pinned at the bottom (`pinned` starts true on open, so
-  // opening marks read; reading history scrolled up leaves the marker put).
+  // on open. Auto-mark-read advances the marker to the channel's timeline head
+  // (the newest message delivered as part of the timeline, which the chat
+  // controller records; not the list's last entry, which may be an older reply
+  // loaded for an article) while the view is pinned at the bottom (`pinned`
+  // starts true on open, so opening marks read; reading history scrolled up
+  // leaves the marker put).
   const dividerBeforeId = createUnreadDivider({
     scopeId: channelId,
     messages,
     ready: () => handle() !== null,
     self: () => session.actor ?? undefined,
   });
-  trackNewestRead({ scopeId: channelId, messages, enabled: () => pinned });
+  trackNewestRead({ scopeId: channelId, enabled: () => pinned });
 
   // Jump to the original post when a reply reference is clicked: scroll its row
   // into view and flash a transient highlight. No-op if the parent is older than

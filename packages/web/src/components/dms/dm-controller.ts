@@ -9,7 +9,12 @@
  *   2. backfill the most-recent page of RECEIVED history from the caller's inbox
  *      (`GET /api/dms/{dmId}/messages`, backward) into the same thread,
  *   3. subscribe over WS with the `dm_` id and fold incoming `dm.message`
- *      (received) events into the thread live.
+ *      (received) events into the thread live,
+ *   4. record the thread's timeline head (`stores/timeline-heads.ts`): the
+ *      newest RECEIVED message the inbox timeline delivered, which
+ *      auto-mark-read names (§7.7). A newly delivered `dm.message` moves it and
+ *      the newest inbox page settles it; replacements (edits, deletes), older
+ *      pages and reply listings never touch it.
  * The store de-dupes received + sent by `id` and orders by `createdAt`.
  *
  * History is WINDOWED on both sides rather than drained: `loadOlder()` on the
@@ -34,6 +39,7 @@ import type { OfscpWsClient } from "../../lib/ofscp-ws.ts";
 import {
   addDmReactionAgg,
   applyDmEdit,
+  dmThread,
   removeDmReactionAgg,
   setDmOlderCursor,
   setDmTyping,
@@ -41,6 +47,11 @@ import {
   upsertConversation,
   upsertDmMessage,
 } from "../../stores/dms.ts";
+import {
+  advanceTimelineHead,
+  resetTimelineHead,
+  settleTimelineHead,
+} from "../../stores/timeline-heads.ts";
 
 /** History page size for the inbox backfill + each "load older" page. */
 export const DM_HISTORY_PAGE_SIZE = 50;
@@ -252,6 +263,9 @@ export async function openConversation(deps: OpenConversationDeps): Promise<Conv
     }
   };
 
+  // The thread's timeline head starts over with this open.
+  resetTimelineHead(dmId);
+
   // 1) Hydrate the newest page of THIS user's locally-retained sent messages (no
   // server copy) so the thread paints immediately; step 4 re-runs this with the
   // received floor once the inbox page has landed.
@@ -271,6 +285,12 @@ export async function openConversation(deps: OpenConversationDeps): Promise<Conv
     if (data.dmId !== dmId) return;
     const m = data.message;
     const mine = m.author === me;
+    // §7.4: a `dm.message` for a message already held replaces it, and edits and
+    // deletes of messages outside the window carry `editedAt` / `deletedAt`.
+    // Only a newly delivered received message is the inbox timeline's newest.
+    const delivered =
+      !mine && !m.editedAt && !m.deletedAt && !dmThread(dmId).some((x) => x.id === m.id);
+    if (delivered) advanceTimelineHead(dmId, m.id);
     if (m.deletedAt) {
       tombstoneDmMessage(dmId, m.id, m.deletedAt);
       return;
@@ -330,6 +350,12 @@ export async function openConversation(deps: OpenConversationDeps): Promise<Conv
   const firstPage = await fetchReceivedPage(null);
   hydrateSent();
   foldReceived(firstPage);
+  // The newest inbox page (newest first) settles the head against any delivery
+  // that arrived while it was in flight; only received messages qualify.
+  settleTimelineHead(
+    dmId,
+    firstPage.filter((m) => m.author !== me).map((m) => m.id),
+  );
   publishOlderState();
 
   return {
@@ -346,6 +372,7 @@ export async function openConversation(deps: OpenConversationDeps): Promise<Conv
       return olderCursor !== null || sentHasMore;
     },
     close(): void {
+      resetTimelineHead(dmId);
       offDm();
       offReaction();
       offTyping();

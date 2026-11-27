@@ -1,10 +1,20 @@
 /**
- * Read positions in a loaded timeline (OFSCP §7.7), worked out from what the
- * client already holds: message ids, and the order of the loaded list. The
- * stores keep each timeline chronological by position (history pages are
- * prepended, live messages appended), so position is the client's timeline
- * order. Cursors are never decoded for this (§2.5): a read marker names a
- * message, and the provider alone compares positions when it stores one.
+ * Read positions in a timeline (OFSCP §7.7), worked out from what the client
+ * already holds: message ids, the order the provider delivers them in, and the
+ * order of the loaded list. Cursors are never decoded for this (§2.5): a read
+ * marker names a message, and the provider alone compares positions when it
+ * stores one.
+ *
+ *  - Which message a view marks read is the scope's timeline HEAD: the newest
+ *    message the provider has delivered as part of the timeline itself (the
+ *    newest history page, then live and resumed creates, which arrive in
+ *    commit order). It is tracked as messages arrive (`stores/timeline-heads.ts`
+ *    with {@link headAfterNewestPage}), never read off the loaded list, because
+ *    the list also holds messages loaded out of timeline order (a reply
+ *    listing, an edit to a message outside the window), so its last entry need
+ *    not be the newest.
+ *  - The "New messages" divider ({@link dividerBeforeId}) is placed by list
+ *    position.
  */
 
 /** The fields of a loaded message these helpers look at. */
@@ -28,19 +38,31 @@ function confirmed(m: TimelineEntry): boolean {
 }
 
 /**
- * The id of the newest confirmed message in `list` (by position) that `keep`
- * accepts, or `undefined` when there is none. This is the message a view marks
- * read: everything at or before it has been shown.
+ * The timeline head after the scope's NEWEST history page arrives, given the
+ * head recorded so far in this viewing session (`current`, from live or resumed
+ * creates delivered since the scope was opened) and the page's ids newest
+ * first (only those the head may name).
+ *
+ * The page is the newest messages at the moment the provider read it, and the
+ * subscription was made before the page was requested, so a live create either
+ * landed in the page or was committed after it was read:
+ *
+ *  - nothing recorded yet, or the recorded head is in the page → the page's
+ *    newest message is the head (it is at least as new);
+ *  - the recorded head is not in the page → it was committed after the page
+ *    was read, so it stays. (A resume replay — which the provider sends in
+ *    order, up to the present, right after `subscribe` — can deliver messages
+ *    older than the page here; keeping the replayed one is then only a step
+ *    behind, and the rest of the replay moves the head on to the newest.)
  */
-export function newestConfirmedId<T extends TimelineEntry>(
-  list: readonly T[],
-  keep: (m: T) => boolean = () => true,
+export function headAfterNewestPage(
+  current: string | undefined,
+  pageNewestFirst: readonly string[],
 ): string | undefined {
-  for (let i = list.length - 1; i >= 0; i--) {
-    const m = list[i];
-    if (m && confirmed(m) && keep(m)) return m.id;
-  }
-  return undefined;
+  const newest = pageNewestFirst[0];
+  if (newest === undefined) return current;
+  if (current === undefined || pageNewestFirst.includes(current)) return newest;
+  return current;
 }
 
 /**

@@ -512,11 +512,13 @@ const ThreadView: Component<{
   const typingActors = createMemo(() => dmTypingFor(props.dmId).filter((u) => u !== session.actor));
 
   // Auto-mark-read (§7.7): while a DM thread is open (the view always follows
-  // the bottom), keep its marker at the newest RECEIVED message. A marker names
-  // a message read from this provider; received messages are in the caller's
-  // inbox here, while a sent one may live on the counterparty's provider. The
-  // caller's own messages never count as unread, so this clears the thread.
-  trackNewestRead({ scopeId: () => props.dmId, messages, keep: (m) => m.mine !== true });
+  // the bottom), keep its marker at the newest RECEIVED message the inbox
+  // timeline delivered (the DM controller records it as the thread's head; a
+  // reply listing never moves it). A marker names a message read from this
+  // provider; received messages are in the caller's inbox here, while a sent
+  // one may live on the counterparty's provider. The caller's own messages
+  // never count as unread, so this clears the thread.
+  trackNewestRead({ scopeId: () => props.dmId });
 
   // Index messages by id so a reply-quote can resolve its parent's snippet.
   const byId = createMemo(() => {

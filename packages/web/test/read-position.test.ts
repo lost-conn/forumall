@@ -1,13 +1,13 @@
 /**
- * Read positions from loaded ids and order (`lib/read-position.ts`, §7.7): which
- * message a view marks read, and where the "New messages" divider goes. No
- * cursor is decoded; the list order is the timeline.
+ * Read positions (`lib/read-position.ts`, §7.7): how the newest history page
+ * settles a scope's timeline head (the message a view marks read), and where
+ * the "New messages" divider goes in the loaded list. No cursor is decoded.
  */
 import { describe, expect, test } from "bun:test";
 import {
   type TimelineEntry,
   dividerBeforeId,
-  newestConfirmedId,
+  headAfterNewestPage,
 } from "../src/lib/read-position.ts";
 
 const ME = "me@a.test";
@@ -17,26 +17,23 @@ const m = (id: string, author = "bob@a.test", extra: Partial<TimelineEntry> = {}
   ...extra,
 });
 
-describe("newestConfirmedId", () => {
-  test("the last confirmed message by position", () => {
-    expect(newestConfirmedId([m("1"), m("2"), m("3")])).toBe("3");
+describe("headAfterNewestPage", () => {
+  test("with nothing recorded yet, the page's newest message is the head", () => {
+    expect(headAfterNewestPage(undefined, ["3", "2", "1"])).toBe("3");
   });
 
-  test("skips pending and failed optimistic echoes", () => {
-    const list = [
-      m("1"),
-      m("2"),
-      m("opt_a", ME, { pending: true }),
-      m("opt_b", ME, { failed: true }),
-    ];
-    expect(newestConfirmedId(list)).toBe("2");
+  test("a recorded head the page holds yields to the page's newest", () => {
+    expect(headAfterNewestPage("2", ["3", "2", "1"])).toBe("3");
+    expect(headAfterNewestPage("3", ["3", "2", "1"])).toBe("3");
   });
 
-  test("honours keep, and is undefined when nothing qualifies", () => {
-    const list = [m("1"), m("2", ME)];
-    expect(newestConfirmedId(list, (x) => x.author !== ME)).toBe("1");
-    expect(newestConfirmedId([m("1", ME)], (x) => x.author !== ME)).toBeUndefined();
-    expect(newestConfirmedId([])).toBeUndefined();
+  test("a recorded head the page does not hold was committed after it, and stays", () => {
+    expect(headAfterNewestPage("4", ["3", "2", "1"])).toBe("4");
+  });
+
+  test("an empty page leaves the head as it is", () => {
+    expect(headAfterNewestPage("4", [])).toBe("4");
+    expect(headAfterNewestPage(undefined, [])).toBeUndefined();
   });
 });
 

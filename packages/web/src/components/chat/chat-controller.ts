@@ -14,7 +14,11 @@
  *      resume without a gap (the server replays post-cursor messages; the store
  *      de-dupes the overlap by message id),
  *   3. register per-type WS listeners that fold `message.*` / `reaction.*` /
- *      `channel.typing` events into the store.
+ *      `channel.typing` events into the store,
+ *   4. record the channel's timeline head (`stores/timeline-heads.ts`) — the
+ *      newest message the timeline delivered, which auto-mark-read names (§7.7):
+ *      every live or resumed create moves it, and the newest history page
+ *      settles it; older pages and reply listings never touch it.
  *
  * The channel has one lifetime, ended by `close()` or by the caller's `signal`.
  * Every REST load made for it (the first page, older pages, the reaction
@@ -70,6 +74,11 @@ import {
   tombstoneMessage,
   upsertMessage,
 } from "../../stores/chat.ts";
+import {
+  advanceTimelineHead,
+  resetTimelineHead,
+  settleTimelineHead,
+} from "../../stores/timeline-heads.ts";
 import { backfillReactions, noteLiveReaction } from "./reaction-backfill.ts";
 
 /**
@@ -160,6 +169,10 @@ export async function openChannel(deps: OpenChannelDeps): Promise<ChannelHandle>
   // de-dupes the history/live overlap by message id. We then advance the resume
   // cursor implicitly as live events arrive.
 
+  // The timeline head starts over with this open: what the last open saw says
+  // nothing about what this one has delivered.
+  resetTimelineHead(channelId);
+
   // 1) Wire WS events → store. Each listener filters to THIS channel.
   const offCreated = ws.on("message.created", (e: WsEnvelope) => {
     const data = (e as WsMessageCreated).data;
@@ -170,13 +183,18 @@ export async function openChannel(deps: OpenChannelDeps): Promise<ChannelHandle>
     // echoes per §7.1. (A duplicate-create answer has no `cursor`, so it never
     // advances the resume point.)
     const correlationId = (e as { correlationId?: string }).correlationId;
+    // A duplicate-create answer (correlated, no `cursor`) is the message stored
+    // earlier, wherever it sits in the timeline. Every other create arrives in
+    // commit order (live, or a resume replay up to now), so it is the newest.
+    const duplicateAnswer = correlationId !== undefined && data.cursor === undefined;
     const pending = correlationId ? pendingSends.get(correlationId) : undefined;
     if (pending && pending.channelId === channelId) {
       pendingSends.delete(correlationId as string);
       reconcileOptimistic(channelId, pending.clientMessageId, canonical);
-      return;
+    } else {
+      upsertMessage(channelId, canonical);
     }
-    upsertMessage(channelId, canonical);
+    if (!duplicateAnswer) advanceTimelineHead(channelId, canonical.id);
   });
 
   // A correlated `error` answering one of our `message.create`s (e.g. `403` no
@@ -233,6 +251,7 @@ export async function openChannel(deps: OpenChannelDeps): Promise<ChannelHandle>
     if (signal.aborted) return;
     lifetime.abort();
     deps.signal?.removeEventListener("abort", close);
+    resetTimelineHead(channelId);
     offCreated();
     offError();
     offUpdated();
@@ -268,6 +287,12 @@ export async function openChannel(deps: OpenChannelDeps): Promise<ChannelHandle>
   for (const m of [...page.messages].reverse()) {
     upsertMessage(channelId, toChatMessage(m));
   }
+  // The newest page (newest first) settles the head against any create that
+  // arrived while it was in flight.
+  settleTimelineHead(
+    channelId,
+    page.messages.map((m) => m.id),
+  );
 
   // A history page holds messages only (§7.2), so each loaded message's
   // reactions come from its own `…/reactions` listing; older pages and reply
