@@ -168,9 +168,17 @@ describe("WS message.create authorization (§5.2.1, §7.1)", () => {
     await subscribe(conn, ids.channelId);
     await subscribe(ownerConn, ids.channelId);
 
-    // post:memo is admin-only.
-    const memoAttempt = { type: "memo", content: text("m") };
-    expect(wsErrorCode(await wsCreate(conn, "c_memo", ids, memoAttempt))).toBe("forbidden");
+    // The owner may post a memo over WS.
+    const memo = wsMessage(
+      await wsCreate(ownerConn, "c_memo_ok", ids, { type: "memo", content: text("m") }),
+    );
+    expect(memo.type).toBe("memo");
+    const toMemo = { content: text("reply"), reference: { type: "reply", id: memo.id } };
+
+    // post:memo is admin-only. The member's memo is a valid reply to a memo, so
+    // it satisfies replyOnly and replyOnlyTo: only the post:<type> check refuses it.
+    const memoReply = { ...toMemo, type: "memo" };
+    expect(wsErrorCode(await wsCreate(conn, "c_memo", ids, memoReply))).toBe("forbidden");
     // replyOnly: a member must carry a reference…
     expect(wsErrorCode(await wsCreate(conn, "c_top", ids, { content: text("top") }))).toBe(
       "forbidden",
@@ -179,10 +187,7 @@ describe("WS message.create authorization (§5.2.1, §7.1)", () => {
     const toPlain = { content: text("r"), reference: { type: "reply", id: plain.id } };
     expect(wsErrorCode(await wsCreate(conn, "c_plain", ids, toPlain))).toBe("forbidden");
 
-    // The owner may post a memo over WS; the member may reply to it.
-    const memo = wsMessage(await wsCreate(ownerConn, "c_memo_ok", ids, memoAttempt));
-    expect(memo.type).toBe("memo");
-    const toMemo = { content: text("reply"), reference: { type: "reply", id: memo.id } };
+    // The same reply as a plain message is permitted and stored.
     const reply = wsMessage(await wsCreate(conn, "c_reply", ids, toMemo));
     expect(reply.reference).toEqual({ type: "reply", id: memo.id });
     expect(reply.author).toBe(member.actor);

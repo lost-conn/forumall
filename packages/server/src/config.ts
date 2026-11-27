@@ -26,7 +26,7 @@ const BoolEnvSchema = z.preprocess(
     .optional(),
 );
 
-const RawEnvSchema = z.object({
+const RawEnvFields = z.object({
   PORT: PortSchema.default(3000),
   /**
    * Public authority for this provider (the OFSCP signing authority / `iss`).
@@ -145,8 +145,9 @@ const RawEnvSchema = z.object({
    * Edit window for `article` messages in seconds (§7.1: providers SHOULD give
    * articles a longer window than chat, or none). Unset or empty (the default)
    * means no limit: an article carries no `permissions.editUntil` and its author
-   * may edit it at any time. Chat types (`message`, `memo`) and DMs always use
-   * `MESSAGE_EDIT_WINDOW_SECONDS`.
+   * may edit it at any time. When set it must be >= `MESSAGE_EDIT_WINDOW_SECONDS`
+   * (the cross-field check in {@link RawEnvSchema}). Chat types (`message`,
+   * `memo`) and DMs always use `MESSAGE_EDIT_WINDOW_SECONDS`.
    */
   ARTICLE_EDIT_WINDOW_SECONDS: z.preprocess(
     (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
@@ -278,6 +279,22 @@ const RawEnvSchema = z.object({
    * a proxy. Unset (default) → direct connection. Example `http://10.0.0.2:3128`.
    */
   PUSH_PROXY: z.string().url().optional(),
+});
+
+/** {@link RawEnvFields} plus the checks that span more than one variable. */
+const RawEnvSchema = RawEnvFields.superRefine((raw, ctx) => {
+  // §7.1: articles SHOULD get a longer edit window than chat, or none. A set
+  // article window shorter than the chat window would break that, so refuse it.
+  if (
+    raw.ARTICLE_EDIT_WINDOW_SECONDS !== undefined &&
+    raw.ARTICLE_EDIT_WINDOW_SECONDS < raw.MESSAGE_EDIT_WINDOW_SECONDS
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["ARTICLE_EDIT_WINDOW_SECONDS"],
+      message: `must be >= MESSAGE_EDIT_WINDOW_SECONDS (${raw.MESSAGE_EDIT_WINDOW_SECONDS}): articles get a longer edit window than chat, or none (leave it unset)`,
+    });
+  }
 });
 
 /** Parse a comma-separated list into trimmed, non-empty, de-duplicated entries. */

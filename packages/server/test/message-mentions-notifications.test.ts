@@ -110,12 +110,25 @@ describe("mentions replace text parsing (§5.3, §10.1)", () => {
     const { b, alice, bob, dave, ids } = await setup("rest-rules");
     const msg = await create(b, alice, ids, {
       content: text("no names here"),
-      mentions: [alice.actor, dave.actor, `ghost@${DOMAIN}`, "bob@elsewhere.test", bob.actor],
+      mentions: [alice.actor, dave.actor, `ghost@${DOMAIN}`, bob.actor],
     });
     expect(mentionsOf(b, "bob")).toEqual([msg.id]);
     expect(mentionsOf(b, "alice")).toEqual([]); // the author
     expect(mentionsOf(b, "dave")).toEqual([]); // cannot read the channel
     expect(listNotifications(b.db, "ghost").items).toEqual([]); // no such user
+  });
+
+  test("a listed remote actor notifies no one, even one sharing a local user's handle", async () => {
+    const { b, alice, ids } = await setup("rest-remote");
+    // `bob@elsewhere.test` is not the local `bob` (a member who can read the
+    // channel): only the domain tells them apart, so this is the domain check.
+    await create(b, alice, ids, {
+      content: text("no names here"),
+      mentions: ["bob@elsewhere.test"],
+    });
+    for (const handle of ["alice", "bob", "carol", "dave"]) {
+      expect(listNotifications(b.db, handle).items).toEqual([]);
+    }
   });
 
   test("WS message.create follows the same rule", async () => {

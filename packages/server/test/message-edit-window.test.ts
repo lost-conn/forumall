@@ -172,10 +172,24 @@ describe("edit window helpers and config", () => {
   test("ARTICLE_EDIT_WINDOW_SECONDS: unset or empty → no limit; a value ≥ 0; else rejected", () => {
     expect(loadConfig({}).articleEditWindowSeconds).toBeNull();
     expect(loadConfig({ ARTICLE_EDIT_WINDOW_SECONDS: "" }).articleEditWindowSeconds).toBeNull();
-    expect(loadConfig({ ARTICLE_EDIT_WINDOW_SECONDS: "0" }).articleEditWindowSeconds).toBe(0);
     expect(loadConfig({ ARTICLE_EDIT_WINDOW_SECONDS: "3600" }).articleEditWindowSeconds).toBe(3600);
+    expect(
+      loadConfig({ MESSAGE_EDIT_WINDOW_SECONDS: "0", ARTICLE_EDIT_WINDOW_SECONDS: "0" })
+        .articleEditWindowSeconds,
+    ).toBe(0);
     expect(() => loadConfig({ ARTICLE_EDIT_WINDOW_SECONDS: "-1" })).toThrow();
     expect(() => loadConfig({ ARTICLE_EDIT_WINDOW_SECONDS: "soon" })).toThrow();
+  });
+
+  test("ARTICLE_EDIT_WINDOW_SECONDS below the chat window is rejected (§7.1 SHOULD)", () => {
+    // Equal to the chat window is the shortest accepted value.
+    expect(loadConfig({ ARTICLE_EDIT_WINDOW_SECONDS: "900" }).articleEditWindowSeconds).toBe(900);
+    expect(() => loadConfig({ ARTICLE_EDIT_WINDOW_SECONDS: "899" })).toThrow(
+      /ARTICLE_EDIT_WINDOW_SECONDS[\s\S]*must be >= MESSAGE_EDIT_WINDOW_SECONDS \(900\)/,
+    );
+    expect(() =>
+      loadConfig({ MESSAGE_EDIT_WINDOW_SECONDS: "3600", ARTICLE_EDIT_WINDOW_SECONDS: "60" }),
+    ).toThrow(/must be >= MESSAGE_EDIT_WINDOW_SECONDS \(3600\)/);
   });
 });
 
