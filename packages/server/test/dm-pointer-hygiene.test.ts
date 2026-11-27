@@ -467,9 +467,10 @@ test("a pointer whose counterparty does not derive its dmId is ignored", async (
   // Not listed.
   expect(await listConversations(app, alice)).toEqual([]);
 
-  // Cannot hold a read marker, and the summary does not list the scope.
+  // Cannot hold a read marker (ignored like an unknown scope, §7.7), and the
+  // summary does not list the scope.
   const patch = await signedRequest(app, alice, "PATCH", "/api/me/read-markers", {
-    markers: [{ scopeId: dmId, lastReadSeq: 1 }],
+    markers: [{ scopeId: dmId, lastReadMessageId: "msg_x" }],
   });
   expect(patch.status).toBe(200);
   expect(

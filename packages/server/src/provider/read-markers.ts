@@ -1,15 +1,23 @@
 /**
- * Read-marker storage + unread-summary computation (read/unread tracking — a
- * provider-local extension, mirroring the per-user `privacy_settings` / `presence`
- * pattern). Owns the `read_markers` row lifecycle and the unread aggregation,
- * keeping the HTTP layer thin.
+ * Read-marker storage + unread-summary computation (OFSCP §7.7, OPTIONAL). Owns
+ * the `read_markers` row lifecycle and the unread aggregation, keeping the HTTP
+ * layer thin.
+ *
+ * ## Wire vs storage
+ * On the wire a marker names a MESSAGE (`lastReadMessageId`, §7.7) — never a
+ * cursor or a position. Internally the row stores that message's `seq`, a
+ * storage detail: {@link applyReadMarkerUpdates} resolves each id to its `seq`
+ * in the scope ({@link seqForMessage}), and every wire entry maps the stored
+ * `seq` back to the message id ({@link UnreadEntry}). The `seq` never leaves
+ * the provider.
  *
  * ## Unified scope + monotonic markers
  * A `scopeId` is a channel id (`chn_…`) or a DM conversation id (`dmId`, §7.4).
  * One table is correct because the global monotonic `seq` space already spans
- * both channel `messages` and `dm_messages`, so a single `last_read_seq` compares
- * against either store. Markers are **monotonic**: {@link setReadMarkers} never
- * moves one backward (it takes `MAX(existing, incoming)`).
+ * both channel `messages` and `dm_messages` — it IS the scope's timeline order —
+ * so a single `last_read_seq` compares against either store. Markers are
+ * **monotonic**: {@link setReadMarkers} never moves one backward (it takes
+ * `MAX(existing, incoming)`).
  *
  * ## Unread counts
  * For a channel scope, unread = messages with `seq > last_read_seq` the user did
@@ -17,12 +25,14 @@
  * `dm_messages` in the user's inbox with `seq > last_read_seq` the user did NOT
  * author. With no marker, everything is unread (last_read_seq treated as 0). The
  * user's own messages are excluded so sending a message never bumps your own
- * unread count.
+ * unread count. Tombstones keep their `id` and `seq` (§7.1), so they count; the
+ * count is an uncapped `COUNT(*)`, exact as §7.7 requires.
  *
  * Read state is private + per-account and is NEVER federated: markers key on the
  * LOCAL `handle`, and only locally-hosted channels + local DM inboxes are
  * summarized (remote channel read-state is out of scope).
  */
+import type { ReadMarkerUpdate } from "@forumall/shared";
 import { and, eq, sql } from "drizzle-orm";
 
 import type { Db } from "../db/index.ts";
@@ -38,18 +48,20 @@ import {
 import { canViewChannel } from "./channels.ts";
 import { conversationDerivesDmId } from "./dms.ts";
 
-/** A stored read marker (no unread count). */
+/** A stored read marker (storage form: the read message's `seq`; no unread count). */
 export interface ReadMarkerEntry {
   readonly scopeId: string;
   readonly lastReadSeq: number;
 }
 
-/** A summary entry: a marker plus the recomputed unread count for its scope. */
+/**
+ * One scope as the wire reports it (§7.7 `ReadMarker`): the newest message read
+ * (absent if nothing has been read) plus the recomputed unread count.
+ */
 export interface UnreadEntry {
   readonly scopeId: string;
-  /** The message at `lastReadSeq` (OFSCP wire field); absent at seq 0. */
+  /** The newest message read in this scope; absent if nothing has been read. */
   readonly lastReadMessageId?: string;
-  readonly lastReadSeq: number;
   readonly unreadCount: number;
   /** Owning group id for a channel scope; absent for DM scopes. */
   readonly groupId?: string;
@@ -228,7 +240,6 @@ export function getUnreadSummary(db: Db, handle: string, actor: string): UnreadE
       out.push({
         scopeId: ch.id,
         ...withMessageId(db, ch.id, sinceSeq),
-        lastReadSeq: sinceSeq,
         unreadCount,
         groupId: ch.groupId,
       });
@@ -248,7 +259,6 @@ export function getUnreadSummary(db: Db, handle: string, actor: string): UnreadE
     out.push({
       scopeId: conv.dmId,
       ...withMessageId(db, conv.dmId, sinceSeq),
-      lastReadSeq: sinceSeq,
       unreadCount,
     });
   }
@@ -257,37 +267,69 @@ export function getUnreadSummary(db: Db, handle: string, actor: string): UnreadE
 }
 
 /**
- * Recompute the {@link UnreadEntry} for a single scope (channel or DM) after a
- * marker advance, for the `read.updated` fan-out. The scope kind is inferred from
- * the id prefix (`chn_` → channel; otherwise a DM `dmId`).
+ * Apply a `PATCH /api/me/read-markers` body for `handle` (`actor` =
+ * `handle@<thisDomain>`), per §7.7, and return the entries to report: exactly
+ * the scopes that advanced, each once, with its new marker and `unreadCount`.
+ *
+ * A marker is ignored — not stored, not reported — when its scope is one the
+ * user cannot hold a marker on ({@link canHoldMarker}: unknown, unreadable or
+ * unlisted, all alike), when it names a message this provider does not hold in
+ * that scope, or when it would not move the marker forward. Several markers for
+ * one scope in a body are applied in order; the scope is reported once, at its
+ * final position.
  */
-export function unreadEntryFor(
+export function applyReadMarkerUpdates(
+  db: Db,
+  handle: string,
+  actor: string,
+  markers: readonly ReadMarkerUpdate[],
+): UnreadEntry[] {
+  const entries: ReadMarkerEntry[] = [];
+  for (const m of markers) {
+    if (!canHoldMarker(db, handle, actor, m.scopeId)) continue;
+    const seq = seqForMessage(db, m.scopeId, m.lastReadMessageId);
+    if (seq !== null) entries.push({ scopeId: m.scopeId, lastReadSeq: seq });
+  }
+  const advanced = setReadMarkers(db, handle, entries);
+  const stored = getReadMarkers(db, handle);
+  const out: UnreadEntry[] = [];
+  for (const scopeId of advanced) {
+    const seq = stored.get(scopeId);
+    if (seq !== undefined) out.push(unreadEntryFor(db, handle, actor, scopeId, seq));
+  }
+  return out;
+}
+
+/**
+ * Recompute the {@link UnreadEntry} for a single scope (channel or DM) at the
+ * stored `lastReadSeq`, after a marker advance.
+ */
+function unreadEntryFor(
   db: Db,
   handle: string,
   actor: string,
   scopeId: string,
   lastReadSeq: number,
 ): UnreadEntry {
-  if (scopeId.startsWith("chn_")) {
-    const unreadCount = channelUnread(db, scopeId, lastReadSeq, actor);
-    // Look up the channel's owning group so the rail rollup stays correct on a
-    // multi-device `read.updated`. A missing channel row just omits groupId.
-    const chRow = db.drizzle
-      .select({ groupId: channels.groupId })
-      .from(channels)
-      .where(eq(channels.id, scopeId))
-      .limit(1)
-      .all()[0];
-    return {
-      scopeId,
-      ...withMessageId(db, scopeId, lastReadSeq),
-      lastReadSeq,
-      unreadCount,
-      groupId: chRow?.groupId,
-    };
+  if (isDmScope(scopeId)) {
+    const unreadCount = dmUnread(db, handle, scopeId, lastReadSeq, actor);
+    return { scopeId, ...withMessageId(db, scopeId, lastReadSeq), unreadCount };
   }
-  const unreadCount = dmUnread(db, handle, scopeId, lastReadSeq, actor);
-  return { scopeId, ...withMessageId(db, scopeId, lastReadSeq), lastReadSeq, unreadCount };
+  const unreadCount = channelUnread(db, scopeId, lastReadSeq, actor);
+  // The channel's owning group keeps the client's rail rollup correct on a
+  // `read.updated`. A marker is only accepted on an existing channel.
+  const chRow = db.drizzle
+    .select({ groupId: channels.groupId })
+    .from(channels)
+    .where(eq(channels.id, scopeId))
+    .limit(1)
+    .all()[0];
+  return {
+    scopeId,
+    ...withMessageId(db, scopeId, lastReadSeq),
+    unreadCount,
+    ...(chRow ? { groupId: chRow.groupId } : {}),
+  };
 }
 
 /**
@@ -331,9 +373,11 @@ function isDmScope(scopeId: string): boolean {
 /**
  * The provider `seq` of message `messageId` within `scopeId` (a channel id or a
  * dmId), or `null` if no such message is held here. Used to accept OFSCP read
- * markers, which name a message rather than a provider-internal position.
+ * markers, which name a message rather than a provider-internal position. For a
+ * DM scope this covers the caller's whole conversation view on this provider
+ * (§7.4): every row under the `dmId` belongs to one of its two participants.
  */
-export function seqForMessage(db: Db, scopeId: string, messageId: string): number | null {
+function seqForMessage(db: Db, scopeId: string, messageId: string): number | null {
   const row = isDmScope(scopeId)
     ? db.drizzle
         .select({ seq: dmMessages.seq })

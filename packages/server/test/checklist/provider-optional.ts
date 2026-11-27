@@ -128,9 +128,10 @@ export const PROVIDER_OPTIONAL: readonly ChecklistEntry[] = [
     level: "provider-may",
     covers: [
       "packages/server/test/read-markers.test.ts",
+      "packages/server/test/read-markers-http.test.ts",
+      "packages/server/test/read-markers-conformance.test.ts",
       "packages/server/test/guest-claim.test.ts",
     ],
-    status: "partial",
-    note: "Tests only: `unreadCount` is an uncapped `COUNT(*)` with no `deleted_at` filter, so it is exact and counts tombstones, for channels (`packages/server/src/provider/read-markers.ts:164`) and DMs (`:183`). No test deletes a message and asserts it still counts as unread (`packages/server/test/read-markers.test.ts:206`–`:359` count live messages only).",
+    status: "covered",
   },
 ];

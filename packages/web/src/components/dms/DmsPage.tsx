@@ -33,7 +33,6 @@ import {
   onCleanup,
   onMount,
 } from "solid-js";
-import { seqFromCursor } from "../../lib/cursor.ts";
 import { fetchDmConversations, fetchDmReplies } from "../../lib/dm-api.ts";
 import { DmSentStore } from "../../lib/dm-store.ts";
 import { domainOf, isLocalActor } from "../../lib/federation.ts";
@@ -58,7 +57,7 @@ import {
 } from "../../stores/notifications.ts";
 import { subscribePresence } from "../../stores/presence-controller.ts";
 import { displayNameFor, warmProfile, warmProfiles } from "../../stores/profiles.ts";
-import { markRead, unreadCountFor } from "../../stores/read-markers.ts";
+import { unreadCountFor } from "../../stores/read-markers.ts";
 import { session, sessionClient, sessionWs } from "../../stores/session.ts";
 import { Icon, type IconName } from "../Icon.tsx";
 import { AttachmentList } from "../shared/AttachmentList.tsx";
@@ -70,6 +69,7 @@ import { ReactionBar, ReactionPicker } from "../shared/Reactions.tsx";
 import { ReplyQuote } from "../shared/ReplyQuote.tsx";
 import { RichText } from "../shared/RichText.tsx";
 import { UnreadBadge } from "../shared/UnreadBadge.tsx";
+import { trackNewestRead } from "../shared/read-tracking.ts";
 import { Avatar } from "../social/Avatar.tsx";
 import { PresenceDot } from "../social/PresenceDot.tsx";
 import { DmComposer } from "./DmComposer.tsx";
@@ -511,32 +511,12 @@ const ThreadView: Component<{
   const messages = createMemo(() => dmThread(props.dmId));
   const typingActors = createMemo(() => dmTypingFor(props.dmId).filter((u) => u !== session.actor));
 
-  // Auto-mark-read: while a DM thread is open, advance its read marker to the
-  // newest decodable seq (the DM view always follows the bottom, so an open
-  // thread is effectively "pinned"). Excludes the caller's own messages from
-  // unread server-side. Re-fires as new messages arrive while the thread is open.
-  const newestRead = createMemo(() => {
-    let max = 0;
-    let id: string | undefined;
-    for (const m of messages()) {
-      const s = seqFromCursor(m.cursor);
-      if (s != null && s > max) {
-        max = s;
-        id = m.id;
-      }
-    }
-    return { seq: max, id };
-  });
-  const newestDmSeq = createMemo(() => newestRead().seq);
-  createEffect(
-    on(
-      () => [props.dmId, newestDmSeq()] as const,
-      () => {
-        const seq = newestDmSeq();
-        if (seq > 0) markRead(props.dmId, seq, newestRead().id);
-      },
-    ),
-  );
+  // Auto-mark-read (§7.7): while a DM thread is open (the view always follows
+  // the bottom), keep its marker at the newest RECEIVED message. A marker names
+  // a message read from this provider; received messages are in the caller's
+  // inbox here, while a sent one may live on the counterparty's provider. The
+  // caller's own messages never count as unread, so this clears the thread.
+  trackNewestRead({ scopeId: () => props.dmId, messages, keep: (m) => m.mine !== true });
 
   // Index messages by id so a reply-quote can resolve its parent's snippet.
   const byId = createMemo(() => {

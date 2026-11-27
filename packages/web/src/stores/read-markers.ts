@@ -1,36 +1,39 @@
 /**
- * Read-marker store (read/unread tracking — a provider-local extension).
+ * Read-marker store (OFSCP §7.7).
  *
- * Holds, per scope (`chn_…` channel id OR a `dmId`), the user's `lastReadSeq` and
- * the server-computed `unreadCount`. The store is the single source of truth for
- * unread badges (space rail, channel list, DM list) and the "New messages"
- * divider position.
+ * Holds, per scope (`chn_…` channel id OR a `dmId`), the newest message the user
+ * has read (`lastReadMessageId`, absent if none) and the provider-computed
+ * `unreadCount`. The store is the single source of truth for unread badges
+ * (space rail, channel list, DM list) and the "New messages" divider's anchor.
  *
  *  - {@link hydrateReadMarkers} pulls the full summary on session start.
- *  - {@link markRead} optimistically advances a marker (monotonic: never
- *    decreases) + zeros its unread, then PATCHes the server.
- *  - {@link applyReadUpdated} folds an inbound `read.updated` WS event (another
- *    device advanced a marker) into the store.
+ *  - {@link markRead} optimistically moves a scope's marker to a message and
+ *    zeros its unread count, then PATCHes the spec body
+ *    `{ markers: [{ scopeId, lastReadMessageId }] }`.
+ *  - {@link applyReadUpdated} folds an inbound `read.updated` WS event (a
+ *    marker advanced, on this device or another) into the store.
  *  - {@link installReadMarkerListener} wires the single `read.updated` listener
  *    onto the home WS client (idempotent), mirroring the presence controller.
  *
- * ## Cursor → seq
- * Markers are keyed on the global monotonic `seq` (a number). Messages on the
- * client carry an OPAQUE cursor (`base64url(JSON.stringify({ seq }))`, the §7.2
- * encoding); `lib/cursor.ts` `seqFromCursor` decodes one to its `seq` so a
- * caller can advance a marker from the newest loaded message. That codec lives
- * in `lib/` rather than here because cursor ORDERING (chat/DM/feed timelines,
- * the WS resume `since`) needs it too, and a store is the wrong home for it.
+ * ## Ordering
+ * A marker is a message id, and the client never decodes cursors to compare
+ * positions (§2.5). The provider keeps markers monotonic and reports only real
+ * advances, so the store takes each provider report as the current state.
+ * `read.updated` events arrive in the order the provider committed them, so
+ * the last one received is the latest state. The views pick which message to
+ * mark from the positions of their loaded timeline (`lib/read-position.ts`).
  */
 import type { ReadMarker } from "@forumall/shared";
 import { createStore, reconcile } from "solid-js/store";
 import type { OfscpWsClient } from "../lib/ofscp-ws.ts";
 import { getReadMarkers, setReadMarkers as patchReadMarkers } from "../lib/read-markers-api.ts";
+import type { ReadSnapshot } from "../lib/read-position.ts";
 import { sessionClient } from "./session.ts";
 
 /** Per-scope read state. */
 export interface ScopeReadState {
-  lastReadSeq: number;
+  /** The newest message read in this scope; absent if nothing has been read. */
+  lastReadMessageId?: string;
   unreadCount: number;
   /** Owning group id for a channel scope; absent for DM scopes. */
   groupId?: string;
@@ -45,16 +48,20 @@ const [readState, setReadState] = createStore<ReadMarkerState>({ scopes: {} });
 
 export { readState };
 
+/** The store form of one provider-reported entry (`groupId` kept if omitted). */
+function fromWire(e: ReadMarker, prev: ScopeReadState | undefined): ScopeReadState {
+  const groupId = e.groupId ?? prev?.groupId;
+  return {
+    ...(e.lastReadMessageId !== undefined ? { lastReadMessageId: e.lastReadMessageId } : {}),
+    unreadCount: e.unreadCount,
+    ...(groupId !== undefined ? { groupId } : {}),
+  };
+}
+
 /** Replace the whole summary (hydrate). */
 function setSummary(entries: ReadMarker[]): void {
   const next: Record<string, ScopeReadState> = {};
-  for (const e of entries) {
-    next[e.scopeId] = {
-      lastReadSeq: e.lastReadSeq ?? 0,
-      unreadCount: e.unreadCount,
-      groupId: e.groupId,
-    };
-  }
+  for (const e of entries) next[e.scopeId] = fromWire(e, undefined);
   // `reconcile` replaces the whole map (drops scopes absent from the new
   // summary); a bare object set would MERGE and leave stale keys behind.
   setReadState("scopes", reconcile(next));
@@ -73,48 +80,46 @@ export async function hydrateReadMarkers(): Promise<void> {
 }
 
 /**
- * Advance the marker for `scopeId` up to `seq` (monotonic: a lower or equal seq is
- * a no-op). Optimistically zeros the scope's unread count, then PATCHes the server
- * (which re-broadcasts to other devices). Safe to call frequently — it short-
- * circuits when the marker would not move.
+ * Mark `scopeId` read up to message `messageId` — the newest message the view
+ * has shown. A no-op without an id or when the marker already names it.
+ * Optimistically records the marker and zeros the unread count, then PATCHes
+ * the provider (which tells every device through `read.updated`).
+ *
+ * The answer settles the optimistic state: an advanced scope is applied unless
+ * a newer local mark has replaced it meanwhile; a scope that did NOT advance
+ * means the provider holds a newer marker already (or ignored the message), so
+ * the summary is re-read rather than keeping a guess.
  */
-export function markRead(
-  scopeId: string,
-  seq: number | null | undefined,
-  messageId?: string,
-): void {
-  if (seq == null || !Number.isFinite(seq)) return;
+export function markRead(scopeId: string, messageId: string | undefined): void {
+  if (messageId === undefined) return;
   const cur = readState.scopes[scopeId];
-  if (cur && cur.lastReadSeq >= seq) return; // monotonic guard
+  if (cur?.lastReadMessageId === messageId) return;
 
   setReadState("scopes", scopeId, (prev) => ({
-    lastReadSeq: Math.max(prev?.lastReadSeq ?? 0, seq),
+    lastReadMessageId: messageId,
     unreadCount: 0,
-    groupId: prev?.groupId,
+    ...(prev?.groupId !== undefined ? { groupId: prev.groupId } : {}),
   }));
 
   const client = sessionClient();
   if (!client) return;
-  // OFSCP names the newest-read message; the seq rides along as Forumall's
-  // extension so older servers keep working.
-  void patchReadMarkers(client, [
-    { scopeId, lastReadSeq: seq, ...(messageId ? { lastReadMessageId: messageId } : {}) },
-  ]).catch(() => undefined);
+  void patchReadMarkers(client, [{ scopeId, lastReadMessageId: messageId }]).then(
+    (scopes) => {
+      const entry = scopes.find((s) => s.scopeId === scopeId);
+      if (!entry) {
+        void hydrateReadMarkers();
+        return;
+      }
+      if (readState.scopes[scopeId]?.lastReadMessageId === messageId) applyReadUpdated([entry]);
+    },
+    () => undefined,
+  );
 }
 
-/** Fold an inbound `read.updated` event (multi-device sync) into the store. */
+/** Fold provider-reported advances (`read.updated`, a PATCH answer) into the store. */
 export function applyReadUpdated(markers: ReadMarker[]): void {
   for (const m of markers) {
-    const cur = readState.scopes[m.scopeId];
-    // Monotonic: only advance.
-    const seq = m.lastReadSeq ?? 0;
-    if (cur && cur.lastReadSeq > seq) continue;
-    setReadState("scopes", m.scopeId, {
-      lastReadSeq: Math.max(cur?.lastReadSeq ?? 0, seq),
-      unreadCount: m.unreadCount,
-      // Preserve a known groupId if this update omits it.
-      groupId: m.groupId ?? cur?.groupId,
-    });
+    setReadState("scopes", m.scopeId, (prev) => fromWire(m, prev));
   }
 }
 
@@ -125,9 +130,13 @@ export function unreadCountFor(scopeId: string): number {
   return readState.scopes[scopeId]?.unreadCount ?? 0;
 }
 
-/** The last-read `seq` for a scope; 0 when unknown. */
-export function lastReadSeqFor(scopeId: string): number {
-  return readState.scopes[scopeId]?.lastReadSeq ?? 0;
+/** The scope's read state for placing the "New messages" divider. */
+export function readSnapshotFor(scopeId: string): ReadSnapshot {
+  const s = readState.scopes[scopeId];
+  return {
+    ...(s?.lastReadMessageId !== undefined ? { lastReadMessageId: s.lastReadMessageId } : {}),
+    unreadCount: s?.unreadCount ?? 0,
+  };
 }
 
 /**

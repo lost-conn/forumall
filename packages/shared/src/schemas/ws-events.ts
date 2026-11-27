@@ -16,6 +16,7 @@ import { GroupPointerSchema, MemberSchema } from "./groups.ts";
 import { DmConversationSchema, MessageSchema, ReactionSchema } from "./messaging.ts";
 import { NotificationSchema } from "./notifications.ts";
 import { PresenceSchema } from "./privacy.ts";
+import { ReadUpdatedEventSchema } from "./read-markers.ts";
 import { wsEvent } from "./ws-frame.ts";
 
 // ---------------------------------------------------------------------------
@@ -294,29 +295,12 @@ export const WsPresenceUpdateSchema = wsEvent(
 export type WsPresenceUpdate = z.infer<typeof WsPresenceUpdateSchema>;
 
 /**
- * `read.updated` event — the caller's read markers advanced on ANOTHER device
- * (multi-device sync). Fanned out by `hub.publishToActor` to all of the actor's
- * connections after a `PATCH /api/me/read-markers`. Carries the touched markers,
- * each with its recomputed `unreadCount`. Passthrough, like every other event.
+ * `read.updated` event (§7.7) — the caller's read markers advanced. Sent by
+ * `hub.publishToActor` to all of the actor's connections after a
+ * `PATCH /api/me/read-markers`, carrying the same entries as that response.
+ * Passthrough, like every other event.
  */
-export const WsReadUpdatedSchema = wsEvent(
-  "read.updated",
-  z
-    .object({
-      markers: z.array(
-        z
-          .object({
-            scopeId: z.string().min(1),
-            lastReadMessageId: z.string().min(1).optional(),
-            // Forumall extension (not OFSCP); other providers omit it.
-            lastReadSeq: z.number().int().nonnegative().optional(),
-            unreadCount: z.number().int().nonnegative(),
-          })
-          .passthrough(),
-      ),
-    })
-    .passthrough(),
-);
+export const WsReadUpdatedSchema = wsEvent("read.updated", ReadUpdatedEventSchema);
 export type WsReadUpdated = z.infer<typeof WsReadUpdatedSchema>;
 
 /**

@@ -32,7 +32,6 @@ import {
   onCleanup,
   onMount,
 } from "solid-js";
-import { seqFromCursor } from "../../lib/cursor.ts";
 import { listMembers } from "../../lib/groups-api.ts";
 import { formatTime } from "../../lib/time.ts";
 import { clearActiveThread, setActiveThread } from "../../stores/active-thread.ts";
@@ -51,7 +50,6 @@ import {
   setGroupDisplayName,
   warmProfiles,
 } from "../../stores/profiles.ts";
-import { lastReadSeqFor, markRead } from "../../stores/read-markers.ts";
 import { session, sessionClient, sessionWs } from "../../stores/session.ts";
 import { Icon, type IconName } from "../Icon.tsx";
 import { FollowToggle } from "../feed/FollowToggle.tsx";
@@ -62,6 +60,7 @@ import { MessageStatus } from "../shared/MessageStatus.tsx";
 import { ReactionBar, ReactionPicker } from "../shared/Reactions.tsx";
 import { ReplyQuote } from "../shared/ReplyQuote.tsx";
 import { RichText } from "../shared/RichText.tsx";
+import { createUnreadDivider, trackNewestRead } from "../shared/read-tracking.ts";
 import { Avatar } from "../social/Avatar.tsx";
 import { openUserProfile } from "../social/user-profile-store.ts";
 import { ArticleReadingPane, splitArticle } from "./ArticleReadingPane.tsx";
@@ -429,68 +428,18 @@ export const ChatView: Component<{
     onCleanup(() => ro.disconnect());
   });
 
-  // ---- Read state: auto-mark-read + "New messages" divider --------------
-  // The newest decodable `seq` among loaded messages (optimistic echoes carry no
-  // cursor; tombstones/edits keep theirs). This is the high-water mark we advance
-  // the read marker to.
-  const newestRead = createMemo(() => {
-    let max = 0;
-    let id: string | undefined;
-    for (const m of messages()) {
-      const s = seqFromCursor(m.cursor);
-      if (s != null && s > max) {
-        max = s;
-        id = m.id;
-      }
-    }
-    return { seq: max, id };
+  // ---- Read state: "New messages" divider + auto-mark-read (§7.7) -------
+  // The divider is placed once per opened channel from the marker as it stood
+  // on open. Auto-mark-read advances the marker to the newest loaded message
+  // while the view is pinned at the bottom (`pinned` starts true on open, so
+  // opening marks read; reading history scrolled up leaves the marker put).
+  const dividerBeforeId = createUnreadDivider({
+    scopeId: channelId,
+    messages,
+    ready: () => handle() !== null,
+    self: () => session.actor ?? undefined,
   });
-  const newestSeq = createMemo(() => newestRead().seq);
-
-  // Divider anchor: snapshot the stored `lastReadSeq` when the channel opens, so
-  // the "New messages" line stays put for this viewing session even as
-  // auto-read advances the live marker (like real chat apps). The first message
-  // with `seq > dividerSeq` (not authored by self) gets the divider above it.
-  const [dividerSeq, setDividerSeq] = createSignal(0);
-  createEffect(
-    on(channelId, () => {
-      // Snapshot on open. The hydrate/summary may land slightly after; the
-      // memo below tolerates a 0 snapshot (no divider until there's a marker).
-      setDividerSeq(lastReadSeqFor(channelId()));
-    }),
-  );
-
-  // The id of the message the divider sits ABOVE: the oldest loaded message with
-  // `seq > dividerSeq` that the viewer did not author. `null` → no divider.
-  const dividerBeforeId = createMemo<string | null>(() => {
-    const anchor = dividerSeq();
-    if (anchor <= 0) return null;
-    let best: { seq: number; id: string } | null = null;
-    for (const m of messages()) {
-      if (m.author === session.actor) continue;
-      const s = seqFromCursor(m.cursor);
-      if (s == null || s <= anchor) continue;
-      if (!best || s < best.seq) best = { seq: s, id: m.id };
-    }
-    return best?.id ?? null;
-  });
-
-  // Auto-mark-read: while this channel is active AND pinned at the bottom (or on
-  // initial open), advance the read marker to the newest loaded seq. As new
-  // messages arrive while pinned, this re-fires and keeps the marker current.
-  // Scrolled-up reading history → not pinned → we leave the marker put.
-  createEffect(
-    on(
-      () => [channelId(), newestSeq()] as const,
-      () => {
-        const seq = newestSeq();
-        if (seq <= 0) return;
-        // `pinned` starts true on open/switch, so initial-open marks read; once
-        // the user scrolls up it goes false and we stop advancing.
-        if (pinned) markRead(channelId(), seq, newestRead().id);
-      },
-    ),
-  );
+  trackNewestRead({ scopeId: channelId, messages, enabled: () => pinned });
 
   // Jump to the original post when a reply reference is clicked: scroll its row
   // into view and flash a transient highlight. No-op if the parent is older than

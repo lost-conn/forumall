@@ -1,45 +1,41 @@
 /**
- * Read-marker schemas (read/unread tracking — a provider-local extension, not in
- * the OFSCP v0.1 object model). One marker records a user's last-read `seq` in a
- * scope (a channel id `chn_…` or a DM conversation id `dmId`, §7.4); the unread
- * summary stamps a recomputed `unreadCount` onto each scope.
+ * Read-marker schemas (OFSCP §7.7, OPTIONAL). A marker records, per scope (a
+ * channel local id or a DM `dmId`, §7.4), the newest MESSAGE the user has read —
+ * named by its id, never by a cursor or a provider-internal position (§2.5). The
+ * summary stamps a provider-computed `unreadCount` onto each scope.
  *
- * All objects are `.passthrough()` per the §2.3 forward-compatibility convention.
+ * Mirrors `schemas/v0.1/read-markers-response.json` and
+ * `read-markers-update-request.json` (and `ws/read-updated.json`). All objects
+ * are `.passthrough()` per the §2.3 forward-compatibility convention: a provider
+ * MAY add fields, so a client never rejects them — but nothing here depends on
+ * one.
  */
 import { z } from "zod";
 
+import { LocalIdSchema } from "./common.ts";
+
 /**
- * A single read-marker entry in the unread summary: the scope, the last-read
- * `seq`, and the number of unread messages in that scope (`seq > lastReadSeq`,
- * excluding the user's own messages).
+ * One scope in the read-marker summary (`$defs/ReadMarker`): the scope, the
+ * newest message read (absent if nothing has been read), and the number of
+ * messages newer than the marker not authored by the user (tombstones included).
  */
 export const ReadMarkerSchema = z
   .object({
-    /** Channel id (`chn_…`) or DM conversation id (`dmId`). */
+    /** A channel local id or a dmId (§7.7). */
     scopeId: z.string().min(1),
-    /**
-     * The newest message the user has read in this scope (OFSCP read markers);
-     * absent when nothing has been read yet.
-     */
-    lastReadMessageId: z.string().min(1).optional(),
-    /**
-     * Forumall extension (not OFSCP): the provider-internal `seq` of that
-     * message, used by Forumall's own web client. Other clients use
-     * `lastReadMessageId`. Optional on the wire (other providers omit it).
-     */
-    lastReadSeq: z.number().int().nonnegative().optional(),
-    /** Unread message count in this scope (newer than the marker, own excluded). */
+    /** The newest message the user has read in this scope; absent if none. */
+    lastReadMessageId: LocalIdSchema.optional(),
+    /** Exact count of messages newer than the marker, not authored by the user. */
     unreadCount: z.number().int().nonnegative(),
-    /** Owning group id for a channel scope; absent for DM scopes. */
-    groupId: z.string().optional(),
+    /** The channel's group, present for channel scopes. */
+    groupId: LocalIdSchema.optional(),
   })
   .passthrough();
 export type ReadMarker = z.infer<typeof ReadMarkerSchema>;
 
 /**
- * GET /api/me/read-markers response: the user's full unread summary — one entry
- * per scope the user can currently see (channels they're a member of + DM
- * conversations in their inbox).
+ * `GET`/`PATCH /api/me/read-markers` response. For `GET`, one entry per scope the
+ * user can currently read; for `PATCH`, only the scopes that actually advanced.
  */
 export const ReadMarkersResponseSchema = z
   .object({
@@ -48,24 +44,19 @@ export const ReadMarkersResponseSchema = z
   .passthrough();
 export type ReadMarkersResponse = z.infer<typeof ReadMarkersResponseSchema>;
 
-/** One marker to set in the PATCH body: advance `scopeId` to `lastReadSeq`. */
+/** One marker in the `PATCH` body: advance `scopeId` to `lastReadMessageId`. */
 export const ReadMarkerUpdateSchema = z
   .object({
     scopeId: z.string().min(1),
-    /** OFSCP: the newest message read. Preferred when present. */
-    lastReadMessageId: z.string().min(1).optional(),
-    /** Forumall extension: the same position as a provider `seq`. */
-    lastReadSeq: z.number().int().nonnegative().optional(),
+    lastReadMessageId: LocalIdSchema,
   })
-  .passthrough()
-  .refine((m) => m.lastReadMessageId !== undefined || m.lastReadSeq !== undefined, {
-    message: "a marker needs lastReadMessageId (or the Forumall lastReadSeq extension)",
-  });
+  .passthrough();
 export type ReadMarkerUpdate = z.infer<typeof ReadMarkerUpdateSchema>;
 
 /**
- * PATCH /api/me/read-markers body: one or many markers to advance. Markers are
- * monotonic server-side — a value below the stored marker is ignored.
+ * `PATCH /api/me/read-markers` body: at least one marker. Markers only move
+ * forward; a backward one, one naming a message the provider does not hold in
+ * the scope, and one for an unknown or unreadable scope are ignored (§7.7).
  */
 export const ReadMarkersUpdateRequestSchema = z
   .object({
@@ -75,9 +66,8 @@ export const ReadMarkersUpdateRequestSchema = z
 export type ReadMarkersUpdateRequest = z.infer<typeof ReadMarkersUpdateRequestSchema>;
 
 /**
- * The `read.updated` WS event `data` (multi-device sync): the markers that were
- * just advanced, each with its recomputed `unreadCount`. Fanned to the actor's
- * OTHER devices via `hub.publishToActor`. Same shape as one summary entry.
+ * The `read.updated` WS event `data`: the same entries as the `PATCH` response
+ * that advanced them, sent to all of the user's connections (§7.7).
  */
 export const ReadUpdatedEventSchema = z
   .object({

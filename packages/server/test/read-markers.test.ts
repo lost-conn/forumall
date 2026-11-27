@@ -1,182 +1,56 @@
 /**
- * Read/unread tracking tests (read-markers — a provider-local extension).
+ * Read markers & unread counts (§7.7) — storage and aggregation.
  *
  * Covers:
- *  - `setReadMarkers` / `getReadMarkers` round-trip.
- *  - The monotonic guard: a backward set is ignored.
- *  - Unread counts exclude the user's OWN messages.
- *  - Unread counts for channels AND DMs, advanced by a marker.
- *  - `GET /api/me/read-markers` summary + `PATCH /api/me/read-markers` over the
- *    real signed HTTP surface.
- *  - The PATCH `read.updated` fan-out to the actor's OTHER device (multi-device
- *    sync) over a real `Bun.serve` + `new WebSocket` (no mocks).
+ *  - `setReadMarkers` / `getReadMarkers` round-trip (the storage form: a `seq`).
+ *  - The monotonic guard: a backward or equal set is ignored.
+ *  - Unread counts exclude the user's OWN messages, for channels and DMs.
+ *  - Unread counts drop as a marker advances.
+ *  - Tombstones still count as unread (they keep their id and timeline
+ *    position, §7.1), for channels and DMs, and the count is exact.
  *
- * Channel/DM data is seeded via the provider helpers (messages are normally
- * created over WS); the read-marker logic under test is storage + aggregation.
+ * The wire surface (`GET`/`PATCH /api/me/read-markers`) is in
+ * `read-markers-http.test.ts`; live-body schema conformance in
+ * `read-markers-conformance.test.ts`.
  */
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  type AuthBootstrapResponse,
-  type WsEnvelope,
-  deriveDmId,
-  generateKeyPair,
-  rfc3339Timestamp,
-  sign,
-  signWsAuthenticate,
-} from "@forumall/shared";
+import { deriveDmId } from "@forumall/shared";
 
-import { type AppWithWebSocket, createApp } from "../src/app.ts";
-import { type Argon2Params, type Config, loadConfig } from "../src/config.ts";
-import { type Db, openDb } from "../src/db/index.ts";
-import { migrate } from "../src/db/migrate.ts";
-import { createChannel } from "../src/provider/channels.ts";
-import { storeDmMessage } from "../src/provider/dms.ts";
-import { createGroup } from "../src/provider/groups.ts";
-import { addMember } from "../src/provider/membership.ts";
-import { createMessage } from "../src/provider/messages.ts";
+import { tombstoneDmMessage } from "../src/provider/dm-edits.ts";
+import { tombstoneMessage } from "../src/provider/messages.ts";
 import { getReadMarkers, getUnreadSummary, setReadMarkers } from "../src/provider/read-markers.ts";
-
-const FAST_ARGON2: Argon2Params = { memoryKib: 1024, iterations: 1, parallelism: 1 };
-const DOMAIN = "providera.test";
-
-const FAST_TIMINGS = {
-  authTimeoutMs: 300,
-  challengeTtlMs: 10_000,
-  pingIntervalMs: 100_000,
-  idleTimeoutMs: 100_000,
-};
+import { type Booted, boot, registerUserWithKey } from "./helpers/provider-harness.ts";
+import { dmTo, handleOf, post, seedGroupChannel } from "./helpers/read-markers-fixtures.ts";
 
 let tmp: string;
+const booted: Booted[] = [];
 beforeAll(() => {
   tmp = mkdtempSync(join(tmpdir(), "forumall-readmarkers-"));
 });
 afterAll(() => {
   rmSync(tmp, { recursive: true, force: true });
 });
-
-interface Booted {
-  app: AppWithWebSocket;
-  db: Db;
-  config: Config;
-  server: ReturnType<typeof Bun.serve>;
-  url: string;
-}
-
-const booted: Booted[] = [];
-
-function boot(name: string): Booted {
-  const base = loadConfig({
-    DATA_DIR: tmp,
-    DB_PATH: join(tmp, `${name}.sqlite`),
-    WEB_DIR: join(tmp, `${name}-web`),
-    DOMAIN,
-  });
-  const config: Config = Object.freeze({ ...base, argon2: FAST_ARGON2 });
-  const db = openDb(config.dbPath);
-  migrate(db);
-  const app = createApp(config, { testOnlySkipReplayWarmup: true, db, wsTimings: FAST_TIMINGS });
-  const server = Bun.serve({ port: 0, fetch: app.fetch, websocket: app.__websocket });
-  const b: Booted = {
-    app,
-    db,
-    config,
-    server,
-    url: `ws://${server.hostname}:${server.port}/api/ws`,
-  };
-  booted.push(b);
-  return b;
-}
-
 afterEach(() => {
   for (const b of booted.splice(0)) b.server.stop(true);
 });
 
-interface Signer {
-  keyId: string;
-  privateKey: string;
-  publicKey: string;
-  actor: string;
-  handle: string;
+function start(name: string): Booted {
+  const b = boot(tmp, name);
+  booted.push(b);
+  return b;
 }
 
-function http(b: Booted, path: string, init: RequestInit): Promise<Response> {
-  return fetch(`http://${b.server.hostname}:${b.server.port}${path}`, init);
+/** `handle`'s unread count for `scopeId` from the summary (`undefined` if unlisted). */
+function unread(b: Booted, handle: string, actor: string, scopeId: string): number | undefined {
+  return getUnreadSummary(b.db, handle, actor).find((s) => s.scopeId === scopeId)?.unreadCount;
 }
 
-async function registerUserWithKey(b: Booted, handle: string): Promise<Signer> {
-  const reg = await http(b, "/api/auth/register", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ handle, password: "correct-horse" }),
-  });
-  expect(reg.status).toBe(201);
-  const token = ((await reg.json()) as AuthBootstrapResponse).bootstrap_token;
-
-  const { publicKey, privateKey } = generateKeyPair();
-  const res = await http(b, "/api/auth/device-keys", {
-    method: "POST",
-    headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
-    body: JSON.stringify({ public_key: publicKey, algorithm: "Ed25519", device_name: "dev" }),
-  });
-  expect(res.status).toBe(201);
-  const keyId = ((await res.json()) as { key_id: string }).key_id;
-  return { keyId, privateKey, publicKey, actor: `${handle}@${DOMAIN}`, handle };
-}
-
-function signedReq(
-  b: Booted,
-  signer: Signer,
-  method: string,
-  path: string,
-  bodyObj?: unknown,
-): Promise<Response> {
-  const body = bodyObj === undefined ? undefined : JSON.stringify(bodyObj);
-  const { headers } = sign({
-    actor: signer.actor,
-    keyId: signer.keyId,
-    privateKey: signer.privateKey,
-    authority: DOMAIN,
-    method,
-    path,
-    ...(body !== undefined ? { body } : {}),
-  });
-  return http(b, path, {
-    method,
-    headers: body !== undefined ? { ...headers, "content-type": "application/json" } : headers,
-    ...(body !== undefined ? { body } : {}),
-  });
-}
-
-/**
- * Seed a real private group owned by `owner` (a genuine `groups` row, not just
- * a membership row — channel visibility now looks up the group's own tier,
- * §11), return its id.
- */
-function seedGroup(b: Booted, owner: Signer): string {
-  return createGroup(b.db, owner.actor, { name: "g", tier: "private" }).id;
-}
-
-/** Post `text` from `author` in `(groupId, channelId)`; return its seq. */
-function post(b: Booted, groupId: string, channelId: string, author: string, text: string): number {
-  return createMessage(b.db, b.config, {
-    groupId,
-    channelId,
-    author,
-    type: "message",
-    content: { text, mime: "text/plain" },
-  }).seq;
-}
-
-// ---------------------------------------------------------------------------
-// Provider: setReadMarkers / getReadMarkers / getUnreadSummary
-// ---------------------------------------------------------------------------
-
-describe("read-markers provider", () => {
+describe("read-markers storage", () => {
   test("set + get round-trip", () => {
-    const b = boot("rm-roundtrip");
+    const b = start("rm-roundtrip");
     setReadMarkers(b.db, "alice", [
       { scopeId: "chn_a", lastReadSeq: 5 },
       { scopeId: "chn_b", lastReadSeq: 9 },
@@ -186,462 +60,118 @@ describe("read-markers provider", () => {
     expect(got.get("chn_b")).toBe(9);
   });
 
-  test("monotonic: a backward set is ignored", () => {
-    const b = boot("rm-monotonic");
-    const a1 = setReadMarkers(b.db, "alice", [{ scopeId: "chn_a", lastReadSeq: 10 }]);
-    expect(a1.has("chn_a")).toBe(true);
-    // Lower value → ignored, not advanced.
-    const a2 = setReadMarkers(b.db, "alice", [{ scopeId: "chn_a", lastReadSeq: 4 }]);
-    expect(a2.has("chn_a")).toBe(false);
+  test("monotonic: a backward or equal set is ignored", () => {
+    const b = start("rm-monotonic");
+    expect(
+      setReadMarkers(b.db, "alice", [{ scopeId: "chn_a", lastReadSeq: 10 }]).has("chn_a"),
+    ).toBe(true);
+    expect(setReadMarkers(b.db, "alice", [{ scopeId: "chn_a", lastReadSeq: 4 }]).has("chn_a")).toBe(
+      false,
+    );
+    expect(
+      setReadMarkers(b.db, "alice", [{ scopeId: "chn_a", lastReadSeq: 10 }]).has("chn_a"),
+    ).toBe(false);
     expect(getReadMarkers(b.db, "alice").get("chn_a")).toBe(10);
-    // Equal value → also a no-op.
-    const a3 = setReadMarkers(b.db, "alice", [{ scopeId: "chn_a", lastReadSeq: 10 }]);
-    expect(a3.has("chn_a")).toBe(false);
-    // Forward → advances.
-    const a4 = setReadMarkers(b.db, "alice", [{ scopeId: "chn_a", lastReadSeq: 11 }]);
-    expect(a4.has("chn_a")).toBe(true);
+    expect(
+      setReadMarkers(b.db, "alice", [{ scopeId: "chn_a", lastReadSeq: 11 }]).has("chn_a"),
+    ).toBe(true);
     expect(getReadMarkers(b.db, "alice").get("chn_a")).toBe(11);
   });
+});
 
-  test("channel unread excludes the user's OWN messages", async () => {
-    const b = boot("rm-own");
+describe("unread counts", () => {
+  test("channel unread excludes the user's OWN messages and carries the group", async () => {
+    const b = start("rm-own");
     const alice = await registerUserWithKey(b, "alice");
     const bob = await registerUserWithKey(b, "bob");
-    const groupId = seedGroup(b, alice);
-    addMember(b.db, groupId, bob.actor, "member");
-    const ch = createChannel(b.db, groupId, { type: "text", tier: "private" });
+    const { groupId, channelId } = seedGroupChannel(b, alice, [bob]);
+    post(b, groupId, channelId, bob, "hi");
+    post(b, groupId, channelId, alice, "my own");
+    post(b, groupId, channelId, bob, "again");
 
-    // 2 from bob, 1 from alice. From alice's view, only bob's 2 are unread.
-    post(b, groupId, ch.id, bob.actor, "hi");
-    post(b, groupId, ch.id, alice.actor, "my own");
-    post(b, groupId, ch.id, bob.actor, "again");
-
-    const summary = getUnreadSummary(b.db, "alice", alice.actor);
-    const entry = summary.find((s) => s.scopeId === ch.id);
-    expect(entry).toBeDefined();
+    const entry = getUnreadSummary(b.db, "alice", alice.actor).find((s) => s.scopeId === channelId);
     expect(entry?.unreadCount).toBe(2);
-    // Channel scopes carry their owning group id (for the rail rollup).
     expect(entry?.groupId).toBe(groupId);
-
-    // Bob's view: only alice's 1 message is unread to him.
-    const bobSummary = getUnreadSummary(b.db, "bob", bob.actor);
-    expect(bobSummary.find((s) => s.scopeId === ch.id)?.unreadCount).toBe(1);
+    // Nothing read yet → no marker on the wire.
+    expect(entry?.lastReadMessageId).toBeUndefined();
+    expect(unread(b, "bob", bob.actor, channelId)).toBe(1);
   });
 
-  test("channel unread advances when a marker is set", async () => {
-    const b = boot("rm-advance");
+  test("channel unread drops as the marker advances; the entry names the message", async () => {
+    const b = start("rm-advance");
     const alice = await registerUserWithKey(b, "alice");
     const bob = await registerUserWithKey(b, "bob");
-    const groupId = seedGroup(b, alice);
-    addMember(b.db, groupId, bob.actor, "member");
-    const ch = createChannel(b.db, groupId, { type: "text", tier: "private" });
+    const { groupId, channelId } = seedGroupChannel(b, alice, [bob]);
+    post(b, groupId, channelId, bob, "1");
+    const m2 = post(b, groupId, channelId, bob, "2");
+    post(b, groupId, channelId, bob, "3");
+    expect(unread(b, "alice", alice.actor, channelId)).toBe(3);
 
-    const s1 = post(b, groupId, ch.id, bob.actor, "1");
-    const s2 = post(b, groupId, ch.id, bob.actor, "2");
-    post(b, groupId, ch.id, bob.actor, "3");
-
-    // No marker → all 3 unread.
-    expect(
-      getUnreadSummary(b.db, "alice", alice.actor).find((s) => s.scopeId === ch.id)?.unreadCount,
-    ).toBe(3);
-
-    // Mark read through s2 → only the 3rd remains unread.
-    setReadMarkers(b.db, "alice", [{ scopeId: ch.id, lastReadSeq: s2 }]);
-    expect(
-      getUnreadSummary(b.db, "alice", alice.actor).find((s) => s.scopeId === ch.id)?.unreadCount,
-    ).toBe(1);
-    expect(s2).toBeGreaterThan(s1);
+    setReadMarkers(b.db, "alice", [{ scopeId: channelId, lastReadSeq: m2.seq }]);
+    const entry = getUnreadSummary(b.db, "alice", alice.actor).find((s) => s.scopeId === channelId);
+    expect(entry?.unreadCount).toBe(1);
+    expect(entry?.lastReadMessageId).toBe(m2.id);
+    // The provider-internal seq never appears in a wire entry.
+    expect(entry && "lastReadSeq" in entry).toBe(false);
   });
 
   test("DM unread counts inbox messages from the counterparty", async () => {
-    const b = boot("rm-dm");
+    const b = start("rm-dm");
     const alice = await registerUserWithKey(b, "alice");
     const bob = await registerUserWithKey(b, "bob");
     const dmId = deriveDmId(alice.actor, bob.actor);
+    dmTo(b, dmId, alice, bob, "yo");
+    dmTo(b, dmId, alice, alice, "mine");
+    const last = dmTo(b, dmId, alice, bob, "again");
 
-    // Two messages land in alice's inbox from bob, one from alice herself.
-    storeDmMessage(b.db, b.config, {
-      dmId,
-      owner: "alice",
-      author: bob.actor,
-      content: { text: "yo", mime: "text/plain" },
-    });
-    storeDmMessage(b.db, b.config, {
-      dmId,
-      owner: "alice",
-      author: alice.actor,
-      content: { text: "mine", mime: "text/plain" },
-    });
-    const last = storeDmMessage(b.db, b.config, {
-      dmId,
-      owner: "alice",
-      author: bob.actor,
-      content: { text: "again", mime: "text/plain" },
-    });
-
-    // alice's own message is excluded → 2 unread.
-    const summary = getUnreadSummary(b.db, "alice", alice.actor);
-    const entry = summary.find((s) => s.scopeId === dmId);
-    expect(entry).toBeDefined();
+    const entry = getUnreadSummary(b.db, "alice", alice.actor).find((s) => s.scopeId === dmId);
     expect(entry?.unreadCount).toBe(2);
+    expect(entry?.groupId).toBeUndefined();
 
-    // Mark read to the latest → 0 unread.
     setReadMarkers(b.db, "alice", [{ scopeId: dmId, lastReadSeq: last.seq }]);
+    expect(unread(b, "alice", alice.actor, dmId)).toBe(0);
+  });
+
+  test("channel tombstones still count as unread, exactly", async () => {
+    const b = start("rm-tomb-channel");
+    const alice = await registerUserWithKey(b, "alice");
+    const bob = await registerUserWithKey(b, "bob");
+    const { groupId, channelId } = seedGroupChannel(b, alice, [bob]);
+    const read = post(b, groupId, channelId, bob, "read");
+    setReadMarkers(b.db, "alice", [{ scopeId: channelId, lastReadSeq: read.seq }]);
+    const doomed = post(b, groupId, channelId, bob, "deleted later");
+    post(b, groupId, channelId, bob, "kept");
+    const ownDoomed = post(b, groupId, channelId, alice, "own, deleted");
+    expect(unread(b, "alice", alice.actor, channelId)).toBe(2);
+
+    // Deleting keeps the row as a tombstone at its timeline position (§7.1): it
+    // is still newer than the marker, so the count does not drop. The user's
+    // own tombstone stays excluded.
+    expect(tombstoneMessage(b.db, channelId, doomed.id).message.deletedAt).toBeDefined();
+    tombstoneMessage(b.db, channelId, ownDoomed.id);
+    expect(unread(b, "alice", alice.actor, channelId)).toBe(2);
+
+    // The marker may name the tombstone itself; the count then drops past it.
+    setReadMarkers(b.db, "alice", [{ scopeId: channelId, lastReadSeq: doomed.seq }]);
+    const entry = getUnreadSummary(b.db, "alice", alice.actor).find((s) => s.scopeId === channelId);
+    expect(entry?.unreadCount).toBe(1);
+    expect(entry?.lastReadMessageId).toBe(doomed.id);
+  });
+
+  test("DM tombstones still count as unread", async () => {
+    const b = start("rm-tomb-dm");
+    const alice = await registerUserWithKey(b, "alice");
+    const bob = await registerUserWithKey(b, "bob");
+    const dmId = deriveDmId(alice.actor, bob.actor);
+    const first = dmTo(b, dmId, alice, bob, "read");
+    setReadMarkers(b.db, "alice", [{ scopeId: dmId, lastReadSeq: first.seq }]);
+    const doomed = dmTo(b, dmId, alice, bob, "deleted later");
+    dmTo(b, dmId, alice, bob, "kept");
+    expect(unread(b, "alice", alice.actor, dmId)).toBe(2);
+
     expect(
-      getUnreadSummary(b.db, "alice", alice.actor).find((s) => s.scopeId === dmId)?.unreadCount,
-    ).toBe(0);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// HTTP: GET / PATCH /api/me/read-markers
-// ---------------------------------------------------------------------------
-
-describe("GET/PATCH /api/me/read-markers", () => {
-  test("GET summary returns visible channel + DM scopes with unread counts", async () => {
-    const b = boot("rm-http-get");
-    const alice = await registerUserWithKey(b, "alice");
-    const bob = await registerUserWithKey(b, "bob");
-    const groupId = seedGroup(b, alice);
-    addMember(b.db, groupId, bob.actor, "member");
-    const ch = createChannel(b.db, groupId, { type: "text", tier: "private" });
-    post(b, groupId, ch.id, bob.actor, "hey");
-
-    const dmId = deriveDmId(alice.actor, bob.actor);
-    storeDmMessage(b.db, b.config, {
-      dmId,
-      owner: "alice",
-      author: bob.actor,
-      content: { text: "dm", mime: "text/plain" },
-    });
-
-    const res = await signedReq(b, alice, "GET", "/api/me/read-markers");
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as {
-      scopes: { scopeId: string; lastReadSeq: number; unreadCount: number; groupId?: string }[];
-    };
-    const chEntry = body.scopes.find((s) => s.scopeId === ch.id);
-    const dmEntry = body.scopes.find((s) => s.scopeId === dmId);
-    expect(chEntry?.unreadCount).toBe(1);
-    expect(dmEntry?.unreadCount).toBe(1);
-    // Channel scope carries its owning group id; DM scope has none.
-    expect(chEntry?.groupId).toBe(groupId);
-    expect(dmEntry?.groupId).toBeUndefined();
-  });
-
-  test("PATCH advances a marker; backward value is ignored", async () => {
-    const b = boot("rm-http-patch");
-    const alice = await registerUserWithKey(b, "alice");
-    const bob = await registerUserWithKey(b, "bob");
-    const groupId = seedGroup(b, alice);
-    addMember(b.db, groupId, bob.actor, "member");
-    const ch = createChannel(b.db, groupId, { type: "text", tier: "private" });
-    post(b, groupId, ch.id, bob.actor, "a");
-    const s2 = post(b, groupId, ch.id, bob.actor, "b");
-
-    const patch = await signedReq(b, alice, "PATCH", "/api/me/read-markers", {
-      markers: [{ scopeId: ch.id, lastReadSeq: s2 }],
-    });
-    expect(patch.status).toBe(200);
-    const pbody = (await patch.json()) as { scopes: { scopeId: string; unreadCount: number }[] };
-    expect(pbody.scopes.find((s) => s.scopeId === ch.id)?.unreadCount).toBe(0);
-
-    // A backward PATCH is a no-op → reported scopes empty.
-    const back = await signedReq(b, alice, "PATCH", "/api/me/read-markers", {
-      markers: [{ scopeId: ch.id, lastReadSeq: 1 }],
-    });
-    expect(back.status).toBe(200);
-    expect(((await back.json()) as { scopes: unknown[] }).scopes.length).toBe(0);
-
-    // The stored marker stayed at s2: GET shows 0 unread.
-    const get = await signedReq(b, alice, "GET", "/api/me/read-markers");
-    const gbody = (await get.json()) as { scopes: { scopeId: string; unreadCount: number }[] };
-    expect(gbody.scopes.find((s) => s.scopeId === ch.id)?.unreadCount).toBe(0);
-  });
-
-  test("PATCH by lastReadMessageId (OFSCP form) advances and is echoed back", async () => {
-    const b = boot("rm-http-by-id");
-    const alice = await registerUserWithKey(b, "alice");
-    const bob = await registerUserWithKey(b, "bob");
-    const groupId = seedGroup(b, alice);
-    addMember(b.db, groupId, bob.actor, "member");
-    const ch = createChannel(b.db, groupId, { type: "text", tier: "private" });
-    const first = createMessage(b.db, b.config, {
-      groupId,
-      channelId: ch.id,
-      author: bob.actor,
-      type: "message",
-      content: { text: "a", mime: "text/plain" },
-    }).message.id;
-    post(b, groupId, ch.id, bob.actor, "b");
-
-    // Mark the FIRST message read → one unread left, and the id is echoed.
-    const patch = await signedReq(b, alice, "PATCH", "/api/me/read-markers", {
-      markers: [{ scopeId: ch.id, lastReadMessageId: first }],
-    });
-    expect(patch.status).toBe(200);
-    type Scope = { scopeId: string; unreadCount: number; lastReadMessageId?: string };
-    const scope = ((await patch.json()) as { scopes: Scope[] }).scopes.find(
-      (s) => s.scopeId === ch.id,
-    );
-    expect(scope?.unreadCount).toBe(1);
-    expect(scope?.lastReadMessageId).toBe(first);
-
-    // GET reports the same marker by id.
-    const get = await signedReq(b, alice, "GET", "/api/me/read-markers");
-    const g = ((await get.json()) as { scopes: Scope[] }).scopes.find((s) => s.scopeId === ch.id);
-    expect(g?.lastReadMessageId).toBe(first);
-
-    // An unknown message id is ignored (nothing advances, no error).
-    const unknown = await signedReq(b, alice, "PATCH", "/api/me/read-markers", {
-      markers: [{ scopeId: ch.id, lastReadMessageId: "msg_nope" }],
-    });
-    expect(unknown.status).toBe(200);
-    expect(((await unknown.json()) as { scopes: unknown[] }).scopes.length).toBe(0);
-  });
-
-  test("PATCH ignores scopes the caller can't read (no existence/activity oracle)", async () => {
-    const b = boot("rm-http-scope-authz");
-    const alice = await registerUserWithKey(b, "alice");
-    const bob = await registerUserWithKey(b, "bob");
-    const eve = await registerUserWithKey(b, "eve");
-    const groupId = seedGroup(b, alice);
-    addMember(b.db, groupId, bob.actor, "member");
-    const ch = createChannel(b.db, groupId, { type: "text", tier: "private" });
-    const m1 = createMessage(b.db, b.config, {
-      groupId,
-      channelId: ch.id,
-      author: bob.actor,
-      type: "message",
-      content: { text: "secret", mime: "text/plain" },
-    });
-    post(b, groupId, ch.id, bob.actor, "more");
-
-    // A DM between alice and bob, held in alice's inbox — eve isn't a participant.
-    const dmId = deriveDmId(alice.actor, bob.actor);
-    const dm = storeDmMessage(b.db, b.config, {
-      dmId,
-      owner: "alice",
-      author: bob.actor,
-      content: { text: "private dm", mime: "text/plain" },
-    });
-
-    // Eve (not a member, not a participant) tries both the OFSCP id form and the
-    // Forumall seq extension on both scopes: everything is ignored like an
-    // unknown scope — 200 with no scopes, nothing stored, no read.updated.
-    const res = await signedReq(b, eve, "PATCH", "/api/me/read-markers", {
-      markers: [
-        { scopeId: ch.id, lastReadMessageId: m1.message.id },
-        { scopeId: ch.id, lastReadSeq: m1.seq },
-        { scopeId: dmId, lastReadMessageId: dm.message.id },
-        { scopeId: dmId, lastReadSeq: dm.seq },
-      ],
-    });
-    expect(res.status).toBe(200);
-    expect(((await res.json()) as { scopes: unknown[] }).scopes).toEqual([]);
-    expect(getReadMarkers(b.db, "eve").size).toBe(0);
-
-    // Control: the same markers from a reader still advance.
-    const ok = await signedReq(b, alice, "PATCH", "/api/me/read-markers", {
-      markers: [
-        { scopeId: ch.id, lastReadMessageId: m1.message.id },
-        { scopeId: dmId, lastReadMessageId: dm.message.id },
-      ],
-    });
-    const scopes = ((await ok.json()) as { scopes: { scopeId: string }[] }).scopes;
-    expect(scopes.map((s) => s.scopeId).sort()).toEqual([ch.id, dmId].sort());
-  });
-
-  test("PATCH ignores a readable public channel in a group the caller hasn't joined", async () => {
-    // §7.7: a marker is accepted only for a scope GET would list — a readable
-    // channel IN A GROUP THE USER BELONGS TO. A public channel of a public group
-    // is readable by anyone, but a non-member's GET never lists it, so a marker
-    // there is an unknown scope: 200, not stored, not reported, no read.updated.
-    const b = boot("rm-http-public-nonmember");
-    const alice = await registerUserWithKey(b, "alice");
-    const bob = await registerUserWithKey(b, "bob");
-    const carol = await registerUserWithKey(b, "carol");
-    const groupId = createGroup(b.db, alice.actor, { name: "pub", tier: "public" }).id;
-    addMember(b.db, groupId, bob.actor, "member");
-    const ch = createChannel(b.db, groupId, { type: "text", tier: "public" });
-    const m1 = createMessage(b.db, b.config, {
-      groupId,
-      channelId: ch.id,
-      author: alice.actor,
-      type: "message",
-      content: { text: "hello world", mime: "text/plain" },
-    });
-    // A DM in carol's inbox: a scope she CAN mark, to sequence the WS check.
-    const dmId = deriveDmId(carol.actor, alice.actor);
-    const dm = storeDmMessage(b.db, b.config, {
-      dmId,
-      owner: "carol",
-      author: alice.actor,
-      content: { text: "hi carol", mime: "text/plain" },
-    });
-
-    const carolDevice2 = await connectAuthenticated(b, carol);
-    const res = await signedReq(b, carol, "PATCH", "/api/me/read-markers", {
-      markers: [
-        { scopeId: ch.id, lastReadMessageId: m1.message.id },
-        { scopeId: ch.id, lastReadSeq: m1.seq },
-      ],
-    });
-    expect(res.status).toBe(200);
-    expect(((await res.json()) as { scopes: unknown[] }).scopes).toEqual([]);
-    expect(getReadMarkers(b.db, "carol").has(ch.id)).toBe(false);
-    const get = await signedReq(b, carol, "GET", "/api/me/read-markers");
-    const listed = ((await get.json()) as { scopes: { scopeId: string }[] }).scopes;
-    expect(listed.some((s) => s.scopeId === ch.id)).toBe(false);
-
-    // No read.updated was emitted for the ignored marker: the first one carol's
-    // other device sees is for the DM she marks next.
-    const ok = await signedReq(b, carol, "PATCH", "/api/me/read-markers", {
-      markers: [{ scopeId: dmId, lastReadMessageId: dm.message.id }],
-    });
-    expect(ok.status).toBe(200);
-    const evt = await carolDevice2.ofType("read.updated");
-    const scopeIds = (evt.data as { markers: { scopeId: string }[] }).markers.map((m) => m.scopeId);
-    expect(scopeIds).toEqual([dmId]);
-    carolDevice2.close();
-
-    // Control: a member's marker on the same channel still advances.
-    const member = await signedReq(b, bob, "PATCH", "/api/me/read-markers", {
-      markers: [{ scopeId: ch.id, lastReadMessageId: m1.message.id }],
-    });
-    const scopes = ((await member.json()) as { scopes: { scopeId: string }[] }).scopes;
-    expect(scopes.map((s) => s.scopeId)).toEqual([ch.id]);
-    expect(getReadMarkers(b.db, "bob").get(ch.id)).toBe(m1.seq);
-  });
-
-  test("PATCH with an invalid body → 400", async () => {
-    const b = boot("rm-http-bad");
-    const alice = await registerUserWithKey(b, "alice");
-    const res = await signedReq(b, alice, "PATCH", "/api/me/read-markers", { markers: [] });
-    expect(res.status).toBe(400);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Multi-device sync: read.updated fan-out
-// ---------------------------------------------------------------------------
-
-class WsClient {
-  readonly ws: WebSocket;
-  private readonly queue: WsEnvelope[] = [];
-  private readonly waiters: ((f: WsEnvelope) => void)[] = [];
-  closed = false;
-
-  constructor(url: string) {
-    this.ws = new WebSocket(url);
-    this.ws.addEventListener("message", (e) => {
-      const frame = JSON.parse(String(e.data)) as WsEnvelope;
-      const waiter = this.waiters.shift();
-      if (waiter) waiter(frame);
-      else this.queue.push(frame);
-    });
-    this.ws.addEventListener("close", () => {
-      this.closed = true;
-    });
-  }
-
-  static async open(url: string): Promise<WsClient> {
-    const c = new WsClient(url);
-    await new Promise<void>((resolve, reject) => {
-      c.ws.addEventListener("open", () => resolve(), { once: true });
-      c.ws.addEventListener("error", () => reject(new Error("ws error")), { once: true });
-    });
-    return c;
-  }
-
-  send(frame: Record<string, unknown>): void {
-    this.ws.send(JSON.stringify(frame));
-  }
-
-  next(pred: (f: WsEnvelope) => boolean = () => true, timeoutMs = 2000): Promise<WsEnvelope> {
-    const queued = this.queue.findIndex(pred);
-    if (queued !== -1) return Promise.resolve(this.queue.splice(queued, 1)[0] as WsEnvelope);
-    return new Promise((resolve, reject) => {
-      const waiter = (f: WsEnvelope) => {
-        if (!pred(f)) {
-          this.queue.push(f);
-          this.waiters.unshift(waiter);
-          return;
-        }
-        clearTimeout(timer);
-        resolve(f);
-      };
-      const timer = setTimeout(() => {
-        const idx = this.waiters.indexOf(waiter);
-        if (idx !== -1) this.waiters.splice(idx, 1);
-        reject(new Error("timeout waiting for frame"));
-      }, timeoutMs);
-      this.waiters.push(waiter);
-    });
-  }
-
-  ofType(type: string, timeoutMs = 2000): Promise<WsEnvelope> {
-    return this.next((f) => f.type === type, timeoutMs);
-  }
-
-  close(): void {
-    if (!this.closed) this.ws.close();
-  }
-}
-
-async function connectAuthenticated(b: Booted, signer: Signer): Promise<WsClient> {
-  const client = await WsClient.open(b.url);
-  const challenge = await client.ofType("auth.challenge");
-  const nonce = (challenge.data as { nonce: string }).nonce;
-  const timestamp = rfc3339Timestamp();
-  const { signature } = signWsAuthenticate({
-    privateKey: signer.privateKey,
-    authority: DOMAIN,
-    challengeNonce: nonce,
-    timestamp,
-  });
-  client.send({
-    id: "cli_auth",
-    type: "authenticate",
-    ts: rfc3339Timestamp(),
-    data: { actor: signer.actor, keyId: signer.keyId, timestamp, signature },
-  });
-  await client.ofType("authenticated");
-  return client;
-}
-
-describe("read.updated multi-device fan-out", () => {
-  test("PATCH on one device pushes read.updated to the actor's other device", async () => {
-    const b = boot("rm-fanout");
-    const alice = await registerUserWithKey(b, "alice");
-    const bob = await registerUserWithKey(b, "bob");
-    const groupId = seedGroup(b, alice);
-    addMember(b.db, groupId, bob.actor, "member");
-    const ch = createChannel(b.db, groupId, { type: "text", tier: "private" });
-    post(b, groupId, ch.id, bob.actor, "x");
-    const s2 = post(b, groupId, ch.id, bob.actor, "y");
-
-    // alice's second device holds a live WS connection.
-    const device2 = await connectAuthenticated(b, alice);
-
-    // The first device PATCHes its read marker over REST.
-    const patch = await signedReq(b, alice, "PATCH", "/api/me/read-markers", {
-      markers: [{ scopeId: ch.id, lastReadSeq: s2 }],
-    });
-    expect(patch.status).toBe(200);
-
-    // device2 receives read.updated with the advanced marker + 0 unread.
-    const evt = await device2.ofType("read.updated");
-    const data = evt.data as {
-      markers: { scopeId: string; lastReadSeq: number; unreadCount: number; groupId?: string }[];
-    };
-    const m = data.markers.find((x) => x.scopeId === ch.id);
-    expect(m).toBeDefined();
-    expect(m?.lastReadSeq).toBe(s2);
-    expect(m?.unreadCount).toBe(0);
-    // The recomputed channel marker carries its owning group id for the rollup.
-    expect(m?.groupId).toBe(groupId);
-
-    device2.close();
+      tombstoneDmMessage(b.db, handleOf(alice), dmId, doomed.id).message.deletedAt,
+    ).toBeDefined();
+    expect(unread(b, "alice", alice.actor, dmId)).toBe(2);
   });
 });
