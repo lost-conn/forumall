@@ -63,9 +63,10 @@ export const REALTIME_FEDERATION: readonly ChecklistEntry[] = [
       "packages/server/test/ws-remote-key.test.ts",
       "packages/server/test/server.test.ts",
       "packages/server/test/federation-actor.test.ts",
+      "packages/server/test/federation-realtime-access.test.ts",
     ],
-    status: "partial",
-    note: "The `dmId` part of remote subscriptions is tracked under the direct-messages item. No remote-specific test of a member blocked by tier/`view` or of remote `since` resume (both reuse the local path).",
+    status: "covered",
+    context: "The `dmId` part of remote subscriptions is tracked under the direct-messages item.",
   },
   {
     item: "Support the follow list (`GET`/`POST`/`DELETE /api/me/follows`) as pointers only — no server-side feed compilation or content replication — with each `groupId` derived from the channel as a ref, never taken from the request (§7.6)",
@@ -93,10 +94,11 @@ export const REALTIME_FEDERATION: readonly ChecklistEntry[] = [
     covers: [
       "packages/server/test/presence.test.ts",
       "packages/server/test/remote-presence-federation.test.ts",
+      "packages/server/test/presence-live.test.ts",
+      "packages/server/test/federation-realtime-access.test.ts",
       "packages/server/test/conformance.test.ts",
     ],
-    status: "partial",
-    note: "Untested: privacy filtering of a live `presence.update` (only snapshots are asserted), `allowList`/`denyList` over WS, heartbeat timeout → offline + `lastSeen`, `PUT /api/me/presence` fan-out, and `presence.unsubscribe`.",
+    status: "covered",
   },
   {
     item: "Support message fan-out + notification endpoints",
@@ -105,9 +107,9 @@ export const REALTIME_FEDERATION: readonly ChecklistEntry[] = [
       "packages/server/test/notifications.test.ts",
       "packages/server/test/ws-hub-fanout.test.ts",
       "packages/server/test/ws-message-create.test.ts",
+      "packages/server/test/notification-endpoints.test.ts",
     ],
-    status: "partial",
-    note: "Untested: `GET /api/notifications/endpoints` (shape, caller's own only) and `DELETE /api/notifications/endpoints/{id}` (`204`; `404` for another caller's or unknown).",
+    status: "covered",
   },
   {
     item: 'Enforce tiers per channel and group, using the single effective-read-access rule (§11.3) on every surface, and end live subscriptions with `unsubscribed` (`reason: "access_revoked"`) when access is lost (§7.1)',

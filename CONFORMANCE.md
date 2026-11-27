@@ -52,12 +52,12 @@ Notes marked "spec question" point at wording in the spec that needs clarifying 
 
 | Level | Items | Covered | Partial | Missing |
 |---|---|---|---|---|
-| Provider MUST | 58 | 26 | 27 | 5 |
+| Provider MUST | 58 | 33 | 20 | 5 |
 | Provider SHOULD | 4 | 1 | 1 | 2 |
 | Provider MAY (optional) | 10 | 5 | 5 | 0 |
 | Client MUST | 14 | 8 | 4 | 2 |
 | Client SHOULD | 8 | 3 | 1 | 4 |
-| **Total** | 94 | 43 | 38 | 13 |
+| **Total** | 94 | 50 | 31 | 13 |
 
 ## §12 Compliance Checklist coverage map
 
@@ -107,21 +107,17 @@ Notes marked "spec question" point at wording in the spec that needs clarifying 
 15. **covered**: Support group and channel management (create/read/update/delete) with the permission model (§5.5)
     - Tests: `packages/server/test/groups.test.ts`, `packages/server/test/channels.test.ts`, `packages/server/test/channel-permissions.test.ts`, `packages/server/test/group-creation-policy.test.ts`, `packages/server/test/conformance.test.ts`, `packages/server/test/hidden-channels.test.ts`
     - Context: `GET`/`PATCH`/`DELETE` of a channel the caller cannot read answer `404` before the `manage` check; `GET …/channels` of an unreadable group answers `403`, as `GET /api/groups/{groupId}` does (§5.5).
-16. **partial**: Support group membership: join/leave, member listing, roles, per-group nicknames, `member.updated`, and the `request` approval flow (§5.7)
-    - Tests: `packages/server/test/membership.test.ts`, `packages/server/test/membership-requests.test.ts`, `packages/server/test/display-name.test.ts`, `packages/server/test/conformance.test.ts`
-    - Note: Untested: nickname validation (>64 chars → `400`, blank clears) and its `404`, the role-change subset rule against the target's current role, and `member.updated` to the affected member's own connections.
-17. **partial**: List the owner among the members with role `owner`, keep `joinedAt` across role changes and ownership transfers, and keep the member list's order stable for cursor paging (§5.7)
-    - Tests: `packages/server/test/membership.test.ts`, `packages/server/test/groups.test.ts`
-    - Note: Untested: `GET …/members` lists the owner with role `owner` (`membership.test.ts:290` checks users only; `groups.test.ts:145` reads the stored row), the creator's `joinedAt` equals the group's `createdAt`, and `joinedAt` is unchanged after a role change or an ownership transfer (`membership.test.ts:372`, `:412` check roles only).
-    - Context: The behaviour is there: the creator's row is stamped with the group's `createdAt` (`packages/server/src/provider/groups.ts:122`, `:130`), role changes and transfers update only `role` (`provider/membership.ts:242`, `:277`), and the listing pages by the total order (`joinedAt`, `user`) (`provider/membership.ts:173`), which `membership.test.ts:290` walks without skip or repeat.
-18. **partial**: Answer a repeat `join` under the `request` policy with `202` and the caller's existing pending `JoinRequest`, unchanged; answer `leave` from a non-member with `404` (and from the owner with `409`) (§5.7)
-    - Tests: `packages/server/test/membership.test.ts`
-    - Note: Untested: a repeat `join` carrying a different `message` leaves the pending request unchanged (`membership.test.ts:178` repeats with no body and compares `id` only), and `leave` from a non-member → `404` (`packages/server/src/http/membership.ts:162`).
-    - Context: `requestToJoin` returns the existing pending row as stored (`packages/server/src/provider/membership.ts:355`); the owner's `409` is tested (`membership.test.ts:257`).
-19. **partial**: Gate join-request approve and deny on `manage` or `moderate`, without the subset rule; give an approved requester role `member`, and answer an approval for someone already a member with `200` and the existing `Member`, marking the request `approved` (§5.7)
-    - Tests: `packages/server/test/membership.test.ts`
-    - Note: Untested: approve and deny by a role holding only `moderate`, and their `403` for a caller holding neither (only the listing's `403` is, `membership.test.ts:678`); an approval for a requester who is already a member → `200` with the existing `Member` unchanged and the request `approved` (`packages/server/src/provider/membership.ts:395`).
-    - Context: Approve and deny check `manage` or `moderate` and apply no subset rule (`packages/server/src/http/membership.ts:432`, `:456`); the owner's approval → `member` is tested (`membership.test.ts:611`).
+16. **covered**: Support group membership: join/leave, member listing, roles, per-group nicknames, `member.updated`, and the `request` approval flow (§5.7)
+    - Tests: `packages/server/test/membership.test.ts`, `packages/server/test/membership-requests.test.ts`, `packages/server/test/display-name.test.ts`, `packages/server/test/membership-rules.test.ts`, `packages/server/test/member-updated.test.ts`, `packages/server/test/membership-listing.test.ts`, `packages/server/test/conformance.test.ts`
+    - Context: A nickname's 64-character limit counts code points (JSON Schema's string length), so 64 emoji fit. `member.updated` goes to the group's channel subscribers and the member's own connections, local or remote over direct-WS (`federation-realtime-access.test.ts`); join, leave and kick emit none.
+17. **covered**: List the owner among the members with role `owner`, keep `joinedAt` across role changes and ownership transfers, and keep the member list's order stable for cursor paging (§5.7)
+    - Tests: `packages/server/test/membership-listing.test.ts`, `packages/server/test/membership.test.ts`, `packages/server/test/groups.test.ts`
+    - Context: The listing pages by the total order (`joinedAt`, `user`); `membership-listing.test.ts` pages through it while members join, leave and change role between pages. A forged cursor reads as the first page (`provider/cursor.ts` validates the decoded position).
+18. **covered**: Answer a repeat `join` under the `request` policy with `202` and the caller's existing pending `JoinRequest`, unchanged; answer `leave` from a non-member with `404` (and from the owner with `409`) (§5.7)
+    - Tests: `packages/server/test/membership.test.ts`, `packages/server/test/membership-rules.test.ts`
+19. **covered**: Gate join-request approve and deny on `manage` or `moderate`, without the subset rule; give an approved requester role `member`, and answer an approval for someone already a member with `200` and the existing `Member`, marking the request `approved` (§5.7)
+    - Tests: `packages/server/test/membership-requests.test.ts`, `packages/server/test/membership-rules.test.ts`
+    - Context: The moderate-only approver in `membership-rules.test.ts` lacks a permission the approved `member` role holds, so the approval shows the subset rule is not applied.
 20. **missing**: Keep pending join requests across tier and `joinPolicy` changes; reject an approval with `409` `conflict` while the effective join policy is `invite` (including a group whose tier makes it invite-only, such as `private`), leaving the request `pending`, and check this first, before the already-a-member case, so a requester who is already a member still gets `409`; still allow deny (§5.7)
     - Note: Not implemented: approve (`packages/server/src/http/membership.ts:424`) never checks `effectiveJoinPolicy`, so a request is approved after the group becomes invite-only or `private`. No test of any part: approve after a tier or `joinPolicy` change, the `409`, deny after such a change.
     - Context: Pending requests already survive tier and `joinPolicy` changes: only deleting the group removes them (`packages/server/src/provider/groups.ts:173`).
@@ -206,9 +202,9 @@ Notes marked "spec question" point at wording in the spec that needs clarifying 
     - Note: A federated `action: "remove"` is untested; only `request` and `accept` are sent to `/api/federation/contacts`.
 47. **covered**: Publish provider signing key(s) in discovery and sign provider-to-provider requests (§8.1)
     - Tests: `packages/server/test/server.test.ts`, `packages/server/test/federation.test.ts`, `packages/server/test/signer-resolution.test.ts`, `packages/server/test/notifications.test.ts`, `packages/shared/test/signing.test.ts`, `packages/server/test/conformance.test.ts`
-48. **partial**: Accept direct-WS connections from remote members — resolve remote keys via §4.6, enforce prior membership + tier at subscribe-time — and advertise `capabilities.federation.realtimeDelivery` (§8.5)
-    - Tests: `packages/server/test/federation-realtime.test.ts`, `packages/server/test/ws-remote-key.test.ts`, `packages/server/test/server.test.ts`, `packages/server/test/federation-actor.test.ts`
-    - Note: The `dmId` part of remote subscriptions is tracked under the direct-messages item. No remote-specific test of a member blocked by tier/`view` or of remote `since` resume (both reuse the local path).
+48. **covered**: Accept direct-WS connections from remote members — resolve remote keys via §4.6, enforce prior membership + tier at subscribe-time — and advertise `capabilities.federation.realtimeDelivery` (§8.5)
+    - Tests: `packages/server/test/federation-realtime.test.ts`, `packages/server/test/ws-remote-key.test.ts`, `packages/server/test/server.test.ts`, `packages/server/test/federation-actor.test.ts`, `packages/server/test/federation-realtime-access.test.ts`
+    - Context: The `dmId` part of remote subscriptions is tracked under the direct-messages item.
 49. **partial**: Support the follow list (`GET`/`POST`/`DELETE /api/me/follows`) as pointers only — no server-side feed compilation or content replication — with each `groupId` derived from the channel as a ref, never taken from the request (§7.6)
     - Tests: `packages/server/test/follows.test.ts`, `packages/server/test/conformance.test.ts`
     - Note: Behaviour gap: `POST /api/me/follows` stores the request body's `groupId` (`packages/server/src/http/follows.ts:128`, passed to `addFollow` at `:158`, stored by `packages/server/src/provider/follows.ts:63`) instead of ignoring it and deriving the group from the channel (the local channel's `groupId`; for a remote channel URI, `https://{domain}/api/groups/{groupId}` on its authority). A follow posted without `groupId` gets none. `packages/server/test/follows.test.ts:161` sends `groupId` and asserts the echo (`:168`), so no test checks derivation or that a mismatched body `groupId` is ignored. Pointers-only storage is implemented and tested.
@@ -216,12 +212,10 @@ Notes marked "spec question" point at wording in the spec that needs clarifying 
     - Tests: `packages/server/test/ws-resume.test.ts`, `packages/server/test/ws-envelope-rules.test.ts`, `packages/server/test/dm-subscriptions.test.ts`
     - Note: Behaviour gap: a since-deleted message replays only as a `message.created` carrying the tombstone, with no `message.deleted` after it (`packages/server/src/http/ws/subscriptions.ts:168`; `ws-resume.test.ts:104` asserts just the tombstone). Untested: a channel event cursor used as the REST history or reply-listing `cursor`, a listing cursor used as `since`, and the same for DM cursors (`dm-subscriptions.test.ts:199` covers DM resume only).
     - Context: Channel and DM cursors all encode the one global `seq` (`encodeMessageCursor`), so they should be interchangeable.
-51. **partial**: Support real-time presence over WebSocket: `presence.subscribe`/`set`, `presence.update` fan-out, connection-derived online/offline, and §6.1 visibility filtering consistent with the REST presence endpoint (§7.5)
-    - Tests: `packages/server/test/presence.test.ts`, `packages/server/test/remote-presence-federation.test.ts`, `packages/server/test/conformance.test.ts`
-    - Note: Untested: privacy filtering of a live `presence.update` (only snapshots are asserted), `allowList`/`denyList` over WS, heartbeat timeout → offline + `lastSeen`, `PUT /api/me/presence` fan-out, and `presence.unsubscribe`.
-52. **partial**: Support message fan-out + notification endpoints
-    - Tests: `packages/server/test/notifications.test.ts`, `packages/server/test/ws-hub-fanout.test.ts`, `packages/server/test/ws-message-create.test.ts`
-    - Note: Untested: `GET /api/notifications/endpoints` (shape, caller's own only) and `DELETE /api/notifications/endpoints/{id}` (`204`; `404` for another caller's or unknown).
+51. **covered**: Support real-time presence over WebSocket: `presence.subscribe`/`set`, `presence.update` fan-out, connection-derived online/offline, and §6.1 visibility filtering consistent with the REST presence endpoint (§7.5)
+    - Tests: `packages/server/test/presence.test.ts`, `packages/server/test/remote-presence-federation.test.ts`, `packages/server/test/presence-live.test.ts`, `packages/server/test/federation-realtime-access.test.ts`, `packages/server/test/conformance.test.ts`
+52. **covered**: Support message fan-out + notification endpoints
+    - Tests: `packages/server/test/notifications.test.ts`, `packages/server/test/ws-hub-fanout.test.ts`, `packages/server/test/ws-message-create.test.ts`, `packages/server/test/notification-endpoints.test.ts`
 53. **covered**: Enforce tiers per channel and group, using the single effective-read-access rule (§11.3) on every surface, and end live subscriptions with `unsubscribed` (`reason: "access_revoked"`) when access is lost (§7.1)
     - Tests: `packages/server/test/channels.test.ts`, `packages/server/test/groups.test.ts`, `packages/server/test/messages.test.ts`, `packages/server/test/channel-permissions.test.ts`, `packages/server/test/membership.test.ts`, `packages/server/test/ws-subscriptions.test.ts`, `packages/server/test/ws-access-revocation.test.ts`, `packages/server/test/follows.test.ts`, `packages/server/test/read-markers-http.test.ts`, `packages/server/test/notifications-feed.test.ts`, `packages/server/test/discovery-feed.test.ts`, `packages/server/test/hidden-channels.test.ts`, `packages/server/test/reader-participation.test.ts`
 54. **covered**: Answer a channel the caller may not read (any §11.3 condition fails, including an unreadable group) exactly as a missing channel on every surface except the channel-join alias (`404` / `not_found`, unknown read-marker scope); `403` only when the caller can read the channel but lacks a permission (§11.3)

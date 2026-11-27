@@ -40,13 +40,14 @@ import {
   rfc3339Timestamp,
 } from "@forumall/shared";
 import { and, eq, inArray, sql } from "drizzle-orm";
+import { z } from "zod";
 
 import type { Config } from "../config.ts";
 import type { Db } from "../db/index.ts";
 import { type ChannelRow, channels, messages } from "../db/schema.ts";
 import { canViewChannel } from "./channels.ts";
+import { decodeCursor, encodeCursor } from "./cursor.ts";
 import { listFeaturedGroupIds } from "./discover-features.ts";
-import { decodeCursor, encodeCursor } from "./membership.ts";
 
 /** The tier eligible for the discovery feed (§11.1, §11.2). */
 const DISCOVERABLE_TIER = "discoverable";
@@ -56,9 +57,8 @@ export const DEFAULT_DISCOVER_PAGE_SIZE = 50;
 export const MAX_DISCOVER_PAGE_SIZE = 100;
 
 /** Keyset position for the feed: a channel `rowid` (stable insertion order). */
-interface DiscoverCursor {
-  readonly rowid: number;
-}
+const DiscoverCursorSchema = z.object({ rowid: z.number().int() });
+type DiscoverCursor = z.infer<typeof DiscoverCursorSchema>;
 
 /** Encode a channel rowid as the opaque feed cursor. */
 function encodeDiscoverCursor(rowid: number): string {
@@ -67,8 +67,7 @@ function encodeDiscoverCursor(rowid: number): string {
 
 /** Decode a feed cursor back to its rowid, or `null` if malformed (→ first page). */
 function decodeDiscoverCursor(cursor: string): number | null {
-  const pos = decodeCursor<DiscoverCursor>(cursor);
-  return pos && typeof pos.rowid === "number" ? pos.rowid : null;
+  return decodeCursor(cursor, DiscoverCursorSchema)?.rowid ?? null;
 }
 
 /** Options for {@link compileDiscoverPage}. */

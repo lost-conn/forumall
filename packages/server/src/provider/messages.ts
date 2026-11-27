@@ -42,12 +42,13 @@ import {
   rfc3339Timestamp,
 } from "@forumall/shared";
 import { type SQL, and, eq, inArray, sql } from "drizzle-orm";
+import { z } from "zod";
 
 import type { Config } from "../config.ts";
 import type { Db } from "../db/index.ts";
 import { type MessageRow, messages } from "../db/schema.ts";
+import { decodeCursor, encodeCursor } from "./cursor.ts";
 import { editWindowEnd } from "./edit-window.ts";
-import { decodeCursor, encodeCursor } from "./membership.ts";
 
 /** `id` prefix per the §5.3 wire examples (`msg_…`). */
 const MESSAGE_ID_PREFIX = "msg_";
@@ -81,9 +82,8 @@ function mintMessageId(): string {
 // ---------------------------------------------------------------------------
 
 /** Keyset position for the message timeline: a single `seq`. */
-interface MessageCursor {
-  readonly seq: number;
-}
+const MessageCursorSchema = z.object({ seq: z.number().int() });
+type MessageCursor = z.infer<typeof MessageCursorSchema>;
 
 /** Encode a `seq` as the §7.2 opaque cursor (shared with §7.1 resume). */
 export function encodeMessageCursor(seq: number): string {
@@ -95,8 +95,7 @@ export function encodeMessageCursor(seq: number): string {
  * (a forged/garbage cursor is treated as "no cursor" — first page).
  */
 export function decodeMessageCursor(cursor: string): number | null {
-  const pos = decodeCursor<MessageCursor>(cursor);
-  return pos && typeof pos.seq === "number" ? pos.seq : null;
+  return decodeCursor(cursor, MessageCursorSchema)?.seq ?? null;
 }
 
 // ---------------------------------------------------------------------------

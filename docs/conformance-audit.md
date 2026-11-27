@@ -56,7 +56,7 @@ The old map (28 Provider + 7 Client MUST items) predated the spec PRs #23–#30;
 | 17 | Re-fetch on unknown `key_id`, `503` when unfetchable | covered | — | — |
 | 18 | Identity mismatch rejected; `403` denied, `401` forbidden fetch | covered | — | — |
 | 19 | Group and channel CRUD with permissions (§5.5) | behaviour | `GET` channel the caller can't read → `403` (must be `404`); `PATCH`/`DELETE` channel never check read access. Channel list of an unreadable group: spec question 4. | U3 |
-| 20 | Membership (§5.7) | tests only | Nickname limits/clearing/404, subset rule against the target's current role, `member.updated` to the member's own connections untested. | U12 |
+| 20 | Membership (§5.7) | met (U12) | Nickname limit (now counted in code points), clearing and `404`, the subset rule against the target's current role, `member.updated` to the member's own connections (local and remote) and its absence on join/leave/kick are tested. | U12 |
 | 21 | Message create, every type, both transports | tests only | WS create: unreadable channel → `not_found`, `post:<type>` / `replyOnly` / `replyOnlyTo` refusals, `memo` and replies over WS; REST create in a missing group. | U9 |
 | 22 | `clientMessageId` idempotency and echo | tests only | Duplicate returns the message as it now stands (edited/deleted); key is per channel; reply-only retry without `reference` → `403`. | U9 |
 | 23 | Full `Message` in `message.created`/`updated`, `dm.message` | covered | — | — |
@@ -74,11 +74,11 @@ The old map (28 Provider + 7 Client MUST items) predated the spec PRs #23–#30;
 | 35 | Direct messages (§7.4) | behaviour | A remote participant can't subscribe to a `dmId` (known gap), so no `dm.*` delivery or resume for it. Non-participant subscribe → `not_found`, non-participant read → `404` where the spec says `forbidden`/`403` (spec question 8). Untested: `dm.conversation`, non-local `to`, `with` = caller, remote `PUT /api/me/dms`. | U10 |
 | 36 | Contacts (§6.7) | tests only | Federated `remove` untested. | U11 |
 | 37 | Provider keys and provider signing (§8.1) | covered | — | — |
-| 38 | Direct-WS from remote members (§8.5) | tests only | No remote-specific test of a member blocked by tier or `view`, or of remote `since` resume (both reuse the local path). | U12 |
+| 38 | Direct-WS from remote members (§8.5) | met (U12) | `federation-realtime-access.test.ts`: a remote non-member refused by tier until it joins, a remote member refused a `view` channel until promoted (a demotion revokes), remote `since` resume. | U12 |
 | 39 | Follows as pointers (§7.6) | behaviour | An unreadable channel answers `403` (see L44). | U3 |
 | 40 | WS resume, `ping`/`pong` | covered | — | — |
-| 41 | WS presence (§7.5) | tests only | Live `presence.update` filtering, allow/deny lists on WS, heartbeat timeout → offline, `PUT` fan-out, `presence.unsubscribe` untested. | U12 |
-| 42 | Fan-out + notification endpoints | tests only | `GET` and `DELETE /api/notifications/endpoints` untested. | U12 |
+| 41 | WS presence (§7.5) | met (U12) | `presence-live.test.ts` (live filtering, allow/deny lists, heartbeat timeout → offline + `lastSeen`, `PUT` fan-out, `presence.unsubscribe`); remote viewers in `federation-realtime-access.test.ts`. | U12 |
+| 42 | Fan-out + notification endpoints | met (U12) | `notification-endpoints.test.ts` covers `GET` (own only, schema-valid) and `DELETE` (`204`, `404` for unknown or another caller's). | U12 |
 | 43 | Tiers, one §11.3 rule, `unsubscribed` | behaviour | "Reading never implies posting": a non-member reader can react and type; reaction `react` override uses rank inheritance, against exact membership (§5.2). Edit/delete skip read access. | U3 |
 | 44 | Unreadable channel answers as missing (§11.3) | behaviour | `403` instead of `404`/`not_found` on: channel `GET`, history, replies, reactions list, reaction add/remove (REST + WS), WS `typing`, `POST /api/me/follows`, edit/delete. | U3 |
 | 45 | Unsigned → anonymous viewer, never `401` (§4.5) | behaviour | `/api/users/{userRef}/{profile,groups,presence}` require a signature. Anonymous replies and a bad signature on an anonymous route untested. | U4 |
@@ -166,9 +166,9 @@ numbers are in the spec at `e94447d`.
 |---|---|---|---|---|
 | 8 (P MUST) | Signature validation, now also both identity headers → step-1 `401` | met (U19) | Step 1 (`http/signature.ts` `readSigningHeaders`) rejects both identity headers with `401` before the deny check, on every route (`provider-signed-routes.test.ts`). The U11 test gaps (full store over HTTP, replayed provider-signed request, concurrent copies) remain. | U19, U11 |
 | 10 (P MUST) | Federation deny `403`, now also for a provider-signed request to a user-signature-only route | met (U22) | A denied provider gets `403` on user-only routes too (`provider-signed-routes.test.ts`). | U22 |
-| 20 (P MUST) | Owner listed as `owner`, `joinedAt` kept, stable member order | tests only | Implemented (`provider/groups.ts:130`, `provider/membership.ts:173`); no test asserts the owner's listed role, the creator's `joinedAt`, or `joinedAt` after a role change or transfer. | U12 |
-| 21 (P MUST) | Repeat `join` → `202` with the pending request unchanged; `leave` by a non-member → `404`, by the owner → `409` | tests only | Repeat with a different `message` and the non-member `404` (`http/membership.ts:162`) untested. | U12 |
-| 22 (P MUST) | Approve/deny on `manage` or `moderate`, no subset rule; approving a member → `200` | tests only | Implemented (`http/membership.ts:432`, `provider/membership.ts:395`); a `moderate`-only approver, the `403`s and the already-a-member approval untested. | U12 |
+| 20 (P MUST) | Owner listed as `owner`, `joinedAt` kept, stable member order | met (U12) | `membership-listing.test.ts`. Found and fixed: a forged member-listing cursor answered `500`; the shared cursor codec (`provider/cursor.ts`) now validates the decoded position for every listing. | U12 |
+| 21 (P MUST) | Repeat `join` → `202` with the pending request unchanged; `leave` by a non-member → `404`, by the owner → `409` | met (U12) | `membership-rules.test.ts`. | U12 |
+| 22 (P MUST) | Approve/deny on `manage` or `moderate`, no subset rule; approving a member → `200` | met (U12) | `membership-rules.test.ts`. | U12 |
 | 23 (P MUST) | Pending requests survive policy changes; approve → `409` while invite-only, checked first; deny allowed | behaviour | Approve never checks `effectiveJoinPolicy` (`http/membership.ts:424`). Requests do survive. No test. | U18 |
 | 24 (P MUST) | Invite creation: `role`/`channelId` `400`s, subset `403`; `token` in the `201`; ≥128-bit CSPRNG tokens stored as a digest; `Referrer-Policy: no-referrer`; no token logs | behaviour | None of the `400`/`403` checks exists (`http/invites.ts:94`); tokens stored in plaintext (`db/tables/groups.ts:199`); no `Referrer-Policy` anywhere. Token in the `201` and 256-bit CSPRNG tokens are fine (`provider/invites.ts:21`). | U18 |
 | 25 (P MUST) | Redeem checks the invite first; a member's redeem → `200`, current role, no use consumed | behaviour | A member redeeming an exhausted invite gets `200`, not `409` (`http/invites.ts:181` before `:194`). A deleted channel's id is still echoed (`:186`, `:203`). Member redeem untested. | U18 |
@@ -263,7 +263,7 @@ Each unit is one pull request to `main`. Each updates its area's entries in
 | U9 | Message semantics: `mentions` drive notifications; edit window per type; create/idempotency/edit test gaps. | 21, 22, 24, 25, 55 |
 | U10 | DM real-time for remote participants (`dmId` subscribe, delivery, resume); DM test gaps; split `http/dms.ts`. | 35 |
 | U11 | Auth, keys, signature and egress test gaps; per-key unusable keys (after spec question 3). | 6–11, 36 |
-| U12 | Membership, presence and notification-endpoint test gaps. | 20, 41, 42 |
+| U12 | Membership, presence and notification-endpoint test gaps; remote direct-WS tests; validated cursor decoding; nickname limit in code points. | 20, 38, 41, 42; 20–22 (at `e94447d`) |
 | U13 | Client protocol: commands wait for `authenticated`; registration-mode errors; upload `target`; `mentions`; duplicate-create and reconnect tests. | 69, 70, 75, 77, 86, 89 |
 | U14 | Client rendering by `mime`, `attachment:` links, article title, untrusted attachments. | 78, 79, 80 |
 | U15 | Client remote channels and groups, cross-provider DM history, remote-author attachments, attachment refresh. | 72, 87, 88, 90, 91 |

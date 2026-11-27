@@ -26,10 +26,11 @@
  */
 import { type Reaction, ReactionSchema, rfc3339Timestamp } from "@forumall/shared";
 import { and, eq, or, sql } from "drizzle-orm";
+import { z } from "zod";
 
 import type { Db } from "../db/index.ts";
 import { type ReactionRow, reactions } from "../db/schema.ts";
-import { decodeCursor, encodeCursor } from "./membership.ts";
+import { decodeCursor, encodeCursor } from "./cursor.ts";
 
 /** `id` prefix per the §5.3 wire examples (`rct_…`). */
 const REACTION_ID_PREFIX = "rct_";
@@ -172,10 +173,7 @@ export function removeReaction(db: Db, messageId: string, author: string, key: s
 }
 
 /** Keyset position for the reactions listing: `(createdAt, id)` — a total order. */
-interface ReactionCursor {
-  readonly createdAt: number;
-  readonly id: string;
-}
+const ReactionCursorSchema = z.object({ createdAt: z.number().int(), id: z.string() });
 
 /** Options for {@link listReactions}. */
 export interface ListReactionsOptions {
@@ -209,21 +207,20 @@ export function listReactions(
     opts.limit && Number.isFinite(opts.limit) && opts.limit > 0
       ? Math.min(Math.floor(opts.limit), MAX_REACTION_PAGE_SIZE)
       : DEFAULT_REACTION_PAGE_SIZE;
-  const after = opts.cursor ? decodeCursor<ReactionCursor>(opts.cursor) : null;
+  const after = opts.cursor ? decodeCursor(opts.cursor, ReactionCursorSchema) : null;
 
   // Keyset predicate: rows strictly after (createdAt, id) in the total order.
   // (createdAt > a) OR (createdAt = a AND id > i).
   const messageEq = eq(reactions.messageId, messageId);
-  const where =
-    after && typeof after.createdAt === "number" && typeof after.id === "string"
-      ? and(
-          messageEq,
-          or(
-            sql`${reactions.createdAt} > ${after.createdAt}`,
-            and(eq(reactions.createdAt, after.createdAt), sql`${reactions.id} > ${after.id}`),
-          ),
-        )
-      : messageEq;
+  const where = after
+    ? and(
+        messageEq,
+        or(
+          sql`${reactions.createdAt} > ${after.createdAt}`,
+          and(eq(reactions.createdAt, after.createdAt), sql`${reactions.id} > ${after.id}`),
+        ),
+      )
+    : messageEq;
 
   // Fetch one extra row to detect whether a further page exists.
   const rows = db.drizzle
