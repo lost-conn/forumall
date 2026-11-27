@@ -193,7 +193,7 @@ export async function leaveGroup(client: OfscpClient, groupId: string): Promise<
   await client.post(`/api/groups/${groupId}/leave`, {});
 }
 
-/** List a group's members (first page; §5.7/§7.2). */
+/** List all of a group's members, following `nextCursor` across pages (§5.7/§7.2). */
 export async function listMembers(client: OfscpClient, groupId: string): Promise<Member[]> {
   return listAllPages<Member>(client, `/api/groups/${groupId}/members`);
 }
