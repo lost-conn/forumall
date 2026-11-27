@@ -1,11 +1,11 @@
 /**
- * Read-marker REST surface (read/unread tracking — a provider-local extension).
+ * Read-marker REST surface (OFSCP §7.7).
  *
- *  - {@link getReadMarkers} — GET the caller's unread summary (one entry per
- *    visible channel + DM scope).
- *  - {@link setReadMarkers} — PATCH one or many markers forward; the server
- *    persists monotonically and fans a `read.updated` event to the caller's other
- *    devices. Returns the touched markers with recomputed unread counts.
+ *  - {@link getReadMarkers} — `GET /api/me/read-markers`: the caller's summary,
+ *    one `{ scopeId, lastReadMessageId?, unreadCount, groupId? }` per scope.
+ *  - {@link setReadMarkers} — `PATCH /api/me/read-markers` with exactly
+ *    `{ markers: [{ scopeId, lastReadMessageId }] }`; the provider moves markers
+ *    forward only and answers with the scopes that advanced.
  *
  * Both go through the session's signing {@link OfscpClient} so the request carries
  * the §4.4 signature.
@@ -19,12 +19,15 @@ export async function getReadMarkers(client: OfscpClient): Promise<ReadMarker[]>
   return res.data.scopes ?? [];
 }
 
-/** PATCH /api/me/read-markers → advance markers; returns the touched entries. */
+/** PATCH /api/me/read-markers → advance markers; returns the scopes that advanced. */
 export async function setReadMarkers(
   client: OfscpClient,
-  markers: ReadMarkerUpdate[],
+  markers: readonly ReadMarkerUpdate[],
 ): Promise<ReadMarker[]> {
   if (markers.length === 0) return [];
-  const res = await client.patch<{ scopes: ReadMarker[] }>("/api/me/read-markers", { markers });
+  const body = {
+    markers: markers.map((m) => ({ scopeId: m.scopeId, lastReadMessageId: m.lastReadMessageId })),
+  };
+  const res = await client.patch<{ scopes: ReadMarker[] }>("/api/me/read-markers", body);
   return res.data.scopes ?? [];
 }

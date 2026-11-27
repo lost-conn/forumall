@@ -34,7 +34,13 @@ export interface DmMessagesPageResult {
 export async function fetchDmMessages(
   client: OfscpClient,
   dmId: string,
-  opts: { cursor?: string; limit?: number; direction?: "backward" | "forward" } = {},
+  opts: {
+    cursor?: string;
+    limit?: number;
+    direction?: "backward" | "forward";
+    /** Aborts the request (the open conversation it was made for ended). */
+    signal?: AbortSignal;
+  } = {},
 ): Promise<DmMessagesPageResult> {
   const params = new URLSearchParams();
   if (opts.cursor) params.set("cursor", opts.cursor);
@@ -43,6 +49,7 @@ export async function fetchDmMessages(
   const qs = params.toString();
   const res = await client.get<{ items: Message[]; page: { nextCursor?: string | null } }>(
     `/api/dms/${dmId}/messages${qs ? `?${qs}` : ""}`,
+    opts.signal ? { signal: opts.signal } : {},
   );
   return {
     messages: res.data.items ?? [],
@@ -127,7 +134,13 @@ export async function fetchDmReplies(
   client: OfscpClient,
   dmId: string,
   messageId: string,
-  opts: { cursor?: string; limit?: number; direction?: "backward" | "forward" } = {},
+  opts: {
+    cursor?: string;
+    limit?: number;
+    direction?: "backward" | "forward";
+    /** Aborts the request (the open conversation it was made for ended). */
+    signal?: AbortSignal;
+  } = {},
 ): Promise<DmMessagesPageResult> {
   const params = new URLSearchParams();
   if (opts.cursor) params.set("cursor", opts.cursor);

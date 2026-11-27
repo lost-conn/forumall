@@ -49,6 +49,7 @@ import {
   setSessionAuth,
   storedSession,
 } from "./session.ts";
+import { clearTimelineHeads } from "./timeline-heads.ts";
 
 /**
  * Self `UserAccount` shape (subset). `isAdmin` is a Forumall extension field;
@@ -178,6 +179,7 @@ export async function doLogout(opts: { keyStore?: KeyStore } = {}): Promise<bool
   clearProfiles();
   resetPresenceSubscriptions();
   clearReadMarkers();
+  clearTimelineHeads();
   clearNotifications();
   clearNotificationPrefs();
   clearNotifyFx();

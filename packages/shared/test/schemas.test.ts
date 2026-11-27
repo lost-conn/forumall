@@ -114,10 +114,8 @@ import {
   isKnownWsType,
 } from "../src/schemas/index.ts";
 import {
-  ReadMarkerSchema,
   ReadMarkersResponseSchema,
   ReadMarkersUpdateRequestSchema,
-  ReadUpdatedEventSchema,
   WsReadUpdatedSchema,
 } from "../src/schemas/index.ts";
 import {
@@ -573,55 +571,6 @@ describe("history and reply pages hold messages only (§7.2, lost-conn/ofscp#37)
 
   test("a TimelineItem that is a Reaction is rejected", () => {
     expect(TimelineItemSchema.safeParse(reaction).success).toBe(false);
-  });
-});
-
-describe("read-markers schemas (provider-local extension)", () => {
-  test("a read-marker summary entry parses", () => {
-    const r = ReadMarkerSchema.safeParse({ scopeId: "chn_a", lastReadSeq: 7, unreadCount: 2 });
-    expect(r.success).toBe(true);
-  });
-
-  test("the GET response (summary) parses and preserves unknown keys (§2.3)", () => {
-    const r = ReadMarkersResponseSchema.safeParse({
-      scopes: [{ scopeId: "chn_a", lastReadSeq: 0, unreadCount: 3, future: "x" }],
-      extra: 1,
-    });
-    expect(r.success).toBe(true);
-    if (r.success) {
-      expect((r.data as Record<string, unknown>).extra).toBe(1);
-    }
-  });
-
-  test("the PATCH request requires at least one marker", () => {
-    expect(ReadMarkersUpdateRequestSchema.safeParse({ markers: [] }).success).toBe(false);
-    expect(
-      ReadMarkersUpdateRequestSchema.safeParse({
-        markers: [{ scopeId: "chn_a", lastReadSeq: 5 }],
-      }).success,
-    ).toBe(true);
-  });
-
-  test("a negative lastReadSeq is rejected", () => {
-    expect(
-      ReadMarkerSchema.safeParse({ scopeId: "chn_a", lastReadSeq: -1, unreadCount: 0 }).success,
-    ).toBe(false);
-  });
-
-  test("the read.updated event payload + WS frame parse", () => {
-    const payload = { markers: [{ scopeId: "chn_a", lastReadSeq: 9, unreadCount: 0 }] };
-    expect(ReadUpdatedEventSchema.safeParse(payload).success).toBe(true);
-    const frame = WsReadUpdatedSchema.safeParse({
-      id: "evt_1",
-      type: "read.updated",
-      ts: "2026-01-01T12:00:00Z",
-      data: payload,
-    });
-    expect(frame.success).toBe(true);
-  });
-
-  test("read.updated is a known WS type", () => {
-    expect(isKnownWsType("read.updated")).toBe(true);
   });
 });
 

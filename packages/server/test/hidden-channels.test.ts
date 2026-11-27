@@ -23,7 +23,7 @@
  * answers must be identical once the channel id itself is normalised away.
  * The channel-join alias (§8.2) is deliberately not walked: it answers as a
  * group join. The read-marker "unknown scope" answer is covered by
- * `read-markers.test.ts`.
+ * `read-markers-http.test.ts`.
  *
  * Also here: a provider-defined (unknown) tier fails closed, as `group` (§11).
  */
