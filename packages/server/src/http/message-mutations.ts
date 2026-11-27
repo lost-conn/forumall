@@ -11,8 +11,9 @@
  *    actor cannot read, or a missing message → 404 (read access first, §11.3,
  *    so an author who lost access cannot edit and a non-reader cannot learn a
  *    message exists); then author-only, and only while `permissions.editUntil`
- *    (the row's `edit_until`) is in the future; otherwise 403. The body is
- *    judged only after that (`http/message-edit.ts`).
+ *    (the row's `edit_until`) is in the future — with no limit when the
+ *    message has none (§7.1); otherwise 403. The body is judged only after
+ *    that (`http/message-edit.ts`).
  *  - **delete** (`message.delete` / `DELETE …/messages/{id}`): the same 404
  *    step; then the **author** OR a member with the `moderate` role; else 403.
  *  - **reactions** (`reaction.add`/`remove`, `PUT`/`DELETE …/reactions/{key}`):
@@ -30,6 +31,7 @@ import type { ChannelPermissions } from "@forumall/shared";
 import type { Db } from "../db/index.ts";
 import type { GroupRow, MessageRow } from "../db/schema.ts";
 import { getReadableChannel, parseChannelPermissions } from "../provider/channels.ts";
+import { isEditWindowOpen } from "../provider/edit-window.ts";
 import { getGroupRow, rowToGroup } from "../provider/groups.ts";
 import { getMessageRow } from "../provider/messages.ts";
 import {
@@ -98,8 +100,8 @@ function groupPermissionsOf(groupRow: GroupRow): ChannelAuthzContext["groupPermi
 
 /**
  * Authorize an **edit** (§7.1): author-only and only while `edit_until` is in the
- * future. 404 if the message is missing; 403 if not the author or the edit window
- * has passed.
+ * future (no limit when it is null). 404 if the message is missing; 403 if not
+ * the author or the edit window has passed.
  */
 export function authorizeMessageEdit(
   db: Db,
@@ -112,7 +114,9 @@ export function authorizeMessageEdit(
   if (resolved.error) return resolved;
   const row = resolved.row;
   if (row.author !== actor) return forbidden("only the author may edit this message");
-  if (Date.now() >= row.editUntil) return forbidden("the edit window for this message has passed");
+  if (!isEditWindowOpen(row.editUntil)) {
+    return forbidden("the edit window for this message has passed");
+  }
   return { row };
 }
 

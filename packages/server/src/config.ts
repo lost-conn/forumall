@@ -133,12 +133,25 @@ const RawEnvSchema = z.object({
   USER_KEYS_CACHE_SECONDS: z.coerce.number().int().min(1).max(3600).default(3600),
 
   /**
-   * Message edit window in seconds (§5.3, §7.1): how long after creation a
-   * message remains editable, surfaced as `permissions.editUntil`. The WS
-   * edit card enforces this; the store stamps `edit_until` at create time.
+   * Chat edit window in seconds (§5.3, §7.1): how long after creation a
+   * `message`, `memo` or DM remains editable, surfaced as
+   * `permissions.editUntil`. Edits (REST and WS) enforce it; the store stamps
+   * `edit_until` at create time.
    * Default 900 (15 min); configurable so tests can use a tiny/large window.
    */
   MESSAGE_EDIT_WINDOW_SECONDS: z.coerce.number().int().min(0).default(900),
+
+  /**
+   * Edit window for `article` messages in seconds (§7.1: providers SHOULD give
+   * articles a longer window than chat, or none). Unset or empty (the default)
+   * means no limit: an article carries no `permissions.editUntil` and its author
+   * may edit it at any time. Chat types (`message`, `memo`) and DMs always use
+   * `MESSAGE_EDIT_WINDOW_SECONDS`.
+   */
+  ARTICLE_EDIT_WINDOW_SECONDS: z.preprocess(
+    (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
+    z.coerce.number().int().min(0).optional(),
+  ),
 
   /**
    * Max number of post-cursor messages the WS resume path will replay per
@@ -373,8 +386,10 @@ export interface Config {
   readonly bootstrapTtlSeconds: number;
   /** `cache_until` window for the public keys endpoint in seconds (§4.6). */
   readonly userKeysCacheSeconds: number;
-  /** Message edit window in seconds (§5.3); basis of `permissions.editUntil`. */
+  /** Chat (`message`/`memo`/DM) edit window in seconds (§5.3); `permissions.editUntil`. */
   readonly messageEditWindowSeconds: number;
+  /** `article` edit window in seconds (§7.1); `null` = no limit (no `editUntil`). */
+  readonly articleEditWindowSeconds: number | null;
   /** Max post-cursor messages the WS resume path replays per channel (§7.1). */
   readonly maxResumeReplay: number;
   /** Typing-indicator auto-expiry window in ms (§7.1 "Typing indicators"). */
@@ -472,6 +487,7 @@ export function loadConfig(env: Env = process.env): Config {
     bootstrapTtlSeconds: raw.BOOTSTRAP_TTL_SECONDS,
     userKeysCacheSeconds: raw.USER_KEYS_CACHE_SECONDS,
     messageEditWindowSeconds: raw.MESSAGE_EDIT_WINDOW_SECONDS,
+    articleEditWindowSeconds: raw.ARTICLE_EDIT_WINDOW_SECONDS ?? null,
     maxResumeReplay: raw.MAX_RESUME_REPLAY,
     typingTimeoutMs: raw.TYPING_TIMEOUT_MS,
     wsMaxFrameBytes: raw.WS_MAX_FRAME_BYTES,

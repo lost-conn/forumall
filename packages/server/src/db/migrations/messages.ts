@@ -203,3 +203,69 @@ export const m0039MessagesMentionsArticle: Migration = {
     }
   },
 };
+
+/** The `messages` columns, in order, after {@link m0042MessagesEditUntilNullable}. */
+const MESSAGES_COLUMNS_0042 = `
+  id                TEXT PRIMARY KEY,
+  channel_id        TEXT NOT NULL,
+  group_id          TEXT NOT NULL,
+  author            TEXT NOT NULL,
+  type              TEXT NOT NULL,
+  content           TEXT NOT NULL,
+  attachments       TEXT NOT NULL,
+  reference         TEXT,
+  tags              TEXT NOT NULL,
+  seq               INTEGER NOT NULL,
+  created_at        INTEGER NOT NULL,
+  edited_at         INTEGER,
+  deleted_at        INTEGER,
+  edit_until        INTEGER,
+  client_message_id TEXT,
+  reply_to          TEXT,
+  metadata          TEXT NOT NULL DEFAULT '[]',
+  mentions          TEXT,
+  title             TEXT,
+  summary           TEXT,
+  cover             TEXT
+`;
+
+export const m0042MessagesEditUntilNullable: Migration = {
+  // Per-type edit windows (§7.1 *Editing*): a message without
+  // `permissions.editUntil` has no time limit, and articles SHOULD get a longer
+  // window than chat, or none. `edit_until` becomes nullable (null = no limit).
+  //
+  // SQLite cannot drop a NOT NULL constraint in place, so the table is rebuilt
+  // (create new → copy → drop → rename) inside the migration's transaction and
+  // its indexes are re-created. Nothing references `messages` through a
+  // foreign-key constraint (references are by id string), so a plain rebuild
+  // is safe. Only the columns the old table has are copied, so the copy holds
+  // whichever earlier column migrations a database has applied; the rest take
+  // their defaults (and those migrations' column guards then skip them).
+  // Existing rows keep the `edit_until` they were stamped with.
+  id: "0042_messages_edit_until_nullable",
+  up: (sqlite) => {
+    const columns = (table: string): string[] =>
+      sqlite
+        .query<{ name: string }, []>(`PRAGMA table_info(${table})`)
+        .all()
+        .map((c) => c.name);
+    const old = columns("messages");
+    sqlite.exec(`CREATE TABLE messages_new (${MESSAGES_COLUMNS_0042}) STRICT;`);
+    const kept = columns("messages_new")
+      .filter((name) => old.includes(name))
+      .join(", ");
+    sqlite.exec(`INSERT INTO messages_new (${kept}) SELECT ${kept} FROM messages;`);
+    sqlite.exec("DROP TABLE messages;");
+    sqlite.exec("ALTER TABLE messages_new RENAME TO messages;");
+    sqlite.exec("CREATE INDEX idx_messages_channel_seq ON messages (channel_id, seq);");
+    sqlite.exec("CREATE UNIQUE INDEX idx_messages_seq ON messages (seq);");
+    sqlite.exec(
+      `CREATE UNIQUE INDEX idx_messages_author_channel_client_msg
+         ON messages (author, channel_id, client_message_id)
+         WHERE client_message_id IS NOT NULL;`,
+    );
+    sqlite.exec(
+      "CREATE INDEX idx_messages_channel_reply_to ON messages (channel_id, reply_to, seq);",
+    );
+  },
+};
