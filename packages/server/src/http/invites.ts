@@ -19,7 +19,9 @@
  *        existing account → 200 `{ groupId, channelId?, role }`. The invite is
  *        checked first (404 unknown/expired, 409 exhausted), whoever the
  *        caller is; an existing member then gets their current role and
- *        consumes no use. A since-deleted `channelId` is omitted.
+ *        consumes no use. A since-deleted `channelId` is omitted. A guest
+ *        redeeming another group's invite → 403 (§4.8, `guest-binding.ts`);
+ *        an invite whose custom role the group no longer defines → 400.
  *      - `POST /invites/{token}/guest`  (**unsigned**): provision a guest
  *        account (§4.8) + bind its first device key → 201. The guest's role
  *        is always `guest`, whatever the invite's `role`.
@@ -58,6 +60,7 @@ import {
 import { addMember, getMemberRow } from "../provider/membership.ts";
 import { canActor, getMembership, isKnownRole, roleHoldsAll } from "../provider/permissions.ts";
 import { AppError } from "./errors.ts";
+import { refuseGuestOutsideItsGroup } from "./guest-binding.ts";
 import { optionalActorOrProviderSignature, requireSignature } from "./signature.ts";
 import type { AppBindings } from "./types.ts";
 
@@ -233,9 +236,8 @@ export function createInvitesRouter() {
       throw AppError.notFound({ detail: "unknown or expired invite" });
     }
     // The group must still exist (a raced delete cascades invites, but guard).
-    if (!getGroupRow(db, invite.groupId)) {
-      throw AppError.notFound({ detail: "unknown or expired invite" });
-    }
+    const groupRow = getGroupRow(db, invite.groupId);
+    if (!groupRow) throw AppError.notFound({ detail: "unknown or expired invite" });
     if (isInviteExhausted(invite)) {
       throw AppError.conflict({ detail: "this invite has reached its maximum uses" });
     }
@@ -244,6 +246,22 @@ export function createInvitesRouter() {
     // their current role, unchanged, and no use consumed (§5.6).
     const existing = getMemberRow(db, invite.groupId, actor.actor);
     if (existing) return c.json(redeemBody(db, invite, existing.role), 200);
+
+    // A guest is bound to the group it joined (§4.8): another group's invite
+    // is refused (`403`, "provider/group policy forbids").
+    refuseGuestOutsideItsGroup(db, actor);
+
+    // The invite's role is re-validated against the group as it is NOW: a
+    // custom role removed from the `roles` catalogue since the invite was
+    // created is no longer one the invite may grant. The spec defines no
+    // redeem-time answer for this, so it is refused with the same `400` an
+    // invite naming an unknown role gets at creation (§5.6). Checked before a
+    // use is consumed.
+    if (!isKnownRole(invite.role, rowToGroup(groupRow))) {
+      throw AppError.badRequest({
+        detail: `this invite grants role \`${invite.role}\`, which the group no longer defines`,
+      });
+    }
 
     // Consume a use atomically, respecting maxUses → 409 if a concurrent
     // redemption took the last one since the check above (§5.6).

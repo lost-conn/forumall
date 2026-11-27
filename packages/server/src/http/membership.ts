@@ -60,6 +60,7 @@ import {
 import { effectiveJoinPolicy, tierReadableBy } from "../provider/tiers.ts";
 import type { Hub } from "../provider/ws-hub.ts";
 import { AppError } from "./errors.ts";
+import { refuseGuestOutsideItsGroup } from "./guest-binding.ts";
 import { requireSignature } from "./signature.ts";
 import type { AppBindings } from "./types.ts";
 
@@ -128,6 +129,9 @@ export function createMembershipRouter() {
     // Already a member → return their membership (idempotent, 200).
     const existing = getMemberRow(db, groupId, actor.actor);
     if (existing) return c.json(rowToMember(existing), 200);
+    // A guest is bound to the group it joined (§4.8): no joining, and no join
+    // request, anywhere else.
+    refuseGuestOutsideItsGroup(db, actor);
 
     // The body is optional; only the `request` policy reads `{ message }`.
     const raw = await c.req.json().catch(() => undefined as Record<string, unknown> | undefined);

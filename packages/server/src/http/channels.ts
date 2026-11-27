@@ -48,6 +48,7 @@ import { canActor } from "../provider/permissions.ts";
 import { effectiveJoinPolicy, tierReadableBy } from "../provider/tiers.ts";
 import { requireReadableChannel } from "./channel-access.ts";
 import { AppError } from "./errors.ts";
+import { refuseGuestOutsideItsGroup } from "./guest-binding.ts";
 import { createMessagesRouter } from "./messages.ts";
 import { optionalSignature, requireSignature } from "./signature.ts";
 import type { AppBindings } from "./types.ts";
@@ -222,6 +223,8 @@ export function createChannelsRouter() {
     // Already a member → idempotent return of their group membership (200).
     const existing = getMemberRow(db, groupId, actor.actor);
     if (existing) return c.json(rowToMember(existing), 200);
+    // As for a group join: a guest is bound to the group it joined (§4.8).
+    refuseGuestOutsideItsGroup(db, actor);
 
     // The body is optional; only the `request` policy reads `{ message }`.
     const raw = await c.req.json().catch(() => undefined as Record<string, unknown> | undefined);
