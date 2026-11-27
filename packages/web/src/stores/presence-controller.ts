@@ -28,7 +28,6 @@
  * doesn't fan a subject their own update over a subscription) — the self signal
  * is the source of truth for the caller's own dot.
  */
-import { rfc3339Timestamp } from "@forumall/shared";
 import type { OfscpWsClient } from "../lib/ofscp-ws.ts";
 import type { SettableAvailability } from "../lib/social-api.ts";
 import {
@@ -37,44 +36,6 @@ import {
   setMyPresenceState,
   setPresenceFor,
 } from "./presence.ts";
-
-/** A single WS command frame id counter (per session). */
-let frameSeq = 0;
-function frameId(prefix: string): string {
-  frameSeq += 1;
-  return `${prefix}_${Date.now().toString(36)}_${frameSeq.toString(36)}`;
-}
-
-/** Send a raw WS command frame through the client's underlying socket. */
-function rawSend(ws: OfscpWsClient, type: string, data: Record<string, unknown>): void {
-  (ws as unknown as { sendRaw(frame: Record<string, unknown>): void }).sendRaw({
-    id: frameId(type.replace(/\W/g, "")),
-    type,
-    ts: rfc3339Timestamp(),
-    data,
-  });
-}
-
-/**
- * Send a command once the WS is connected. The WS client only auto-resumes
- * CHANNEL subscriptions across (re)connects, not presence ones, and `sendRaw`
- * silently drops a frame on a not-yet-OPEN socket. So a presence command issued
- * while the connection is still `connecting`/`reconnecting` would be lost. This
- * sends immediately when `connected`, otherwise defers to the next `connected`
- * state transition (one-shot).
- */
-function sendWhenConnected(ws: OfscpWsClient, type: string, data: Record<string, unknown>): void {
-  if (ws.state === "connected") {
-    rawSend(ws, type, data);
-    return;
-  }
-  const off = ws.onState((s) => {
-    if (s === "connected") {
-      off();
-      rawSend(ws, type, data);
-    }
-  });
-}
 
 /** Shape of the inbound `presence.update` event `data`. */
 interface PresenceUpdateData {
@@ -119,7 +80,7 @@ export function installPresenceListener(ws: OfscpWsClient): void {
   ws.onState((s) => {
     if (s !== "connected") return;
     const subjects = [...refCounts.keys()];
-    if (subjects.length > 0) rawSend(ws, "presence.subscribe", { users: subjects });
+    if (subjects.length > 0) ws.send("presence.subscribe", { users: subjects });
   });
 }
 
@@ -142,8 +103,10 @@ export function subscribePresence(
     refCounts.set(a, prev + 1);
     if (prev === 0) fresh.push(a);
   }
+  // Dropped while disconnected: the `connected` handler above subscribes to
+  // every ref-counted subject, these included, once the connection is back.
   if (fresh.length > 0) {
-    sendWhenConnected(ws, "presence.subscribe", { users: fresh });
+    ws.send("presence.subscribe", { users: fresh }, { whenDisconnected: "drop" });
   }
 
   let disposed = false;
@@ -161,8 +124,10 @@ export function subscribePresence(
         refCounts.set(a, next);
       }
     }
-    if (stale.length > 0 && ws.state === "connected") {
-      rawSend(ws, "presence.unsubscribe", { users: stale });
+    // A new connection starts with no presence subscriptions, and the
+    // `connected` handler no longer counts these, so nothing to send then.
+    if (stale.length > 0) {
+      ws.send("presence.unsubscribe", { users: stale }, { whenDisconnected: "drop" });
     }
   };
 }
@@ -189,7 +154,7 @@ export function refreshPresenceSnapshots(
 ): void {
   if (!ws) return;
   const subjects = [...new Set(actors)].filter((a) => a && a !== self);
-  if (subjects.length > 0) sendWhenConnected(ws, "presence.subscribe", { users: subjects });
+  if (subjects.length > 0) ws.send("presence.subscribe", { users: subjects });
 }
 
 /**
@@ -208,7 +173,7 @@ export function setMyPresence(
     ...(status !== undefined && status !== "" ? { status } : {}),
   });
   if (!ws) return;
-  sendWhenConnected(ws, "presence.set", {
+  ws.send("presence.set", {
     availability,
     ...(status !== undefined && status !== "" ? { status } : {}),
   });

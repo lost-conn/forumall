@@ -72,6 +72,8 @@ export interface ClaimInput {
   handle: string;
   password: string;
   displayName?: string;
+  /** Account invite, when the provider is invite-only (claim follows §4.1.1). */
+  inviteToken?: string;
 }
 
 /**
@@ -86,6 +88,7 @@ export async function claimAccount(
     handle: input.handle,
     password: input.password,
     ...(input.displayName ? { displayName: input.displayName } : {}),
+    ...(input.inviteToken ? { inviteToken: input.inviteToken } : {}),
   });
   return res.data;
 }

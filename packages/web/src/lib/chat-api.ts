@@ -8,6 +8,7 @@
  * session's signing {@link OfscpClient} so requests carry the §4.4 signature.
  */
 import type { Attachment, Message, Reaction } from "@forumall/shared";
+import { canonicalAuthority } from "@forumall/shared";
 import { type OfscpClient, type RequestOptions, ofscpRequestMeta } from "./ofscp-client.ts";
 import { baseUrlForHost } from "./provider.ts";
 
@@ -106,19 +107,37 @@ export async function fetchReactions(
 // Media upload (§5.8) — signed multipart
 // ---------------------------------------------------------------------------
 
+/** Options for {@link uploadMedia}. */
+export interface UploadMediaOptions {
+  /**
+   * The upload's §5.8 *target*: the canonical authority of the provider that
+   * will hold the message(s) using it — the channel's home provider, or for a
+   * DM the recipient's provider (§7.4). Omitted, the provider takes its own
+   * authority (a local upload): right for an avatar. An upload may be reused
+   * only in messages on its target.
+   */
+  target?: string;
+}
+
 /**
- * Upload a file as `multipart/form-data` to `POST /api/media` and return the
- * hosted {@link Attachment}.
+ * Upload a file as `multipart/form-data` to `POST /api/media` on the HOME
+ * provider (§5.8: every attachment is uploaded there, whatever it is for) and
+ * return the hosted {@link Attachment}.
  *
  * The §4.4 signature digests the EXACT request-body bytes, so we build the
- * multipart body ourselves (one `file` part) and hand those exact bytes to the
- * signing client as the body, with the matching `multipart/form-data; boundary=…`
- * content-type. This keeps the digest the server recomputes byte-identical to
- * what we signed (the server re-parses the same cached raw bytes).
+ * multipart body ourselves ({@link buildMediaMultipart}) and hand those exact
+ * bytes to the signing client as the body, with the matching
+ * `multipart/form-data; boundary=…` content-type. This keeps the digest the
+ * server recomputes byte-identical to what we signed (the server re-parses the
+ * same cached raw bytes).
  */
-export async function uploadMedia(client: OfscpClient, file: File): Promise<Attachment> {
+export async function uploadMedia(
+  client: OfscpClient,
+  file: File,
+  opts: UploadMediaOptions = {},
+): Promise<Attachment> {
   const boundary = `----forumall${ofscpRequestMeta.generateNonce(12)}`;
-  const { bytes, contentType } = await buildMultipart(boundary, file);
+  const { bytes, contentType } = await buildMediaMultipart(boundary, file, opts.target);
   // Use the binary-safe signed POST: the multipart body contains raw image bytes,
   // which must NOT be UTF-8 round-tripped (that corrupts them). `postBinary` signs
   // + sends the exact bytes.
@@ -126,16 +145,34 @@ export async function uploadMedia(client: OfscpClient, file: File): Promise<Atta
   return res.data;
 }
 
-/** Build a single-part `multipart/form-data` body (`file`), returning its bytes. */
-async function buildMultipart(
+/**
+ * Escape a value for a quoted `Content-Disposition` parameter the way browsers
+ * encode `multipart/form-data` (WHATWG HTML): `"`, CR and LF are
+ * percent-encoded, so a file name cannot end the parameter or the header.
+ */
+function escapeDispositionValue(value: string): string {
+  return value.replace(/"/g, "%22").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
+}
+
+/**
+ * Build the `POST /api/media` `multipart/form-data` body: a `target` part (the
+ * canonical authority, as text) when given, then the `file` part. Exported so
+ * tests can check the exact wire bytes.
+ */
+export async function buildMediaMultipart(
   boundary: string,
   file: File,
+  target?: string,
 ): Promise<{ bytes: Uint8Array; contentType: string }> {
   const enc = new TextEncoder();
-  const filename = file.name || "upload";
+  const filename = escapeDispositionValue(file.name || "upload");
   const fileType = file.type || "application/octet-stream";
+  const targetPart =
+    target === undefined
+      ? ""
+      : `--${boundary}\r\nContent-Disposition: form-data; name="target"\r\n\r\n${canonicalAuthority(target)}\r\n`;
   const header = enc.encode(
-    `--${boundary}\r\n` +
+    `${targetPart}--${boundary}\r\n` +
       `Content-Disposition: form-data; name="file"; filename="${filename}"\r\n` +
       `Content-Type: ${fileType}\r\n\r\n`,
   );

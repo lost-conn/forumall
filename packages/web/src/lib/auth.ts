@@ -33,6 +33,7 @@ import type { KeyStore } from "./key-store.ts";
 import { keyStore as defaultKeyStore } from "./key-store.ts";
 import { OfscpClient } from "./ofscp-client.ts";
 import { baseUrlForHost } from "./provider.ts";
+import { registrationRefusalOf } from "./registration.ts";
 
 const SESSION_KEY = "forumall.session";
 
@@ -180,19 +181,40 @@ export interface RegisterInput {
   handle: string;
   password: string;
   recoveryEmail?: string;
+  /** Account invite for an invite-only provider (§4.1.1). */
+  inviteToken?: string;
   deviceName?: string;
   keyStore?: KeyStore;
   fetch?: typeof fetch;
 }
 
-/** Full register flow: account → bootstrap → device key → store (§4.1.1 → §4.3). */
+/**
+ * Full register flow: account → bootstrap → device key → store (§4.1.1 → §4.3).
+ *
+ * An `invite_required` answer to a registration that carried an invite token
+ * may mean an earlier attempt with that token succeeded and only its response
+ * was lost (the token is now spent), so the flow then tries logging in with the
+ * same credentials (§4.1.1 "Retries"). If that fails too, the original
+ * `invite_required` error is thrown.
+ */
 export async function register(input: RegisterInput): Promise<AuthResult> {
   const anon = anonClientFor(input.host, input.fetch);
-  const { bootstrap_token } = await anon.register({
-    handle: input.handle,
-    password: input.password,
-    ...(input.recoveryEmail ? { recoveryEmail: input.recoveryEmail } : {}),
-  });
+  let bootstrap_token: string;
+  try {
+    ({ bootstrap_token } = await anon.register({
+      handle: input.handle,
+      password: input.password,
+      ...(input.recoveryEmail ? { recoveryEmail: input.recoveryEmail } : {}),
+      ...(input.inviteToken ? { inviteToken: input.inviteToken } : {}),
+    }));
+  } catch (err) {
+    if (!input.inviteToken || registrationRefusalOf(err) !== "invite_required") throw err;
+    try {
+      return await login(input);
+    } catch {
+      throw err;
+    }
+  }
   return completeBootstrap(anon, {
     bootstrapToken: bootstrap_token,
     handle: input.handle,

@@ -403,6 +403,8 @@ export class OfscpClient {
     handle: string;
     password: string;
     recoveryEmail?: string;
+    /** Account invite for an invite-only provider (§4.1.1). */
+    inviteToken?: string;
   }): Promise<AuthBootstrapResponse> {
     const res = await this.post<AuthBootstrapResponse>("/api/auth/register", input, {
       anonymous: true,

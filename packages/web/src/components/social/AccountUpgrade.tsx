@@ -11,7 +11,8 @@
  * either path {@link applyUpgradedIdentity} persists the new session + reloads to
  * re-bootstrap cleanly as the new actor — the device stays logged in, no key
  * loss. Surfaces server errors (409 handle taken / 400 invalid / 401 wrong
- * credentials) inline. Visible only to a guest (the caller gates on isGuest).
+ * credentials, and the §4.1.1 registration-mode refusals a claim shares with
+ * registration) inline. Visible only to a guest (the caller gates on isGuest).
  */
 import { type Component, Match, Show, Switch, createSignal } from "solid-js";
 import {
@@ -21,7 +22,8 @@ import {
   validateClaimForm,
 } from "../../lib/account-upgrade.ts";
 import { OfscpHttpError } from "../../lib/ofscp-client.ts";
-import { sessionClient } from "../../stores/session.ts";
+import { registrationRefusalMessage, registrationRefusalOf } from "../../lib/registration.ts";
+import { provider, sessionClient } from "../../stores/session.ts";
 import { Icon } from "../Icon.tsx";
 
 type Mode = "claim" | "merge";
@@ -110,6 +112,10 @@ const ClaimForm: Component = () => {
   const [displayName, setDisplayName] = createSignal("");
   const [password, setPassword] = createSignal("");
   const [confirm, setConfirm] = createSignal("");
+  const [inviteToken, setInviteToken] = createSignal("");
+  // A claim follows the registration mode (§4.1.1): ask for an invite when the
+  // provider advertises invite-only, or once it answers `invite_required`.
+  const [showInvite, setShowInvite] = createSignal(provider()?.registration === "invite");
   const [busy, setBusy] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
 
@@ -132,16 +138,22 @@ const ClaimForm: Component = () => {
     }
     setBusy(true);
     setError(null);
+    const invite = inviteToken().trim();
     try {
       const result = await claimAccount(client, {
         handle: h,
         password: password(),
         ...(displayName().trim() ? { displayName: displayName().trim() } : {}),
+        ...(invite ? { inviteToken: invite } : {}),
       });
       // Persist the new identity + reload to re-bootstrap as the new actor.
       applyUpgradedIdentity(result);
     } catch (err) {
-      setError(errorMessage(err, "Could not create your account."));
+      if (registrationRefusalOf(err) === "invite_required") setShowInvite(true);
+      setError(
+        registrationRefusalMessage(err, { sentInvite: invite !== "", claiming: true }) ??
+          errorMessage(err, "Could not create your account."),
+      );
       setBusy(false);
     }
   };
@@ -208,6 +220,22 @@ const ClaimForm: Component = () => {
           data-testid="claim-confirm-password"
         />
       </label>
+
+      <Show when={showInvite()}>
+        <label class="flex flex-col gap-1.5">
+          <span class="eyebrow">Invite token</span>
+          <input
+            class="input font-mono"
+            name="inviteToken"
+            autocomplete="off"
+            placeholder="Paste the token you were given"
+            value={inviteToken()}
+            onInput={(e) => setInviteToken(e.currentTarget.value)}
+            disabled={busy()}
+            data-testid="claim-invite-token"
+          />
+        </label>
+      </Show>
 
       <Show when={error()}>
         <p class="text-sm text-danger" role="alert" data-testid="claim-error">

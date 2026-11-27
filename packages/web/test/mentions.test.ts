@@ -11,6 +11,7 @@ import { describe, expect, test } from "bun:test";
 import {
   detectActiveMentionQuery,
   mentionRefFor,
+  mentionedActors,
   parseMentionSegments,
 } from "../src/lib/mentions.ts";
 
@@ -97,5 +98,39 @@ describe("parseMentionSegments", () => {
     expect(parseMentionSegments("nothing to see", LOCAL)).toEqual([
       { type: "text", value: "nothing to see" },
     ]);
+  });
+
+  test("a `.` ends the handle (§10.1: the longest run of [a-z0-9_-])", () => {
+    expect(parseMentionSegments("hi @bob.smith.", LOCAL)).toEqual([
+      { type: "text", value: "hi " },
+      { type: "mention", raw: "@bob", actor: `bob@${LOCAL}` },
+      { type: "text", value: ".smith." },
+    ]);
+  });
+
+  test("a trailing sentence `.` after a domain is not part of it", () => {
+    expect(parseMentionSegments("ask @a_1@b.example.", LOCAL)).toEqual([
+      { type: "text", value: "ask " },
+      { type: "mention", raw: "@a_1@b.example", actor: "a_1@b.example" },
+      { type: "text", value: "." },
+    ]);
+  });
+});
+
+describe("mentionedActors (§5.3 `mentions`)", () => {
+  test("canonical actors in first-mention order, de-duplicated and lowercased", () => {
+    expect(
+      mentionedActors("@Bob and @carol@Other.Example, again @bob and @CAROL@other.example", LOCAL),
+    ).toEqual([`bob@${LOCAL}`, "carol@other.example"]);
+  });
+
+  test("a bare handle names a user of the hosting provider, in canonical form", () => {
+    expect(mentionedActors("hey @dave", "Forum.Example:443")).toEqual(["dave@forum.example"]);
+    expect(mentionedActors("hey @dave", "localhost:8787")).toEqual(["dave@localhost:8787"]);
+  });
+
+  test("emails and text without mentions name nobody", () => {
+    expect(mentionedActors("mail bob@example.com please", LOCAL)).toEqual([]);
+    expect(mentionedActors("", LOCAL)).toEqual([]);
   });
 });

@@ -326,6 +326,24 @@ describe("static SPA", () => {
     expect(html).toContain("SPA");
   });
 
+  test("the /register sign-up page is sent with `Referrer-Policy: no-referrer` (§4.1.1)", async () => {
+    const webDir = join(tmp, "register-web");
+    const { app } = freshApp("register", { WEB_DIR: webDir });
+    await Bun.write(join(webDir, "index.html"), "<!doctype html><title>SPA</title>");
+
+    // An invite link carries its token in the URL; the page must not leak it
+    // to other origins through `Referer`.
+    for (const path of ["/register?invite=tok_secret", "/register", "/register/"]) {
+      const res = await app.request(path);
+      expect(res.status).toBe(200);
+      expect(await res.text()).toContain("SPA");
+      expect(res.headers.get("referrer-policy")).toBe("no-referrer");
+    }
+    // Other SPA routes keep the default policy.
+    const other = await app.request("/some/spa/route");
+    expect(other.headers.get("referrer-policy")).toBeNull();
+  });
+
   test("missing web build: non-API route 404s cleanly (problem+json)", async () => {
     const { app } = freshApp("nostatic", {
       WEB_DIR: join(tmp, "definitely-absent"),

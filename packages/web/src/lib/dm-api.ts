@@ -73,6 +73,8 @@ export interface SendDmMessageOptions {
   to?: string;
   attachments?: Attachment[];
   reference?: { type: string; id: string };
+  /** The canonical actors the message mentions (§5.3); omitted when empty. */
+  mentions?: string[];
   /**
    * The §7.1 idempotency key to send under. Pass the id the caller already minted
    * for this logical send — and, on a RETRY, the SAME id as the first attempt:
@@ -107,6 +109,7 @@ export async function sendDmMessage(
       content,
       ...(opts.attachments && opts.attachments.length > 0 ? { attachments: opts.attachments } : {}),
       ...(opts.reference ? { reference: opts.reference } : {}),
+      ...(opts.mentions && opts.mentions.length > 0 ? { mentions: opts.mentions } : {}),
     },
     // `clientMessageId` is the idempotency key (a duplicate returns the existing
     // message, §7.1), so a re-signed retry after a 503 cannot double-send.
@@ -166,17 +169,21 @@ export async function removeDmReaction(
   );
 }
 
-/** Edit a DM message in place via `PATCH …` (author-only, edit window). */
+/**
+ * Edit a DM message in place via `PATCH …` (author-only, edit window). `mentions`
+ * is the full new §5.3 list (`[]` for none): an omitted field would be kept.
+ */
 export async function editDmMessage(
   client: OfscpClient,
   dmId: string,
   messageId: string,
   content: { mime: string; text: string },
+  mentions: string[],
 ): Promise<Message> {
-  // An edit replaces the content wholesale → safe to resend after a 503.
+  // An edit replaces the fields it carries wholesale → safe to resend after a 503.
   const res = await client.patch<Message>(
     `/api/dms/${dmId}/messages/${messageId}`,
-    { content },
+    { content, mentions },
     { idempotent: true },
   );
   return res.data;

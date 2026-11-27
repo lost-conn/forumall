@@ -5,30 +5,34 @@
  * These mirror the SERVER's mention semantics (provider/notifications-feed.ts
  * `detectMentions` / `MENTION_RE`) byte-for-byte where it matters, so that what
  * the composer autocompletes and what the client highlights is EXACTLY what the
- * server will parse into a mention notification. Mentions are a provider-LOCAL
- * concept (not in OFSCP v0.1) — there is no spec object here.
+ * server will parse into a mention notification — the §10.1 text rule. The
+ * same rule fills a sent message's `mentions` (§5.3), so the list the client
+ * sends is exactly what the text names.
  *
- * Three responsibilities:
+ * Four responsibilities:
  *  - {@link detectActiveMentionQuery} — the composer's "am I typing a mention
  *    right now?" probe (caret-relative);
  *  - {@link mentionRefFor} — the bare token to insert for a member;
  *  - {@link parseMentionSegments} — split a finished message body into plain +
- *    mention segments for styled rendering.
+ *    mention segments for styled rendering;
+ *  - {@link mentionedActors} — the canonical actors a message's text names, for
+ *    its `mentions` field.
  */
+import { canonicalActor, canonicalAuthority } from "@forumall/shared";
 
 /**
- * The match rule mirror of the server's `MENTION_RE` (notifications-feed.ts):
+ * The match rule mirror of the server's `MENTION_RE` (notifications-feed.ts),
+ * which is OFSCP §10.1's:
  *  - the leading `@` must NOT be preceded by a word char or another `@` (so an
  *    email `a@b.com` does NOT register as a bare mention of `b.com`);
- *  - the handle body is lowercase-ish alphanumerics plus `_`, `.`, `-` (lazy, so
- *    trailing punctuation like `@alice,` parses `alice`);
- *  - an optional `@domain` suffix matches a dotted host or `localhost[:port]`;
- *  - it must end before a non-handle char (or end-of-string).
+ *  - the handle is the longest run of handle characters (`[a-z0-9_-]`, §2.2.1),
+ *    so a `.` ends it (`@alice.` and `@alice.smith` both name `alice`);
+ *  - an optional `@domain` suffix matches a dotted host or `localhost[:port]`.
  *
  * Kept in sync with the server: if you change one, change the other.
  */
 const MENTION_RE =
-  /(?<![\w@])@([a-z0-9][a-z0-9_.-]*?)(?:@([a-z0-9.-]+\.[a-z]{2,}|localhost(?::\d+)?))?(?=[^a-z0-9_.@-]|$)/gi;
+  /(?<![\w@])@([a-z0-9_-]+)(?:@([a-z0-9.-]+\.[a-z]{2,}|localhost(?::\d+)?))?(?![a-z0-9_-])/gi;
 
 /**
  * Looking back from `caret`, detect an active mention being typed: an `@` that is
@@ -99,9 +103,8 @@ export type MentionSegmentNode = TextSegment | MentionSegment;
  * `actor` is the resolved canonical `handle@domain` (`@handle` → `localDomain`;
  * `@handle@domain` keeps its domain). Emails are NOT treated as mentions.
  *
- * The trailing-punctuation cleanup mirrors the server: a lazy body may leave a
- * dangling `.`/`-`/`_`; it is trimmed off the resolved handle but kept in the
- * `raw` token only up to the matched extent (the regex already excludes it).
+ * A domain ends with a letter label, so a trailing `.` after it belongs to the
+ * sentence (`@a@b.com.` names `a@b.com`), as on the server.
  */
 export function parseMentionSegments(text: string, localDomain: string): MentionSegmentNode[] {
   const out: MentionSegmentNode[] = [];
@@ -109,17 +112,34 @@ export function parseMentionSegments(text: string, localDomain: string): Mention
   // Fresh regex per call: it is /g/ (stateful lastIndex).
   const re = new RegExp(MENTION_RE.source, MENTION_RE.flags);
   for (const m of text.matchAll(re)) {
-    const handleRaw = (m[1] ?? "").toLowerCase();
-    if (!handleRaw) continue;
-    const cleanHandle = handleRaw.replace(/[.\-_]+$/, "");
-    if (!cleanHandle) continue;
+    const handle = (m[1] ?? "").toLowerCase();
+    if (!handle) continue;
     const start = m.index ?? 0;
     const raw = m[0];
     if (start > last) out.push({ type: "text", value: text.slice(last, start) });
     const domain = (m[2] ?? localDomain).toLowerCase();
-    out.push({ type: "mention", raw, actor: `${cleanHandle}@${domain}` });
+    out.push({ type: "mention", raw, actor: `${handle}@${domain}` });
     last = start + raw.length;
   }
   if (last < text.length) out.push({ type: "text", value: text.slice(last) });
+  return out;
+}
+
+/**
+ * The users `text` names (§10.1 rule above), as the canonical actors (§2.2) a
+ * message's `mentions` field carries (§5.3): first-mention order, no
+ * duplicates. A bare `@handle` names a user of `hostingAuthority`, the provider
+ * that will hold the message. A token that is not a valid actor (a junk domain)
+ * is left out rather than sent, since a provider rejects a message whose
+ * `mentions` holds a non-canonical actor it does not convert (§7.1).
+ */
+export function mentionedActors(text: string, hostingAuthority: string): string[] {
+  const local = canonicalAuthority(hostingAuthority);
+  const out: string[] = [];
+  for (const seg of parseMentionSegments(text, local)) {
+    if (seg.type !== "mention") continue;
+    const actor = canonicalActor(seg.actor);
+    if (actor !== null && !out.includes(actor)) out.push(actor);
+  }
   return out;
 }

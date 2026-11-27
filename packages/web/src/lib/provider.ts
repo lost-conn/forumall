@@ -13,6 +13,7 @@
  * current origin both is the transport and carries the signing authority.
  */
 import { ProviderDiscoverySchema } from "@forumall/shared";
+import { type RegistrationMode, registrationModeOf } from "./registration.ts";
 
 const PROVIDER_HOST_KEY = "forumall.provider.host";
 
@@ -26,6 +27,8 @@ export interface ProviderInfo {
   version: string;
   /** OFSCP protocol version the provider speaks. */
   protocolVersion: string;
+  /** Who may register (§4.1.1); `"open"` when absent or unrecognised. */
+  registration: RegistrationMode;
 }
 
 /**
@@ -84,6 +87,7 @@ export async function probeProvider(
     name: provider.software.name,
     version: provider.software.version,
     protocolVersion: provider.protocolVersion,
+    registration: registrationModeOf(json),
   };
 }
 
