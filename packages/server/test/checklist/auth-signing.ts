@@ -36,7 +36,7 @@ export const AUTH_SIGNING: readonly ChecklistEntry[] = [
     note: "The device-key list item shape (`algorithm`, `public_key`, `device_name`, `created_at`) is never asserted and `GET /api/auth/device-keys` is not validated against `device-keys-response.json`.",
   },
   {
-    item: "Encode every `public_key` as the raw 32-byte Ed25519 key in padded standard base64, and reject (`400`) a registration whose key does not decode to 32 bytes (§4.3.2)",
+    item: "Encode every `public_key` as the raw 32-byte Ed25519 key in padded standard base64, reject (`400`) a registration whose key does not decode to 32 bytes, and, as a verifier, ignore on its own a published key that does not (or whose `algorithm` is unsupported), keeping the document's other keys (`401` for a request signed with it) (§4.3.2)",
     level: "provider-must",
     covers: [
       "packages/server/test/device-keys.test.ts",
@@ -44,7 +44,7 @@ export const AUTH_SIGNING: readonly ChecklistEntry[] = [
       "packages/server/test/conformance.test.ts",
     ],
     status: "partial",
-    note: "Untested: guest creation (§4.8) with a key that is not 32 bytes → `400`, and a verifier treating a published key that does not decode to 32 bytes as unusable (per key: today one bad key invalidates the whole keys or discovery document, where only that key should be ignored).",
+    note: "Untested: guest creation (§4.8) with a key that is not 32 bytes → `400`, and per-key handling of published keys (behaviour gap: today one key that does not decode to 32 bytes, or has an unsupported `algorithm`, invalidates the whole keys or discovery document, where only that key should be ignored and a request signed with it get `401`).",
   },
   {
     item: "Validate Ed25519 request signatures over the §4.4.2 canonical string, including authority binding and nonce replay rejection, with one bounded provider-wide replay store that records a nonce only after the signature verifies (§4.5)",
