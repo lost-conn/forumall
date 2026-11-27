@@ -22,19 +22,23 @@ export const CLIENT: readonly ChecklistEntry[] = [
     item: "Complete the WebSocket signed-challenge handshake before sending other commands (§7.1)",
     level: "client-must",
     covers: [
+      "packages/web/test/ofscp-ws-outbox.test.ts",
+      "packages/web/test/chat-controller.test.ts",
       "packages/web/test/ofscp-ws.test.ts",
       "packages/shared/test/ws-auth.test.ts",
       "packages/shared/test/conformance.test.ts",
     ],
-    status: "partial",
-    note: "Behaviour gap: the chat controller sends `message.*`, `reaction.*` and `typing.*` through `sendRaw`, which only checks the socket is open, so they can go out before `authenticated` (server closes `4001`). Untested: a command issued during the handshake is held or refused.",
+    status: "covered",
+    context:
+      "Every command goes through `OfscpWsClient.send`, which writes nothing but `authenticate` before `authenticated`: commands wait in an ordered outbox flushed after the resubscribe, typing and fresh presence subscribes are dropped instead, and a terminal close reports what is still queued as undelivered.",
   },
   {
     item: "Handle the registration-mode errors (`registration_closed`, `invite_required`) when registering or claiming a guest account (§4.1.1)",
     level: "client-must",
-    covers: [],
-    status: "missing",
-    note: 'Not implemented: the web client never references `registration_closed` / `invite_required` or `inviteToken` and shows only a generic error on register and claim. Spec question: does "handle" require an invite-token path for `invite_required`, beyond surfacing the error?',
+    covers: ["packages/web/test/registration.test.ts", "packages/web/test/provider.test.ts"],
+    status: "covered",
+    context:
+      'Register and claim send an optional `inviteToken` (prefilled from a `/register?invite=` link for this provider, whose authority is shown first), each refusal gets its own message read from the problem `errorCode`, the advertised mode shapes the form, and `invite_required` after sending a token retries as a login (§4.1.1 "Retries"). The form wiring itself has no e2e test: this provider is always open.',
   },
   {
     item: "Derive `dmId` per §7.4 (no sender copy is stored server-side)",
@@ -85,12 +89,15 @@ export const CLIENT: readonly ChecklistEntry[] = [
     item: "Treat the `message.created` that answers a duplicate create (no `cursor`) as the result of the pending send, not as a new message, and never store it as a resume point (§7.1)",
     level: "client-must",
     covers: [
+      "packages/web/test/chat-controller.test.ts",
+      "packages/web/test/ofscp-ws-outbox.test.ts",
       "packages/web/test/chat-store.test.ts",
       "packages/web/test/cursor.test.ts",
       "packages/server/test/message-create.test.ts",
     ],
-    status: "partial",
-    note: "Untested: a correlated, cursor-less `message.created` driven through the chat controller's handler, and `OfscpWsClient.cursorFor` staying unchanged on a cursor-less event.",
+    status: "covered",
+    context:
+      "An idempotent `message.create` the socket dropped before its answer is re-sent under the same frame id after the reconnect, so the duplicate answer correlates to the pending send.",
   },
   {
     item: "Set an avatar by uploading it to the home provider (`POST /api/media`) and then sending its `url` in `PATCH /api/me/profile` (§6.3)",
@@ -101,9 +108,14 @@ export const CLIENT: readonly ChecklistEntry[] = [
   {
     item: "Upload every attachment to the home provider, including for posts to remote channels and DMs, naming as `target` the provider that will hold the message, and reusing an upload only in messages on its target, uploading again for any other provider (§5.8)",
     level: "client-must",
-    covers: ["e2e/tests/chat.spec.ts", "e2e/tests/dms.spec.ts"],
-    status: "partial",
-    note: "Behaviour gap: `uploadMedia` never sends a `target` part, so cross-provider DM attachments upload as home-local uploads, and nothing tracks an upload's target for reuse. The existing tests cover same-provider upload only.",
+    covers: [
+      "packages/web/test/media-upload.test.ts",
+      "e2e/tests/chat.spec.ts",
+      "e2e/tests/dms.spec.ts",
+    ],
+    status: "covered",
+    context:
+      "The holding provider is the channel's home for a channel message and the recipient's provider for a DM. Composer uploads remember their target and are uploaded again when sent to another provider.",
   },
   {
     item: "Render `text/plain` and CommonMark `text/markdown`, showing raw HTML in Markdown as text; render `text/html` only through the §5.3 allow-list sanitizer (or as text with tags removed); make only `http`, `https`, `mailto` and `attachment:` links active (§5.3)",
@@ -142,9 +154,11 @@ export const CLIENT: readonly ChecklistEntry[] = [
   {
     item: "Handle federation latency + retries",
     level: "client-should",
-    covers: ["packages/web/test/ofscp-client-retry.test.ts"],
-    status: "partial",
-    note: "The HTTP `503` + `Retry-After` re-sign is tested; the WebSocket backoff reconnect with `since` resume after a drop is not.",
+    covers: [
+      "packages/web/test/ofscp-client-retry.test.ts",
+      "packages/web/test/ofscp-ws-outbox.test.ts",
+    ],
+    status: "covered",
   },
   {
     item: "Name the DM recipient in `to`, record a conversation pointer at the home provider after a cross-provider send, and read sent history from the counterparty's provider (§7.4)",
@@ -163,9 +177,14 @@ export const CLIENT: readonly ChecklistEntry[] = [
   {
     item: "Set `mentions` on messages that mention users (§5.3), and in a DM write `@handle@domain` (or set `mentions`) for a user who is not on the recipient's home provider, since a bare `@handle` there names a user of that provider (§10.1)",
     level: "client-should",
-    covers: [],
-    status: "missing",
-    note: "Not implemented: neither the channel nor the DM send sets `mentions`, although `lib/mentions.ts` can parse them; the DM composer sends a bare `@handle` as typed.",
+    covers: [
+      "packages/web/test/mentions.test.ts",
+      "packages/web/test/chat-controller.test.ts",
+      "packages/web/test/dm-store.test.ts",
+    ],
+    status: "covered",
+    context:
+      "A bare `@handle` names a user of the provider hosting the message (§10.1); for a DM this client takes that to be the recipient's provider, which holds the message.",
   },
   {
     item: "Record a membership pointer at the home provider after joining a remote group, and remove it after leaving (§5.7)",
