@@ -3,7 +3,8 @@
  * command succeeds gets exactly one copy of the resulting event, carrying the
  * command's `id` in `correlationId` — when it can read the channel but has
  * not subscribed to it, and (never a second, uncorrelated one) when it has.
- * Subscribers still get the event uncorrelated. (That other subscribers'
+ * Subscribers — another user, and the requester's own other connection —
+ * each still get the event once, uncorrelated. (That other subscribers'
  * copies are uncorrelated, one frame id for all, is `ws-correlation.test.ts`.)
  */
 import { describe, expect, test } from "bun:test";
@@ -66,11 +67,15 @@ function steps(ids: { groupId: string; channelId: string }, prefix: string): Ste
 }
 
 /**
- * Run every step from `requester` and check that it — and the subscribed
- * `watcher` — each get exactly one copy of the step's event: correlated for
- * the requester, uncorrelated for the watcher.
+ * Run every step from `requester` and check that it — and each subscribed
+ * watcher — gets exactly one copy of the step's event: correlated for the
+ * requester, uncorrelated for every watcher.
  */
-async function runSteps(requester: WsClient, watcher: WsClient, list: Step[]): Promise<void> {
+async function runSteps(
+  requester: WsClient,
+  watchers: readonly WsClient[],
+  list: Step[],
+): Promise<void> {
   let messageId = "";
   for (const step of list) {
     requester.send({
@@ -85,52 +90,68 @@ async function runSteps(requester: WsClient, watcher: WsClient, list: Step[]): P
       step: step.id,
       correlationId: step.id,
     });
-    const seen = await watcher.next(isEvent);
-    expect(seen.correlationId).toBeUndefined();
-    expect(seen.id).toBe(own.id);
-    expect(seen.data).toEqual(own.data);
-    expect({ step: step.id, second: !(await requester.none(isEvent, 150)) }).toEqual({
-      step: step.id,
-      second: false,
-    });
+    for (const [i, watcher] of watchers.entries()) {
+      const seen = await watcher.next(isEvent);
+      expect({ step: step.id, watcher: i, correlationId: seen.correlationId }).toEqual({
+        step: step.id,
+        watcher: i,
+        correlationId: undefined,
+      });
+      expect(seen.id).toBe(own.id);
+      expect(seen.data).toEqual(own.data);
+    }
+    for (const [i, conn] of [requester, ...watchers].entries()) {
+      // 0 = the requester, then each watcher: none gets a second copy.
+      expect({ step: step.id, conn: i, second: !(await conn.none(isEvent, 150)) }).toEqual({
+        step: step.id,
+        conn: i,
+        second: false,
+      });
+    }
     if (step.type === "message.create") {
       messageId = (own.data as { message: { id: string } }).message.id;
     }
   }
 }
 
+/**
+ * alice owns a channel; bob (a member) and alice's own other connection are
+ * subscribed to it as watchers.
+ */
 async function setup(name: string): Promise<{
   b: Booted;
   ids: { groupId: string; channelId: string };
   alice: Awaited<ReturnType<typeof registerUserWithKey>>;
-  watcher: WsClient;
+  watchers: WsClient[];
 }> {
   const b = boot(name);
   const alice = await registerUserWithKey(b, "alice");
   const bob = await registerUserWithKey(b, "bob");
   const ids = await makeGroupChannel(b, alice);
   addMember(b, ids.groupId, bob, "member");
-  const watcher = await connectAuthenticated(b, bob);
-  await subscribe(watcher, ids.channelId);
-  return { b, ids, alice, watcher };
+  const bobConn = await connectAuthenticated(b, bob);
+  await subscribe(bobConn, ids.channelId);
+  const aliceOther = await connectAuthenticated(b, alice);
+  await subscribe(aliceOther, ids.channelId);
+  return { b, ids, alice, watchers: [bobConn, aliceOther] };
 }
 
 describe("the requester's own copy (§7.1 Delivery)", () => {
   test("a connection not subscribed to the channel gets exactly one correlated copy of each event", async () => {
-    const { b, ids, alice, watcher } = await setup("requester-unsubscribed");
+    const { b, ids, alice, watchers } = await setup("requester-unsubscribed");
     const requester = await connectAuthenticated(b, alice);
-    await runSteps(requester, watcher, steps(ids, "u"));
+    await runSteps(requester, watchers, steps(ids, "u"));
     requester.close();
-    watcher.close();
+    for (const w of watchers) w.close();
   });
 
   test("a subscribed connection gets that same single copy, never a second, uncorrelated one", async () => {
-    const { b, ids, alice, watcher } = await setup("requester-subscribed");
+    const { b, ids, alice, watchers } = await setup("requester-subscribed");
     const requester = await connectAuthenticated(b, alice);
     await subscribe(requester, ids.channelId);
-    await runSteps(requester, watcher, steps(ids, "s"));
+    await runSteps(requester, watchers, steps(ids, "s"));
     requester.close();
-    watcher.close();
+    for (const w of watchers) w.close();
   });
 
   test("an unsubscribed requester gets its copy of a channel no one is subscribed to", async () => {
