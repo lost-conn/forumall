@@ -57,6 +57,20 @@ describe("isOlderCopy: local edits are ordered by their base, not by the client 
     expect(isOlderCopy(server(SERVER_EDIT_2), slowClock)).toBe(true);
   });
 
+  test("an unsettled local mutation outranks every server copy, a tombstone included", () => {
+    const unsettled = {
+      editedAt: "2000-01-01T00:00:00Z",
+      localVersion: { unsettled: true as const },
+    };
+    expect(isOlderCopy(unsettled, server(SERVER_EDIT_2))).toBe(true);
+    expect(isOlderCopy(unsettled, { deletedAt: SERVER_EDIT_2 })).toBe(true);
+    // A new unsettled copy is the user's latest intent: it wins over anything stored.
+    expect(isOlderCopy(server(SERVER_EDIT_2), unsettled)).toBe(false);
+    expect(isOlderCopy(unsettled, { ...unsettled })).toBe(false);
+    // Settled, it is ordered by its base again.
+    expect(localVersionOf(unsettled)).toEqual({});
+  });
+
   test("a new local edit over an unconfirmed one keeps its base and wins", () => {
     const pending = local("2026-11-27T10:06:00Z", SERVER_EDIT_1);
     const next = { editedAt: "2026-11-27T10:07:00Z", localVersion: localVersionOf(pending) };
