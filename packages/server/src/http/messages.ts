@@ -165,7 +165,8 @@ export function createMessagesRouter() {
     const channelId = requireParam(c, "channelId");
     const messageId = requireParam(c, "messageId");
 
-    // 404 / 403 before the body is judged (400): see `editChannelMessage`.
+    // A body that is not JSON (→ undefined) or not an object is 400 first;
+    // the rest of the body is judged after 404 / 403: see `editChannelMessage`.
     const body: unknown = await c.req.json().catch(() => undefined);
     const outcome = editChannelMessage(db, config, {
       groupId,

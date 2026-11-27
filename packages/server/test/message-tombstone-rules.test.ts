@@ -4,7 +4,8 @@
  * out:
  *
  *  - an edit of a tombstone is `404` / `not_found` (step 3, before the author
- *    check), and leaves it unchanged;
+ *    check), and leaves it unchanged; an edit body that is not a JSON object is
+ *    `400` before even that (step 1);
  *  - a repeated delete is `204` over REST and fans out nothing; over WebSocket
  *    the requesting connection alone gets a `message.deleted` with the
  *    command's `correlationId` and no `cursor`; the permission check (step 4)
@@ -27,6 +28,7 @@ import {
   connectAuthenticated,
   makeGroupChannel,
   registerUserWithKey,
+  signedRawReq,
   signedReq,
   subscribe,
   useWsBoot,
@@ -163,6 +165,37 @@ describe("edits and deletes of a tombstone (§7.1)", () => {
     const conn = await connectAuthenticated(f.b, f.bob);
     command(conn, "del", "message.delete", { ...ids(f), messageId: f.messageId });
     expect((await conn.next(correlated("del"))).data).toMatchObject({ code: "forbidden" });
+  });
+
+  test("an edit body that is not a JSON object is 400 before visibility, the message and permission (step 1)", async () => {
+    const f = await fixture("tomb-edit-not-object");
+    await tombstone(f);
+    // A channel in a private group bob is not in: it answers as missing (404).
+    const hidden = await makeGroupChannel(f.b, f.alice, { group: "private", channel: "public" });
+    const targets = [
+      ["tombstone", messagePath(f)],
+      ["missing message", `${messagesPath(f)}/msg_nope`],
+      ["hidden channel", `${messagesPath(hidden)}/msg_nope`],
+    ] as const;
+    const notObjects = [
+      ["a JSON string", JSON.stringify("x")],
+      ["a JSON array", "[]"],
+      ["JSON null", "null"],
+      ["not JSON", "not json"],
+    ] as const;
+    for (const [where, path] of targets) {
+      // A well-formed edit is 404 here, so the 400 below comes from step 1.
+      const wellFormed = await signedReq(f.b, f.bob, "PATCH", path, {
+        content: { mime: "text/plain", text: "x" },
+      });
+      expect(`${where}: ${wellFormed.status}`).toBe(`${where}: 404`);
+      for (const [what, body] of notObjects) {
+        const res = await signedRawReq(f.b, f.bob, "PATCH", path, body);
+        expect(`${where}, ${what}: ${res.status}`).toBe(`${where}, ${what}: 400`);
+        expect(await problemCode(res)).toBe("bad_request");
+      }
+    }
+    expect(await f.watcher.none(ofType("message.updated"))).toBe(true);
   });
 });
 

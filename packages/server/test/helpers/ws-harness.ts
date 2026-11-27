@@ -151,7 +151,20 @@ export function signedReq(
   path: string,
   bodyObj?: unknown,
 ): Promise<Response> {
-  const body = bodyObj === undefined ? undefined : JSON.stringify(bodyObj);
+  return signedRawReq(b, signer, method, path, bodyObj === undefined ? undefined : JSON.stringify(bodyObj));
+}
+
+/**
+ * {@link signedReq} with the body sent exactly as given (labelled
+ * `application/json`), so a test can send a body that is not JSON at all.
+ */
+export function signedRawReq(
+  b: Booted,
+  signer: Signer,
+  method: string,
+  path: string,
+  body?: string,
+): Promise<Response> {
   // The query string is a distinct signed line (§4.4.2); split it off the path.
   const qIdx = path.indexOf("?");
   const query = qIdx === -1 ? undefined : path.slice(qIdx + 1);
