@@ -19,22 +19,24 @@
  * A marker is a message id, and the client never decodes cursors to compare
  * positions (§2.5). The provider keeps markers monotonic and reports only real
  * advances, and `read.updated` events arrive in the order it committed them.
- * What the client must still guard is its OWN optimistic mark: a mark that is
- * still waiting for its PATCH answer is newer than anything the provider has
- * reported so far, so while it is pending the store keeps it against every
- * other report for that scope — a late `read.updated` for an earlier mark, or
- * a summary read before the PATCH landed — instead of letting the marker move
- * back. The answer then settles the scope: applied if the mark advanced,
- * re-read from the summary if it did not (the provider held a newer marker, set
- * by another device, or ignored the message). A report naming the pending
- * message itself is its confirmation and applies. The views pick which message
- * to mark from the scope's timeline head (`stores/timeline-heads.ts`).
+ * What the client must still guard is its OWN optimistic mark against reports
+ * older than it: a `read.updated` for an earlier mark that lands late, or a
+ * summary whose request was issued before the mark's PATCH was answered (the
+ * summary is re-read on every WS `connected`, so it races the PATCHes the view
+ * sends meanwhile). {@link ReadMarkLedger} orders these on a local clock and
+ * says which reports apply; a report naming the latest mark itself is its
+ * confirmation and applies. The PATCH answer then settles the scope: applied
+ * if the mark advanced, re-read from the summary if it did not (the provider
+ * held a newer marker, set by another device, or ignored the message). The
+ * views pick which message to mark from the scope's timeline head
+ * (`stores/timeline-heads.ts`).
  */
 import type { ReadMarker } from "@forumall/shared";
 import { createStore, reconcile } from "solid-js/store";
 import type { OfscpWsClient } from "../lib/ofscp-ws.ts";
 import { getReadMarkers, setReadMarkers as patchReadMarkers } from "../lib/read-markers-api.ts";
 import type { ReadSnapshot } from "../lib/read-position.ts";
+import { ReadMarkLedger } from "./read-mark-ledger.ts";
 import { sessionClient } from "./session.ts";
 
 /** Per-scope read state. */
@@ -55,22 +57,8 @@ const [readState, setReadState] = createStore<ReadMarkerState>({ scopes: {} });
 
 export { readState };
 
-/**
- * scopeId → the message of the newest local mark still waiting for its PATCH
- * answer (see "Ordering" above). Not reactive: it only gates writes.
- */
-const pendingMarks = new Map<string, string>();
-
-/** Whether a provider report for `scopeId` naming `messageId` may be applied. */
-function reportApplies(scopeId: string, messageId: string | undefined): boolean {
-  const pending = pendingMarks.get(scopeId);
-  return pending === undefined || pending === messageId;
-}
-
-/** The PATCH for `scopeId`'s mark of `messageId` was answered (or failed). */
-function settlePendingMark(scopeId: string, messageId: string): void {
-  if (pendingMarks.get(scopeId) === messageId) pendingMarks.delete(scopeId);
-}
+/** This device's own marks, which gate provider reports (see "Ordering"). */
+const ledger = new ReadMarkLedger();
 
 /** The store form of one provider-reported entry (`groupId` kept if omitted). */
 function fromWire(e: ReadMarker, prev: ScopeReadState | undefined): ScopeReadState {
@@ -83,11 +71,11 @@ function fromWire(e: ReadMarker, prev: ScopeReadState | undefined): ScopeReadSta
 }
 
 /**
- * Replace the whole summary (hydrate). A scope with a pending local mark keeps
- * its local state unless the summary already names that mark (the summary may
- * have been read before the PATCH landed; its answer settles the scope).
+ * Replace the whole summary (hydrate) with one requested at clock tick
+ * `issuedAt`. A scope whose latest local mark the request may predate keeps its
+ * local state unless the summary already names that mark (see "Ordering").
  */
-function setSummary(entries: ReadMarker[]): void {
+function setSummary(entries: ReadMarker[], issuedAt: number): void {
   // A plain copy: `reconcile` must not be handed the store's own proxies.
   const local = (scopeId: string): ScopeReadState | undefined => {
     const s = readState.scopes[scopeId];
@@ -95,12 +83,14 @@ function setSummary(entries: ReadMarker[]): void {
   };
   const next: Record<string, ScopeReadState> = {};
   for (const e of entries) {
-    const kept = reportApplies(e.scopeId, e.lastReadMessageId) ? undefined : local(e.scopeId);
+    const kept = ledger.summaryApplies(e.scopeId, e.lastReadMessageId, issuedAt)
+      ? undefined
+      : local(e.scopeId);
     next[e.scopeId] = kept
       ? { ...kept, ...(e.groupId !== undefined ? { groupId: e.groupId } : {}) }
       : fromWire(e, undefined);
   }
-  for (const scopeId of pendingMarks.keys()) {
+  for (const scopeId of ledger.unsettledSince(issuedAt)) {
     const kept = next[scopeId] === undefined ? local(scopeId) : undefined;
     if (kept) next[scopeId] = kept;
   }
@@ -109,13 +99,14 @@ function setSummary(entries: ReadMarker[]): void {
   setReadState("scopes", reconcile(next));
 }
 
-/** GET the unread summary on session start and seed the store. */
+/** GET the unread summary (session start, every WS reconnect) and seed the store. */
 export async function hydrateReadMarkers(): Promise<void> {
   const client = sessionClient();
   if (!client) return;
+  const issuedAt = ledger.issueSummary();
   try {
     const scopes = await getReadMarkers(client);
-    setSummary(scopes);
+    setSummary(scopes, issuedAt);
   } catch {
     // Non-fatal: badges/divider degrade gracefully without the summary.
   }
@@ -127,8 +118,8 @@ export async function hydrateReadMarkers(): Promise<void> {
  * Optimistically records the marker and zeros the unread count, then PATCHes
  * the provider (which tells every device through `read.updated`).
  *
- * Until the answer arrives the mark is pending, and provider reports that
- * would replace it are ignored (see "Ordering" above). The answer settles the
+ * Provider reports older than the mark are ignored, while it is pending and
+ * after (see "Ordering" above). The answer settles the
  * optimistic state: an advanced scope is applied unless a newer local mark has
  * replaced it meanwhile; a scope that did NOT advance means the provider holds
  * a newer marker already (or ignored the message), and a failed request leaves
@@ -148,20 +139,20 @@ export function markRead(scopeId: string, messageId: string | undefined): void {
 
   const client = sessionClient();
   if (!client) return;
-  pendingMarks.set(scopeId, messageId);
+  const stamp = ledger.mark(scopeId, messageId);
   void patchReadMarkers(client, [{ scopeId, lastReadMessageId: messageId }]).then(
     (scopes) => {
-      settlePendingMark(scopeId, messageId);
+      // A newer mark replaced this one: its own answer settles the scope.
+      if (!ledger.settle(scopeId, stamp)) return;
       const entry = scopes.find((s) => s.scopeId === scopeId);
       if (!entry) {
         void hydrateReadMarkers();
         return;
       }
-      if (readState.scopes[scopeId]?.lastReadMessageId === messageId) applyMarker(entry);
+      applyMarker(entry);
     },
     () => {
-      settlePendingMark(scopeId, messageId);
-      if (readState.scopes[scopeId]?.lastReadMessageId === messageId) void hydrateReadMarkers();
+      if (ledger.settle(scopeId, stamp)) void hydrateReadMarkers();
     },
   );
 }
@@ -172,13 +163,13 @@ function applyMarker(m: ReadMarker): void {
 }
 
 /**
- * Fold provider-reported advances (`read.updated`) into the store. An entry is
- * ignored while a newer local mark for its scope is pending, unless it names
- * that mark (see "Ordering" above).
+ * Fold provider-reported advances (`read.updated`) into the store. An entry
+ * older than this device's latest mark for its scope is ignored (see
+ * "Ordering" above).
  */
 export function applyReadUpdated(markers: ReadMarker[]): void {
   for (const m of markers) {
-    if (reportApplies(m.scopeId, m.lastReadMessageId)) applyMarker(m);
+    if (ledger.updateApplies(m.scopeId, m.lastReadMessageId)) applyMarker(m);
   }
 }
 
@@ -226,7 +217,7 @@ export function unreadForGroup(groupId: string): number {
 
 /** Clear all read state (logout). */
 export function clearReadMarkers(): void {
-  pendingMarks.clear();
+  ledger.clear();
   // `reconcile({})` truly empties the keyed map; a bare `{}` set would merge.
   setReadState("scopes", reconcile({}));
 }

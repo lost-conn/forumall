@@ -201,35 +201,49 @@ describe("unreadForGroup rolls up by groupId", () => {
   });
 });
 
-/** A client whose PATCHes wait until the test answers (or fails) them in turn. */
-function deferredClient(get: ReadMarker[][] = []) {
-  const patches: { body: unknown; answer(scopes: ReadMarker[]): void; fail(): void }[] = [];
+/** A deferred request the test answers (or fails) when it chooses. */
+interface Deferred {
+  body?: unknown;
+  answer(scopes: ReadMarker[]): void;
+  fail(): void;
+}
+
+/**
+ * A client whose PATCHes wait until the test answers (or fails) them in turn.
+ * GETs answer at once from `get`, or, with `deferGets`, wait in `getsWaiting`.
+ */
+function deferredClient(get: ReadMarker[][] = [], opts: { deferGets?: boolean } = {}) {
+  const patches: Deferred[] = [];
+  const getsWaiting: Deferred[] = [];
   let gets = 0;
+  const deferred = (list: Deferred[], body?: unknown) =>
+    new Promise((resolve, reject) => {
+      list.push({
+        ...(body !== undefined ? { body } : {}),
+        answer: (scopes) => resolve({ data: { scopes } }),
+        fail: () => reject(new Error("offline")),
+      });
+    });
   const client = {
     async get() {
       gets++;
+      if (opts.deferGets) return deferred(getsWaiting);
       return { data: { scopes: get.shift() ?? [] } };
     },
     patch(_path: string, body: unknown) {
-      return new Promise((resolve, reject) => {
-        patches.push({
-          body,
-          answer: (scopes) => resolve({ data: { scopes } }),
-          fail: () => reject(new Error("offline")),
-        });
-      });
+      return deferred(patches, body);
     },
   } as unknown as OfscpClient;
-  return { client, patches, gets: () => gets };
+  return { client, patches, getsWaiting, gets: () => gets };
 }
 
-describe("a pending local mark is never rolled back", () => {
-  const at = (id: string, unreadCount = 0): ReadMarker => ({
-    scopeId: "chn_a",
-    lastReadMessageId: id,
-    unreadCount,
-  });
+const at = (id: string, unreadCount = 0, scopeId = "chn_a"): ReadMarker => ({
+  scopeId,
+  lastReadMessageId: id,
+  unreadCount,
+});
 
+describe("a pending local mark is never rolled back", () => {
   test("a late read.updated for an earlier mark does not move the marker back", async () => {
     const { client, patches } = deferredClient();
     setSessionAuth({ client, stored: STORED });
@@ -253,17 +267,16 @@ describe("a pending local mark is never rolled back", () => {
     expect(readSnapshotFor("chn_a")).toEqual({ lastReadMessageId: "msg_3", unreadCount: 0 });
   });
 
-  test("a summary read while a mark is pending keeps the mark, even one an earlier answer asked for", async () => {
-    const { client, patches, gets } = deferredClient([[at("msg_0", 4)], [at("msg_2")]]);
+  test("an earlier mark the provider did not advance leaves the newer pending mark to settle", async () => {
+    const { client, patches, gets } = deferredClient([[at("msg_2")]]);
     setSessionAuth({ client, stored: STORED });
     markRead("chn_a", "msg_1");
     markRead("chn_a", "msg_2");
 
-    // msg_1 did not advance → the summary is re-read; it predates msg_2's PATCH.
+    // msg_1 did not advance, but msg_2 replaced it: msg_2's answer decides.
     patches[0]?.answer([]);
     await settle();
-    await settle();
-    expect(gets()).toBe(1);
+    expect(gets()).toBe(0);
     expect(readSnapshotFor("chn_a")).toEqual({ lastReadMessageId: "msg_2", unreadCount: 0 });
 
     // A summary that already names the pending mark applies.
@@ -284,5 +297,64 @@ describe("a pending local mark is never rolled back", () => {
     expect(readSnapshotFor("chn_a")).toEqual({ lastReadMessageId: "msg_0", unreadCount: 3 });
     applyReadUpdated([at("msg_4")]);
     expect(readSnapshotFor("chn_a")).toEqual({ lastReadMessageId: "msg_4", unreadCount: 0 });
+  });
+});
+
+describe("reports older than a settled mark", () => {
+  test("a summary requested before the PATCH but answered after it is skipped for that scope", async () => {
+    const { client, patches, getsWaiting } = deferredClient([], { deferGets: true });
+    setSessionAuth({ client, stored: STORED });
+    applyReadUpdated([at("msg_0", 5), at("msg_x", 2, "dm_x")]);
+
+    // The WS reconnects (hydrate) while the view's mark is being PATCHed.
+    const hydrating = hydrateReadMarkers();
+    markRead("chn_a", "msg_1");
+    patches[0]?.answer([at("msg_1")]);
+    await settle();
+    expect(readSnapshotFor("chn_a")).toEqual({ lastReadMessageId: "msg_1", unreadCount: 0 });
+
+    // The summary was read before the PATCH landed: its chn_a entry is older.
+    getsWaiting[0]?.answer([at("msg_0", 5), at("msg_y", 1, "dm_x")]);
+    await hydrating;
+    expect(readSnapshotFor("chn_a")).toEqual({ lastReadMessageId: "msg_1", unreadCount: 0 });
+    // Scopes without a local mark take the summary as usual.
+    expect(readSnapshotFor("dm_x")).toEqual({ lastReadMessageId: "msg_y", unreadCount: 1 });
+
+    // A summary requested after the mark settled is the provider's word.
+    const again = hydrateReadMarkers();
+    getsWaiting[1]?.answer([at("msg_1", 2), at("msg_y", 1, "dm_x")]);
+    await again;
+    expect(readSnapshotFor("chn_a")).toEqual({ lastReadMessageId: "msg_1", unreadCount: 2 });
+  });
+
+  test("a stale summary that lacks the marked scope keeps the local mark", async () => {
+    const { client, patches, getsWaiting } = deferredClient([], { deferGets: true });
+    setSessionAuth({ client, stored: STORED });
+    const hydrating = hydrateReadMarkers();
+    markRead("dm_new", "msg_1");
+    patches[0]?.answer([at("msg_1", 0, "dm_new")]);
+    await settle();
+    getsWaiting[0]?.answer([]);
+    await hydrating;
+    expect(readSnapshotFor("dm_new")).toEqual({ lastReadMessageId: "msg_1", unreadCount: 0 });
+  });
+
+  test("a read.updated for an earlier mark, after the newer mark's answer, does not step back", async () => {
+    const { client, patches } = deferredClient();
+    setSessionAuth({ client, stored: STORED });
+    markRead("chn_a", "msg_1");
+    markRead("chn_a", "msg_2");
+    patches[0]?.answer([at("msg_1", 1)]);
+    patches[1]?.answer([at("msg_2")]);
+    await settle();
+    expect(readSnapshotFor("chn_a")).toEqual({ lastReadMessageId: "msg_2", unreadCount: 0 });
+
+    // msg_1's event was committed before msg_2 but lands after both answers.
+    applyReadUpdated([at("msg_1", 1)]);
+    expect(readSnapshotFor("chn_a")).toEqual({ lastReadMessageId: "msg_2", unreadCount: 0 });
+    // msg_2's own event, then another device's advance, still apply.
+    applyReadUpdated([at("msg_2")]);
+    applyReadUpdated([at("msg_3", 0)]);
+    expect(readSnapshotFor("chn_a")).toEqual({ lastReadMessageId: "msg_3", unreadCount: 0 });
   });
 });

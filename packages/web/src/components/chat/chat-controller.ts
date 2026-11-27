@@ -79,6 +79,7 @@ import {
   resetTimelineHead,
   settleTimelineHead,
 } from "../../stores/timeline-heads.ts";
+import { closedError, closedReason } from "../shared/open-session.ts";
 import { backfillReactions, noteLiveReaction } from "./reaction-backfill.ts";
 
 /**
@@ -278,7 +279,7 @@ export async function openChannel(deps: OpenChannelDeps): Promise<ChannelHandle>
     throw closedReason(deps.signal) ?? err;
   }
   // Closed while the page was in flight: write nothing.
-  if (signal.aborted) throw closedReason(deps.signal) ?? closedError();
+  if (signal.aborted) throw closedReason(deps.signal) ?? closedError("channel");
   olderCursor = page.nextCursor;
   // Publish the older cursor so the UI can offer "load older" / auto-page on a
   // scroll to the top. The closure variable above stays the fetch's own source
@@ -301,7 +302,7 @@ export async function openChannel(deps: OpenChannelDeps): Promise<ChannelHandle>
     backfillDeps,
     page.messages.map((m) => m.id),
   );
-  if (signal.aborted) throw closedReason(deps.signal) ?? closedError();
+  if (signal.aborted) throw closedReason(deps.signal) ?? closedError("channel");
 
   return {
     async loadOlder(): Promise<boolean> {
@@ -337,16 +338,6 @@ export async function openChannel(deps: OpenChannelDeps): Promise<ChannelHandle>
     },
     close,
   };
-}
-
-/** The caller's abort reason, when its signal is what ended the channel. */
-function closedReason(callerSignal: AbortSignal | undefined): unknown {
-  return callerSignal?.aborted ? callerSignal.reason : undefined;
-}
-
-/** The rejection of an `openChannel` ended by `close()` before it resolved. */
-function closedError(): DOMException {
-  return new DOMException("The channel was closed while it was opening", "AbortError");
 }
 
 // ---------------------------------------------------------------------------

@@ -14,8 +14,15 @@
  *      newest RECEIVED message the inbox timeline delivered, which
  *      auto-mark-read names (§7.7). A newly delivered `dm.message` moves it and
  *      the newest inbox page settles it; replacements (edits, deletes), older
- *      pages and reply listings never touch it.
+ *      pages and reply listings never touch it (see {@link isNewDelivery}).
  * The store de-dupes received + sent by `id` and orders by `createdAt`.
+ *
+ * The conversation has one lifetime, ended by `close()` or by the caller's
+ * `signal` (a view's {@link startDmSession}, `components/shared/open-session.ts`):
+ * once it ends, the listeners are off, the inbox loads are aborted, and a page
+ * that still arrives is dropped rather than written to the store. A cancelled
+ * open therefore never touches state (the thread, its timeline head) owned by a
+ * later open of the same conversation.
  *
  * History is WINDOWED on both sides rather than drained: `loadOlder()` on the
  * returned handle extends the inbox page AND the local sent window together (see
@@ -51,7 +58,9 @@ import {
   advanceTimelineHead,
   resetTimelineHead,
   settleTimelineHead,
+  timelineHeadFor,
 } from "../../stores/timeline-heads.ts";
+import { closedError, closedReason } from "../shared/open-session.ts";
 
 /** History page size for the inbox backfill + each "load older" page. */
 export const DM_HISTORY_PAGE_SIZE = 50;
@@ -107,6 +116,13 @@ export interface OpenConversationDeps {
   counterparty: string;
   /** This user's local sent-store (scoped to `me`). */
   sentStore: DmSentStore;
+  /**
+   * Ends the conversation from outside, as `close()` does. A view passes it so
+   * a switch can close the old conversation while it is still opening (before
+   * there is a handle to close); the pending `openConversation` then rejects
+   * with the signal's reason.
+   */
+  signal?: AbortSignal;
 }
 
 export interface ConversationHandle {
@@ -115,8 +131,51 @@ export interface ConversationHandle {
    * more page of locally-retained sent messages. Returns whether more remain.
    */
   loadOlder(): Promise<boolean>;
-  /** Tear down the WS listener + unsubscribe (thread switch / unmount). */
+  /**
+   * End the conversation (thread switch / unmount): tear down the WS listeners,
+   * unsubscribe, and abort the inbox loads still running for it. Idempotent.
+   */
   close(): void;
+}
+
+/** What {@link isNewDelivery} knows of a `dm.message`'s message and the thread. */
+export interface DeliveryFacts {
+  /** The message is the caller's own. */
+  mine: boolean;
+  /** The event carries `editedAt` / `deletedAt`. */
+  edited: boolean;
+  deleted: boolean;
+  /** The thread already holds a message with this id. */
+  held: boolean;
+  /** The message's `createdAt`. */
+  createdAt: string;
+  /**
+   * `createdAt` of the thread's current timeline head, or, with no head yet,
+   * of the oldest received message loaded (the window's floor); absent when
+   * neither exists.
+   */
+  reference?: string;
+}
+
+/**
+ * Whether a `dm.message` is a newly delivered RECEIVED message — the inbox
+ * timeline's new front — rather than a replacement of a message delivered
+ * before (§7.4).
+ *
+ *  - A held id, a tombstone, or the caller's own message never is.
+ *  - An unedited message the thread does not hold is a create, delivered live
+ *    or replayed on resume in commit order (§7.1), so it is the newest.
+ *  - An EDITED one the thread does not hold is either an edit of an older
+ *    message outside the loaded window, or a message created and edited while
+ *    this device was offline (a resume replays current state). The loaded
+ *    window is gapless from its floor up to the head, so it is new exactly when
+ *    it is not older than the head (or the floor, with no head yet). `editedAt`
+ *    alone cannot tell the two apart.
+ */
+export function isNewDelivery(f: DeliveryFacts): boolean {
+  if (f.mine || f.deleted || f.held) return false;
+  if (!f.edited) return true;
+  return f.reference === undefined || f.createdAt >= f.reference;
 }
 
 /**
@@ -131,6 +190,11 @@ export interface ConversationHandle {
  */
 export async function openConversation(deps: OpenConversationDeps): Promise<ConversationHandle> {
   const { client, ws, dmId, me, counterparty, sentStore } = deps;
+  deps.signal?.throwIfAborted();
+  // The conversation's lifetime: the inbox loads carry `signal`, and `close()`
+  // aborts it (see the module doc).
+  const lifetime = new AbortController();
+  const { signal } = lifetime;
 
   // Remember the counterparty so an only-sent conversation still lists it.
   sentStore.rememberCounterparty(dmId, counterparty);
@@ -211,6 +275,7 @@ export async function openConversation(deps: OpenConversationDeps): Promise<Conv
         ...(cursor ? { cursor } : {}),
         limit: DM_HISTORY_PAGE_SIZE,
         direction: "backward",
+        signal,
       });
     } catch (err) {
       if (
@@ -263,6 +328,23 @@ export async function openConversation(deps: OpenConversationDeps): Promise<Conv
     }
   };
 
+  /**
+   * The reference an edited, unheld delivery is compared with (see
+   * {@link isNewDelivery}): the head's `createdAt`, else the window's floor.
+   */
+  const deliveryReference = (): string | undefined => {
+    const head = timelineHeadFor(dmId);
+    if (head === undefined) return oldestReceivedAt;
+    return dmThread(dmId).find((x) => x.id === head)?.createdAt ?? oldestReceivedAt;
+  };
+  /**
+   * Edited, unheld received messages delivered before the newest inbox page
+   * settled the head: the window is not known yet, so they are judged once it
+   * is (step 4).
+   */
+  let firstPageSettled = false;
+  const editedBeforeSettle: { id: string; createdAt: string }[] = [];
+
   // The thread's timeline head starts over with this open.
   resetTimelineHead(dmId);
 
@@ -288,9 +370,23 @@ export async function openConversation(deps: OpenConversationDeps): Promise<Conv
     // §7.4: a `dm.message` for a message already held replaces it, and edits and
     // deletes of messages outside the window carry `editedAt` / `deletedAt`.
     // Only a newly delivered received message is the inbox timeline's newest.
-    const delivered =
-      !mine && !m.editedAt && !m.deletedAt && !dmThread(dmId).some((x) => x.id === m.id);
-    if (delivered) advanceTimelineHead(dmId, m.id);
+    const facts = {
+      mine,
+      edited: m.editedAt !== undefined,
+      deleted: m.deletedAt !== undefined,
+      held: dmThread(dmId).some((x) => x.id === m.id),
+      createdAt: m.createdAt,
+    };
+    if (facts.edited && !firstPageSettled) {
+      if (isNewDelivery({ ...facts, edited: false })) {
+        editedBeforeSettle.push({ id: m.id, createdAt: m.createdAt });
+      }
+    } else {
+      const reference = deliveryReference();
+      if (isNewDelivery({ ...facts, ...(reference !== undefined ? { reference } : {}) })) {
+        advanceTimelineHead(dmId, m.id);
+      }
+    }
     if (m.deletedAt) {
       tombstoneDmMessage(dmId, m.id, m.deletedAt);
       return;
@@ -342,12 +438,33 @@ export async function openConversation(deps: OpenConversationDeps): Promise<Conv
   // 3) Subscribe with the `dm_` id as the channel (§7.4 live delivery).
   ws.subscribe([dmId]);
 
+  const close = (): void => {
+    if (signal.aborted) return;
+    lifetime.abort();
+    deps.signal?.removeEventListener("abort", close);
+    resetTimelineHead(dmId);
+    offDm();
+    offReaction();
+    offTyping();
+    ws.unsubscribe([dmId]);
+  };
+  deps.signal?.addEventListener("abort", close, { once: true });
+
   // 4) Backfill the most-recent page of RECEIVED inbox history (§7.4 backward
   // paging — newest-first; the store orders the merged thread by `createdAt`, so
   // arrival order doesn't matter). Fetch → re-hydrate the sent side down to that
   // page's floor (no hole in the merged window) → fold the page last (the server
   // copy is authoritative), then publish the paging state.
-  const firstPage = await fetchReceivedPage(null);
+  let firstPage: Message[];
+  try {
+    firstPage = await fetchReceivedPage(null);
+  } catch (err) {
+    // A failed open leaves nothing subscribed; a closed one reports the close.
+    close();
+    throw closedReason(deps.signal) ?? err;
+  }
+  // Closed while the page was in flight: write nothing.
+  if (signal.aborted) throw closedReason(deps.signal) ?? closedError("conversation");
   hydrateSent();
   foldReceived(firstPage);
   // The newest inbox page (newest first) settles the head against any delivery
@@ -356,6 +473,24 @@ export async function openConversation(deps: OpenConversationDeps): Promise<Conv
     dmId,
     firstPage.filter((m) => m.author !== me).map((m) => m.id),
   );
+  // Now the window is known, judge the edited deliveries that arrived before it
+  // (oldest first, so the newest new one ends as the head). One deleted since
+  // it arrived is a tombstone now, which never is a delivery.
+  firstPageSettled = true;
+  editedBeforeSettle.sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1));
+  for (const e of editedBeforeSettle) {
+    const reference = deliveryReference();
+    const delivered = isNewDelivery({
+      mine: false,
+      edited: true,
+      deleted: dmThread(dmId).some((x) => x.id === e.id && x.deletedAt !== undefined),
+      held: false,
+      createdAt: e.createdAt,
+      ...(reference !== undefined ? { reference } : {}),
+    });
+    if (delivered) advanceTimelineHead(dmId, e.id);
+  }
+  editedBeforeSettle.length = 0;
   publishOlderState();
 
   return {
@@ -364,19 +499,23 @@ export async function openConversation(deps: OpenConversationDeps): Promise<Conv
       // still has one) and one more page of local sent messages — a thread whose
       // older half is entirely our own messages must still page back. Same
       // fetch → hydrate → fold ordering as the initial load.
-      const page = olderCursor ? await fetchReceivedPage(olderCursor) : [];
+      if (signal.aborted) return false;
+      let page: Message[];
+      try {
+        page = olderCursor ? await fetchReceivedPage(olderCursor) : [];
+      } catch (err) {
+        if (signal.aborted) return false;
+        throw err;
+      }
+      // Closed while the page was in flight: the thread belongs to whatever
+      // opens this conversation next, so neither the page nor its cursor lands.
+      if (signal.aborted) return false;
       sentLimit += DM_HISTORY_PAGE_SIZE;
       hydrateSent();
       foldReceived(page);
       publishOlderState();
       return olderCursor !== null || sentHasMore;
     },
-    close(): void {
-      resetTimelineHead(dmId);
-      offDm();
-      offReaction();
-      offTyping();
-      ws.unsubscribe([dmId]);
-    },
+    close,
   };
 }

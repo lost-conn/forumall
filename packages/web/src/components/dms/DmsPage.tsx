@@ -61,7 +61,8 @@ import { DmComposer } from "./DmComposer.tsx";
 import { DmMessageRow, DmTypingLine } from "./DmMessageRow.tsx";
 import { NotificationList } from "./InboxNotifications.tsx";
 import { NewDmModal } from "./NewDmModal.tsx";
-import { type ConversationHandle, openConversation } from "./dm-controller.ts";
+import type { ConversationHandle } from "./dm-controller.ts";
+import { startDmSession } from "./dm-session.ts";
 import { isRemoteActor } from "./remote-actor.ts";
 
 /**
@@ -348,7 +349,11 @@ const ThreadView: Component<{
     return "";
   });
 
-  // (Re)open the conversation whenever the dmId changes.
+  // (Re)open the conversation whenever the dmId changes. The effect's cleanup
+  // (which runs before the next conversation opens, and on unmount) disposes
+  // the session at once, closing the old conversation even while it is still
+  // loading — so it never touches the thread state a later open of the same
+  // conversation owns (A → B → A).
   createEffect(
     on(
       () => props.dmId,
@@ -358,7 +363,6 @@ const ThreadView: Component<{
         const store = props.sentStore();
         const me = session.actor;
         setError(null);
-        handle()?.close();
         setHandle(null);
         if (!client || !ws || !store || !me) return;
         const other = counterparty();
@@ -366,21 +370,14 @@ const ThreadView: Component<{
           setError("Unknown participant for this conversation.");
           return;
         }
-        let cancelled = false;
-        void openConversation({ client, ws, dmId, me, counterparty: other, sentStore: store })
-          .then((h) => {
-            if (cancelled) h.close();
-            else setHandle(h);
-          })
-          .catch((err) => setError(err instanceof Error ? err.message : String(err)));
-        onCleanup(() => {
-          cancelled = true;
-        });
+        const dmSession = startDmSession(
+          { client, ws, dmId, me, counterparty: other, sentStore: store },
+          { opened: setHandle, failed: setError },
+        );
+        onCleanup(() => dmSession.dispose());
       },
     ),
   );
-
-  onCleanup(() => handle()?.close());
 
   // Track the open DM as the global "active thread" (notify-fx sound suppression:
   // an incoming DM in the thread you're watching while focused doesn't chime).

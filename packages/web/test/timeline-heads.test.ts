@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { Message, WsEnvelope } from "@forumall/shared";
 import { loadReplies, openChannel } from "../src/components/chat/chat-controller.ts";
 import { openConversation } from "../src/components/dms/dm-controller.ts";
+import { startDmSession } from "../src/components/dms/dm-session.ts";
 import { DmSentStore } from "../src/lib/dm-store.ts";
 import type { OfscpClient } from "../src/lib/ofscp-client.ts";
 import type { OfscpWsClient } from "../src/lib/ofscp-ws.ts";
@@ -46,6 +47,8 @@ const page = (items: Message[], nextCursor: string | null = null) => ({
 /** A deferred GET, so a test can deliver events while a request is in flight. */
 interface Pending {
   path: string;
+  /** The request's abort signal, if it was given one. */
+  signal?: AbortSignal;
   resolve(data: unknown): void;
 }
 
@@ -56,12 +59,16 @@ interface Pending {
 function fakeClient(routes: Record<string, unknown>) {
   const pending: Pending[] = [];
   const client = {
-    async get(path: string) {
+    async get(path: string, opts?: { signal?: AbortSignal }) {
       if (path.endsWith("/reactions")) return { data: { items: [] } };
       const key = Object.keys(routes).find((k) => path.startsWith(k));
       if (key !== undefined) return { data: routes[key] };
       return new Promise((resolve) => {
-        pending.push({ path, resolve: (data) => resolve({ data }) });
+        pending.push({
+          path,
+          ...(opts?.signal ? { signal: opts.signal } : {}),
+          resolve: (data) => resolve({ data }),
+        });
       });
     },
   } as unknown as OfscpClient;
@@ -261,5 +268,99 @@ describe("DM timeline head (received messages only)", () => {
     expect(timelineHeadFor(DM)).toBe("d_2");
     expect(dmThread(DM).some((m) => m.id === "d_0")).toBe(true);
     handle.close();
+  });
+
+  test("a message created and edited while offline moves the head; an edit of an older one does not", async () => {
+    const { handle, emit } = await open([message("d_1", { createdAt: "2026-06-05T00:00:01Z" })]);
+    // A resume replays current state: d_2 arrives already edited.
+    emit(
+      "dm.message",
+      dmEvent(
+        message("d_2", { createdAt: "2026-06-05T00:00:02Z", editedAt: "2026-06-05T00:00:09Z" }),
+      ),
+    );
+    expect(timelineHeadFor(DM)).toBe("d_2");
+    // An edit of a message older than the head, outside the window.
+    emit(
+      "dm.message",
+      dmEvent(
+        message("d_0", { createdAt: "2026-06-05T00:00:00Z", editedAt: "2026-06-05T00:00:10Z" }),
+      ),
+    );
+    expect(timelineHeadFor(DM)).toBe("d_2");
+    handle.close();
+  });
+
+  test("edited deliveries that beat the first inbox page are judged against it", async () => {
+    const { client, pending } = fakeClient({});
+    const { ws, emit } = fakeWs();
+    const opening = openConversation({
+      client,
+      ws,
+      dmId: DM,
+      me: ME,
+      counterparty: BOB,
+      sentStore: new DmSentStore(ME, memBackend()),
+    });
+    await settle();
+    emit(
+      "dm.message",
+      dmEvent(
+        message("d_3", { createdAt: "2026-06-05T00:00:03Z", editedAt: "2026-06-05T00:00:08Z" }),
+      ),
+    );
+    emit(
+      "dm.message",
+      dmEvent(
+        message("d_old", { createdAt: "2026-06-05T00:00:00Z", editedAt: "2026-06-05T00:00:09Z" }),
+      ),
+    );
+    pending.shift()?.resolve(page([message("d_1", { createdAt: "2026-06-05T00:00:01Z" })]));
+    const handle = await opening;
+    expect(timelineHeadFor(DM)).toBe("d_3");
+    handle.close();
+  });
+
+  test("A -> B -> A while A's first open is loading: the cancelled open leaves the new one alone", async () => {
+    const DM_B = "dm_other";
+    const { client, pending } = fakeClient({});
+    const { ws, emit } = fakeWs();
+    const sentStore = new DmSentStore(ME, memBackend());
+    const deps = { client, ws, me: ME, counterparty: BOB, sentStore };
+    const outcomes: string[] = [];
+    const events = (name: string) => ({
+      opened: () => outcomes.push(name),
+      failed: (msg: string) => outcomes.push(`${name} failed: ${msg}`),
+    });
+
+    const firstA = startDmSession({ ...deps, dmId: DM }, events("A1"));
+    await settle();
+    firstA.dispose();
+    startDmSession({ ...deps, dmId: DM_B }, events("B")).dispose();
+    const secondA = startDmSession({ ...deps, dmId: DM }, events("A2"));
+    await settle();
+
+    const [stalePage, , freshPage] = pending;
+    expect(stalePage?.path.startsWith(`/api/dms/${DM}/`)).toBe(true);
+    expect(stalePage?.signal?.aborted).toBe(true);
+    expect(freshPage?.path.startsWith(`/api/dms/${DM}/`)).toBe(true);
+    expect(freshPage?.signal?.aborted).toBe(false);
+
+    freshPage?.resolve(page([message("d_2", { createdAt: "2026-06-05T00:00:02Z" })]));
+    await settle();
+    expect(timelineHeadFor(DM)).toBe("d_2");
+
+    // The cancelled open's page lands last: nothing of it is written.
+    stalePage?.resolve(page([message("d_stale", { createdAt: "2026-06-05T00:00:03Z" })]));
+    await settle();
+    expect(timelineHeadFor(DM)).toBe("d_2");
+    expect(dmThread(DM).some((m) => m.id === "d_stale")).toBe(false);
+    expect(outcomes).toEqual(["A2"]);
+
+    // Only the live open still listens, and disposing it ends it.
+    emit("dm.message", dmEvent(message("d_4", { createdAt: "2026-06-05T00:00:04Z" })));
+    expect(timelineHeadFor(DM)).toBe("d_4");
+    secondA.dispose();
+    expect(timelineHeadFor(DM)).toBeUndefined();
   });
 });
