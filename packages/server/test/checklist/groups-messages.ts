@@ -82,13 +82,19 @@ export const GROUPS_MESSAGES: readonly ChecklistEntry[] = [
   {
     item: "On `redeem`, check the invite first (`404` unknown or expired, `409` exhausted, whoever the caller is); answer a valid invite redeemed by a caller who is already a member (the owner included) with `200`, the invite's `channelId` and their current role, changing no role and consuming no use of the invite; let a redemption whose invite names a since-deleted channel succeed, omitting `channelId` (§5.6)",
     level: "provider-must",
-    covers: ["packages/server/test/invite-redemption.test.ts", "packages/server/test/invites.test.ts"],
+    covers: [
+      "packages/server/test/invite-redemption.test.ts",
+      "packages/server/test/invites.test.ts",
+    ],
     status: "covered",
   },
   {
     item: "Give a guest provisioned through `/invites/{token}/guest` role `guest`, whatever the invite's `role`, and join it to the group even when the invite names a since-deleted channel (§4.8, §5.6)",
     level: "provider-must",
-    covers: ["packages/server/test/invite-redemption.test.ts", "packages/server/test/invites.test.ts"],
+    covers: [
+      "packages/server/test/invite-redemption.test.ts",
+      "packages/server/test/invites.test.ts",
+    ],
     status: "covered",
   },
   {
