@@ -36,9 +36,7 @@ import {
 import { seqFromCursor } from "../../lib/cursor.ts";
 import { fetchDmConversations, fetchDmReplies } from "../../lib/dm-api.ts";
 import { DmSentStore } from "../../lib/dm-store.ts";
-import { clientForHost, domainOf, isLocalActor } from "../../lib/federation.ts";
-import { keyStore } from "../../lib/key-store.ts";
-import type { OfscpClient } from "../../lib/ofscp-client.ts";
+import { domainOf, isLocalActor } from "../../lib/federation.ts";
 import { formatFullTime, formatTime } from "../../lib/time.ts";
 import { clearActiveThread, setActiveThread } from "../../stores/active-thread.ts";
 import {
@@ -63,18 +61,15 @@ import { displayNameFor, warmProfile, warmProfiles } from "../../stores/profiles
 import { markRead, unreadCountFor } from "../../stores/read-markers.ts";
 import { session, sessionClient, sessionWs } from "../../stores/session.ts";
 import { Icon, type IconName } from "../Icon.tsx";
-import { AttachmentChips } from "../shared/AttachmentChips.tsx";
 import { AttachmentList } from "../shared/AttachmentList.tsx";
 import { EditMessageForm } from "../shared/EditMessageForm.tsx";
 import { EmptyState } from "../shared/EmptyState.tsx";
 import { MessageStatus } from "../shared/MessageStatus.tsx";
 import { Modal } from "../shared/Modal.tsx";
 import { ReactionBar, ReactionPicker } from "../shared/Reactions.tsx";
-import { ReplyContextPill } from "../shared/ReplyContextPill.tsx";
 import { ReplyQuote } from "../shared/ReplyQuote.tsx";
 import { RichText } from "../shared/RichText.tsx";
 import { UnreadBadge } from "../shared/UnreadBadge.tsx";
-import { useComposerTyping, useComposerUpload } from "../shared/composer.ts";
 import { Avatar } from "../social/Avatar.tsx";
 import { PresenceDot } from "../social/PresenceDot.tsx";
 import { DmComposer } from "./DmComposer.tsx";

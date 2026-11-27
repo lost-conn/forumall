@@ -333,7 +333,7 @@ Notes marked "spec question" point at wording in the spec that needs clarifying 
 5. **missing**: Not load remote content a message body names, or the attachments of an author on another provider than the message's, without a user action (§5.3)
     - Note: Attachments of authors on other providers auto-load (`<img>`/`<video>`/`<audio>`) with no user action. Body-named remote images are never loaded (no image syntax), but that is untested.
 6. **covered**: Set `mentions` on messages that mention users (§5.3), and in a DM write `@handle@domain` (or set `mentions`) for a user who is not on the recipient's home provider, since a bare `@handle` there names a user of that provider (§10.1)
-    - Tests: `packages/web/test/mentions.test.ts`, `packages/web/test/chat-controller.test.ts`, `packages/web/test/dm-store.test.ts`
+    - Tests: `packages/web/test/mentions.test.ts`, `packages/web/test/chat-controller.test.ts`, `packages/web/test/dm-send.test.ts`
     - Context: A bare `@handle` names a user of the provider hosting the message (§10.1); for a DM this client takes that to be the recipient's provider, which holds the message.
 7. **missing**: Record a membership pointer at the home provider after joining a remote group, and remove it after leaving (§5.7)
     - Note: Not implemented: the web client never calls the home membership-pointer API and has no remote-group join UI.

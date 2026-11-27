@@ -7,41 +7,17 @@
  * `retrySendDm(...)` re-sends under the original id and a send that committed
  * without acknowledging is deduped rather than delivered twice.
  */
-import type {
-  Attachment,
-  Message,
-  Reaction,
-  WsDmMessage,
-  WsDmReaction,
-  WsDmTyping,
-  WsEnvelope,
-} from "@forumall/shared";
-import { rfc3339Timestamp } from "@forumall/shared";
+import type { Attachment } from "@forumall/shared";
 import { newClientMessageId } from "../../lib/chat-api.ts";
-import {
-  addDmReaction as apiAddDmReaction,
-  removeDmReaction as apiRemoveDmReaction,
-  deleteDmMessage,
-  editDmMessage,
-  fetchDmMessages,
-  putDmConversation,
-  sendDmMessage,
-} from "../../lib/dm-api.ts";
-import type { DmSentStore, SentDmMessage } from "../../lib/dm-store.ts";
+import { putDmConversation, sendDmMessage } from "../../lib/dm-api.ts";
+import type { DmSentStore } from "../../lib/dm-store.ts";
 import { domainOf } from "../../lib/federation.ts";
 import { mentionedActors } from "../../lib/mentions.ts";
 import { type OfscpClient, isDefinitiveRejection } from "../../lib/ofscp-client.ts";
 import {
   addDmOptimistic,
-  addDmReactionAgg,
-  applyDmEdit,
   dropDmOptimistic,
   markDmFailed,
-  removeDmReactionAgg,
-  restoreDmMessage,
-  setDmOlderCursor,
-  setDmTyping,
-  tombstoneDmMessage,
   upsertConversation,
   upsertDmMessage,
 } from "../../stores/dms.ts";

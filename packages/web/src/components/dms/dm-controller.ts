@@ -20,7 +20,6 @@
  * the typing signals in `dm-typing.ts`.
  */
 import type {
-  Attachment,
   Message,
   Reaction,
   WsDmMessage,
@@ -28,28 +27,14 @@ import type {
   WsDmTyping,
   WsEnvelope,
 } from "@forumall/shared";
-import { rfc3339Timestamp } from "@forumall/shared";
-import { newClientMessageId } from "../../lib/chat-api.ts";
-import {
-  addDmReaction as apiAddDmReaction,
-  removeDmReaction as apiRemoveDmReaction,
-  deleteDmMessage,
-  editDmMessage,
-  fetchDmMessages,
-  putDmConversation,
-  sendDmMessage,
-} from "../../lib/dm-api.ts";
+import { fetchDmMessages } from "../../lib/dm-api.ts";
 import type { DmSentStore, SentDmMessage } from "../../lib/dm-store.ts";
-import { type OfscpClient, isDefinitiveRejection } from "../../lib/ofscp-client.ts";
+import type { OfscpClient } from "../../lib/ofscp-client.ts";
 import type { OfscpWsClient } from "../../lib/ofscp-ws.ts";
 import {
-  addDmOptimistic,
   addDmReactionAgg,
   applyDmEdit,
-  dropDmOptimistic,
-  markDmFailed,
   removeDmReactionAgg,
-  restoreDmMessage,
   setDmOlderCursor,
   setDmTyping,
   tombstoneDmMessage,

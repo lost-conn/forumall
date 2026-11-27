@@ -180,7 +180,7 @@ export const CLIENT: readonly ChecklistEntry[] = [
     covers: [
       "packages/web/test/mentions.test.ts",
       "packages/web/test/chat-controller.test.ts",
-      "packages/web/test/dm-store.test.ts",
+      "packages/web/test/dm-send.test.ts",
     ],
     status: "covered",
     context:

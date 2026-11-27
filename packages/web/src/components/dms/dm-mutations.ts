@@ -2,42 +2,22 @@
  * Reactions, edits and deletes on DM messages (REST, §7.4 / §8.3), each
  * addressed to the provider that HOLDS the message ({@link deliveryClientFor}).
  */
-import type {
-  Attachment,
-  Message,
-  Reaction,
-  WsDmMessage,
-  WsDmReaction,
-  WsDmTyping,
-  WsEnvelope,
-} from "@forumall/shared";
+import type { Attachment, Reaction } from "@forumall/shared";
 import { rfc3339Timestamp } from "@forumall/shared";
-import { newClientMessageId } from "../../lib/chat-api.ts";
 import {
   addDmReaction as apiAddDmReaction,
   removeDmReaction as apiRemoveDmReaction,
   deleteDmMessage,
   editDmMessage,
-  fetchDmMessages,
-  putDmConversation,
-  sendDmMessage,
 } from "../../lib/dm-api.ts";
-import type { DmSentStore, SentDmMessage } from "../../lib/dm-store.ts";
+import type { DmSentStore } from "../../lib/dm-store.ts";
 import { type OfscpClient, isDefinitiveRejection } from "../../lib/ofscp-client.ts";
-import type { OfscpWsClient } from "../../lib/ofscp-ws.ts";
 import {
-  addDmOptimistic,
   addDmReactionAgg,
   applyDmEdit,
-  dropDmOptimistic,
-  markDmFailed,
   removeDmReactionAgg,
   restoreDmMessage,
-  setDmOlderCursor,
-  setDmTyping,
   tombstoneDmMessage,
-  upsertConversation,
-  upsertDmMessage,
 } from "../../stores/dms.ts";
 import { DmUnconfirmedError } from "./dm-errors.ts";
 export interface DmReactionArgs {
