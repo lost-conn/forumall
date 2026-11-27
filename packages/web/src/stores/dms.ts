@@ -21,7 +21,12 @@
 import type { Attachment, Reaction, WsDmConversation, WsEnvelope } from "@forumall/shared";
 import { createStore, produce } from "solid-js/store";
 import { compareByCursorThenId } from "../lib/cursor.ts";
-import { type LocalVersion, mergeCanonical } from "../lib/merge-message.ts";
+import {
+  type LocalVersion,
+  isOlderCopy,
+  localVersionOf,
+  mergeCanonical,
+} from "../lib/merge-message.ts";
 import type { OfscpWsClient } from "../lib/ofscp-ws.ts";
 
 /** A DM message as the thread renders it (received OR locally-retained sent). */
@@ -48,6 +53,13 @@ export interface DmMessage {
   localVersion?: LocalVersion;
   /** Set when the message was tombstoned (deleted). */
   deletedAt?: string;
+  /**
+   * The newest server copy that arrived while this copy was an UNSETTLED local
+   * mutation (`localVersion.unsettled`), which outranks it: kept aside so the
+   * mutation's settle ({@link settleDmMessage}) can still install it when it is
+   * newer than the mutation's outcome (an edit or delete from another device).
+   */
+  serverCopy?: DmVersion;
   /** Set on a local echo until its canonical confirmation replaces it. */
   clientMessageId?: string;
   /** Opaque timeline cursor (§7.2/§7.4 share one space); decodes to `seq`. */
@@ -152,9 +164,36 @@ const VERSION_KEYS = [
   "editedAt",
 ] as const satisfies readonly (keyof DmMessage)[];
 
-/** Merge a newer copy into the stored message in place ({@link mergeCanonical}). */
+/**
+ * Merge a newer copy into the stored message in place ({@link mergeCanonical}).
+ * A server copy that meets an unsettled local mutation loses to it, but is kept
+ * aside as {@link DmMessage.serverCopy} (the newest such copy).
+ */
 function mergeDmMessage(target: DmMessage | undefined, incoming: DmMessage): void {
-  if (target !== undefined) mergeCanonical(target, incoming, VERSION_KEYS);
+  if (target === undefined) return;
+  if (target.localVersion?.unsettled === true && incoming.localVersion === undefined) {
+    keepServerCopy(target, dmVersionOf(incoming));
+  }
+  mergeCanonical(target, incoming, VERSION_KEYS);
+}
+
+/** Record `copy` as the target's {@link DmMessage.serverCopy} unless it is older. */
+function keepServerCopy(target: DmMessage, copy: DmVersion): void {
+  if (target.serverCopy === undefined || !isOlderCopy(target.serverCopy, copy)) {
+    target.serverCopy = copy;
+  }
+}
+
+/** The version-owned fields of a copy, detached from it (never `unsettled`). */
+export function dmVersionOf(m: DmVersion): DmVersion {
+  return {
+    content: { ...m.content },
+    ...(m.attachments && m.attachments.length > 0 ? { attachments: [...m.attachments] } : {}),
+    ...(m.reference ? { reference: { ...m.reference } } : {}),
+    ...(m.editedAt !== undefined ? { editedAt: m.editedAt } : {}),
+    ...(m.localVersion !== undefined ? { localVersion: localVersionOf(m) } : {}),
+    ...(m.deletedAt !== undefined ? { deletedAt: m.deletedAt } : {}),
+  };
 }
 
 /**
@@ -266,52 +305,62 @@ export function applyDmEdit(dmId: string, message: DmMessage): void {
   upsertDmMessage(dmId, message);
 }
 
-/** The pre-mutation snapshot {@link restoreDmMessage} rewinds a message to. */
-export interface DmMessageRestore {
-  id: string;
+/**
+ * One version of a message: the fields an edit or delete owns. A settled local
+ * edit carries `localVersion` without `unsettled`; a tombstone has `deletedAt`
+ * and empty content.
+ */
+export interface DmVersion {
   content: { mime?: string; text?: string };
   attachments?: Attachment[];
   reference?: { type: string; id: string };
-  /**
-   * The `editedAt` the message carried BEFORE the reverted mutation — omitted
-   * when it had never been edited, in which case the marker is REMOVED.
-   */
+  /** Omitted for a never-edited version, in which case the marker is REMOVED. */
   editedAt?: string;
-  /** The prior copy's {@link DmMessage.localVersion}, when it was an unconfirmed edit. */
+  /** Set when the version is an edit the server has not confirmed. */
   localVersion?: LocalVersion;
+  deletedAt?: string;
 }
 
 /**
- * Rewind a message to its pre-mutation snapshot — the un-do for an optimistic
- * {@link applyDmEdit} / {@link tombstoneDmMessage} that the server rejected.
+ * Settle a message once no optimistic mutation of it is unsettled any more:
+ * install `outcome` (the confirmed copy, the kept unconfirmed edit, or, after a
+ * rejection, the version the message had before), or the
+ * {@link DmMessage.serverCopy} that arrived meanwhile when that is newer.
+ * Returns the version installed, or `null` when the message is not loaded in
+ * this thread (a no-op).
  *
  * This is NOT expressible as an upsert: {@link upsertDmMessage} never clears
- * `deletedAt` (a tombstone is terminal for it) and keeps the local bookkeeping,
- * so a snapshot could not rewind an optimistic tombstone. The row is therefore REBUILT from
- * the snapshot: the mutation-owned fields (`content`, `attachments`, `reference`,
- * `editedAt`, `localVersion`, `deletedAt`) are re-derived and simply absent when the snapshot has
- * none, while identity + placement (`author`, `createdAt`, `cursor`, `mine`, echo
- * state) are carried over so the message keeps its position and echo linkage.
- * A no-op when the message is not loaded in this thread.
+ * `deletedAt` (a tombstone is terminal for it) and an unsettled copy outranks
+ * every server copy, so a merge could neither rewind a rejected tombstone nor
+ * replace a pending edit. The row is therefore REBUILT from the version: the
+ * mutation-owned fields (`content`, `attachments`, `reference`, `editedAt`,
+ * `localVersion`, `deletedAt`, `serverCopy`) come from it and are simply absent
+ * when it has none, while identity + placement (`author`, `createdAt`,
+ * `cursor`, `mine`, echo state) are carried over so the message keeps its
+ * position and echo linkage.
  */
-export function restoreDmMessage(dmId: string, prior: DmMessageRestore): void {
+export function settleDmMessage(
+  dmId: string,
+  messageId: string,
+  outcome: DmVersion,
+): DmVersion | null {
+  let installed: DmVersion | null = null;
   setDms(
     produce((s) => {
       const list = s.threads[dmId];
-      const idx = list?.findIndex((m) => m.id === prior.id) ?? -1;
+      const idx = list?.findIndex((m) => m.id === messageId) ?? -1;
       if (!list || idx === -1) return;
       const existing = list[idx] as DmMessage;
+      const shadow = existing.serverCopy;
+      const version = dmVersionOf(
+        shadow !== undefined && !isOlderCopy(outcome, shadow) ? shadow : outcome,
+      );
+      installed = version;
       list[idx] = {
         id: existing.id,
         author: existing.author,
         createdAt: existing.createdAt,
-        content: prior.content,
-        ...(prior.attachments && prior.attachments.length > 0
-          ? { attachments: prior.attachments }
-          : {}),
-        ...(prior.reference ? { reference: prior.reference } : {}),
-        ...(prior.editedAt !== undefined ? { editedAt: prior.editedAt } : {}),
-        ...(prior.localVersion !== undefined ? { localVersion: prior.localVersion } : {}),
+        ...version,
         ...(existing.clientMessageId !== undefined
           ? { clientMessageId: existing.clientMessageId }
           : {}),
@@ -322,22 +371,40 @@ export function restoreDmMessage(dmId: string, prior: DmMessageRestore): void {
       };
     }),
   );
+  return installed;
 }
 
 /**
  * Mark a DM message tombstoned (clear content + attachments, set `deletedAt`),
  * preserving its position in the timeline — mirrors the chat store's
  * `tombstoneMessage`. A delete arrives as a `dm.message` event with `deletedAt`.
+ * `local` marks the caller's own optimistic delete, unsettled until its request
+ * is answered; a server tombstone for a message under an unsettled mutation is
+ * kept as its {@link DmMessage.serverCopy} instead.
  */
-export function tombstoneDmMessage(dmId: string, messageId: string, deletedAt: string): void {
+export function tombstoneDmMessage(
+  dmId: string,
+  messageId: string,
+  deletedAt: string,
+  opts: { local?: boolean } = {},
+): void {
   setDms(
     produce((s) => {
       const msg = s.threads[dmId]?.find((m) => m.id === messageId);
-      if (msg) {
-        msg.deletedAt = deletedAt;
-        msg.content = { mime: "text/plain", text: "" };
-        msg.attachments = [];
+      if (!msg) return;
+      if (opts.local) {
+        // The caller's own optimistic delete: unsettled until its request is
+        // answered, like an optimistic edit.
+        msg.localVersion = { unsettled: true };
+      } else if (msg.localVersion?.unsettled === true) {
+        // A server tombstone meeting an unsettled local mutation waits for that
+        // mutation's settle, which installs it (a tombstone outranks any outcome).
+        keepServerCopy(msg, { content: { mime: "text/plain", text: "" }, deletedAt });
+        return;
       }
+      msg.deletedAt = deletedAt;
+      msg.content = { mime: "text/plain", text: "" };
+      msg.attachments = [];
     }),
   );
 }

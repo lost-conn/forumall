@@ -7,6 +7,13 @@
  * a merge first decides which copy is the newer VERSION of the message
  * ({@link isOlderCopy}):
  *
+ * - An UNSETTLED local mutation ({@link LocalVersion.unsettled}) ranks above
+ *   every server copy, a tombstone included: while its request (or an earlier
+ *   mutation's, queued ahead of it) is unanswered, any server copy that arrives
+ *   is an earlier edit's or this mutation's own confirmation, and the mutation's
+ *   settle installs the outcome itself (`components/dms/dm-mutation-chain.ts`).
+ *   A new unsettled copy outranks whatever is stored: it is the user's latest
+ *   intent.
  * - A tombstone is terminal. A stored copy with `deletedAt` is newer than any
  *   copy without it, so no merge un-deletes a message; an incoming copy with
  *   `deletedAt` is newer than a live stored one.
@@ -53,6 +60,14 @@
  */
 export interface LocalVersion {
   basedOn?: string;
+  /**
+   * Set (in memory only, never persisted) while the mutation that made this
+   * copy, or an earlier mutation of the message queued ahead of it, is still
+   * unanswered in this page. Such a copy outranks every server copy; when the
+   * last unsettled mutation is answered the marker is dropped and the outcome
+   * installed.
+   */
+  unsettled?: true;
 }
 
 /** The fields that order two copies of one message (see {@link isOlderCopy}). */
@@ -104,6 +119,8 @@ function compareVersions(a: MessageVersion, b: MessageVersion): number {
 
 /** Whether `incoming` is an OLDER version of the message than `current`. */
 export function isOlderCopy(current: MessageVersion, incoming: MessageVersion): boolean {
+  if (incoming.localVersion?.unsettled === true) return false;
+  if (current.localVersion?.unsettled === true) return true;
   const currentDeleted = current.deletedAt !== undefined;
   const incomingDeleted = incoming.deletedAt !== undefined;
   if (currentDeleted !== incomingDeleted) return currentDeleted;
