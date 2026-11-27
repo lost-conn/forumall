@@ -216,8 +216,10 @@ export function createNotifications(
  * the local-recipient + self-exclude rules, and persist them. Returns the rows
  * actually created (deduped), for the WS fan-out.
  *
- *  - **mentions**: parse `@…` out of the message text, resolve each to a local
- *    user, exclude the author.
+ *  - **mentions**: the message's `mentions` when it carries them — exactly those
+ *    actors, and the text is not parsed (§5.3, §10.1; `[]` mentions nobody) —
+ *    else the `@…` parsed out of the message text; each resolved to a local
+ *    user, excluding the author.
  *  - **reply**: if `replyToId` is set, look up the parent message's author; if it
  *    is a local user and not the author, create a `reply` row.
  *
@@ -228,6 +230,11 @@ export function notifyForChannelMessage(
   db: Db,
   params: {
     readonly text: string;
+    /**
+     * The message's stored `mentions` (canonical actors, §5.3), or undefined
+     * when it carries none — then mentions are parsed from `text` (§10.1).
+     */
+    readonly mentions?: readonly string[] | undefined;
     readonly author: string;
     readonly sourceMessageId: string;
     readonly channelId: string;
@@ -237,7 +244,8 @@ export function notifyForChannelMessage(
     readonly replyToId?: string | undefined;
   },
 ): CreatedNotification[] {
-  const { text, author, sourceMessageId, channelId, groupId, localDomain, replyToId } = params;
+  const { text, mentions, author, sourceMessageId, channelId, groupId, localDomain, replyToId } =
+    params;
   const inputs: NotificationInput[] = [];
   // LOCAL recipient handles already covered by a mention/reply row (so the
   // `all`-path does not also create a `message` row for them).
@@ -252,7 +260,9 @@ export function notifyForChannelMessage(
     channel != null && canViewChannel(db, channel, `${handle}@${localDomain}`);
 
   // --- Mentions ---------------------------------------------------------
-  for (const actor of detectMentions(text, localDomain)) {
+  // §10.1: a message's `mentions`, when present, are exactly the users it
+  // mentions and its text is not parsed.
+  for (const actor of mentions ?? detectMentions(text, localDomain)) {
     if (actor === author) continue; // self-exclude
     const at = actor.lastIndexOf("@");
     const handle = actor.slice(0, at);
