@@ -223,10 +223,9 @@ export async function openChannel(deps: OpenChannelDeps): Promise<ChannelHandle>
   for (const m of [...page.messages].reverse()) {
     upsertMessage(channelId, toChatMessage(m));
   }
-  for (const r of page.reactions) addReactionAgg(channelId, r);
 
-  // Backfill reaction history for each loaded message (the timeline page may not
-  // include reactions for every message; this covers late-joiners reliably).
+  // Backfill reaction history for each loaded message: a timeline holds
+  // messages only (§7.2), so reactions come from each message's `…/reactions`.
   await Promise.all(
     page.messages.map(async (m) => {
       try {
@@ -252,7 +251,6 @@ export async function openChannel(deps: OpenChannelDeps): Promise<ChannelHandle>
         channelId,
         [...older.messages].reverse().map((m) => toChatMessage(m)),
       );
-      for (const r of older.reactions) addReactionAgg(channelId, r);
       olderCursor = older.nextCursor;
       setOlderCursor(channelId, olderCursor);
       return olderCursor !== null;
@@ -345,7 +343,6 @@ export async function loadReplies(deps: {
     limit: HISTORY_PAGE_SIZE,
   });
   for (const m of page.messages) upsertMessage(channelId, toChatMessage(m));
-  for (const r of page.reactions) addReactionAgg(channelId, r);
 }
 
 /** Retry a failed optimistic send: drop the failed echo and resend its content. */

@@ -8,7 +8,7 @@ import type { ChecklistEntry } from "./types.ts";
 
 export const REALTIME_FEDERATION: readonly ChecklistEntry[] = [
   {
-    item: "Support direct messages: deterministic `dmId` derivation, inbox-only storage (no sender copy), the `{dmId}`/`to` verification on delivery, conversation pointers and `dm.conversation`, conversation listing/reading, `dm.message` real-time delivery, and `dmId` subscriptions from a remote participant, answering a non-participant on every DM path exactly as an unknown `dmId` (`404` / `not_found`) (§7.4)",
+    item: "Support direct messages: deterministic `dmId` derivation, inbox-only storage (no sender copy), the `{dmId}`/`to` verification on delivery, conversation pointers and `dm.conversation`, conversation listing/reading, `dm.message` real-time delivery, and `dmId` subscriptions from a remote participant, answering a non-participant on every DM path exactly as an unknown `dmId` (`404` / `not_found`), where a participant is a caller from whom and some other actor the `dmId` derives, the provider hosting at least one of the two (a local user is a participant of their conversations with remote actors too) (§7.4)",
     level: "provider-must",
     covers: [
       "packages/shared/test/dm.test.ts",
@@ -26,9 +26,10 @@ export const REALTIME_FEDERATION: readonly ChecklistEntry[] = [
       "packages/server/test/message-edit-dm.test.ts",
       "packages/server/test/read-markers.test.ts",
     ],
-    status: "covered",
+    status: "partial",
+    note: "Behaviour gap: `GET /api/dms/{dmId}/messages` and `…/replies` (`packages/server/src/http/dms.ts:76`, `:104`) decide participation from stored rows only (`isDmThreadParticipant`, `packages/server/src/provider/dms.ts:333`), not by derivation, so a participant with nothing stored yet (a remote caller, or a local caller whose counterparty is local) gets `404` instead of an empty page. Untested: those two reads for such a participant.",
     context:
-      "A participant is an actor the `dmId` derives from together with a local user; a local actor whose counterparty is on another provider is recognised by its consistent conversation row instead, since the one-way `dmId` names no local user then. `dm.typing` is delivered to a remote participant's `dmId` subscription (a MAY).",
+      "`dmId` subscribe and typing decide by derivation (`resolveLocalDmOwner`, `packages/server/src/http/dm-request.ts:42`), and a local caller whose counterparty is remote by its consistent conversation row (an inbox message or a pointer), as §7.4 says; reactions and edits name a message, which exists only once stored. `dm.typing` is delivered to a remote participant's `dmId` subscription (a MAY).",
   },
   {
     item: "Support the explicit contacts model (request/accept/remove, local and federated) backing the `contacts` visibility tier (§6.7)",
@@ -73,13 +74,17 @@ export const REALTIME_FEDERATION: readonly ChecklistEntry[] = [
     status: "covered",
   },
   {
-    item: "Support WebSocket resume (`since` replay with per-message cursors) and the `ping`/`pong` heartbeat (§7.1)",
+    item: "Support WebSocket resume (`since` replay with per-message cursors, each replayed event carrying the message's current state, a since-deleted message replaying as a `message.created` with the tombstone followed by its `message.deleted`), accept a channel's event cursors as its REST history and reply-listing `cursor` and those listings' cursors as `since`, and likewise for a DM conversation's `dm.message` cursors, history and reply listing on the provider that issued them, and support the `ping`/`pong` heartbeat (§7.1, §7.2)",
     level: "provider-must",
     covers: [
       "packages/server/test/ws-resume.test.ts",
       "packages/server/test/ws-envelope-rules.test.ts",
+      "packages/server/test/dm-subscriptions.test.ts",
     ],
-    status: "covered",
+    status: "partial",
+    note: "Behaviour gap: a since-deleted message replays only as a `message.created` carrying the tombstone, with no `message.deleted` after it (`packages/server/src/http/ws/subscriptions.ts:168`; `ws-resume.test.ts:104` asserts just the tombstone). Untested: a channel event cursor used as the REST history or reply-listing `cursor`, a listing cursor used as `since`, and the same for DM cursors (`dm-subscriptions.test.ts:199` covers DM resume only).",
+    context:
+      "Channel and DM cursors all encode the one global `seq` (`encodeMessageCursor`), so they should be interchangeable.",
   },
   {
     item: "Support real-time presence over WebSocket: `presence.subscribe`/`set`, `presence.update` fan-out, connection-derived online/offline, and §6.1 visibility filtering consistent with the REST presence endpoint (§7.5)",

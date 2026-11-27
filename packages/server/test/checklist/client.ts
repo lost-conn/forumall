@@ -161,11 +161,11 @@ export const CLIENT: readonly ChecklistEntry[] = [
     note: "Attachments of authors on other providers auto-load (`<img>`/`<video>`/`<audio>`) with no user action. Body-named remote images are never loaded (no image syntax), but that is untested.",
   },
   {
-    item: "Set `mentions` on messages that mention users (§5.3)",
+    item: "Set `mentions` on messages that mention users (§5.3), and in a DM write `@handle@domain` (or set `mentions`) for a user who is not on the recipient's home provider, since a bare `@handle` there names a user of that provider (§10.1)",
     level: "client-should",
     covers: [],
     status: "missing",
-    note: "Not implemented: neither the channel nor the DM send sets `mentions`, although `lib/mentions.ts` can parse them.",
+    note: "Not implemented: neither the channel nor the DM send sets `mentions`, although `lib/mentions.ts` can parse them; the DM composer sends a bare `@handle` as typed.",
   },
   {
     item: "Record a membership pointer at the home provider after joining a remote group, and remove it after leaving (§5.7)",

@@ -1,7 +1,7 @@
 # OFSCP §12 conformance audit
 
 Audit of Forumall `main` at `1b336ef` against the §12 Compliance Checklist of
-OFSCP `main` at `598e45d` (updated for ofscp#31, `7f3e0e9`, and ofscp#34, `300f6fa`) (`../ofscp/docs/ofscp_spec.md`). Every checklist line
+OFSCP `main` at `598e45d` (updated for ofscp#31, `7f3e0e9`, ofscp#34, `300f6fa`, and ofscp#35–#40, `e94447d`) (`../ofscp/docs/ofscp_spec.md`). Every checklist line
 was split into its sub-requirements and checked for (a) the behaviour in the
 code and (b) a test that asserts it. The per-item coverage map itself (which
 test files cover which item) lives in `packages/server/test/checklist/` and is
@@ -152,6 +152,48 @@ channel `400`, DM reply checks and the listing parameter, DM reaction test)
 and U17 (client keying by provider and DM reply `provider`; follows U15's
 cross-provider DM history) are new units.
 
+## ofscp#35–#40 (`e94447d`): membership, DM participants, channel messaging, one signature identity, invite tokens
+
+ofscp#35 spelled out group membership and invites (six new items); ofscp#36
+reworded the deny and DM items; ofscp#37 clarified channel and DM messaging
+(eight new items, three reworded); ofscp#38 made a request carrying both
+identity headers a step-1 `401`; ofscp#39 added the approve `409` while the
+group is invite-only; ofscp#40 extended the invite items (token in the `201`,
+token entropy and storage, `Referrer-Policy`, deleted channels). The `L`
+numbers are in the spec at `e94447d`.
+
+| L | Item (short) | Status | Gap | Unit |
+|---|---|---|---|---|
+| 8 (P MUST) | Signature validation, now also both identity headers → step-1 `401` | behaviour | Not rejected: step 1 reads only the route's identity header (`http/signature.ts:174`); the either-identity routes take provider mode whenever `X-OFSCP-Provider` is present (`:427`). | U19 |
+| 10 (P MUST) | Federation deny `403`, now also for a provider-signed request to a user-signature-only route | behaviour | A provider-signed request from a denied provider to a user-only route gets the step-1 `401` (`http/signature.ts:174`, actor mode). The public-route gaps stay (open PR #43). | U4 |
+| 20 (P MUST) | Owner listed as `owner`, `joinedAt` kept, stable member order | tests only | Implemented (`provider/groups.ts:130`, `provider/membership.ts:173`); no test asserts the owner's listed role, the creator's `joinedAt`, or `joinedAt` after a role change or transfer. | U12 |
+| 21 (P MUST) | Repeat `join` → `202` with the pending request unchanged; `leave` by a non-member → `404`, by the owner → `409` | tests only | Repeat with a different `message` and the non-member `404` (`http/membership.ts:162`) untested. | U12 |
+| 22 (P MUST) | Approve/deny on `manage` or `moderate`, no subset rule; approving a member → `200` | tests only | Implemented (`http/membership.ts:432`, `provider/membership.ts:395`); a `moderate`-only approver, the `403`s and the already-a-member approval untested. | U12 |
+| 23 (P MUST) | Pending requests survive policy changes; approve → `409` while invite-only, checked first; deny allowed | behaviour | Approve never checks `effectiveJoinPolicy` (`http/membership.ts:424`). Requests do survive. No test. | U18 |
+| 24 (P MUST) | Invite creation: `role`/`channelId` `400`s, subset `403`; `token` in the `201`; ≥128-bit CSPRNG tokens stored as a digest; `Referrer-Policy: no-referrer`; no token logs | behaviour | None of the `400`/`403` checks exists (`http/invites.ts:94`); tokens stored in plaintext (`db/tables/groups.ts:199`); no `Referrer-Policy` anywhere. Token in the `201` and 256-bit CSPRNG tokens are fine (`provider/invites.ts:21`). | U18 |
+| 25 (P MUST) | Redeem checks the invite first; a member's redeem → `200`, current role, no use consumed | behaviour | A member redeeming an exhausted invite gets `200`, not `409` (`http/invites.ts:181` before `:194`). A deleted channel's id is still echoed (`:186`, `:203`). Member redeem untested. | U18 |
+| 26 (P MUST) | Guest via `/guest` always gets role `guest` | behaviour | Only `member` maps to `guest` (`http/invites.ts:261`); an `admin` invite makes an `admin` guest. A deleted channel does not block the join. | U18 |
+| 32 (P MUST) | Edit; delete by author or `moderate` | partial | Delete rule implemented and tested (`message-edit-delete.test.ts:481`); the old "no `editUntil`" gap stays. | U9 |
+| 33 (P MUST) | Tombstone edit → `404`; repeated delete → `204`, no second fan-out | behaviour | No `deletedAt` check (`http/message-mutations.ts:104`, `:123`); a repeat delete fans out again. No test. | U20 |
+| 34 (P MUST) | Channel reactions: tombstone `404`, repeated add and no-op remove to the requester only | behaviour | Add to a tombstone accepted (`http/message-mutations.ts:178`); a repeated add is fanned out (`ws/reactions.ts:56`, `http/messages.ts:276`). No-op remove is right and tested. | U20 |
+| 35 (P MUST) | One correlated copy to the requester, subscribed or not | behaviour | `publishToChannel` writes to subscribers only (`provider/ws-hub.ts:233`). | U20 |
+| 36 (P MUST) | `typing.start` needs read access and a `post:*` grant; no-op stop sends nothing | behaviour | Gate is membership (`ws/typing.ts:46`); a stop with no `start` is fanned out (`:276`). | U20 |
+| 37 (P MUST) | History and replies hold messages only | tests only | Behaviour right; `TimelineItemSchema` is now `MessageSchema` (this PR). History with reactions untested. | U20 |
+| 48 (P MUST) | DMs: a participant by derivation, a local user's remote conversations too | behaviour | History and reply reads decide from stored rows (`http/dms.ts:76`, `:104`), so a derivation participant with nothing stored gets `404`. Subscribe and typing already derive. | U10 |
+| 53 (P MUST) | Resume: current state, deleted → `message.created` then `message.deleted`; cursors shared with REST, DM too | behaviour | No `message.deleted` after a replayed tombstone (`ws/subscriptions.ts:168`); cursor interchange untested. | U20 |
+| 77 (P MAY) | DM reactions: tombstone `404`, no-op remove and repeated add emit no `dm.reaction` | behaviour | Tombstone add stored, and both no-ops fan out `dm.reaction` (`http/dm-reaction-routes.ts:102`, `:104`, `:119`). | U10 |
+| 78 (P MAY) | DM edit/delete author-only; tombstone `PATCH` → `404`; repeated `DELETE` no second `dm.message` | behaviour | Inbox owner may delete others' messages (`http/dm-edit-routes.ts:153`); tombstone editable (`http/dm-events.ts:134`); repeat delete re-fans (`:195`). | U10 |
+| 79 (P MAY) | DM typing for any participant; no-op stop sends nothing | behaviour | A non-participant's stop is dropped, not `not_found`; a stop with no `start` is delivered (`ws/typing.ts:259`). | U10 |
+| 107 (C SHOULD) | Set `mentions`; `@handle@domain` in a DM for users off the recipient's provider | behaviour | Neither is done. | U13 |
+
+The DM and resume items were `covered` before; both are now `partial`. New
+units: U18 (server invites and join requests: creation checks, token digest
+and `Referrer-Policy`, redeem order and deleted channels, guest role, approve
+`409`, with tests), U19 (verifier: both identity headers → step-1 `401`), U20 (server
+channel messaging per ofscp#37: tombstones, reaction no-ops, the requester's
+copy, typing grant, resume of deletes, cursor tests). This PR also drops
+`Reaction` from `TimelineItemSchema`, as the ofscp#37 schema does.
+
 ## Units of work
 
 Each unit is one pull request to `main`. Each updates its area's entries in
@@ -177,6 +219,9 @@ Each unit is one pull request to `main`. Each updates its area's entries in
 | U15 | Client remote channels and groups, cross-provider DM history, remote-author attachments, attachment refresh. | 72, 87, 88, 90, 91 |
 | U16 | Server `reference.provider`: shared schema field, §2.2 canonicalization, channel `400`, DM reply checks, DM reply listing `provider` parameter, DM `Reaction.reference` test. | 21, 22, 65 (at `300f6fa`) |
 | U17 | Client keying by (holding provider, `id`), DM reply `provider`, unresolved-parent test. Follows U15. | 74 (at `300f6fa`) |
+| U18 | Server invites and join requests: creation `role`/`channelId` `400`s and subset `403`; token digest and `Referrer-Policy: no-referrer`; redeem checks the invite before membership and omits a deleted `channelId`; `/guest` always `guest`; approve `409` while invite-only; tests. | 23–26 (at `e94447d`) |
+| U19 | Verifier: a request carrying both `X-OFSCP-Actor` and `X-OFSCP-Provider` → step-1 `401`, before the deny check; tests. | 8 (at `e94447d`) |
+| U20 | Server channel messaging (ofscp#37): tombstone edit `404` and repeat-delete no-op, reaction tombstone and no-op rules, one copy to an unsubscribed requester, typing `post:*` grant and no-op stop, `message.deleted` after a replayed tombstone, cursor interchange tests. | 33–37, 53 (at `e94447d`) |
 
 Order: U0 first (every unit edits the map). U3, U4, U5, U9, U10, U11, U13 and
 U14 touch disjoint files and can run in parallel; U6 follows U4 and U5; U7

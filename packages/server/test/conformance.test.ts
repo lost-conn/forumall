@@ -409,6 +409,8 @@ describe("live schema validation: groups, channels, messaging (§5, §7)", () =>
     expect(invRes.status).toBe(201);
     const invite = (await invRes.json()) as { token: string };
     await expectValid("invite.json", invite);
+    // The create response alone MUST carry the bearer `token` (§5.6).
+    await expectValid("invite-create-response.json", invite);
 
     // Member (§5.7): bob joins the open group → canonical Member object.
     // NOTE: `POST /invites/{token}/redeem` returns `{ groupId, channelId?, role }`
@@ -621,6 +623,7 @@ describe("conformance coverage summary", () => {
     "channel.json",
     ...(HAS_CHANNEL_LIST_SCHEMA ? ["channel-list.json"] : []),
     "invite.json",
+    "invite-create-response.json",
     "member.json",
     "messages-page.json",
     "message.json",

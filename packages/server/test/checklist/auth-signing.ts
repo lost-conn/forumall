@@ -47,7 +47,7 @@ export const AUTH_SIGNING: readonly ChecklistEntry[] = [
     note: "Untested: guest creation (§4.8) with a key that is not 32 bytes → `400`, and per-key handling of published keys (behaviour gap: today one key that does not decode to 32 bytes, or has an unsupported `algorithm`, invalidates the whole keys or discovery document, where only that key should be ignored and a request signed with it get `401`).",
   },
   {
-    item: "Validate Ed25519 request signatures over the §4.4.2 canonical string, including authority binding and nonce replay rejection, with one bounded provider-wide replay store that records a nonce only after the signature verifies (§4.5)",
+    item: "Validate Ed25519 request signatures over the §4.4.2 canonical string, including authority binding and nonce replay rejection, with one bounded provider-wide replay store that records a nonce only after the signature verifies; reject a request carrying both `X-OFSCP-Actor` and `X-OFSCP-Provider` with `401` at §4.5 step 1, even when a header names a denied provider (§4.5)",
     level: "provider-must",
     covers: [
       "packages/shared/test/conformance.test.ts",
@@ -59,7 +59,7 @@ export const AUTH_SIGNING: readonly ChecklistEntry[] = [
       "packages/server/test/ws-handshake.test.ts",
     ],
     status: "partial",
-    note: "Untested over HTTP: a full replay store → `503` + `Retry-After` (only the store unit test), a replayed provider-signed (§8.1) request → `401`, and the atomic re-check after step 7 (two concurrent copies → exactly one `200`).",
+    note: "Behaviour gap: a request carrying both `X-OFSCP-Actor` and `X-OFSCP-Provider` is not rejected. Step 1 reads only the route's identity header (`packages/server/src/http/signature.ts:174`), and `requireActorOrProviderSignature` picks provider mode whenever `X-OFSCP-Provider` is present (`:427`), so the request verifies as one identity (and can get the deny `403`). Untested over HTTP: a full replay store → `503` + `Retry-After` (only the store unit test), a replayed provider-signed (§8.1) request → `401`, and the atomic re-check after step 7 (two concurrent copies → exactly one `200`).",
   },
   {
     item: "Apply the outbound-request rules (https only, public addresses only, no redirects) to every request to a host named by someone else (§8)",
@@ -72,7 +72,7 @@ export const AUTH_SIGNING: readonly ChecklistEntry[] = [
     note: "Push delivery to an `http`, private or redirecting endpoint is untested. Notification-target delivery, DM forwarding and the known-providers scrape are only structurally guarded: their tests inject a `federationFetch` that bypasses `guardedFetch`.",
   },
   {
-    item: "Apply federation allow/deny policy to every outbound request and to every signed inbound request (`403` at the start of §4.5 step 6 or §8.1 step 2, before any key or discovery fetch; WebSocket `4001`); answer unsigned requests to public endpoints regardless (§8)",
+    item: "Apply federation allow/deny policy to every outbound request and to every signed inbound request (`403` at the start of §4.5 step 6 or §8.1 step 2, before any key or discovery fetch, including for a provider-signed request to a route that defines only user signatures; WebSocket `4001`); answer unsigned requests to public endpoints regardless (§8)",
     level: "provider-must",
     covers: [
       "packages/server/test/federation-actor.test.ts",
@@ -83,7 +83,9 @@ export const AUTH_SIGNING: readonly ChecklistEntry[] = [
       "packages/server/test/ws-remote-key.test.ts",
     ],
     status: "partial",
-    note: "Behaviour gap: a signed request from a denied provider to a public route that does no signature checking (discovery, the keys endpoint, `/problems/*`, `/api/tiers`, `/api/health`) is served instead of `403` (spec question: must such routes run §4.5 steps 1–5 first?). Untested: steps 1–5 winning over the `403`, the `403`'d nonce not being recorded, unsigned public reads under a deny list, push to a since-denied host, and the provider's own authority being exempt.",
+    note: "Behaviour gap: a provider-signed request (`X-OFSCP-Provider`, no `X-OFSCP-Actor`) from a denied provider to a route that takes only user signatures (`requireSignature()` / `optionalSignature()` in actor mode, `packages/server/src/http/signature.ts:174`) gets the step-1 `401` instead of `403`; and a signed request from a denied provider to a public route that does no signature checking (discovery, the keys endpoint, `/problems/*`, `/api/tiers`, `/api/health`) is served instead of `403` (spec question: must such routes run §4.5 steps 1–5 first?). Untested: steps 1–5 winning over the `403`, the `403`'d nonce not being recorded, unsigned public reads under a deny list, push to a since-denied host, and the provider's own authority being exempt.",
+    context:
+      "Judged on `main`; open PR #43 (U4, `fix/public-routes-anonymous`) runs §4.5 and the federation policy on signed requests to public routes.",
   },
   {
     item: "Allow cross-origin access per §3.4 (CORS preflight and headers; no `Origin` check on WebSocket upgrades) on every endpoint in §3.4's scope (standard endpoints, `/.well-known/ofscp…`, attachment and pre-signed upload URLs); non-standard ambient-credential endpoints SHOULD stay same-origin",

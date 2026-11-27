@@ -134,8 +134,12 @@ export const ReactionPutRequestSchema = z
   .passthrough();
 export type ReactionPutRequest = z.infer<typeof ReactionPutRequestSchema>;
 
-/** Union of message-like items found in timelines (`TimelineItem`). */
-export const TimelineItemSchema = z.union([MessageSchema, ReactionSchema]);
+/**
+ * An item of channel history or of a reply listing (`TimelineItem`, §7.2): a
+ * message only, tombstones included. Reactions are never timeline items; they
+ * come only from the `…/reactions` listing and reaction events (§7.1).
+ */
+export const TimelineItemSchema = MessageSchema;
 export type TimelineItem = z.infer<typeof TimelineItemSchema>;
 
 // ---------------------------------------------------------------------------
