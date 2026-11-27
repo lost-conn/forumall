@@ -52,12 +52,12 @@ Notes marked "spec question" point at wording in the spec that needs clarifying 
 
 | Level | Items | Covered | Partial | Missing |
 |---|---|---|---|---|
-| Provider MUST | 58 | 26 | 27 | 5 |
+| Provider MUST | 58 | 25 | 28 | 5 |
 | Provider SHOULD | 4 | 1 | 1 | 2 |
 | Provider MAY (optional) | 10 | 4 | 6 | 0 |
 | Client MUST | 14 | 8 | 4 | 2 |
 | Client SHOULD | 8 | 3 | 1 | 4 |
-| **Total** | 94 | 42 | 39 | 13 |
+| **Total** | 94 | 41 | 40 | 13 |
 
 ## §12 Compliance Checklist coverage map
 
@@ -81,9 +81,9 @@ Notes marked "spec question" point at wording in the spec that needs clarifying 
 6. **partial**: Apply the outbound-request rules (https only, public addresses only, no redirects) to every request to a host named by someone else (§8)
     - Tests: `packages/server/test/egress-guard.test.ts`, `packages/server/test/signer-resolution.test.ts`
     - Note: Push delivery to an `http`, private or redirecting endpoint is untested. Notification-target delivery, DM forwarding and the known-providers scrape are only structurally guarded: their tests inject a `federationFetch` that bypasses `guardedFetch`.
-7. **partial**: Apply federation allow/deny policy to every outbound request and to every signed inbound request (`403` at the start of §4.5 step 6 or §8.1 step 2, before any key or discovery fetch, including for a provider-signed request to a route that defines only user signatures; WebSocket `4001`); answer unsigned requests to public endpoints regardless (§8)
+7. **partial**: Apply federation allow/deny policy to every outbound request and to every signed inbound request (`403` at the start of §4.5 step 6 or §8.1 step 2, before any key or discovery fetch, including for a provider-signed request to a route that defines only user signatures, which, from a permitted provider, then gets `401` without a discovery fetch or signature check; WebSocket `4001`); answer unsigned requests to public endpoints regardless (§8)
     - Tests: `packages/server/test/federation-actor.test.ts`, `packages/server/test/signer-resolution.test.ts`, `packages/server/test/canonical-authority.test.ts`, `packages/server/test/dms-pointers.test.ts`, `packages/server/test/federation-realtime.test.ts`, `packages/server/test/ws-remote-key.test.ts`, `packages/server/test/public-route-signatures.test.ts`
-    - Note: Behaviour gap: a provider-signed request (`X-OFSCP-Provider`, no `X-OFSCP-Actor`) from a denied provider to a route that takes only user signatures (`requireSignature()` / `optionalSignature()` in actor mode, `packages/server/src/http/signature.ts:174`) gets the step-1 `401` instead of `403`. Untested: push delivery to a push host that was denied after the subscription was stored.
+    - Note: Behaviour gaps: (1) a provider-signed request (`X-OFSCP-Provider`, no `X-OFSCP-Actor`) from a denied provider to a route that takes only user signatures (`requireSignature()` / `optionalSignature()` in actor mode, `packages/server/src/http/signature.ts:174`) gets the step-1 `401` instead of `403`. (2) The public routes on `optionalActorOrProviderSignature()` (`packages/server/src/http/signature.ts:427`: discovery, the keys endpoint, `/api/tiers`, `/api/health`, `/problems/*`, the provider profile, media, push public key, discovery feed, invite `/guest`) run the full provider pipeline for a permitted provider (or this provider itself): discovery fetch and verify (`resolveSigner`, `:299`), nonce recorded (`:325`), then `200` (or the handler's answer), never `401`. (3) The replay warm-up `503` (`:220`) runs before the deny check (`:283`), so during warm-up a denied signer gets `503`, not `403`, and a permitted provider's signature on a public route gets `503`, not `401`. Untested: a permitted provider's signature on a user-only route → `401` with no discovery fetch and no recorded nonce; push delivery to a push host that was denied after the subscription was stored.
     - Context: Public routes that need no caller run §4.5 only when signed (`optionalActorOrProviderSignature`), so a denied signer of either kind gets `403` there, after steps 1–5, without recording the nonce.
 8. **covered**: Allow cross-origin access per §3.4 (CORS preflight and headers; no `Origin` check on WebSocket upgrades) on every endpoint in §3.4's scope (standard endpoints, `/.well-known/ofscp…`, attachment and pre-signed upload URLs); non-standard ambient-credential endpoints SHOULD stay same-origin
     - Tests: `packages/server/test/cors.test.ts`
@@ -226,8 +226,9 @@ Notes marked "spec question" point at wording in the spec that needs clarifying 
 54. **covered**: Answer a channel the caller may not read (any §11.3 condition fails, including an unreadable group) exactly as a missing channel on every surface except the channel-join alias (`404` / `not_found`, unknown read-marker scope); `403` only when the caller can read the channel but lacks a permission (§11.3)
     - Tests: `packages/server/test/ws-subscriptions.test.ts`, `packages/server/test/federation-realtime.test.ts`, `packages/server/test/read-markers.test.ts`, `packages/server/test/notifications-feed.test.ts`, `packages/server/test/discovery-feed.test.ts`, `packages/server/test/message-create.test.ts`, `packages/server/test/hidden-channels.test.ts`, `packages/server/test/reader-participation.test.ts`, `packages/server/test/channels.test.ts`, `packages/server/test/messages.test.ts`, `packages/server/test/channel-permissions.test.ts`, `packages/server/test/reactions.test.ts`, `packages/server/test/typing.test.ts`, `packages/server/test/follows.test.ts`
     - Context: `hidden-channels.test.ts` hides one channel three ways (group unreadable, channel tier, `view`) and compares every REST and WS answer with the missing-channel answer. The channel list names only the group, so it answers as `GET /api/groups/{groupId}` does (`403` for an unreadable group, §5.5).
-55. **covered**: Handle an unsigned request to a route that accepts anonymous readers as an anonymous viewer (`public` access only, never `401`), keeping `401` for signed requests that fail §4.5 (§4.5)
+55. **partial**: Handle an unsigned request to a route that accepts anonymous readers as an anonymous viewer (`public` access only, never `401`), keeping `401` for signed requests that fail §4.5 and for a permitted provider's signature (§4.5, §8)
     - Tests: `packages/server/test/groups.test.ts`, `packages/server/test/channels.test.ts`, `packages/server/test/messages.test.ts`, `packages/server/test/replay-warmup.test.ts`, `packages/server/test/signature.test.ts`, `packages/server/test/users-anonymous.test.ts`, `packages/server/test/public-route-signatures.test.ts`
+    - Note: Untested: a permitted provider's signature (`X-OFSCP-Provider`, no `X-OFSCP-Actor`) on an anonymous-reader route (`optionalSignature()` in actor mode: `GET` group, channels, channel, history, replies, §6 `GET`s) → `401`, never served as an anonymous viewer. Today it gets that `401` only because actor-mode step 1 finds no `X-OFSCP-Actor` (`packages/server/src/http/signature.ts:174`), so a digest mismatch gets `401` rather than the step-5 `400` the spec's steps 1–5 give.
 56. **covered**: Support the `private` tier
     - Tests: `packages/server/test/groups.test.ts`, `packages/server/test/channels.test.ts`, `packages/server/test/membership.test.ts`, `packages/server/test/server.test.ts`
 57. **covered**: Expose `GET /api/tiers` endpoint
