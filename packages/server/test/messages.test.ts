@@ -7,7 +7,8 @@
  * create card owns the real create flow). Covers: schema-valid message mapping +
  * future `permissions.editUntil`; backward/forward keyset paging (stable,
  * non-overlapping, gap-free, walks the whole history); opaque (non-int) cursors
- * ordered by seq; `MessagesPageSchema` validation; and read authz (an
+ * ordered by seq; `MessagesPageSchema` validation; history and replies holding
+ * messages only (§7.2); and read authz (an
  * unreadable channel answers as a missing one — 404, §11.3 — public 200).
  *
  * Argon2id cost is reduced (TEST-ONLY) so register stays fast.
@@ -456,6 +457,50 @@ describe("replies (§7.2)", () => {
     // The replies themselves have no replies → no replyCount field.
     const reply = body.items.find((m) => m.id !== parent && m.reference);
     expect(reply?.replyCount).toBeUndefined();
+  });
+
+  test("history and replies hold messages only: no Reaction item, tombstones kept (§7.2)", async () => {
+    const { app, config, db } = freshApp("replies-messages-only");
+    const alice = await registerUserWithKey(app, "alice");
+    const group = await createGroup(app, alice, { name: "G", tier: "public" });
+    const channel = await createChannel(app, alice, group.id, { type: "text", tier: "public" });
+    const base = `/api/groups/${group.id}/channels/${channel.id}/messages`;
+
+    const parent = at(seedMessages(db, config, group.id, channel.id, alice.actor, 1), 0);
+    const r1 = seedReply(db, config, group.id, channel.id, alice.actor, parent, "re 1");
+    const r2 = seedReply(db, config, group.id, channel.id, alice.actor, parent, "re 2");
+    // Reactions on the parent and on a reply, then tombstone a reply.
+    for (const [id, key] of [
+      [parent, "+1"],
+      [r1, "heart"],
+    ] as const) {
+      const put = await signedRequest(app, alice, "PUT", `${base}/${id}/reactions/${key}`, {});
+      expect(put.status).toBeLessThan(300);
+    }
+    expect((await signedRequest(app, alice, "DELETE", `${base}/${r2}`)).status).toBeLessThan(300);
+
+    // A Reaction carries `key`; a Message never does. Every item must be a
+    // Message (and the page must parse against the narrowed schema).
+    const assertMessagesOnly = (body: Page): void => {
+      expect(() => MessagesPageSchema.parse(body)).not.toThrow();
+      for (const item of body.items) {
+        expect((item as { key?: unknown }).key).toBeUndefined();
+        expect(() => MessageSchema.parse(item)).not.toThrow();
+      }
+    };
+
+    const history = (await (
+      await app.request(`${base}?direction=forward&limit=50`)
+    ).json()) as Page;
+    assertMessagesOnly(history);
+    expect(history.items.map((m) => m.id)).toEqual([parent, r1, r2]);
+
+    const replies = (await (await app.request(`${base}/${parent}/replies`)).json()) as Page;
+    assertMessagesOnly(replies);
+    expect(replies.items.map((m) => m.id)).toEqual([r1, r2]);
+    // The tombstoned reply stays in the reply listing, as a tombstone.
+    const tombstone = replies.items.find((m) => m.id === r2);
+    expect(tombstone?.deletedAt).toBeDefined();
   });
 
   test("replies read gate matches history (private channel → 404, §11.3)", async () => {

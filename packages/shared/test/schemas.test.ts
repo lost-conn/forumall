@@ -69,6 +69,7 @@ import {
   ReactionPutRequestSchema,
   ReactionSchema,
   TiersResponseSchema,
+  TimelineItemSchema,
   UserKeysResponseSchema,
   UserProfileSchema,
   WsAuthChallengeSchema,
@@ -479,6 +480,55 @@ describe("negative cases: missing required fields are rejected", () => {
       },
     });
     expect(result.success).toBe(false);
+  });
+});
+
+describe("history and reply pages hold messages only (§7.2, lost-conn/ofscp#37)", () => {
+  // `messages-page` is the shape of both channel history and a reply listing
+  // (`GET …/messages` and `GET …/messages/{messageId}/replies`); there is no
+  // separate replies-page schema. Its `items` are `TimelineItem` = `Message`.
+  const message = {
+    id: "msg_1",
+    author: "jane@a.com",
+    type: "message",
+    content: { text: "hi", mime: "text/plain" },
+    attachments: [],
+    createdAt: "2025-03-01T12:00:00Z",
+    metadata: [],
+  };
+  const reaction = {
+    id: "rx_1",
+    author: "bob@b.com",
+    key: "+1",
+    unicode: "\u{1F44D}",
+    reference: { type: "message", id: "msg_1" },
+    createdAt: "2025-03-01T12:01:00Z",
+    metadata: [],
+  };
+
+  test("the reaction fixture is itself a valid Reaction", () => {
+    expect(ReactionSchema.safeParse(reaction).success).toBe(true);
+  });
+
+  test("a page of messages (a tombstone included) is accepted", () => {
+    const tombstone = { ...message, id: "msg_2", deletedAt: "2025-03-01T12:02:00Z" };
+    const result = MessagesPageSchema.safeParse({
+      items: [message, tombstone],
+      page: {},
+    });
+    expect(result.success).toBe(true);
+  });
+
+  test("a page whose item is a Reaction is rejected", () => {
+    const result = MessagesPageSchema.safeParse({
+      items: [message, reaction],
+      page: {},
+    });
+    expect(result.success).toBe(false);
+  });
+
+  test("a TimelineItem that is a Reaction is rejected", () => {
+    expect(TimelineItemSchema.safeParse(reaction).success).toBe(false);
   });
 });
 

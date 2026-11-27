@@ -83,6 +83,39 @@ export const PROVIDER_OPTIONAL: readonly ChecklistEntry[] = [
     status: "covered",
   },
   {
+    item: "Support DM reactions with the §7.1 checks and no-op rules: `404` for a non-participant or an add to a tombstone, a remove on a tombstone handled as on a live message, `204` with no `dm.reaction` for one that removes nothing, and the existing `Reaction` with no `dm.reaction` for a repeated add (§7.1, §7.4)",
+    level: "provider-may",
+    covers: ["packages/server/test/dm-reactions.test.ts"],
+    status: "partial",
+    note: "Behaviour gap: an add to a tombstone is stored (no `deletedAt` check in `applyHere`, `packages/server/src/http/dm-reaction-routes.ts:102`); a remove that removes nothing still fans out `dm.reaction` (`:104`), and so does a repeated add (`:119`). Untested: all three, and a remove on a tombstone.",
+    context:
+      "A non-participant gets `404` on add and remove (`dm-reactions.test.ts:396`, `:1389`); a repeated add returns the existing `Reaction` with `200` (`dm-reaction-routes.ts:130`).",
+  },
+  {
+    item: "Support DM edits and deletes by the original author only (no `moderate`): `404` for a `PATCH` of a tombstone, `204` with no second `dm.message` for a repeated `DELETE` (§7.1, §7.4)",
+    level: "provider-may",
+    covers: [
+      "packages/server/test/dm-reactions.test.ts",
+      "packages/server/test/message-edit-dm.test.ts",
+    ],
+    status: "partial",
+    note: "Behaviour gap: the inbox owner may delete a message they did not author (`requireAuthor: false`, `packages/server/src/http/dm-edit-routes.ts:153`, asserted as intended by `dm-reactions.test.ts:815`); `applyDmEdit` never checks `deletedAt`, so a tombstone can be edited (`packages/server/src/http/dm-events.ts:134`); and a repeated `DELETE` fans out `dm.message` again (`dm-events.ts:195`). Untested: the tombstone `PATCH` and the repeated `DELETE`.",
+    context:
+      "Edits are author-only within the edit window (`dm-reactions.test.ts:815`, `:846`); a third party gets `404` (`:1038`). There is no `moderate` path.",
+  },
+  {
+    item: "Support DM typing for any participant (no `post` grant), answering a non-participant `not_found`, sending no acknowledgement of a successful `typing.start` and nothing for a `typing.stop` with no active `start` (§7.4)",
+    level: "provider-may",
+    covers: [
+      "packages/server/test/dm-reactions.test.ts",
+      "packages/server/test/dm-subscriptions.test.ts",
+    ],
+    status: "partial",
+    note: "Behaviour gap: a `typing.stop { dmId }` from a non-participant is silently dropped instead of answered `not_found`, and one with no active `start` is still delivered to the counterparty (`packages/server/src/http/ws/typing.ts:259`). Untested: the absent acknowledgement of a successful `typing.start`, and both stop cases.",
+    context:
+      "Any participant may type, with no group permission (`typing.ts:185`); `typing.start` reaches the counterparty (`dm-reactions.test.ts:442`); a non-participant's `typing.start` answers as an unknown `dmId` (`dm-subscriptions.test.ts:437`).",
+  },
+  {
     item: "Support DM replies: check the parent only when `reference.provider` is absent or its own (`400` if it is not in the conversation), otherwise require (`400`) a participant's home provider; and serve the reply listing with its `provider` parameter, listing the replies it holds to (`provider`, `{messageId}`) (§7.4)",
     level: "provider-may",
     covers: ["packages/server/test/dm-reactions.test.ts"],

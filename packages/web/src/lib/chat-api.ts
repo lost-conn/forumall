@@ -8,97 +8,96 @@
  * session's signing {@link OfscpClient} so requests carry the §4.4 signature.
  */
 import type { Attachment, Message, Reaction } from "@forumall/shared";
-import { type OfscpClient, ofscpRequestMeta } from "./ofscp-client.ts";
+import { type OfscpClient, type RequestOptions, ofscpRequestMeta } from "./ofscp-client.ts";
 import { baseUrlForHost } from "./provider.ts";
 
-/** A timeline item is either a Message or a Reaction (§7.2 messages-page). */
-type TimelineItem = (Message | Reaction) & { type?: string };
-
+/**
+ * One page of channel history or replies (§7.2 messages-page). Its items are
+ * messages only, tombstones included; reactions come from `…/reactions` and
+ * reaction events, never from a timeline (§7.1).
+ */
 export interface MessagesPageResult {
   messages: Message[];
-  reactions: Reaction[];
   nextCursor: string | null;
 }
 
 /**
+ * Paging options for a history or reply page. `signal` aborts the request (the
+ * channel it was loading for closed).
+ */
+export interface PageOptions {
+  cursor?: string;
+  limit?: number;
+  direction?: "backward" | "forward";
+  signal?: AbortSignal;
+}
+
+/** Request options carrying `signal` only when there is one. */
+function signalOption(signal: AbortSignal | undefined): RequestOptions {
+  return signal ? { signal } : {};
+}
+
+/**
  * Read one page of channel history, newest-first by default (backward paging).
- * Splits the mixed timeline into messages + reactions so the store can backfill
- * both. `cursor` is the opaque `nextCursor` from a prior page ("load older").
+ * `cursor` is the opaque `nextCursor` from a prior page ("load older").
  */
 export async function fetchHistory(
   client: OfscpClient,
   groupId: string,
   channelId: string,
-  opts: { cursor?: string; limit?: number; direction?: "backward" | "forward" } = {},
+  opts: PageOptions = {},
 ): Promise<MessagesPageResult> {
   const params = new URLSearchParams();
   if (opts.cursor) params.set("cursor", opts.cursor);
   if (opts.limit) params.set("limit", String(opts.limit));
   params.set("direction", opts.direction ?? "backward");
   const qs = params.toString();
-  const res = await client.get<{ items: TimelineItem[]; page: { nextCursor?: string | null } }>(
+  const res = await client.get<{ items: Message[]; page: { nextCursor?: string | null } }>(
     `/api/groups/${groupId}/channels/${channelId}/messages${qs ? `?${qs}` : ""}`,
+    signalOption(opts.signal),
   );
-  const items = res.data.items ?? [];
-  const messages: Message[] = [];
-  const reactions: Reaction[] = [];
-  for (const item of items) {
-    // A Reaction carries `reference` + `key`; a Message carries `content`.
-    if (isReaction(item)) reactions.push(item);
-    else messages.push(item as Message);
-  }
-  return { messages, reactions, nextCursor: res.data.page?.nextCursor ?? null };
-}
-
-/** Distinguish a Reaction timeline item from a Message. */
-function isReaction(item: TimelineItem): item is Reaction {
-  return (
-    typeof (item as Reaction).key === "string" &&
-    typeof (item as Reaction).reference === "object" &&
-    (item as Reaction).reference != null
-  );
+  return { messages: res.data.items ?? [], nextCursor: res.data.page?.nextCursor ?? null };
 }
 
 /**
  * Read one page of the replies to a message (§7.2) — the thread under a parent,
- * oldest-first by default. Returns messages + the next cursor (reactions on
- * replies are folded in like the timeline). Used to nest replies under a
- * memo/article and to expand a thread whose parent is outside the loaded window.
+ * oldest-first by default. Returns messages + the next cursor. Used to nest
+ * replies under a memo/article and to expand a thread whose parent is outside
+ * the loaded window.
  */
 export async function fetchReplies(
   client: OfscpClient,
   groupId: string,
   channelId: string,
   messageId: string,
-  opts: { cursor?: string; limit?: number; direction?: "backward" | "forward" } = {},
+  opts: PageOptions = {},
 ): Promise<MessagesPageResult> {
   const params = new URLSearchParams();
   if (opts.cursor) params.set("cursor", opts.cursor);
   if (opts.limit) params.set("limit", String(opts.limit));
   params.set("direction", opts.direction ?? "forward");
   const qs = params.toString();
-  const res = await client.get<{ items: TimelineItem[]; page: { nextCursor?: string | null } }>(
+  const res = await client.get<{ items: Message[]; page: { nextCursor?: string | null } }>(
     `/api/groups/${groupId}/channels/${channelId}/messages/${messageId}/replies${qs ? `?${qs}` : ""}`,
+    signalOption(opts.signal),
   );
-  const items = res.data.items ?? [];
-  const messages: Message[] = [];
-  const reactions: Reaction[] = [];
-  for (const item of items) {
-    if (isReaction(item)) reactions.push(item);
-    else messages.push(item as Message);
-  }
-  return { messages, reactions, nextCursor: res.data.page?.nextCursor ?? null };
+  return { messages: res.data.items ?? [], nextCursor: res.data.page?.nextCursor ?? null };
 }
 
-/** Fetch the reaction history for one message (late-joiner / history backfill). */
+/**
+ * Fetch the reaction history for one message (late-joiner / history backfill).
+ * `signal` aborts the request (the channel closed).
+ */
 export async function fetchReactions(
   client: OfscpClient,
   groupId: string,
   channelId: string,
   messageId: string,
+  signal?: AbortSignal,
 ): Promise<Reaction[]> {
   const res = await client.get<{ items: Reaction[] }>(
     `/api/groups/${groupId}/channels/${channelId}/messages/${messageId}/reactions`,
+    signalOption(signal),
   );
   return res.data.items ?? [];
 }

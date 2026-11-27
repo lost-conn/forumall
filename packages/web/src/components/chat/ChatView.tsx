@@ -72,13 +72,13 @@ import { Avatar } from "../social/Avatar.tsx";
 import { openUserProfile } from "../social/user-profile-store.ts";
 import { ArticleEditorOverlay } from "./ArticleEditorOverlay.tsx";
 import { ArticleReadingPane, splitArticle } from "./ArticleReadingPane.tsx";
+import { type ChannelSession, startChannelSession } from "./channel-session.ts";
 import {
   type ChannelHandle,
   addReactionCmd,
   deleteMessage,
   editMessage,
   loadReplies,
-  openChannel,
   removeReactionCmd,
   retrySend,
   sendMessage,
@@ -149,38 +149,46 @@ export const ChatView: Component<{
   // Reset the open article when the channel changes.
   createEffect(on(channelId, () => setOpenArticle(null)));
 
+  // The open channel's session (null with no session client/WS). Its signal ends
+  // every load made for the channel, so a reply listing still in flight at a
+  // channel switch writes nothing.
+  let channelSession: ChannelSession | null = null;
+
   const loadArticleReplies = async (messageId: string): Promise<void> => {
     const client = sessionClient();
-    if (!client) return;
-    await loadReplies({ client, groupId: groupId(), channelId: channelId(), messageId }).catch(
-      () => {},
-    );
+    const session = channelSession;
+    if (!client || !session) return;
+    await loadReplies({
+      client,
+      groupId: groupId(),
+      channelId: channelId(),
+      messageId,
+      signal: session.signal,
+    }).catch(() => {});
   };
 
-  // (Re)open the channel whenever it changes. Tear down the previous wiring.
+  // (Re)open the channel whenever it changes. The effect's cleanup (which runs
+  // before the next channel opens, and on unmount) disposes the session at once,
+  // closing the old channel even while it is still loading.
   createEffect(
     on(channelId, (id) => {
       const client = sessionClient();
       const ws = sessionWs();
       setHistoryError(null);
       setReplyTarget(null);
-      handle()?.close();
       setHandle(null);
       if (!client || !ws) return;
-      let cancelled = false;
-      void openChannel({ client, ws, groupId: groupId(), channelId: id })
-        .then((h) => {
-          if (cancelled) h.close();
-          else setHandle(h);
-        })
-        .catch((err) => setHistoryError(err instanceof Error ? err.message : String(err)));
+      const session = startChannelSession(
+        { client, ws, groupId: groupId(), channelId: id },
+        { opened: setHandle, failed: setHistoryError },
+      );
+      channelSession = session;
       onCleanup(() => {
-        cancelled = true;
+        session.dispose();
+        if (channelSession === session) channelSession = null;
       });
     }),
   );
-
-  onCleanup(() => handle()?.close());
 
   // Track the open channel as the global "active thread" (drives notify-fx sound
   // suppression — a message in the channel you're watching while focused + pinned
