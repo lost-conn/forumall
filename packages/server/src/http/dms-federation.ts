@@ -39,6 +39,7 @@ import {
 } from "./dm-request.ts";
 import { AppError, parseRequestBody } from "./errors.ts";
 import { checkCreateFields } from "./message-fields.ts";
+import { reactionExtras, readReactionPutBody } from "./reaction-body.ts";
 import { requireActorOrProviderSignature, requireSignature } from "./signature.ts";
 import type { AppBindings } from "./types.ts";
 
@@ -325,8 +326,14 @@ async function handleFederationDmReaction(
   const key = requireParam(c, "key");
   assertValidReactionKey(key);
 
-  // A DELETE may legitimately arrive with no body at all, hence the catch.
-  const body = (await c.req.json().catch(() => ({}))) as { actor?: unknown };
+  // A PUT takes the optional reaction body (§7.1/§8.3,
+  // `reaction-put-request.json`): absent or empty is fine, anything else is
+  // checked (400 on a mismatch). A DELETE may legitimately arrive with no body
+  // at all, hence the catch. Either may carry the provider-signed `actor`.
+  const body: { actor?: unknown; unicode?: string; image?: string } =
+    state === "added"
+      ? await readReactionPutBody(c)
+      : ((await c.req.json().catch(() => ({}))) as { actor?: unknown });
   // User-signed → the reacting actor IS the signer and `body.actor` is ignored;
   // provider-signed → the named actor's domain must equal the signing
   // provider's domain, binding the body actor to the peer that signed the
@@ -351,7 +358,13 @@ async function handleFederationDmReaction(
   }
 
   if (state === "added") {
-    const reaction = addDmReaction(db, { dmId, messageId, author: reactingActor, key });
+    const reaction = addDmReaction(db, {
+      dmId,
+      messageId,
+      author: reactingActor,
+      key,
+      ...reactionExtras(body),
+    });
     fanOutDmReaction(hub, {
       dmId,
       messageId,

@@ -137,8 +137,9 @@ export type NewDmConversationRow = typeof dmConversations.$inferInsert;
  * layer forwards the reaction to the peer's provider rather than storing it
  * here (see `http/dms.ts`).
  *
- * `unicode` is omitted (DM reactions in v0.1 carry only a `key`, like the
- * channel `reaction.add` minimal form); the canonical `Reaction.reference` is
+ * `unicode` / `image` are nullable: the optional `PUT …/reactions/{key}` body
+ * (§7.1, `reaction-put-request.json`, also taken by the DM and federation DM
+ * routes) may carry either or neither. The canonical `Reaction.reference` is
  * re-derived as `{ type: "message", id: message_id }` at the read boundary. The
  * `(dm_id, message_id)` index backs the per-message aggregation on history reads.
  */
@@ -155,6 +156,10 @@ export const dmReactions = sqliteTable(
     author: text("author").notNull(),
     /** Reaction key (e.g. `heart`); the dedupe axis with author + message. */
     key: text("key").notNull(),
+    /** Optional unicode glyph (e.g. `❤️`). */
+    unicode: text("unicode"),
+    /** Optional custom image (an `https` URL). */
+    image: text("image"),
     /** Creation time (epoch millis); rendered as RFC 3339 `createdAt`. */
     createdAt: integer("created_at", { mode: "number" }).notNull(),
   },

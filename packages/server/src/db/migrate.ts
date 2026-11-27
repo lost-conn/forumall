@@ -27,6 +27,7 @@ import {
   m0035DmConversationsLastSentAt,
   m0036DmConversationsCanonicalCounterparty,
   m0040DmMessagesTagsMentions,
+  m0041DmReactionsUnicodeImage,
 } from "./migrations/dms.ts";
 import {
   m0005GroupsAndMembers,
@@ -131,6 +132,7 @@ export const migrations: readonly Migration[] = [
   m0038MediaDurationMs,
   m0039MessagesMentionsArticle,
   m0040DmMessagesTagsMentions,
+  m0041DmReactionsUnicodeImage,
 ];
 
 const LEDGER_DDL = `

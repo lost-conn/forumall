@@ -28,13 +28,12 @@ import {
   rfc3339Timestamp,
 } from "@forumall/shared";
 import { type Context, Hono } from "hono";
-import { z } from "zod";
 
 import { canViewChannel, getChannelRow } from "../provider/channels.ts";
 import { getGroupRow } from "../provider/groups.ts";
 import { listMessages, listReplies, tombstoneMessage } from "../provider/messages.ts";
 import { addReaction, hasReaction, listReactions, removeReaction } from "../provider/reactions.ts";
-import { AppError, parseRequestBody, slugForErrorCode } from "./errors.ts";
+import { AppError, slugForErrorCode } from "./errors.ts";
 import { createChannelMessage } from "./message-create.ts";
 import { editChannelMessage } from "./message-edit.ts";
 import {
@@ -42,6 +41,7 @@ import {
   authorizeMessageDelete,
   authorizeReaction,
 } from "./message-mutations.ts";
+import { reactionExtras, readReactionPutBody } from "./reaction-body.ts";
 import { optionalSignature, requireSignature } from "./signature.ts";
 import type { AppBindings } from "./types.ts";
 
@@ -282,7 +282,7 @@ export function createMessagesRouter() {
     const messageId = requireParam(c, "messageId");
     const key = requireParam(c, "key");
 
-    const body = parseRequestBody(ReactionPutBodySchema, await readOptionalJson(c));
+    const body = await readReactionPutBody(c);
 
     const outcome = authorizeReaction(db, groupId, channelId, messageId, actor.actor);
     if (outcome.error) throw toAppError(outcome.error);
@@ -297,8 +297,7 @@ export function createMessagesRouter() {
       groupId,
       author: actor.actor,
       key,
-      ...(body.unicode !== undefined ? { unicode: body.unicode } : {}),
-      ...(body.image !== undefined ? { image: body.image } : {}),
+      ...reactionExtras(body),
     });
 
     hub.publishToChannel(channelId, {
@@ -340,35 +339,4 @@ export function createMessagesRouter() {
   });
 
   return router;
-}
-
-/**
- * Optional body for `PUT …/reactions/{key}`: `{ unicode?, image? }` (§7.1). An
- * empty/absent body is allowed (the `{key}` carries the reaction identity); any
- * present `image` must be an https URI (validated by `ReactionSchema` on the way
- * out too, but rejected here for a clean 400).
- */
-const ReactionPutBodySchema = z
-  .object({
-    unicode: z.string().optional(),
-    image: z
-      .string()
-      .regex(/^https:\/\//)
-      .optional(),
-  })
-  .passthrough();
-
-/**
- * Read a JSON body if one was sent, else `{}`. The `PUT …/reactions/{key}` body
- * is OPTIONAL, so a request with no body (or an empty one) must not 400 on
- * `c.req.json()` — we tolerate a parse failure and treat it as no body.
- */
-async function readOptionalJson(c: Context<AppBindings>): Promise<unknown> {
-  try {
-    const text = await c.req.text();
-    if (!text || text.trim().length === 0) return {};
-    return JSON.parse(text);
-  } catch {
-    return {};
-  }
 }

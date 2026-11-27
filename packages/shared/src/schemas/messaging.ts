@@ -119,6 +119,21 @@ export const ReactionSchema = z
   .passthrough();
 export type Reaction = z.infer<typeof ReactionSchema>;
 
+/**
+ * Body of `PUT …/reactions/{key}` (`reaction-put-request.json`, §7.1; the DM
+ * route §7.4 and its federation route §8.3 take the same body). The body is
+ * optional: an absent or empty body is not checked at all, and `{}` is valid.
+ * `unicode` and `image` are each optional and independent of each other and of
+ * the path's `key`, which alone identifies the reaction.
+ */
+export const ReactionPutRequestSchema = z
+  .object({
+    unicode: z.string().optional(),
+    image: HttpsUriSchema.optional(),
+  })
+  .passthrough();
+export type ReactionPutRequest = z.infer<typeof ReactionPutRequestSchema>;
+
 /** Union of message-like items found in timelines (`TimelineItem`). */
 export const TimelineItemSchema = z.union([MessageSchema, ReactionSchema]);
 export type TimelineItem = z.infer<typeof TimelineItemSchema>;

@@ -85,6 +85,27 @@ export const m0026DmReactions: Migration = {
   },
 };
 
+export const m0041DmReactionsUnicodeImage: Migration = {
+  // DM reactions carry the optional `unicode` / `image` of the `PUT
+  // …/reactions/{key}` body (OFSCP §7.1/§7.4/§8.3, `reaction-put-request.json`),
+  // like channel reactions. Nullable ADD COLUMNs, safe on a STRICT table; no
+  // backfill (an existing reaction carried neither). Guarded so a re-run is a
+  // no-op.
+  id: "0041_dm_reactions_unicode_image",
+  up: (sqlite) => {
+    const cols = sqlite
+      .query<{ name: string }, []>("PRAGMA table_info(dm_reactions)")
+      .all()
+      .map((c) => c.name);
+    if (!cols.includes("unicode")) {
+      sqlite.exec("ALTER TABLE dm_reactions ADD COLUMN unicode TEXT;");
+    }
+    if (!cols.includes("image")) {
+      sqlite.exec("ALTER TABLE dm_reactions ADD COLUMN image TEXT;");
+    }
+  },
+};
+
 export const m0034DmConversationsLastSent: Migration = {
   // DM conversation pointers (OFSCP §7.4): a nullable cached copy of the
   // newest message the owner SENT, so a conversation the owner started (no
