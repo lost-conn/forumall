@@ -16,6 +16,14 @@
  *   3. register per-type WS listeners that fold `message.*` / `reaction.*` /
  *      `channel.typing` events into the store.
  *
+ * The channel has one lifetime, ended by `close()` or by the caller's `signal`.
+ * Every REST load made for it (the first page, older pages, the reaction
+ * backfills) carries that lifetime's signal: once it ends, queued requests never
+ * start, in-flight ones are aborted, and an answer that still arrives is dropped
+ * rather than written to the store. Writing it would be wrong, not just wasted:
+ * with the listeners gone, nothing reconciles a stale snapshot against the live
+ * events it missed (see `reaction-backfill.ts`).
+ *
  * The command helpers (`sendMessage`, `editMessage`, `deleteMessage`,
  * `addReaction`, `removeReaction`, typing) emit the matching WS commands and,
  * for sends, manage the optimistic local echo.
@@ -35,7 +43,12 @@ import type {
   WsReactionRemoved,
 } from "@forumall/shared";
 import { rfc3339Timestamp } from "@forumall/shared";
-import { fetchHistory, fetchReplies, newClientMessageId } from "../../lib/chat-api.ts";
+import {
+  type MessagesPageResult,
+  fetchHistory,
+  fetchReplies,
+  newClientMessageId,
+} from "../../lib/chat-api.ts";
 import type { OfscpClient } from "../../lib/ofscp-client.ts";
 import type { OfscpWsClient } from "../../lib/ofscp-ws.ts";
 import type { ChatMessage } from "../../stores/chat.ts";
@@ -126,22 +139,42 @@ export interface OpenChannelDeps {
   ws: OfscpWsClient;
   groupId: string;
   channelId: string;
+  /**
+   * Ends the channel from outside, as `close()` does. A view passes it so a
+   * channel switch can close the old channel while it is still opening (before
+   * there is a handle to close); the pending `openChannel` then rejects with the
+   * signal's reason.
+   */
+  signal?: AbortSignal;
 }
 
 export interface ChannelHandle {
-  /** Load the next OLDER page of history; returns whether more remain. */
+  /**
+   * Load the next OLDER page of history; returns whether more remain. After
+   * `close()` it writes nothing and resolves `false`.
+   */
   loadOlder(): Promise<boolean>;
-  /** Tear down the WS listeners + unsubscribe (channel switch / unmount). */
+  /**
+   * End the channel (channel switch / unmount): tear down the WS listeners,
+   * unsubscribe, and abort every REST load still running for it. Idempotent.
+   */
   close(): void;
 }
 
 /**
  * Open a channel: backfill history, subscribe with a resume cursor, and wire WS
- * events into the store. Returns a handle for "load older" + teardown.
+ * events into the store. Returns a handle for "load older" + teardown. Rejects
+ * with the signal's reason if `deps.signal` aborts before it is open.
  */
 export async function openChannel(deps: OpenChannelDeps): Promise<ChannelHandle> {
   const { client, ws, groupId, channelId } = deps;
+  deps.signal?.throwIfAborted();
   let olderCursor: string | null = null;
+  // The channel's lifetime: every REST load below carries `signal`, and
+  // `close()` aborts it (see the module doc).
+  const lifetime = new AbortController();
+  const { signal } = lifetime;
+  const backfillDeps = { client, groupId, channelId, signal };
 
   // Order matters: register the listeners + SUBSCRIBE synchronously BEFORE the
   // async history backfill. The server only fans `message.created` (incl. the
@@ -209,12 +242,36 @@ export async function openChannel(deps: OpenChannelDeps): Promise<ChannelHandle>
   const since = cursorFor(channelId);
   ws.subscribe([channelId], since ? { since: { [channelId]: since } } : {});
 
+  const close = (): void => {
+    if (signal.aborted) return;
+    lifetime.abort();
+    deps.signal?.removeEventListener("abort", close);
+    offCreated();
+    offUpdated();
+    offDeleted();
+    offReactionAdded();
+    offReactionRemoved();
+    offTyping();
+    ws.unsubscribe([channelId]);
+  };
+  deps.signal?.addEventListener("abort", close, { once: true });
+
   // 3) Backfill the most-recent history page (§7.2 backward paging), oldest→newest
   // into the store. Runs after the subscribe so live events can't open a gap.
-  const page = await fetchHistory(client, groupId, channelId, {
-    limit: HISTORY_PAGE_SIZE,
-    direction: "backward",
-  });
+  let page: MessagesPageResult;
+  try {
+    page = await fetchHistory(client, groupId, channelId, {
+      limit: HISTORY_PAGE_SIZE,
+      direction: "backward",
+      signal,
+    });
+  } catch (err) {
+    // A failed open leaves nothing subscribed; a closed one reports the close.
+    close();
+    throw closedReason(deps.signal) ?? err;
+  }
+  // Closed while the page was in flight: write nothing.
+  if (signal.aborted) throw closedReason(deps.signal) ?? closedError();
   olderCursor = page.nextCursor;
   // Publish the older cursor so the UI can offer "load older" / auto-page on a
   // scroll to the top. The closure variable above stays the fetch's own source
@@ -228,18 +285,29 @@ export async function openChannel(deps: OpenChannelDeps): Promise<ChannelHandle>
   // reactions come from its own `…/reactions` listing; older pages and reply
   // listings go through the same backfill.
   await backfillReactions(
-    deps,
+    backfillDeps,
     page.messages.map((m) => m.id),
   );
+  if (signal.aborted) throw closedReason(deps.signal) ?? closedError();
 
   return {
     async loadOlder(): Promise<boolean> {
-      if (!olderCursor) return false;
-      const older = await fetchHistory(client, groupId, channelId, {
-        cursor: olderCursor,
-        limit: HISTORY_PAGE_SIZE,
-        direction: "backward",
-      });
+      if (!olderCursor || signal.aborted) return false;
+      let older: MessagesPageResult;
+      try {
+        older = await fetchHistory(client, groupId, channelId, {
+          cursor: olderCursor,
+          limit: HISTORY_PAGE_SIZE,
+          direction: "backward",
+          signal,
+        });
+      } catch (err) {
+        if (signal.aborted) return false;
+        throw err;
+      }
+      // Closed while the page was in flight: the store belongs to whatever
+      // opens this channel next, so neither the page nor its cursor lands.
+      if (signal.aborted) return false;
       // A backward page arrives NEWEST-first; reverse it so the block lands at
       // the front of the timeline in chronological order.
       prependHistory(
@@ -249,21 +317,23 @@ export async function openChannel(deps: OpenChannelDeps): Promise<ChannelHandle>
       olderCursor = older.nextCursor;
       setOlderCursor(channelId, olderCursor);
       await backfillReactions(
-        deps,
+        backfillDeps,
         older.messages.map((m) => m.id),
       );
-      return olderCursor !== null;
+      return !signal.aborted && olderCursor !== null;
     },
-    close(): void {
-      offCreated();
-      offUpdated();
-      offDeleted();
-      offReactionAdded();
-      offReactionRemoved();
-      offTyping();
-      ws.unsubscribe([channelId]);
-    },
+    close,
   };
+}
+
+/** The caller's abort reason, when its signal is what ended the channel. */
+function closedReason(callerSignal: AbortSignal | undefined): unknown {
+  return callerSignal?.aborted ? callerSignal.reason : undefined;
+}
+
+/** The rejection of an `openChannel` ended by `close()` before it resolved. */
+function closedError(): DOMException {
+  return new DOMException("The channel was closed while it was opening", "AbortError");
 }
 
 // ---------------------------------------------------------------------------
@@ -331,20 +401,34 @@ export function sendMessage(args: SendArgs): string {
  * / nest replies under a memo or article whose replies may be outside the loaded
  * history window. A reply listing holds messages only (§7.2), so each reply's
  * reactions are then backfilled from its own `…/reactions` listing.
+ *
+ * `signal` is the open channel's lifetime (a view passes the one it opened the
+ * channel with): once it aborts, the requests are aborted and nothing more is
+ * written, and the returned promise resolves quietly.
  */
 export async function loadReplies(deps: {
   client: OfscpClient;
   groupId: string;
   channelId: string;
   messageId: string;
+  signal?: AbortSignal;
 }): Promise<void> {
-  const { client, groupId, channelId, messageId } = deps;
-  const page = await fetchReplies(client, groupId, channelId, messageId, {
-    limit: HISTORY_PAGE_SIZE,
-  });
+  const { client, groupId, channelId, messageId, signal } = deps;
+  if (signal?.aborted) return;
+  let page: MessagesPageResult;
+  try {
+    page = await fetchReplies(client, groupId, channelId, messageId, {
+      limit: HISTORY_PAGE_SIZE,
+      ...(signal ? { signal } : {}),
+    });
+  } catch (err) {
+    if (signal?.aborted) return;
+    throw err;
+  }
+  if (signal?.aborted) return;
   for (const m of page.messages) upsertMessage(channelId, toChatMessage(m));
   await backfillReactions(
-    deps,
+    { client, groupId, channelId, ...(signal ? { signal } : {}) },
     page.messages.map((m) => m.id),
   );
 }

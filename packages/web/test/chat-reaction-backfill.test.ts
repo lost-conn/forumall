@@ -9,6 +9,7 @@
  */
 import { beforeEach, describe, expect, test } from "bun:test";
 import type { Message, Reaction, WsEnvelope } from "@forumall/shared";
+import { startChannelSession } from "../src/components/chat/channel-session.ts";
 import { loadReplies, openChannel } from "../src/components/chat/chat-controller.ts";
 import {
   REACTION_FETCH_CONCURRENCY,
@@ -47,6 +48,8 @@ function reaction(messageId: string, key: string, author = "bob@h"): Reaction {
 /** A deferred response, so a test can act while a request is in flight. */
 interface Pending {
   path: string;
+  /** The request's abort signal, if it carried one. */
+  signal: AbortSignal | undefined;
   resolve(data: unknown): void;
   reject(err: Error): void;
 }
@@ -54,17 +57,20 @@ interface Pending {
 /**
  * A scripted `OfscpClient`: `routes` answers a GET path at once; any other GET
  * waits in `pending` until the test settles it. `gets` records every path.
+ * A pending request ignores its signal (it settles only when the test says), so
+ * a test can deliver an answer that arrives after the abort.
  */
 function fakeClient(routes: Record<string, unknown>) {
   const gets: string[] = [];
   const pending: Pending[] = [];
   const client = {
-    async get(path: string) {
+    async get(path: string, opts?: { signal?: AbortSignal }) {
       gets.push(path);
       if (path in routes) return { data: routes[path] };
       return new Promise((resolve, reject) => {
         pending.push({
           path,
+          signal: opts?.signal,
           resolve: (data) => resolve({ data }),
           reject,
         });
@@ -222,5 +228,145 @@ describe("live reaction events win over an in-flight listing", () => {
     await done;
     expect(keysFor("m1")).toEqual(["+1:bob@h"]);
     handle.close();
+  });
+});
+
+describe("closing the channel cancels its backfill", () => {
+  const listingsOf = (pending: Pending[]) => pending.filter((p) => p.path.endsWith("/reactions"));
+
+  test("a close while the open's listings are in flight aborts them and writes nothing", async () => {
+    const { client, pending } = fakeClient({
+      [`${BASE}?limit=50&direction=backward`]: page([message("m2"), message("m1")]),
+    });
+    const lifetime = new AbortController();
+    const opening = openChannel({
+      client,
+      ws: fakeWs().ws,
+      groupId: G,
+      channelId: CH,
+      signal: lifetime.signal,
+    });
+    await settle();
+    const listings = listingsOf(pending);
+    expect(listings.length).toBe(2);
+    lifetime.abort();
+    expect(listings.every((p) => p.signal?.aborted === true)).toBe(true);
+    // The snapshots answer after the close (bob's "+1" was removed meanwhile,
+    // with no listener left to report it): neither may land.
+    listings[0]?.resolve({ items: [reaction("m2", "+1")] });
+    listings[1]?.resolve({ items: [reaction("m1", "+1")] });
+    await expect(opening).rejects.toThrow();
+    await settle();
+    expect(keysFor("m1")).toEqual([]);
+    expect(keysFor("m2")).toEqual([]);
+  });
+
+  test("close() during loadOlder aborts its in-flight listings and writes none", async () => {
+    const { client, pending } = fakeClient({
+      [`${BASE}?limit=50&direction=backward`]: page([message("m3")], "c_old"),
+      [`${BASE}/m3/reactions`]: { items: [] },
+      [`${BASE}?cursor=c_old&limit=50&direction=backward`]: page([message("m1")], "c_older"),
+    });
+    const handle = await openChannel({ client, ws: fakeWs().ws, groupId: G, channelId: CH });
+    const older = handle.loadOlder();
+    await settle();
+    const [listing] = listingsOf(pending);
+    expect(listing?.path).toBe(`${BASE}/m1/reactions`);
+    handle.close();
+    expect(listing?.signal?.aborted).toBe(true);
+    listing?.resolve({ items: [reaction("m1", "+1")] });
+    expect(await older).toBe(false);
+    expect(keysFor("m1")).toEqual([]);
+    expect(await handle.loadOlder()).toBe(false);
+  });
+
+  test("an older page answered after close() is not written", async () => {
+    const { client, pending } = fakeClient({
+      [`${BASE}?limit=50&direction=backward`]: page([message("m3")], "c_old"),
+      [`${BASE}/m3/reactions`]: { items: [] },
+    });
+    const handle = await openChannel({ client, ws: fakeWs().ws, groupId: G, channelId: CH });
+    const older = handle.loadOlder();
+    await settle();
+    const historyReq = pending.find((p) => p.path.includes("cursor=c_old"));
+    expect(historyReq?.signal).toBeDefined();
+    handle.close();
+    expect(historyReq?.signal?.aborted).toBe(true);
+    historyReq?.resolve(page([message("m1")], "c_older"));
+    expect(await older).toBe(false);
+    expect(messagesFor(CH).map((m) => m.id)).toEqual(["m3"]);
+  });
+
+  test("queued listings never start after close()", async () => {
+    const ids = Array.from({ length: REACTION_FETCH_CONCURRENCY * 2 }, (_, i) => `m${i}`);
+    const { client, gets, pending } = fakeClient({
+      [`${BASE}?limit=50&direction=backward`]: page([], "c_old"),
+      [`${BASE}?cursor=c_old&limit=50&direction=backward`]: page(ids.map((id) => message(id))),
+    });
+    const handle = await openChannel({ client, ws: fakeWs().ws, groupId: G, channelId: CH });
+    const older = handle.loadOlder();
+    await settle();
+    expect(listingsOf(pending).length).toBe(REACTION_FETCH_CONCURRENCY);
+    handle.close();
+    for (const p of listingsOf(pending)) p.resolve({ items: [] });
+    expect(await older).toBe(false);
+    await settle();
+    expect(gets.filter((g) => g.endsWith("/reactions")).length).toBe(REACTION_FETCH_CONCURRENCY);
+  });
+
+  test("a reply listing whose signal aborts writes nothing", async () => {
+    const { client, pending } = fakeClient({
+      [`${BASE}/p1/replies?limit=50&direction=forward`]: page([
+        message("r1", { reference: { type: "message", id: "p1" } }),
+      ]),
+    });
+    const lifetime = new AbortController();
+    const loading = loadReplies({
+      client,
+      groupId: G,
+      channelId: CH,
+      messageId: "p1",
+      signal: lifetime.signal,
+    });
+    await settle();
+    const [listing] = listingsOf(pending);
+    lifetime.abort();
+    expect(listing?.signal?.aborted).toBe(true);
+    listing?.resolve({ items: [reaction("r1", "eyes")] });
+    await loading;
+    expect(keysFor("r1")).toEqual([]);
+  });
+
+  test("switching channels: the old channel's backfill applies nothing", async () => {
+    const CH2 = "ch2";
+    const BASE2 = `/api/groups/${G}/channels/${CH2}/messages`;
+    const { client, pending } = fakeClient({
+      [`${BASE}?limit=50&direction=backward`]: page([message("m1")]),
+      [`${BASE2}?limit=50&direction=backward`]: page([message("n1")]),
+      [`${BASE2}/n1/reactions`]: { items: [reaction("n1", "tada")] },
+    });
+    const { ws } = fakeWs();
+    const events: string[] = [];
+    const first = startChannelSession(
+      { client, ws, groupId: G, channelId: CH },
+      { opened: () => events.push("opened ch1"), failed: (m) => events.push(`failed ch1: ${m}`) },
+    );
+    await settle();
+    const listing = listingsOf(pending).find((p) => p.path === `${BASE}/m1/reactions`);
+    expect(listing).toBeDefined();
+    // The switch, as ChatView's effect cleanup does it: dispose, then open the next.
+    first.dispose();
+    expect(listing?.signal?.aborted).toBe(true);
+    const second = startChannelSession(
+      { client, ws, groupId: G, channelId: CH2 },
+      { opened: () => events.push("opened ch2"), failed: (m) => events.push(`failed ch2: ${m}`) },
+    );
+    listing?.resolve({ items: [reaction("m1", "+1")] });
+    await settle();
+    await settle();
+    expect(keysFor("m1")).toEqual([]);
+    expect(reactionsFor(CH2, "n1").map((g) => g.key)).toEqual(["tada"]);
+    expect(events).toEqual(["opened ch2"]);
+    second.dispose();
   });
 });

@@ -22,6 +22,15 @@
  * listing is still pending, that `(key, author)` pair is marked, and the
  * snapshot's entry for it is not applied, because the live event already put
  * the store in the newer state.
+ *
+ * ## Cancelled with the channel
+ * That guard only holds while the channel's listeners run. Once the view closes
+ * the channel nothing reports live events any more, so a listing answered
+ * after the close could put back a reaction removed in the meantime, and the
+ * additive store would keep that ghost across a reopen. Every backfill
+ * therefore takes the channel's lifetime `signal` (aborted by the controller's
+ * `close()`): once it aborts, no queued listing starts, the in-flight requests
+ * are aborted, and any listing that still answers is dropped, never applied.
  */
 import type { Reaction } from "@forumall/shared";
 import { fetchReactions } from "../../lib/chat-api.ts";
@@ -43,11 +52,13 @@ function pairOf(key: string, author: string): string {
 async function forEachBounded<T>(
   items: readonly T[],
   limit: number,
+  signal: AbortSignal | undefined,
   task: (item: T) => Promise<void>,
 ): Promise<void> {
   let next = 0;
   const worker = async (): Promise<void> => {
-    while (next < items.length) {
+    // Checked before each start, so nothing queued begins after an abort.
+    while (next < items.length && !signal?.aborted) {
       const item = items[next] as T;
       next += 1;
       await task(item);
@@ -79,18 +90,32 @@ export function noteLiveReaction(
   for (const live of running.get(channelId) ?? []) live.get(messageId)?.add(pairOf(key, author));
 }
 
+/** What a backfill needs: the channel's REST client, its ids and its lifetime. */
+export interface BackfillDeps {
+  client: OfscpClient;
+  groupId: string;
+  channelId: string;
+  /**
+   * The channel's lifetime: once aborted, no listing starts, in-flight requests
+   * are aborted and their answers are dropped. Omitted only by a caller whose
+   * backfill outlives no view (a one-shot load).
+   */
+  signal?: AbortSignal;
+}
+
 /**
  * Fetch and fold the reactions of `messageIds` (the messages a page just
  * loaded) into the store. Resolves once every listing has been applied or has
- * failed.
+ * failed, or, after `signal` aborts, as soon as the in-flight requests settle
+ * (nothing more is applied then).
  */
 export async function backfillReactions(
-  deps: { client: OfscpClient; groupId: string; channelId: string },
+  deps: BackfillDeps,
   messageIds: readonly string[],
 ): Promise<void> {
-  const { client, groupId, channelId } = deps;
+  const { client, groupId, channelId, signal } = deps;
   const ids = [...new Set(messageIds)];
-  if (ids.length === 0) return;
+  if (ids.length === 0 || signal?.aborted) return;
   const live = new Map(ids.map((id) => [id, new Set<string>()]));
   let channelLoads = running.get(channelId);
   if (!channelLoads) {
@@ -99,15 +124,19 @@ export async function backfillReactions(
   }
   channelLoads.add(live);
   try {
-    await forEachBounded(ids, REACTION_FETCH_CONCURRENCY, async (messageId) => {
+    await forEachBounded(ids, REACTION_FETCH_CONCURRENCY, signal, async (messageId) => {
       let reactions: Reaction[];
       try {
-        reactions = await fetchReactions(client, groupId, channelId, messageId);
+        reactions = await fetchReactions(client, groupId, channelId, messageId, signal);
       } catch {
         // A deleted or no longer visible message's listing may 404; its
-        // reactions simply stay as the live events left them.
+        // reactions simply stay as the live events left them. An aborted
+        // request lands here too, and is equally not applied.
         return;
       }
+      // The channel closed while this listing was in flight: no live events
+      // were reported since, so the snapshot may be stale. Drop it.
+      if (signal?.aborted) return;
       const liveSince = live.get(messageId) ?? new Set<string>();
       for (const r of reactions) {
         if (liveSince.has(pairOf(r.key, r.author))) continue;

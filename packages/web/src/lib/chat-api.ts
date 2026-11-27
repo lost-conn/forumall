@@ -8,7 +8,7 @@
  * session's signing {@link OfscpClient} so requests carry the §4.4 signature.
  */
 import type { Attachment, Message, Reaction } from "@forumall/shared";
-import { type OfscpClient, ofscpRequestMeta } from "./ofscp-client.ts";
+import { type OfscpClient, type RequestOptions, ofscpRequestMeta } from "./ofscp-client.ts";
 import { baseUrlForHost } from "./provider.ts";
 
 /**
@@ -22,6 +22,22 @@ export interface MessagesPageResult {
 }
 
 /**
+ * Paging options for a history or reply page. `signal` aborts the request (the
+ * channel it was loading for closed).
+ */
+export interface PageOptions {
+  cursor?: string;
+  limit?: number;
+  direction?: "backward" | "forward";
+  signal?: AbortSignal;
+}
+
+/** Request options carrying `signal` only when there is one. */
+function signalOption(signal: AbortSignal | undefined): RequestOptions {
+  return signal ? { signal } : {};
+}
+
+/**
  * Read one page of channel history, newest-first by default (backward paging).
  * `cursor` is the opaque `nextCursor` from a prior page ("load older").
  */
@@ -29,7 +45,7 @@ export async function fetchHistory(
   client: OfscpClient,
   groupId: string,
   channelId: string,
-  opts: { cursor?: string; limit?: number; direction?: "backward" | "forward" } = {},
+  opts: PageOptions = {},
 ): Promise<MessagesPageResult> {
   const params = new URLSearchParams();
   if (opts.cursor) params.set("cursor", opts.cursor);
@@ -38,6 +54,7 @@ export async function fetchHistory(
   const qs = params.toString();
   const res = await client.get<{ items: Message[]; page: { nextCursor?: string | null } }>(
     `/api/groups/${groupId}/channels/${channelId}/messages${qs ? `?${qs}` : ""}`,
+    signalOption(opts.signal),
   );
   return { messages: res.data.items ?? [], nextCursor: res.data.page?.nextCursor ?? null };
 }
@@ -53,7 +70,7 @@ export async function fetchReplies(
   groupId: string,
   channelId: string,
   messageId: string,
-  opts: { cursor?: string; limit?: number; direction?: "backward" | "forward" } = {},
+  opts: PageOptions = {},
 ): Promise<MessagesPageResult> {
   const params = new URLSearchParams();
   if (opts.cursor) params.set("cursor", opts.cursor);
@@ -62,19 +79,25 @@ export async function fetchReplies(
   const qs = params.toString();
   const res = await client.get<{ items: Message[]; page: { nextCursor?: string | null } }>(
     `/api/groups/${groupId}/channels/${channelId}/messages/${messageId}/replies${qs ? `?${qs}` : ""}`,
+    signalOption(opts.signal),
   );
   return { messages: res.data.items ?? [], nextCursor: res.data.page?.nextCursor ?? null };
 }
 
-/** Fetch the reaction history for one message (late-joiner / history backfill). */
+/**
+ * Fetch the reaction history for one message (late-joiner / history backfill).
+ * `signal` aborts the request (the channel closed).
+ */
 export async function fetchReactions(
   client: OfscpClient,
   groupId: string,
   channelId: string,
   messageId: string,
+  signal?: AbortSignal,
 ): Promise<Reaction[]> {
   const res = await client.get<{ items: Reaction[] }>(
     `/api/groups/${groupId}/channels/${channelId}/messages/${messageId}/reactions`,
+    signalOption(signal),
   );
   return res.data.items ?? [];
 }
