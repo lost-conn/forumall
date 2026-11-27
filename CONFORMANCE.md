@@ -52,12 +52,12 @@ Notes marked "spec question" point at wording in the spec that needs clarifying 
 
 | Level | Items | Covered | Partial | Missing |
 |---|---|---|---|---|
-| Provider MUST | 44 | 12 | 28 | 4 |
+| Provider MUST | 44 | 16 | 24 | 4 |
 | Provider SHOULD | 4 | 0 | 0 | 4 |
 | Provider MAY (optional) | 6 | 5 | 1 | 0 |
 | Client MUST | 13 | 4 | 7 | 2 |
 | Client SHOULD | 8 | 1 | 2 | 5 |
-| **Total** | 75 | 22 | 38 | 15 |
+| **Total** | 75 | 26 | 34 | 15 |
 
 ## §12 Compliance Checklist coverage map
 
@@ -101,9 +101,9 @@ Notes marked "spec question" point at wording in the spec that needs clarifying 
     - Tests: `packages/server/test/signer-resolution.test.ts`, `packages/server/test/federation-actor.test.ts`, `packages/server/test/federation.test.ts`, `packages/server/test/key-lookup-expiry.test.ts`
 14. **covered**: Reject a keys response whose `actor` is not the requested actor, and a discovery document whose `provider.domain` is not the authority it was fetched from (§3.1, §4.6); answer `403` for a denied signer and `401` when the outbound-request rules forbid the fetch (§4.6, §8)
     - Tests: `packages/server/test/signer-resolution.test.ts`, `packages/server/test/canonical-authority.test.ts`, `packages/server/test/federation-actor.test.ts`
-15. **partial**: Support group and channel management (create/read/update/delete) with the permission model (§5.5)
-    - Tests: `packages/server/test/groups.test.ts`, `packages/server/test/channels.test.ts`, `packages/server/test/channel-permissions.test.ts`, `packages/server/test/group-creation-policy.test.ts`, `packages/server/test/conformance.test.ts`
-    - Note: Behaviour gap: `GET …/channels/{channelId}` for an unreadable channel answers `403` (tests assert it) where §11.3 wants `404`, and `PATCH`/`DELETE` channel skip the read check. Spec question: should `GET …/channels` of an unreadable group be `403`, `404` or an empty list?
+15. **covered**: Support group and channel management (create/read/update/delete) with the permission model (§5.5)
+    - Tests: `packages/server/test/groups.test.ts`, `packages/server/test/channels.test.ts`, `packages/server/test/channel-permissions.test.ts`, `packages/server/test/group-creation-policy.test.ts`, `packages/server/test/conformance.test.ts`, `packages/server/test/hidden-channels.test.ts`
+    - Context: `GET`/`PATCH`/`DELETE` of a channel the caller cannot read answer `404` before the `manage` check; `GET …/channels` of an unreadable group answers `403`, as `GET /api/groups/{groupId}` does (§5.5).
 16. **partial**: Support group membership: join/leave, member listing, roles, per-group nicknames, `member.updated`, and the `request` approval flow (§5.7)
     - Tests: `packages/server/test/membership.test.ts`, `packages/server/test/display-name.test.ts`, `packages/server/test/conformance.test.ts`
     - Note: Untested: nickname validation (>64 chars → `400`, blank clears) and its `404`, the role-change subset rule against the target's current role, and `member.updated` to the affected member's own connections.
@@ -116,8 +116,8 @@ Notes marked "spec question" point at wording in the spec that needs clarifying 
 19. **covered**: Carry the full canonical `Message` in `message.created`, `message.updated` and `dm.message` (§7.1, §7.4)
     - Tests: `packages/server/test/message-create.test.ts`, `packages/server/test/message-edit-fields.test.ts`, `packages/server/test/conformance.test.ts`, `packages/shared/test/message-create-schema.test.ts`, `packages/shared/test/schemas.test.ts`
 20. **partial**: Support message edit (author-only; within `editUntil` when set, with no limit when absent) replacing any of `content`, `attachments`, `tags`, `mentions` and the article fields, and tombstone delete (§7.1)
-    - Tests: `packages/server/test/message-edit-delete.test.ts`, `packages/server/test/message-edit-fields.test.ts`, `packages/server/test/message-edit-dm.test.ts`, `packages/server/test/ws-correlation.test.ts`, `packages/shared/test/edits-media-groups.test.ts`
-    - Note: Behaviour gap: edit/delete in a channel the caller cannot read is not answered `404` first, so an author who lost access can still edit or delete and a non-author gets a `403` that leaks existence. "No limit when `editUntil` is absent" is vacuous: every message is stamped with a 900 s window.
+    - Tests: `packages/server/test/message-edit-delete.test.ts`, `packages/server/test/message-edit-fields.test.ts`, `packages/server/test/message-edit-dm.test.ts`, `packages/server/test/ws-correlation.test.ts`, `packages/shared/test/edits-media-groups.test.ts`, `packages/server/test/hidden-channels.test.ts`
+    - Note: "No limit when `editUntil` is absent" is vacuous: every message is stamped with a 900 s window.
 21. **partial**: Accept `text/plain` and `text/markdown` bodies for every message type; store the article fields `title`, `summary` and `cover` (rejecting a `cover` that names none of the message's attachments) and ignore them on other types; store `mentions` (§5.3) and, if the provider offers the §10.1 feed, take a message's mentions from it in place of text parsing when present (§10.1)
     - Tests: `packages/server/test/message-create-fields.test.ts`, `packages/server/test/message-edit-fields.test.ts`, `packages/shared/test/edits-media-groups.test.ts`
     - Note: Behaviour gap: mention notifications are still parsed from the text, never from `mentions`; and no server test creates or edits a `text/markdown` `message`, `memo` or `article`. (Forumall offers the §10.1 feed, so the mentions clause binds it.)
@@ -156,9 +156,8 @@ Notes marked "spec question" point at wording in the spec that needs clarifying 
 34. **partial**: Accept direct-WS connections from remote members — resolve remote keys via §4.6, enforce prior membership + tier at subscribe-time — and advertise `capabilities.federation.realtimeDelivery` (§8.5)
     - Tests: `packages/server/test/federation-realtime.test.ts`, `packages/server/test/ws-remote-key.test.ts`, `packages/server/test/server.test.ts`, `packages/server/test/federation-actor.test.ts`
     - Note: The `dmId` part of remote subscriptions is tracked under the direct-messages item. No remote-specific test of a member blocked by tier/`view` or of remote `since` resume (both reuse the local path).
-35. **partial**: Support the follow list (`GET`/`POST`/`DELETE /api/me/follows`) as pointers only — no server-side feed compilation or content replication (§7.6)
+35. **covered**: Support the follow list (`GET`/`POST`/`DELETE /api/me/follows`) as pointers only — no server-side feed compilation or content replication (§7.6)
     - Tests: `packages/server/test/follows.test.ts`, `packages/server/test/conformance.test.ts`
-    - Note: An unreadable channel answers `403`; §11.3 wants `404` (tracked under the hidden-channel item).
 36. **covered**: Support WebSocket resume (`since` replay with per-message cursors) and the `ping`/`pong` heartbeat (§7.1)
     - Tests: `packages/server/test/ws-resume.test.ts`, `packages/server/test/ws-envelope-rules.test.ts`
 37. **partial**: Support real-time presence over WebSocket: `presence.subscribe`/`set`, `presence.update` fan-out, connection-derived online/offline, and §6.1 visibility filtering consistent with the REST presence endpoint (§7.5)
@@ -167,12 +166,11 @@ Notes marked "spec question" point at wording in the spec that needs clarifying 
 38. **partial**: Support message fan-out + notification endpoints
     - Tests: `packages/server/test/notifications.test.ts`, `packages/server/test/ws-hub-fanout.test.ts`, `packages/server/test/ws-message-create.test.ts`
     - Note: Untested: `GET /api/notifications/endpoints` (shape, caller's own only) and `DELETE /api/notifications/endpoints/{id}` (`204`; `404` for another caller's or unknown).
-39. **partial**: Enforce tiers per channel and group, using the single effective-read-access rule (§11.3) on every surface, and end live subscriptions with `unsubscribed` (`reason: "access_revoked"`) when access is lost (§7.1)
-    - Tests: `packages/server/test/channels.test.ts`, `packages/server/test/groups.test.ts`, `packages/server/test/messages.test.ts`, `packages/server/test/channel-permissions.test.ts`, `packages/server/test/membership.test.ts`, `packages/server/test/ws-subscriptions.test.ts`, `packages/server/test/ws-access-revocation.test.ts`, `packages/server/test/follows.test.ts`, `packages/server/test/read-markers.test.ts`, `packages/server/test/notifications-feed.test.ts`, `packages/server/test/discovery-feed.test.ts`
-    - Note: Behaviour gaps: a non-member reader may react and send typing (reading never implies posting, §11), and edit/delete skip the read check. Untested: unknown tiers fail closed.
-40. **partial**: Answer a channel the caller may not read (any §11.3 condition fails, including an unreadable group) exactly as a missing channel on every surface except the channel-join alias (`404` / `not_found`, unknown read-marker scope); `403` only when the caller can read the channel but lacks a permission (§11.3)
-    - Tests: `packages/server/test/ws-subscriptions.test.ts`, `packages/server/test/federation-realtime.test.ts`, `packages/server/test/read-markers.test.ts`, `packages/server/test/notifications-feed.test.ts`, `packages/server/test/discovery-feed.test.ts`, `packages/server/test/message-create.test.ts`
-    - Note: Behaviour gap: many surfaces answer `403` for an unreadable channel, with tests asserting it: GET channel, history, replies, reactions (REST and WS), WS `typing.start`, `POST /api/me/follows`, and edit/delete. Spec question: must the channel list of an unreadable group be `404`?
+39. **covered**: Enforce tiers per channel and group, using the single effective-read-access rule (§11.3) on every surface, and end live subscriptions with `unsubscribed` (`reason: "access_revoked"`) when access is lost (§7.1)
+    - Tests: `packages/server/test/channels.test.ts`, `packages/server/test/groups.test.ts`, `packages/server/test/messages.test.ts`, `packages/server/test/channel-permissions.test.ts`, `packages/server/test/membership.test.ts`, `packages/server/test/ws-subscriptions.test.ts`, `packages/server/test/ws-access-revocation.test.ts`, `packages/server/test/follows.test.ts`, `packages/server/test/read-markers.test.ts`, `packages/server/test/notifications-feed.test.ts`, `packages/server/test/discovery-feed.test.ts`, `packages/server/test/hidden-channels.test.ts`, `packages/server/test/reader-participation.test.ts`
+40. **covered**: Answer a channel the caller may not read (any §11.3 condition fails, including an unreadable group) exactly as a missing channel on every surface except the channel-join alias (`404` / `not_found`, unknown read-marker scope); `403` only when the caller can read the channel but lacks a permission (§11.3)
+    - Tests: `packages/server/test/ws-subscriptions.test.ts`, `packages/server/test/federation-realtime.test.ts`, `packages/server/test/read-markers.test.ts`, `packages/server/test/notifications-feed.test.ts`, `packages/server/test/discovery-feed.test.ts`, `packages/server/test/message-create.test.ts`, `packages/server/test/hidden-channels.test.ts`, `packages/server/test/reader-participation.test.ts`, `packages/server/test/channels.test.ts`, `packages/server/test/messages.test.ts`, `packages/server/test/channel-permissions.test.ts`, `packages/server/test/reactions.test.ts`, `packages/server/test/typing.test.ts`, `packages/server/test/follows.test.ts`
+    - Context: `hidden-channels.test.ts` hides one channel three ways (group unreadable, channel tier, `view`) and compares every REST and WS answer with the missing-channel answer. The channel list names only the group, so it answers as `GET /api/groups/{groupId}` does (`403` for an unreadable group, §5.5).
 41. **partial**: Handle an unsigned request to a route that accepts anonymous readers as an anonymous viewer (`public` access only, never `401`), keeping `401` for signed requests that fail §4.5 (§4.5)
     - Tests: `packages/server/test/groups.test.ts`, `packages/server/test/channels.test.ts`, `packages/server/test/messages.test.ts`, `packages/server/test/replay-warmup.test.ts`, `packages/server/test/signature.test.ts`
     - Note: Behaviour gap: `GET /api/users/{userRef}/profile`, `…/presence` and `…/groups` require a signature, so an unsigned request gets `401`. Untested: anonymous `…/replies`, and a partial or invalid signature on an anonymous route → `401`.

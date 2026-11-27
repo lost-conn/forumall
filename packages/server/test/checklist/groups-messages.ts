@@ -16,9 +16,11 @@ export const GROUPS_MESSAGES: readonly ChecklistEntry[] = [
       "packages/server/test/channel-permissions.test.ts",
       "packages/server/test/group-creation-policy.test.ts",
       "packages/server/test/conformance.test.ts",
+      "packages/server/test/hidden-channels.test.ts",
     ],
-    status: "partial",
-    note: "Behaviour gap: `GET …/channels/{channelId}` for an unreadable channel answers `403` (tests assert it) where §11.3 wants `404`, and `PATCH`/`DELETE` channel skip the read check. Spec question: should `GET …/channels` of an unreadable group be `403`, `404` or an empty list?",
+    status: "covered",
+    context:
+      "`GET`/`PATCH`/`DELETE` of a channel the caller cannot read answer `404` before the `manage` check; `GET …/channels` of an unreadable group answers `403`, as `GET /api/groups/{groupId}` does (§5.5).",
   },
   {
     item: "Support group membership: join/leave, member listing, roles, per-group nicknames, `member.updated`, and the `request` approval flow (§5.7)",
@@ -79,9 +81,10 @@ export const GROUPS_MESSAGES: readonly ChecklistEntry[] = [
       "packages/server/test/message-edit-dm.test.ts",
       "packages/server/test/ws-correlation.test.ts",
       "packages/shared/test/edits-media-groups.test.ts",
+      "packages/server/test/hidden-channels.test.ts",
     ],
     status: "partial",
-    note: 'Behaviour gap: edit/delete in a channel the caller cannot read is not answered `404` first, so an author who lost access can still edit or delete and a non-author gets a `403` that leaks existence. "No limit when `editUntil` is absent" is vacuous: every message is stamped with a 900 s window.',
+    note: '"No limit when `editUntil` is absent" is vacuous: every message is stamped with a 900 s window.',
   },
   {
     item: "Accept `text/plain` and `text/markdown` bodies for every message type; store the article fields `title`, `summary` and `cover` (rejecting a `cover` that names none of the message's attachments) and ignore them on other types; store `mentions` (§5.3) and, if the provider offers the §10.1 feed, take a message's mentions from it in place of text parsing when present (§10.1)",

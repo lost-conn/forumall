@@ -4,7 +4,7 @@
  * A follow is a POINTER: the provider stores only which channels a user follows
  * and MUST NOT compile or store a feed. These tests cover the follow-list
  * lifecycle over the signed `/api/me/follows` endpoints, the local-channel
- * access check (public → ok, private non-member → 403, unknown → 404), a remote
+ * access check (public → ok; private non-member and unknown → the same 404), a remote
  * channel URI stored as a pointer without a remote access check, the idempotent
  * follow/unfollow semantics, and an assertion that NO server-side feed table or
  * endpoint exists (the store holds only pointers).
@@ -199,15 +199,19 @@ describe("follow a local public channel (§7.6)", () => {
 // ---------------------------------------------------------------------------
 
 describe("local channel access check (§7.6)", () => {
-  test("private channel the user is NOT a member of → 403; nothing stored", async () => {
-    const { app } = freshApp("follows-private-403");
+  test("private channel the user is NOT a member of → 404 as a missing channel (§11.3); nothing stored", async () => {
+    const { app } = freshApp("follows-private-hidden");
     const alice = await registerUserWithKey(app, "alice");
     const bob = await registerUserWithKey(app, "bob");
     const group = await createGroup(app, alice, { name: "G", tier: "public" });
     const priv = await createChannel(app, alice, group.id, { type: "text", tier: "private" });
 
     const res = await signedRequest(app, bob, "POST", "/api/me/follows", { channel: priv.id });
-    expect(res.status).toBe(403);
+    const missing = await signedRequest(app, bob, "POST", "/api/me/follows", {
+      channel: "chn_nope",
+    });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual(await missing.json());
 
     // Nothing was stored.
     expect((await listFollows(app, bob)).length).toBe(0);

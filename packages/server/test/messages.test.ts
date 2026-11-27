@@ -7,8 +7,8 @@
  * create card owns the real create flow). Covers: schema-valid message mapping +
  * future `permissions.editUntil`; backward/forward keyset paging (stable,
  * non-overlapping, gap-free, walks the whole history); opaque (non-int) cursors
- * ordered by seq; `MessagesPageSchema` validation; and read authz (private 403,
- * public 200, unknown 404).
+ * ordered by seq; `MessagesPageSchema` validation; and read authz (an
+ * unreadable channel answers as a missing one — 404, §11.3 — public 200).
  *
  * Argon2id cost is reduced (TEST-ONLY) so register stays fast.
  */
@@ -332,7 +332,7 @@ describe("GET .../messages (§7.2, authz)", () => {
     expect(body.items.length).toBe(3);
   });
 
-  test("private channel: non-member → 403, member → 200", async () => {
+  test("private channel: non-member → 404 as a missing channel (§11.3), member → 200", async () => {
     const { app, config, db } = freshApp("msg-authz-private");
     const alice = await registerUserWithKey(app, "alice");
     const bob = await registerUserWithKey(app, "bob");
@@ -341,8 +341,8 @@ describe("GET .../messages (§7.2, authz)", () => {
     seedMessages(db, config, group.id, channel.id, alice.actor, 2);
     const path = `/api/groups/${group.id}/channels/${channel.id}/messages`;
 
-    const forbidden = await signedRequest(app, bob, "GET", path);
-    expect(forbidden.status).toBe(403);
+    const hidden = await signedRequest(app, bob, "GET", path);
+    expect(hidden.status).toBe(404);
 
     addMember(db, group.id, bob, "member");
     const ok = await signedRequest(app, bob, "GET", path);
@@ -373,10 +373,10 @@ describe("GET .../messages (§7.2, authz)", () => {
     const path = `/api/groups/${group.id}/channels/${channel.id}/messages`;
 
     const anon = await app.request(path);
-    expect(anon.status).toBe(403);
+    expect(anon.status).toBe(404);
 
     const nonMember = await signedRequest(app, bob, "GET", path);
-    expect(nonMember.status).toBe(403);
+    expect(nonMember.status).toBe(404);
 
     // A member of the (private) group can still read the (public) channel.
     addMember(db, group.id, bob, "member");
@@ -458,7 +458,7 @@ describe("replies (§7.2)", () => {
     expect(reply?.replyCount).toBeUndefined();
   });
 
-  test("replies read gate matches history (private channel → 403)", async () => {
+  test("replies read gate matches history (private channel → 404, §11.3)", async () => {
     const { app, config, db } = freshApp("replies-authz");
     const alice = await registerUserWithKey(app, "alice");
     const bob = await registerUserWithKey(app, "bob");
@@ -467,7 +467,7 @@ describe("replies (§7.2)", () => {
     const parent = at(seedMessages(db, config, group.id, channel.id, alice.actor, 1), 0);
     const path = `/api/groups/${group.id}/channels/${channel.id}/messages/${parent}/replies`;
 
-    expect((await signedRequest(app, bob, "GET", path)).status).toBe(403);
+    expect((await signedRequest(app, bob, "GET", path)).status).toBe(404);
     addMember(db, group.id, bob, "member");
     expect((await signedRequest(app, bob, "GET", path)).status).toBe(200);
   });

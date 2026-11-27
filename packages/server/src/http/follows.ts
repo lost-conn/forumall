@@ -16,10 +16,10 @@
  * ## Access check on follow (§7.6)
  * The provider SHOULD verify the caller currently has access before recording the
  * pointer:
- *  - **Local** channel → resolve the channel row, then gate via
- *    {@link canViewChannel} (tier + group tier + any per-channel `view`
- *    override, §5.2.1/§11). Not visible → **403**; no such local channel →
- *    **404**.
+ *  - **Local** channel → resolve it through the §11.3 read gate
+ *    ({@link getReadableChannel}: group tier + channel tier + any per-channel
+ *    `view` override). A channel that is missing or that the caller cannot
+ *    read → the same **404** ("hidden channels answer as missing").
  *  - **Remote** channel → real access verification requires federation (P7), so
  *    the pointer is stored WITHOUT a remote access check for now. P7 can add a
  *    remote access check here (fetch the remote channel / attempt a read against
@@ -36,7 +36,7 @@ import {
 } from "@forumall/shared";
 import { type Context, Hono } from "hono";
 
-import { canViewChannel, getChannelRow } from "../provider/channels.ts";
+import { getReadableChannel } from "../provider/channels.ts";
 import { isProviderAllowed } from "../provider/federation/policy.ts";
 import { addFollow, listFollows, removeFollow } from "../provider/follows.ts";
 import { assertCanonicalUriAuthority } from "./canonical-fields.ts";
@@ -105,8 +105,8 @@ export function createMeFollowsRouter() {
 
   // -- POST /follows (§7.6 — signed) --------------------------------------
   // Start following a channel. Access check before storing the pointer:
-  // local channel → canViewChannel (403 if not visible, 404 if no such
-  // channel); remote channel → stored without a remote access check (P7).
+  // local channel → the §11.3 read gate (404 if missing or unreadable);
+  // remote channel → stored without a remote access check (P7).
   // Idempotent: already-followed → existing Follow (200); new → 201.
   router.post("/", signed, local, async (c) => {
     const { db } = c.var;
@@ -136,15 +136,13 @@ export function createMeFollowsRouter() {
     const classified = classifyChannelRef(c, channel);
 
     if (classified.kind === "local") {
-      // Local channel: verify the caller currently has access (§7.6). 404 if no
-      // such local channel; 403 if it exists but is not visible to the caller.
-      if (classified.channelId === null) {
+      // Local channel: verify the caller currently has access (§7.6). A
+      // missing channel and one the caller cannot read get the same 404 (§11.3).
+      if (
+        classified.channelId === null ||
+        !getReadableChannel(db, classified.channelId, actor.actor)
+      ) {
         throw AppError.notFound({ detail: "no such local channel" });
-      }
-      const row = getChannelRow(db, classified.channelId);
-      if (!row) throw AppError.notFound({ detail: "no such local channel" });
-      if (!canViewChannel(db, row, actor.actor)) {
-        throw AppError.forbidden({ detail: "you do not have access to this channel" });
       }
     }
     if (classified.kind === "remote") {

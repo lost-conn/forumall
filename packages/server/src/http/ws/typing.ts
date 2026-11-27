@@ -9,9 +9,13 @@ import {
   WsTypingStartSchema,
   WsTypingStopSchema,
 } from "@forumall/shared";
-import { canViewChannel, getChannelRow } from "../../provider/channels.ts";
+import type { Db } from "../../db/index.ts";
+import { getReadableChannel } from "../../provider/channels.ts";
 import { getDmConversationRow } from "../../provider/dms.ts";
+import { getMembership } from "../../provider/permissions.ts";
 import type { OutboundEvent } from "../../provider/ws-hub.ts";
+import { CHANNEL_NOT_FOUND } from "../channel-access.ts";
+import type { MutationError } from "../message-mutations.ts";
 import { type ConnState, type WsContext, type WsCtx, errorEvent } from "./connection.ts";
 
 /** Build a validated `channel.typing` event (§7.1 "Typing indicators"). */
@@ -24,6 +28,27 @@ function typingEvent(
     type: "channel.typing",
     data: WsChannelTypingSchema.shape.data.parse({ channelId, user, state: typingState }),
   };
+}
+
+/**
+ * May `actor` type in `channelId`? `null` when allowed, else the error to send:
+ *
+ *  - a channel that does not exist or that the actor cannot read → `not_found`,
+ *    exactly as for a missing channel (§11.3);
+ *  - a reader who is not a member of the channel's group → `forbidden`:
+ *    reading a `public` channel never implies typing in it (§11).
+ *
+ * §11 requires "membership plus the relevant permission"; no permission is
+ * defined for typing (§5.2.1 names `view`, `post:<type>` and `react`), so
+ * membership is the bar.
+ */
+function typingRefusal(db: Db, channelId: string, actor: string): MutationError | null {
+  const channel = getReadableChannel(db, channelId, actor);
+  if (!channel) return CHANNEL_NOT_FOUND;
+  if (!getMembership(db, channel.groupId, actor)) {
+    return { code: "forbidden", message: "only group members may type in this channel" };
+  }
+  return null;
 }
 
 /**
@@ -90,9 +115,9 @@ export function clearAllTyping(ctx: WsCtx, state: ConnState, emitStop: boolean):
 }
 /**
  * §7.1 Typing indicators: signal that the connection's actor started typing in
- * a channel. Authorize the actor against channel visibility ({@link
- * channelVisibleTo} on the channel's group/tier) — an actor who can't see the
- * channel gets `forbidden` and NO fan-out. On success fan out `channel.typing
+ * a channel. Authorize via {@link typingRefusal} — a missing or unreadable
+ * channel gets `not_found`, a non-member reader `forbidden`, and neither any
+ * fan-out. On success fan out `channel.typing
  * { channelId, user, state: "start" }` to every channel subscriber (matching
  * message fan-out, which includes the sender; clients filter their own user)
  * and (re)arm the per-(connection, channel) auto-expiry timer: if no refreshing
@@ -145,9 +170,9 @@ export function handleTypingStart(
     hub.send(ws, errorEvent("bad_request", "typing.start needs a channelId or dmId", frameId));
     return;
   }
-  const channel = getChannelRow(db, channelId);
-  if (!channel || !canViewChannel(db, channel, actor)) {
-    hub.send(ws, errorEvent("forbidden", "not authorized to type in this channel", frameId));
+  const refusal = typingRefusal(db, channelId, actor);
+  if (refusal) {
+    hub.send(ws, errorEvent(refusal.code, refusal.message, frameId));
     return;
   }
 
@@ -168,8 +193,13 @@ export function handleTypingStart(
 /**
  * §7.1 Typing indicators: signal that the connection's actor stopped typing in
  * a channel. Cancels the auto-expiry timer (so it doesn't double-emit) and fans
- * out `channel.typing { channelId, user, state: "stop" }`. We don't gate this on
- * visibility — stopping is always safe — but a malformed frame still errors.
+ * out `channel.typing { channelId, user, state: "stop" }` — when this
+ * connection had a pending `start` there (so an actor who lost access can still
+ * clear their own indicator), or when the actor may type there now (a `start`
+ * from another of their connections). Otherwise nothing happens: there is no
+ * error, so a missing and a hidden channel answer alike (§11.3), and a
+ * non-member reader cannot inject typing events (§11). A malformed frame still
+ * errors.
  */
 export function handleTypingStop(
   ctx: WsCtx,
@@ -206,7 +236,10 @@ export function handleTypingStop(
 
   const channelId = parsed.data.data.channelId;
   if (channelId === undefined) return; // nothing to stop
+  const hadStart = state.typingTimers.has(channelId);
   // Cancel the pending auto-expiry; we're emitting the `stop` explicitly now.
   clearTypingTimer(state, channelId);
-  hub.publishToChannel(channelId, typingEvent(channelId, actor, "stop"));
+  if (hadStart || typingRefusal(db, channelId, actor) === null) {
+    hub.publishToChannel(channelId, typingEvent(channelId, actor, "stop"));
+  }
 }

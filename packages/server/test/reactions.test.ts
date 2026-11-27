@@ -4,11 +4,11 @@
  * Two transports, one model:
  *  - **WS** (real socket via `Bun.serve`, like `ws.test.ts`): `reaction.add` /
  *    `reaction.remove` commands, idempotency, fan-out to other subscribers, two
- *    users sharing a key, and the forbidden (can't-see-channel) path.
+ *    users sharing a key, and the hidden-channel (`not_found`) path.
  *  - **REST** (`app.request`, like `messages.test.ts`): `PUT`/`DELETE`
  *    `…/reactions/{key}` parity (idempotent 201→200, 204), reaching WS
  *    subscribers via the shared hub, the paginated `GET …/reactions` listing,
- *    and the private-channel 403.
+ *    and the hidden-channel 404 (§11.3).
  *
  * Argon2id cost is reduced (TEST-ONLY) so register stays fast.
  */
@@ -30,6 +30,7 @@ import { type AppWithWebSocket, createApp } from "../src/app.ts";
 import { type Argon2Params, type Config, loadConfig } from "../src/config.ts";
 import { openDb } from "../src/db/index.ts";
 import { migrate } from "../src/db/migrate.ts";
+import { groupMembers } from "../src/db/schema.ts";
 import type { Hub } from "../src/provider/ws-hub.ts";
 
 const FAST_ARGON2: Argon2Params = { memoryKib: 1024, iterations: 1, parallelism: 1 };
@@ -187,6 +188,17 @@ async function makeGroupChannelMessage(
   const messageId = (evt.data as { message: { id: string } }).message.id;
   conn.close();
   return { groupId, channelId, messageId };
+}
+
+/**
+ * Make `signer` a `member` of `groupId`. Reacting needs membership: reading a
+ * public channel never implies reacting in it (§11).
+ */
+function addMember(b: Booted, signer: Signer, groupId: string): void {
+  b.db.drizzle
+    .insert(groupMembers)
+    .values({ groupId, user: signer.actor, role: "member", joinedAt: Date.now() })
+    .run();
 }
 
 // ---------------------------------------------------------------------------
@@ -396,6 +408,7 @@ describe("WS reactions (§7.1)", () => {
     const owner = await registerUserWithKey(b, "owner");
     const bob = await registerUserWithKey(b, "bob");
     const { groupId, channelId, messageId } = await makeGroupChannelMessage(b, owner, "public");
+    addMember(b, bob, groupId);
 
     for (const [signer, id] of [
       [owner, "o"],
@@ -421,7 +434,7 @@ describe("WS reactions (§7.1)", () => {
     expect(items.every((r) => r.key === "fire")).toBe(true);
   });
 
-  test("reaction.add to a channel the actor can't see → error forbidden", async () => {
+  test("reaction.add to a channel the actor can't see → error not_found, as a missing channel (§11.3)", async () => {
     const b = boot("rx-forbidden");
     const owner = await registerUserWithKey(b, "owner");
     const bob = await registerUserWithKey(b, "bob"); // not a member
@@ -429,15 +442,15 @@ describe("WS reactions (§7.1)", () => {
 
     const bobConn = await connectAuthenticated(b, bob);
     bobConn.send({
-      id: "rx_forbidden",
+      id: "rx_hidden",
       type: "reaction.add",
       ts: rfc3339Timestamp(),
       data: { groupId, channelId, messageId, key: "heart" },
     });
     const err = await bobConn.ofType("error");
-    expect((err.data as { code: string }).code).toBe("forbidden");
-    expect((err.data as { status: number }).status).toBe(403);
-    expect(err.correlationId).toBe("rx_forbidden");
+    expect((err.data as { code: string }).code).toBe("not_found");
+    expect((err.data as { status: number }).status).toBe(404);
+    expect(err.correlationId).toBe("rx_hidden");
     bobConn.close();
   });
 
@@ -458,6 +471,54 @@ describe("WS reactions (§7.1)", () => {
     expect(err.correlationId).toBe("rx_missing");
     a.close();
   });
+  test("reaction.remove of a reaction the caller does not hold answers only the caller and broadcasts nothing (§11)", async () => {
+    const b = boot("rx-remove-noop");
+    const alice = await registerUserWithKey(b, "alice");
+    const bob = await registerUserWithKey(b, "bob");
+    const carol = await registerUserWithKey(b, "carol");
+    // Public channel: carol (not a member) may read it, so may send reaction.remove.
+    const { groupId, channelId, messageId } = await makeGroupChannelMessage(b, alice, "public");
+
+    const watcher = await connectAuthenticated(b, bob);
+    await subscribe(watcher, channelId, "w_sub");
+    const reader = await connectAuthenticated(b, carol);
+    await subscribe(reader, channelId, "r_sub");
+    const author = await connectAuthenticated(b, alice);
+
+    author.send({
+      id: "rx_add",
+      type: "reaction.add",
+      ts: rfc3339Timestamp(),
+      data: { groupId, channelId, messageId, key: "thumbsup", unicode: "👍" },
+    });
+    await watcher.ofType("reaction.added");
+
+    // Carol holds no reaction: her command resolves, correlated, for her alone.
+    reader.send({
+      id: "rx_noop",
+      type: "reaction.remove",
+      ts: rfc3339Timestamp(),
+      data: { groupId, channelId, messageId, key: "thumbsup" },
+    });
+    const ack = await reader.next((f) => f.correlationId === "rx_noop");
+    expect(ack.type).toBe("reaction.removed");
+    expect((ack.data as { author: string }).author).toBe(carol.actor);
+
+    // Alice's own reaction is untouched, and the next removal the watcher sees is hers.
+    expect((await listReactionItems(b, alice, groupId, channelId, messageId)).length).toBe(1);
+    author.send({
+      id: "rx_rm",
+      type: "reaction.remove",
+      ts: rfc3339Timestamp(),
+      data: { groupId, channelId, messageId, key: "thumbsup" },
+    });
+    const seen = await watcher.ofType("reaction.removed");
+    expect((seen.data as { author: string }).author).toBe(alice.actor);
+
+    author.close();
+    reader.close();
+    watcher.close();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -465,6 +526,30 @@ describe("WS reactions (§7.1)", () => {
 // ---------------------------------------------------------------------------
 
 describe("REST reactions (§7.1 equivalents)", () => {
+  test("DELETE of a reaction the caller does not hold → 204 and no reaction.removed fan-out (§11)", async () => {
+    const b = boot("rx-rest-remove-noop");
+    const alice = await registerUserWithKey(b, "alice");
+    const bob = await registerUserWithKey(b, "bob");
+    const carol = await registerUserWithKey(b, "carol");
+    const { groupId, channelId, messageId } = await makeGroupChannelMessage(b, alice, "public");
+    const base = `/api/groups/${groupId}/channels/${channelId}/messages/${messageId}/reactions/heart`;
+
+    const watcher = await connectAuthenticated(b, bob);
+    await subscribe(watcher, channelId);
+    expect((await signedReq(b, alice, "PUT", base, { unicode: "❤️" })).status).toBe(201);
+    await watcher.ofType("reaction.added");
+
+    // Carol, a non-member reader, holds no such reaction: idempotent 204, nothing broadcast.
+    expect((await signedReq(b, carol, "DELETE", base)).status).toBe(204);
+    expect((await listReactionItems(b, alice, groupId, channelId, messageId)).length).toBe(1);
+
+    expect((await signedReq(b, alice, "DELETE", base)).status).toBe(204);
+    const seen = await watcher.ofType("reaction.removed");
+    expect((seen.data as { author: string }).author).toBe(alice.actor);
+
+    watcher.close();
+  });
+
   test("PUT is idempotent (201 then 200) and reaches WS subscribers; DELETE → 204 + reaction.removed", async () => {
     const b = boot("rx-rest-parity");
     const alice = await registerUserWithKey(b, "alice");
@@ -514,6 +599,8 @@ describe("REST reactions (§7.1 equivalents)", () => {
     const u2 = await registerUserWithKey(b, "user2");
     const u3 = await registerUserWithKey(b, "user3");
     const { groupId, channelId, messageId } = await makeGroupChannelMessage(b, owner, "public");
+    addMember(b, u2, groupId);
+    addMember(b, u3, groupId);
     const path = `/api/groups/${groupId}/channels/${channelId}/messages/${messageId}/reactions`;
 
     // Three distinct users each react with a distinct key → three rows.
@@ -549,7 +636,7 @@ describe("REST reactions (§7.1 equivalents)", () => {
     expect(new Set(ids).size).toBe(3);
   });
 
-  test("reading reactions on a private channel as a non-member → 403", async () => {
+  test("reading reactions on a private channel as a non-member → 404, as a missing channel (§11.3)", async () => {
     const b = boot("rx-rest-private");
     const owner = await registerUserWithKey(b, "owner");
     const bob = await registerUserWithKey(b, "bob"); // not a member
@@ -561,10 +648,10 @@ describe("REST reactions (§7.1 equivalents)", () => {
       "GET",
       `/api/groups/${groupId}/channels/${channelId}/messages/${messageId}/reactions`,
     );
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
   });
 
-  test("PUT a reaction in a private channel as a non-member → 403", async () => {
+  test("PUT a reaction in a private channel as a non-member → 404, as a missing channel (§11.3)", async () => {
     const b = boot("rx-rest-put-private");
     const owner = await registerUserWithKey(b, "owner");
     const bob = await registerUserWithKey(b, "bob");
@@ -577,6 +664,6 @@ describe("REST reactions (§7.1 equivalents)", () => {
       `/api/groups/${groupId}/channels/${channelId}/messages/${messageId}/reactions/heart`,
       {},
     );
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
   });
 });

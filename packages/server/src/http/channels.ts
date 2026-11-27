@@ -8,21 +8,26 @@
  *    membership. → `{ items: [Channel] }`.
  *  - `POST /` (signed): caller must satisfy the group's `manage` action; `type`
  *    is REQUIRED + immutable. → 201 the created `Channel`.
- *  - `GET /:channelId` (optional auth): read gate is {@link canViewChannel} —
- *    tier + group tier (more restrictive of the two, §11) + any `view`
- *    override; missing channel/group → 404, not visible → 403.
- *  - `PATCH /:channelId` (signed): group `manage`; partial update; `type` cannot
- *    change (attempts are rejected 400). → 200.
- *  - `DELETE /:channelId` (signed): group `manage` → 204.
+ *  - `GET /:channelId` (optional auth): the §11.3 read gate — group tier,
+ *    channel tier and any `view` override; a missing group → 404, and a channel
+ *    that is missing or unreadable → the same 404 ("hidden channels answer as
+ *    missing").
+ *  - `PATCH /:channelId` (signed): the same read gate (404), then group
+ *    `manage` (403); partial update; `type` cannot change (attempts are
+ *    rejected 400). → 200.
+ *  - `DELETE /:channelId` (signed): the same read gate (404), then group
+ *    `manage` (403) → 204.
  *
- * The parent group must be readable for any channel access: the group-level tier
- * gate (public/discoverable → anyone; private/group → member) is applied first,
- * mirroring `GET /api/groups/{id}`. The channel's own read gate — tier, the
- * group/channel "more restrictive of the two" combination (§11), and any
- * per-channel `view` override (§5.2.1) — is then applied via
- * {@link canViewChannel}, the single decision messaging/WS subscription also
- * use, so this router cannot drift from them. Authorization (group `manage`)
- * delegates to `provider/permissions.ts`.
+ * Every route naming a channel resolves it through
+ * {@link requireReadableChannel} (`channel-access.ts`), the gate messaging, WS
+ * and follows also use, so this router cannot drift from them; a `403` is only
+ * for a caller who can read the channel but lacks `manage`. The channel-join
+ * alias is the exception (§8.2): it answers as a group join. Authorization
+ * (group `manage`) delegates to `provider/permissions.ts`.
+ *
+ * The listing (`GET /`) answers `403` for a group the caller cannot read,
+ * mirroring `GET /api/groups/{id}`: §11.3 does not say what a listing that
+ * names only an unreadable group answers (open spec question).
  */
 import { ChannelCreateRequestSchema, ChannelUpdateRequestSchema } from "@forumall/shared";
 import { type Context, Hono } from "hono";
@@ -41,6 +46,7 @@ import { getGroupRow } from "../provider/groups.ts";
 import { addMember, getMemberRow, requestToJoin, rowToMember } from "../provider/membership.ts";
 import { canActor } from "../provider/permissions.ts";
 import { effectiveJoinPolicy, tierReadableBy } from "../provider/tiers.ts";
+import { requireReadableChannel } from "./channel-access.ts";
 import { AppError } from "./errors.ts";
 import { createMessagesRouter } from "./messages.ts";
 import { optionalSignature, requireSignature } from "./signature.ts";
@@ -120,20 +126,8 @@ export function createChannelsRouter() {
     const groupId = requireParam(c, "groupId");
     const channelId = requireParam(c, "channelId");
 
-    if (!getGroupRow(db, groupId)) throw AppError.notFound({ detail: "no such group" });
-    const row = getChannelRow(db, channelId);
-    if (!row || row.groupId !== groupId) {
-      throw AppError.notFound({ detail: "no such channel" });
-    }
-
-    // Read gate (§5.2.1, §11): tier + group tier + any per-channel `view`
-    // override, via the same decision messaging/WS subscription use. Missing →
-    // 404 (above), not visible → 403.
-    const actor = c.var.actor?.actor ?? null;
-    if (!canViewChannel(db, row, actor)) {
-      throw AppError.forbidden({ detail: "this channel is private" });
-    }
-
+    // Read gate (§11.3): an unreadable channel answers exactly as a missing one.
+    const row = requireReadableChannel(db, groupId, channelId, c.var.actor?.actor ?? null);
     return c.json(rowToChannel(row));
   });
 
@@ -163,11 +157,9 @@ export function createChannelsRouter() {
       });
     }
 
-    if (!getGroupRow(db, groupId)) throw AppError.notFound({ detail: "no such group" });
-    const existing = getChannelRow(db, channelId);
-    if (!existing || existing.groupId !== groupId) {
-      throw AppError.notFound({ detail: "no such channel" });
-    }
+    // Read access before `manage` (§11.3): a manager left out of `view` cannot
+    // see the channel, so cannot change it; a non-reader cannot learn it exists.
+    requireReadableChannel(db, groupId, channelId, actor.actor);
     if (!canActor(db, "manage", groupId, actor.actor)) {
       throw AppError.forbidden({ detail: "you may not manage this group" });
     }
@@ -187,11 +179,9 @@ export function createChannelsRouter() {
     const groupId = requireParam(c, "groupId");
     const channelId = requireParam(c, "channelId");
 
-    if (!getGroupRow(db, groupId)) throw AppError.notFound({ detail: "no such group" });
-    const existing = getChannelRow(db, channelId);
-    if (!existing || existing.groupId !== groupId) {
-      throw AppError.notFound({ detail: "no such channel" });
-    }
+    // Read access before `manage` (§11.3): a manager left out of `view` cannot
+    // see the channel, so cannot change it; a non-reader cannot learn it exists.
+    requireReadableChannel(db, groupId, channelId, actor.actor);
     if (!canActor(db, "manage", groupId, actor.actor)) {
       throw AppError.forbidden({ detail: "you may not manage this group" });
     }
