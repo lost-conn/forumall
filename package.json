@@ -11,7 +11,8 @@
     "test:e2e": "bun run --filter '@forumall/e2e' test",
     "test:all": "bun run test && bun run test:e2e",
     "lint": "biome check .",
-    "format": "biome format --write ."
+    "format": "biome format --write .",
+    "conformance:render": "bun run packages/server/test/checklist/write-conformance.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
