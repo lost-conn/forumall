@@ -73,11 +73,12 @@ export const GROUPS_MESSAGES: readonly ChecklistEntry[] = [
     covers: [
       "packages/server/test/conformance.test.ts",
       "packages/server/test/invite-creation.test.ts",
+      "packages/server/test/invite-token-logging.test.ts",
       "packages/server/test/invites.test.ts",
     ],
     status: "covered",
     context:
-      "Tokens are 256 bits from `crypto.getRandomValues` (`provider/invites.ts`) and stored only as a SHA-256 digest (`invites.token_digest`, migration 0043 converted plaintext rows). No code logs a request path or token.",
+      "Tokens are 256 bits from `crypto.getRandomValues` (`provider/invites.ts`) and stored only as a SHA-256 digest (`invites.token_digest`, migration 0043 converted plaintext rows). `invite-token-logging.test.ts` captures console and stdout/stderr across create, list, the join-link page, redeem, `/guest` and the 404/409/403/500 paths and finds neither a token nor its digest.",
   },
   {
     item: "On `redeem`, check the invite first (`404` unknown or expired, `409` exhausted, whoever the caller is); answer a valid invite redeemed by a caller who is already a member (the owner included) with `200`, the invite's `channelId` and their current role, changing no role and consuming no use of the invite; let a redemption whose invite names a since-deleted channel succeed, omitting `channelId` (§5.6)",
@@ -92,6 +93,7 @@ export const GROUPS_MESSAGES: readonly ChecklistEntry[] = [
     item: "Give a guest provisioned through `/invites/{token}/guest` role `guest`, whatever the invite's `role`, and join it to the group even when the invite names a since-deleted channel (§4.8, §5.6)",
     level: "provider-must",
     covers: [
+      "packages/server/test/guest-binding.test.ts",
       "packages/server/test/invite-redemption.test.ts",
       "packages/server/test/invites.test.ts",
     ],
