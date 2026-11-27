@@ -1,7 +1,7 @@
 # OFSCP §12 conformance audit
 
 Audit of Forumall `main` at `1b336ef` against the §12 Compliance Checklist of
-OFSCP `main` at `598e45d` (updated for ofscp#31, `7f3e0e9`, ofscp#34, `300f6fa`, and ofscp#35–#40, `e94447d`) (`../ofscp/docs/ofscp_spec.md`). Every checklist line
+OFSCP `main` at `598e45d` (updated for ofscp#31, `7f3e0e9`, ofscp#34, `300f6fa`, ofscp#35–#40, `e94447d`, and ofscp#41, `31100ef`) (`../ofscp/docs/ofscp_spec.md`). Every checklist line
 was split into its sub-requirements and checked for (a) the behaviour in the
 code and (b) a test that asserts it. The per-item coverage map itself (which
 test files cover which item) lives in `packages/server/test/checklist/` and is
@@ -197,6 +197,22 @@ reply listing of reacted messages, a tombstoned reply, and the schema refusing
 a `Reaction` item. The web client backfills each loaded message's reactions
 from `…/reactions` for the first page, older pages and reply listings.
 
+## ofscp#41 (`31100ef`): follow `groupId` and exact unread counts
+
+ofscp#41 reworded two items. The provider derives a `Follow`'s `groupId` from
+the channel (a local id, or the group's object URI on the channel's authority)
+and ignores one in the `POST` body; `unreadCount` is exact, never capped, and
+counts tombstones. The schema changes are descriptions only. The `L` numbers
+are in the spec at `31100ef` (unchanged from `e94447d`).
+
+| L | Item (short) | Status | Gap | Unit |
+|---|---|---|---|---|
+| 52 (P MUST) | Follow list as pointers, `groupId` derived from the channel | behaviour | The body's `groupId` is stored as given (`http/follows.ts:128`, `:158`); nothing derives it, so a follow without one has none. `follows.test.ts:161` asserts the echo. | U21 |
+| 81 (P MAY) | Read markers by message id; `unreadCount` exact, tombstones counted | tests only | An uncapped `COUNT(*)` with no `deleted_at` filter (`provider/read-markers.ts:164`, `:183`); no test counts a tombstone. | U21 |
+
+Both items were `covered` before; both are now `partial`. New unit: U21 (derive the `Follow` `groupId` from the channel and
+ignore the body's; a test that a tombstone still counts as unread).
+
 ## Units of work
 
 Each unit is one pull request to `main`. Each updates its area's entries in
@@ -225,6 +241,7 @@ Each unit is one pull request to `main`. Each updates its area's entries in
 | U18 | Server invites and join requests: creation `role`/`channelId` `400`s and subset `403`; token digest and `Referrer-Policy: no-referrer`; redeem checks the invite before membership and omits a deleted `channelId`; `/guest` always `guest`; approve `409` while invite-only; tests. | 23–26 (at `e94447d`) |
 | U19 | Verifier: a request carrying both `X-OFSCP-Actor` and `X-OFSCP-Provider` → step-1 `401`, before the deny check; tests. | 8 (at `e94447d`) |
 | U20 | Server channel messaging (ofscp#37): tombstone edit `404` and repeat-delete no-op, reaction tombstone and no-op rules, one copy to an unsubscribed requester, typing `post:*` grant and no-op stop, `message.deleted` after a replayed tombstone, cursor interchange tests. | 33–36, 53 (at `e94447d`) |
+| U21 | Server follows and unread counts (ofscp#41): derive the `Follow` `groupId` from the channel, ignore the body's; tests for derivation and a tombstone counted as unread. | 52, 81 (at `31100ef`) |
 
 Order: U0 first (every unit edits the map). U3, U4, U5, U9, U10, U11, U13 and
 U14 touch disjoint files and can run in parallel; U6 follows U4 and U5; U7

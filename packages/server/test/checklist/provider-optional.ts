@@ -124,12 +124,13 @@ export const PROVIDER_OPTIONAL: readonly ChecklistEntry[] = [
     note: "Behaviour gap: a DM send (`packages/server/src/http/dms-federation.ts:55`) stores `body.reference` unchecked (`:119`): no parent lookup in the conversation, no participant-home-provider check of `reference.provider`, no §2.2 canonicalization. The reply listing (`packages/server/src/http/dms.ts:96`) takes no `provider` query parameter, and `listDmReplies` matches on `reference.id` alone (`packages/server/src/provider/dm-reactions.ts:318`), so it also lists replies whose parent another provider holds under the same id. Only same-provider listing is tested (`dm-reactions.test.ts:414`).",
   },
   {
-    item: "Keep read markers and unread counts by message id (§7.7)",
+    item: "Keep read markers and unread counts by message id, with `unreadCount` exact and counting tombstones (§7.7)",
     level: "provider-may",
     covers: [
       "packages/server/test/read-markers.test.ts",
       "packages/server/test/guest-claim.test.ts",
     ],
-    status: "covered",
+    status: "partial",
+    note: "Tests only: `unreadCount` is an uncapped `COUNT(*)` with no `deleted_at` filter, so it is exact and counts tombstones, for channels (`packages/server/src/provider/read-markers.ts:164`) and DMs (`:183`). No test deletes a message and asserts it still counts as unread (`packages/server/test/read-markers.test.ts:206`–`:359` count live messages only).",
   },
 ];
