@@ -48,10 +48,13 @@ export function ftyp(major: string, compatible: readonly string[] = []): Uint8Ar
 }
 
 /** A RIFF container of form type `form` (`WEBP`, `WAVE`, `AVI `). */
-const riff = (form: string): Uint8Array => padded([...ascii("RIFF"), 0, 0, 0, 0, ...ascii(form)]);
+const riff = (form: string): Uint8Array<ArrayBuffer> =>
+  padded([...ascii("RIFF"), 0, 0, 0, 0, ...ascii(form)]);
 
 /** Samples keyed by a short name: the bytes and the `primary` type they sniff as. */
-export const SAMPLES: Readonly<Record<string, { bytes: Uint8Array; primary: string }>> = {
+export const SAMPLES: Readonly<
+  Record<string, { bytes: Uint8Array<ArrayBuffer>; primary: string }>
+> = {
   png: { bytes: pngHeader(2, 3), primary: "image/png" },
   jpeg: { bytes: padded([0xff, 0xd8, 0xff, 0xe0]), primary: "image/jpeg" },
   gif: { bytes: padded(ascii("GIF89a")), primary: "image/gif" },
