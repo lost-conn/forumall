@@ -81,11 +81,12 @@ export const AUTH_SIGNING: readonly ChecklistEntry[] = [
       "packages/server/test/dms-pointers.test.ts",
       "packages/server/test/federation-realtime.test.ts",
       "packages/server/test/ws-remote-key.test.ts",
+      "packages/server/test/public-route-signatures.test.ts",
     ],
     status: "partial",
-    note: "Behaviour gap: a provider-signed request (`X-OFSCP-Provider`, no `X-OFSCP-Actor`) from a denied provider to a route that takes only user signatures (`requireSignature()` / `optionalSignature()` in actor mode, `packages/server/src/http/signature.ts:174`) gets the step-1 `401` instead of `403`; and a signed request from a denied provider to a public route that does no signature checking (discovery, the keys endpoint, `/problems/*`, `/api/tiers`, `/api/health`) is served instead of `403` (spec question: must such routes run §4.5 steps 1–5 first?). Untested: steps 1–5 winning over the `403`, the `403`'d nonce not being recorded, unsigned public reads under a deny list, push to a since-denied host, and the provider's own authority being exempt.",
+    note: "Behaviour gap: a provider-signed request (`X-OFSCP-Provider`, no `X-OFSCP-Actor`) from a denied provider to a route that takes only user signatures (`requireSignature()` / `optionalSignature()` in actor mode, `packages/server/src/http/signature.ts:174`) gets the step-1 `401` instead of `403`. Untested: push delivery to a push host that was denied after the subscription was stored.",
     context:
-      "Judged on `main`; open PR #43 (U4, `fix/public-routes-anonymous`) runs §4.5 and the federation policy on signed requests to public routes.",
+      "Public routes that need no caller run §4.5 only when signed (`optionalActorOrProviderSignature`), so a denied signer of either kind gets `403` there, after steps 1–5, without recording the nonce.",
   },
   {
     item: "Allow cross-origin access per §3.4 (CORS preflight and headers; no `Origin` check on WebSocket upgrades) on every endpoint in §3.4's scope (standard endpoints, `/.well-known/ofscp…`, attachment and pre-signed upload URLs); non-standard ambient-credential endpoints SHOULD stay same-origin",
@@ -139,8 +140,8 @@ export const AUTH_SIGNING: readonly ChecklistEntry[] = [
       "packages/server/test/device-keys.test.ts",
       "packages/server/test/conformance.test.ts",
     ],
-    status: "partial",
-    note: "Behaviour gap: a handle that is not well-formed must get `404`; today one containing `@` or whitespace answers `500` and a non-canonical one such as `Alice` an empty `200`. Untested: the unknown-handle and keyless (never-added-a-key) answers are identical, `cache_until` included.",
+    status: "covered",
+    context: "Forumall has no disabled or deleted account state, so that empty case cannot arise.",
   },
   {
     item: "Re-fetch keys or discovery on an unknown `key_id` before rejecting; answer `503`, not `401`, when they cannot be fetched (§4.6, §8.1)",

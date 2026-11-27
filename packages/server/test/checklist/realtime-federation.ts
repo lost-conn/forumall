@@ -160,9 +160,10 @@ export const REALTIME_FEDERATION: readonly ChecklistEntry[] = [
       "packages/server/test/messages.test.ts",
       "packages/server/test/replay-warmup.test.ts",
       "packages/server/test/signature.test.ts",
+      "packages/server/test/users-anonymous.test.ts",
+      "packages/server/test/public-route-signatures.test.ts",
     ],
-    status: "partial",
-    note: "Behaviour gap: `GET /api/users/{userRef}/profile`, `…/presence` and `…/groups` require a signature, so an unsigned request gets `401`. Untested: anonymous `…/replies`, and a partial or invalid signature on an anonymous route → `401`.",
+    status: "covered",
   },
   {
     item: "Support the `private` tier",

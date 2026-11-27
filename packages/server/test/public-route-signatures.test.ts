@@ -55,14 +55,14 @@ afterAll(() => {
 });
 
 let appSeq = 0;
-function freshApp(opts: { warmup?: boolean } = {}) {
+function freshApp(opts: { warmup?: boolean; policy?: Record<string, string> } = {}) {
   const name = `app-${appSeq++}`;
   const base = loadConfig({
     DATA_DIR: tmp,
     DB_PATH: join(tmp, `${name}.sqlite`),
     WEB_DIR: join(tmp, `${name}-web`),
     DOMAIN,
-    FEDERATION_DENY: DENIED,
+    ...(opts.policy ?? { FEDERATION_DENY: DENIED }),
   });
   const config: Config = Object.freeze({ ...base, argon2: FAST_ARGON2 });
   const db = openDb(config.dbPath);
@@ -113,9 +113,9 @@ interface Route {
 }
 
 /** Sends `route` with `headers` (and `{}` as the body of a POST). */
-function send(app: App, route: Route, headers: Record<string, string>): Promise<Response> {
+async function send(app: App, route: Route, headers: Record<string, string>): Promise<Response> {
   const body = route.method === "POST" ? "{}" : undefined;
-  return app.request(route.path, {
+  return await app.request(route.path, {
     method: route.method,
     headers: body !== undefined ? { ...headers, "content-type": "application/json" } : headers,
     ...(body !== undefined ? { body } : {}),
@@ -330,6 +330,24 @@ describe("a signed request that fails §4.5 → 401, never anonymous (§4.5)", (
       const res = await send(app, route, actorHeaders(alice, route));
       expect({ path: route.path, status: res.status }).toEqual({ path: route.path, status: 200 });
     }
+  });
+});
+
+describe("the provider's own authority is exempt from its policy (§8)", () => {
+  test("an allow list that omits this provider still serves its own signed users", async () => {
+    const { app } = freshApp({ policy: { FEDERATION_ALLOW: "friend.example" } });
+    const { alice, groupId, channelId, messageId } = await seed(app);
+    for (const route of [...PUBLIC_200, ...anonymousReaderRoutes(groupId, channelId, messageId)]) {
+      const res = await send(app, route, actorHeaders(alice, route));
+      expect({ path: route.path, status: res.status }).toEqual({ path: route.path, status: 200 });
+    }
+    // …while an actor of a provider not on the allow list is refused.
+    const route: Route = { method: "GET", path: "/api/tiers" };
+    await expectProblem(
+      await send(app, route, actorHeaders(deniedActor(), route)),
+      403,
+      "forbidden",
+    );
   });
 });
 
