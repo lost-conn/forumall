@@ -185,10 +185,11 @@ export const CLIENT: readonly ChecklistEntry[] = [
       "packages/web/test/mentions.test.ts",
       "packages/web/test/chat-controller.test.ts",
       "packages/web/test/dm-send.test.ts",
+      "packages/web/test/dm-mutations.test.ts",
     ],
     status: "covered",
     context:
-      "A bare `@handle` names a user of the provider hosting the message (§10.1); for a DM this client takes that to be the recipient's provider, which holds the message.",
+      "Channel and DM creates and edits set `mentions` from the text (an edit resends them, `[]` when none remain, since §7.1 keeps a field an edit omits). A bare `@handle` names a user of the provider hosting the message (§10.1); for a DM this client takes that to be the recipient's provider, which holds the message.",
   },
   {
     item: "Record a membership pointer at the home provider after joining a remote group, and remove it after leaving (§5.7)",
