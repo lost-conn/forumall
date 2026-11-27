@@ -99,6 +99,36 @@ function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
+/**
+ * Run `run` under the request's abort signal, bounded by `opts.timeoutMs` when
+ * set: the signal handed to `run` aborts on the caller's `opts.signal` or, once
+ * the time is up, with a `TimeoutError` `DOMException`.
+ */
+async function withDeadline<T>(
+  opts: RequestOptions,
+  run: (signal: AbortSignal | undefined) => Promise<T>,
+): Promise<T> {
+  const { timeoutMs, signal: outer } = opts;
+  if (timeoutMs === undefined) return run(outer);
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new RangeError(`timeoutMs must be a positive number of ms, got ${timeoutMs}`);
+  }
+  const controller = new AbortController();
+  const onOuterAbort = (): void => controller.abort(outer?.reason);
+  if (outer?.aborted) controller.abort(outer.reason);
+  else outer?.addEventListener("abort", onOuterAbort, { once: true });
+  const timer = setTimeout(() => {
+    const message = `The request did not complete within ${timeoutMs} ms.`;
+    controller.abort(new DOMException(message, "TimeoutError"));
+  }, timeoutMs);
+  try {
+    return await run(controller.signal);
+  } finally {
+    clearTimeout(timer);
+    outer?.removeEventListener("abort", onOuterAbort);
+  }
+}
+
 /** Per-request options. */
 export interface RequestOptions {
   /** Extra headers (merged; signing headers win on conflict). */
@@ -109,6 +139,14 @@ export interface RequestOptions {
   bearer?: string;
   /** AbortSignal forwarded to fetch. */
   signal?: AbortSignal;
+  /**
+   * Bound on the whole request, in ms: every attempt, every `Retry-After` wait
+   * and reading the response body. When it passes, the request is aborted with
+   * a `TimeoutError` `DOMException`, which (like any abort) is an UNKNOWN
+   * outcome, not a rejection ({@link isDefinitiveRejection}): the provider may
+   * already have applied it. Unset: no bound beyond `fetch`'s own.
+   */
+  timeoutMs?: number;
   /**
    * Mark a POST/PATCH as safe to resend — its body carries an idempotency key
    * the server dedupes on (e.g. a message/DM `clientMessageId`) or it replaces
@@ -173,8 +211,9 @@ function formatWait(seconds: number): string {
  * OUTCOME and must not be treated as "it didn't happen":
  *   - `TypeError` — `fetch` never got a response (network drop, DNS, CORS
  *     pre-flight); the request may still have reached the server.
- *   - `DOMException` (`AbortError`) — the fetch was aborted (navigation, an
- *     `AbortSignal`) AFTER the bytes may already have been written.
+ *   - `DOMException` (`AbortError`, or `TimeoutError` from
+ *     {@link RequestOptions.timeoutMs}) — the fetch was aborted (navigation, an
+ *     `AbortSignal`, the deadline) AFTER the bytes may already have been written.
  *   - a 5xx — the server took the request and blew up; it may have committed
  *     before failing (or failed in a proxy after committing).
  *   - anything non-`Error` (a thrown string, `undefined`) — unclassifiable.
@@ -296,14 +335,16 @@ export class OfscpClient {
     // Copy into a fresh ArrayBuffer-backed view so `fetch` sends a plain BodyInit.
     const body = new Uint8Array(bytes.byteLength);
     body.set(bytes);
-    const res = await this.doFetch(url.toString(), {
-      method: "POST",
-      headers,
-      body,
-      ...(opts.signal ? { signal: opts.signal } : {}),
+    return withDeadline(opts, async (signal) => {
+      const res = await this.doFetch(url.toString(), {
+        method: "POST",
+        headers,
+        body,
+        ...(signal ? { signal } : {}),
+      });
+      // Not retried: an upload is a non-idempotent POST with no idempotency key.
+      return parseResponse<T>(res);
     });
-    // Not retried: an upload is a non-idempotent POST with no idempotency key.
-    return parseResponse<T>(res);
   }
 
   /**
@@ -316,6 +357,17 @@ export class OfscpClient {
     body?: unknown,
     opts: RequestOptions = {},
   ): Promise<OfscpResponse<T>> {
+    return withDeadline(opts, (signal) => this.send<T>(method, path, body, opts, signal));
+  }
+
+  /** {@link request}'s attempts and retries, under `signal`. */
+  private async send<T>(
+    method: string,
+    path: string,
+    body: unknown,
+    opts: RequestOptions,
+    signal: AbortSignal | undefined,
+  ): Promise<OfscpResponse<T>> {
     const { text } = serializeBody(body);
     const send = (): Promise<Response> => {
       // Re-built (and so RE-SIGNED, with a fresh timestamp + nonce) per attempt:
@@ -326,7 +378,7 @@ export class OfscpClient {
         headers,
         // Only send a body for methods that carry one.
         ...(method !== "GET" && method !== "HEAD" && text !== "" ? { body: text } : {}),
-        ...(opts.signal ? { signal: opts.signal } : {}),
+        ...(signal ? { signal } : {}),
       });
     };
 
@@ -348,7 +400,7 @@ export class OfscpClient {
       if (waitMs === null || waited + waitMs > maxWait) return parseResponse<T>(res);
       await res.body?.cancel();
       // Abort-aware: an aborted request stops waiting and rejects at once.
-      await sleep(waitMs, opts.signal);
+      await sleep(waitMs, signal);
       waited += waitMs;
     }
   }
