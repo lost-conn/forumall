@@ -9,7 +9,8 @@
  *
  * - after `graceMs` the stop is forced (open connections are dropped),
  * - a second signal forces it at once (and disarms the grace timer), and
- * - a stop that rejects is logged and forced, and the process exits with `1`.
+ * - a stop that rejects is logged and forced, and the process exits with `1`;
+ *   so does a forced stop that has not settled after another `graceMs`.
  *
  * Under `bun --hot` this module's caller is re-evaluated on every reload. The
  * signal listeners are therefore installed once per process (keyed on
@@ -67,14 +68,24 @@ export function createShutdownHandler(
     cancelGraceTimer();
     if (forcing) return;
     forcing = true;
-    target.stop(true).then(
-      () => finish(exitCode()),
-      (err: unknown) => {
-        failed = true;
-        log(`[server] forced stop failed: ${describe(err)}`);
-        finish(exitCode());
-      },
-    );
+    // A forced stop that itself never settles must not keep the process up:
+    // after another `graceMs`, exit 1 regardless.
+    const deadline = setTimeout(() => {
+      failed = true;
+      log(`[server] forced stop did not finish within ${graceMs} ms — exiting`);
+      finish(exitCode());
+    }, graceMs);
+    target
+      .stop(true)
+      .finally(() => clearTimeout(deadline))
+      .then(
+        () => finish(exitCode()),
+        (err: unknown) => {
+          failed = true;
+          log(`[server] forced stop failed: ${describe(err)}`);
+          finish(exitCode());
+        },
+      );
   };
 
   return (signal: string) => {

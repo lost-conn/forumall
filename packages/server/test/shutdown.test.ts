@@ -17,6 +17,8 @@ interface FakeOptions {
   gracefulRejects?: boolean;
   /** The forced stop rejects instead of resolving. */
   forceRejects?: boolean;
+  /** The forced stop never settles. */
+  forceHangs?: boolean;
 }
 
 /**
@@ -33,6 +35,7 @@ function fakeServer(opts: FakeOptions = {}): Fake {
     stop: (force?: boolean) => {
       calls.push(force ? "stop(force)" : "stop");
       if (force) {
+        if (opts.forceHangs) return new Promise<void>(() => {});
         return opts.forceRejects ? Promise.reject(new Error("force boom")) : Promise.resolve();
       }
       if (opts.gracefulRejects) return Promise.reject(new Error("graceful boom"));
@@ -160,6 +163,23 @@ describe("shutdown", () => {
     });
     expect(unhandled).toEqual([]);
     expect(lines.some((l) => l.includes("forced stop failed: force boom"))).toBe(true);
+    expect(exits).toEqual([1]);
+  });
+
+  test("a forced stop that never settles exits 1 after another grace period", async () => {
+    const s = fakeServer({ forceHangs: true });
+    const exits: number[] = [];
+    const lines: string[] = [];
+    createShutdownHandler(s, {
+      graceMs: 50,
+      exit: (c) => exits.push(c),
+      log: (l) => lines.push(l),
+    })("SIGTERM");
+    await sleep(75);
+    expect(s.calls).toEqual(["close1001", "stop", "stop(force)"]);
+    expect(exits).toEqual([]);
+    await sleep(75);
+    expect(lines.some((l) => l.includes("forced stop did not finish"))).toBe(true);
     expect(exits).toEqual([1]);
   });
 });
