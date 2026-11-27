@@ -471,6 +471,54 @@ describe("WS reactions (§7.1)", () => {
     expect(err.correlationId).toBe("rx_missing");
     a.close();
   });
+  test("reaction.remove of a reaction the caller does not hold answers only the caller and broadcasts nothing (§11)", async () => {
+    const b = boot("rx-remove-noop");
+    const alice = await registerUserWithKey(b, "alice");
+    const bob = await registerUserWithKey(b, "bob");
+    const carol = await registerUserWithKey(b, "carol");
+    // Public channel: carol (not a member) may read it, so may send reaction.remove.
+    const { groupId, channelId, messageId } = await makeGroupChannelMessage(b, alice, "public");
+
+    const watcher = await connectAuthenticated(b, bob);
+    await subscribe(watcher, channelId, "w_sub");
+    const reader = await connectAuthenticated(b, carol);
+    await subscribe(reader, channelId, "r_sub");
+    const author = await connectAuthenticated(b, alice);
+
+    author.send({
+      id: "rx_add",
+      type: "reaction.add",
+      ts: rfc3339Timestamp(),
+      data: { groupId, channelId, messageId, key: "thumbsup", unicode: "👍" },
+    });
+    await watcher.ofType("reaction.added");
+
+    // Carol holds no reaction: her command resolves, correlated, for her alone.
+    reader.send({
+      id: "rx_noop",
+      type: "reaction.remove",
+      ts: rfc3339Timestamp(),
+      data: { groupId, channelId, messageId, key: "thumbsup" },
+    });
+    const ack = await reader.next((f) => f.correlationId === "rx_noop");
+    expect(ack.type).toBe("reaction.removed");
+    expect((ack.data as { author: string }).author).toBe(carol.actor);
+
+    // Alice's own reaction is untouched, and the next removal the watcher sees is hers.
+    expect((await listReactionItems(b, alice, groupId, channelId, messageId)).length).toBe(1);
+    author.send({
+      id: "rx_rm",
+      type: "reaction.remove",
+      ts: rfc3339Timestamp(),
+      data: { groupId, channelId, messageId, key: "thumbsup" },
+    });
+    const seen = await watcher.ofType("reaction.removed");
+    expect((seen.data as { author: string }).author).toBe(alice.actor);
+
+    author.close();
+    reader.close();
+    watcher.close();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -478,6 +526,30 @@ describe("WS reactions (§7.1)", () => {
 // ---------------------------------------------------------------------------
 
 describe("REST reactions (§7.1 equivalents)", () => {
+  test("DELETE of a reaction the caller does not hold → 204 and no reaction.removed fan-out (§11)", async () => {
+    const b = boot("rx-rest-remove-noop");
+    const alice = await registerUserWithKey(b, "alice");
+    const bob = await registerUserWithKey(b, "bob");
+    const carol = await registerUserWithKey(b, "carol");
+    const { groupId, channelId, messageId } = await makeGroupChannelMessage(b, alice, "public");
+    const base = `/api/groups/${groupId}/channels/${channelId}/messages/${messageId}/reactions/heart`;
+
+    const watcher = await connectAuthenticated(b, bob);
+    await subscribe(watcher, channelId);
+    expect((await signedReq(b, alice, "PUT", base, { unicode: "❤️" })).status).toBe(201);
+    await watcher.ofType("reaction.added");
+
+    // Carol, a non-member reader, holds no such reaction: idempotent 204, nothing broadcast.
+    expect((await signedReq(b, carol, "DELETE", base)).status).toBe(204);
+    expect((await listReactionItems(b, alice, groupId, channelId, messageId)).length).toBe(1);
+
+    expect((await signedReq(b, alice, "DELETE", base)).status).toBe(204);
+    const seen = await watcher.ofType("reaction.removed");
+    expect((seen.data as { author: string }).author).toBe(alice.actor);
+
+    watcher.close();
+  });
+
   test("PUT is idempotent (201 then 200) and reaches WS subscribers; DELETE → 204 + reaction.removed", async () => {
     const b = boot("rx-rest-parity");
     const alice = await registerUserWithKey(b, "alice");

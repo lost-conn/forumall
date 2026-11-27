@@ -295,18 +295,20 @@ export function createMessagesRouter() {
     const outcome = authorizeReaction(db, "remove", groupId, channelId, messageId, actor.actor);
     if (outcome.error) throw toAppError(outcome.error);
 
-    removeReaction(db, messageId, actor.actor, key);
-
-    hub.publishToChannel(channelId, {
-      type: "reaction.removed",
-      data: WsReactionRemovedSchema.shape.data.parse({
-        groupId,
-        channelId,
-        messageId,
-        key,
-        author: actor.actor,
-      }),
-    });
+    // Idempotent (204 either way), but only a removal that happened is fanned
+    // out: a reader who holds no such reaction must not broadcast one (§11).
+    if (removeReaction(db, messageId, actor.actor, key)) {
+      hub.publishToChannel(channelId, {
+        type: "reaction.removed",
+        data: WsReactionRemovedSchema.shape.data.parse({
+          groupId,
+          channelId,
+          messageId,
+          key,
+          author: actor.actor,
+        }),
+      });
+    }
 
     return c.body(null, 204);
   });
