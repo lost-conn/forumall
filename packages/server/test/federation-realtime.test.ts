@@ -132,9 +132,10 @@ async function registerBob(fed: Federation, handle = "bob"): Promise<Signer> {
 }
 
 /**
- * Create an `open`-join group on B with a `group`-tier channel. Returns ids. The
- * group is created directly via the provider helper (owner is a synthetic local
- * actor); the channel tier `group` requires membership, exercising the join.
+ * Create an `open`-join group on B with a channel of the given tier (default
+ * `group`). Returns ids. The group is created directly via the provider helper
+ * (owner is a synthetic local actor). A `group`-tier channel requires
+ * membership, exercising the join; a `public` one is readable by non-members.
  */
 function makeGroupChannelOnB(
   fed: Federation,
