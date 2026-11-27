@@ -52,12 +52,12 @@ Notes marked "spec question" point at wording in the spec that needs clarifying 
 
 | Level | Items | Covered | Partial | Missing |
 |---|---|---|---|---|
-| Provider MUST | 58 | 19 | 34 | 5 |
-| Provider SHOULD | 4 | 0 | 1 | 3 |
+| Provider MUST | 58 | 23 | 30 | 5 |
+| Provider SHOULD | 4 | 1 | 1 | 2 |
 | Provider MAY (optional) | 10 | 5 | 5 | 0 |
 | Client MUST | 14 | 4 | 7 | 3 |
 | Client SHOULD | 8 | 1 | 2 | 5 |
-| **Total** | 94 | 29 | 49 | 16 |
+| **Total** | 94 | 34 | 45 | 15 |
 
 ## §12 Compliance Checklist coverage map
 
@@ -136,9 +136,8 @@ Notes marked "spec question" point at wording in the spec that needs clarifying 
     - Tests: `packages/server/test/invites.test.ts`
     - Note: Behaviour gap: `/guest` maps only `member` to `guest` and otherwise keeps the invite's role (`packages/server/src/http/invites.ts:261`), so an invite with role `admin` or a custom role provisions a guest holding it. Only the default-role case is tested (`invites.test.ts:263`); so is no invite naming a since-deleted channel.
     - Context: `/guest` joins the group without looking at the invite's channel (`http/invites.ts:275`), so a deleted channel does not block it.
-24. **partial**: Support message creation of every type (`message`, `memo`, `article`) with `attachments`, `reference`, `tags` and `metadata`, over both `message.create` and `POST …/messages`, gated by `post:<type>` and by `replyOnly` / `replyOnlyTo` (which only a valid reply, `reference.type` `"reply"` naming an existing message in the channel, satisfies), answering `404` for a channel the actor cannot read (§5.2.1, §7.1)
-    - Tests: `packages/server/test/message-create.test.ts`, `packages/server/test/message-create-fields.test.ts`, `packages/server/test/ws-message-create.test.ts`, `packages/server/test/channel-permissions.test.ts`, `packages/server/test/ws-correlation.test.ts`, `packages/server/test/conformance.test.ts`, `packages/shared/test/message-create-schema.test.ts`
-    - Note: The WebSocket half is thin: `message.create` to an unreadable channel → `not_found`, the `post:<type>` / `replyOnly` / `replyOnlyTo` refusals, and a `memo` or valid reply over WS are untested; so is a REST create in a missing group → `404`.
+24. **covered**: Support message creation of every type (`message`, `memo`, `article`) with `attachments`, `reference`, `tags` and `metadata`, over both `message.create` and `POST …/messages`, gated by `post:<type>` and by `replyOnly` / `replyOnlyTo` (which only a valid reply, `reference.type` `"reply"` naming an existing message in the channel, satisfies), answering `404` for a channel the actor cannot read (§5.2.1, §7.1)
+    - Tests: `packages/server/test/message-create.test.ts`, `packages/server/test/message-create-fields.test.ts`, `packages/server/test/ws-message-create.test.ts`, `packages/server/test/channel-permissions.test.ts`, `packages/server/test/ws-correlation.test.ts`, `packages/server/test/conformance.test.ts`, `packages/shared/test/message-create-schema.test.ts`, `packages/server/test/message-create-semantics.test.ts`
 25. **missing**: Treat a `reference.provider` as a canonical authority (§2.2), and one equal to its own authority as absent; reject (`400`) a channel reply whose `provider` is not the channel's own provider (§7.1, §7.2)
     - Note: Not implemented: `MessageReferenceSchema` (`packages/shared/src/schemas/messaging.ts:37`) has no `provider` field, so it passes through unchecked; `authorizeReplyTarget` (`packages/server/src/http/message-mutations.ts:254`) looks the parent up by `reference.id` alone, so a channel reply naming another provider is accepted, and the reference is stored and served verbatim, never canonicalized (`packages/server/src/provider/messages.ts:255`). No test sends a `reference.provider`.
     - Context: A `provider` equal to the channel's own authority already behaves as absent, but only because the field is ignored.
@@ -146,14 +145,13 @@ Notes marked "spec question" point at wording in the spec that needs clarifying 
     - Tests: `packages/server/test/reactions.test.ts`, `packages/server/test/dm-reactions.test.ts`
     - Note: Untested for DM reactions: no test asserts the `reference` of a served DM `Reaction` (`rowToDmReaction`, `packages/server/src/provider/dm-reactions.ts:82`); `dm-reactions.test.ts` checks keys and authors only.
     - Context: Both mappers build `reference` as `{ type: "message", id }` with no `provider` (`provider/reactions.ts:71`, `provider/dm-reactions.ts:89`), taking the spec's SHOULD-omit option. The channel `Reaction`'s exact `reference` is asserted over WS and REST (`reactions.test.ts:337`, `:571`).
-27. **partial**: Treat `(author, channelId, clientMessageId)` as idempotent, running only authentication, visibility and the actor's permission checks before the duplicate lookup and returning the existing message on a duplicate (over WebSocket as a `message.created` with no `cursor`); echo `clientMessageId` on the author's `message.created`, live or replayed, and on every create response (§7.1, §7.4)
-    - Tests: `packages/server/test/message-create.test.ts`, `packages/server/test/ws-message-create.test.ts`, `packages/server/test/dms-send.test.ts`, `packages/server/test/conformance.test.ts`
-    - Note: Untested: the duplicate answer reflects the message as it now stands (edited or tombstoned), the key is scoped by `channelId`, and a reply-restricted actor's retry without `reference` → `403`.
+27. **covered**: Treat `(author, channelId, clientMessageId)` as idempotent, running only authentication, visibility and the actor's permission checks before the duplicate lookup and returning the existing message on a duplicate (over WebSocket as a `message.created` with no `cursor`); echo `clientMessageId` on the author's `message.created`, live or replayed, and on every create response (§7.1, §7.4)
+    - Tests: `packages/server/test/message-create.test.ts`, `packages/server/test/ws-message-create.test.ts`, `packages/server/test/dms-send.test.ts`, `packages/server/test/conformance.test.ts`, `packages/server/test/message-create-semantics.test.ts`
 28. **covered**: Carry the full canonical `Message` in `message.created`, `message.updated` and `dm.message` (§7.1, §7.4)
     - Tests: `packages/server/test/message-create.test.ts`, `packages/server/test/message-edit-fields.test.ts`, `packages/server/test/conformance.test.ts`, `packages/shared/test/message-create-schema.test.ts`, `packages/shared/test/schemas.test.ts`
-29. **partial**: Support message edit (author-only; within `editUntil` when set, with no limit when absent) replacing any of `content`, `attachments`, `tags`, `mentions` and the article fields, and tombstone delete by the author or a holder of the group's `moderate` permission (§7.1)
-    - Tests: `packages/server/test/message-edit-delete.test.ts`, `packages/server/test/message-edit-fields.test.ts`, `packages/server/test/message-edit-dm.test.ts`, `packages/server/test/ws-correlation.test.ts`, `packages/shared/test/edits-media-groups.test.ts`, `packages/server/test/hidden-channels.test.ts`
-    - Note: "No limit when `editUntil` is absent" is vacuous: every message is stamped with a 900 s window.
+29. **covered**: Support message edit (author-only; within `editUntil` when set, with no limit when absent) replacing any of `content`, `attachments`, `tags`, `mentions` and the article fields, and tombstone delete by the author or a holder of the group's `moderate` permission (§7.1)
+    - Tests: `packages/server/test/message-edit-delete.test.ts`, `packages/server/test/message-edit-fields.test.ts`, `packages/server/test/message-edit-dm.test.ts`, `packages/server/test/ws-correlation.test.ts`, `packages/shared/test/edits-media-groups.test.ts`, `packages/server/test/hidden-channels.test.ts`, `packages/server/test/message-edit-window.test.ts`
+    - Context: No limit when `editUntil` is absent: an article has no `editUntil` unless `ARTICLE_EDIT_WINDOW_SECONDS` is set, and edits to it are never refused for time (`message-edit-window.test.ts`).
 30. **missing**: Answer an edit of a tombstone `404` (`not_found`), and a repeated delete of one `204` with no second `message.deleted` fanned out (over WebSocket, a `message.deleted` with `correlationId` and no `cursor` to the requester alone), applying the §7.1 order of checks (§7.1)
     - Note: Not implemented: `authorizeMessageEdit` and `authorizeMessageDelete` (`packages/server/src/http/message-mutations.ts:104`, `:123`) never check `deletedAt`, so a tombstone is edited and `message.updated` fanned out, and a repeated delete re-tombstones and fans out `message.deleted` with a cursor again (`packages/server/src/http/messages.ts:199`, `packages/server/src/http/ws/messages.ts:161`). No test.
 31. **partial**: Support channel reactions over `reaction.add`/`reaction.remove` and `PUT`/`DELETE …/reactions/{key}`, with the `…/reactions` listing, in the §7.1 order of checks: answer an add to a tombstone `404` (`not_found`); answer a repeated add with the existing `Reaction`, changing nothing, and over WebSocket send its `reaction.added` with `correlationId` to the requester alone, never fanned out; answer a remove on a tombstone, or one that removes nothing, `204`, and over WebSocket send that no-op's `reaction.removed` with `correlationId` to the requester alone, never fanned out (§7.1)
@@ -171,9 +169,9 @@ Notes marked "spec question" point at wording in the spec that needs clarifying 
 34. **covered**: Serve channel history and replies holding messages only, tombstones included, never reactions (§7.2)
     - Tests: `packages/server/test/messages.test.ts`, `packages/server/test/message-edit-delete.test.ts`, `packages/server/test/conformance.test.ts`, `packages/shared/test/schemas.test.ts`
     - Context: The history and reply listing of messages that carry reactions hold no `Reaction` item, and a tombstoned reply stays in the reply listing (`messages.test.ts`, "history and replies hold messages only"). A tombstone stays in history (`message-edit-delete.test.ts:408`, `:569`). Both live pages validate against the spec's `messages-page` schema (`conformance.test.ts`), and `MessagesPageSchema`, which both routes parse with, rejects a page whose item is a `Reaction` (`schemas.test.ts`, "history and reply pages hold messages only").
-35. **partial**: Accept `text/plain` and `text/markdown` bodies for every message type; store the article fields `title`, `summary` and `cover` (rejecting a `cover` that names none of the message's attachments) and ignore them on other types; store `mentions` (§5.3) and, if the provider offers the §10.1 feed, take a message's mentions from it in place of text parsing when present (§10.1)
-    - Tests: `packages/server/test/message-create-fields.test.ts`, `packages/server/test/message-edit-fields.test.ts`, `packages/shared/test/edits-media-groups.test.ts`
-    - Note: Behaviour gap: mention notifications are still parsed from the text, never from `mentions`; and no server test creates or edits a `text/markdown` `message`, `memo` or `article`. (Forumall offers the §10.1 feed, so the mentions clause binds it.)
+35. **covered**: Accept `text/plain` and `text/markdown` bodies for every message type; store the article fields `title`, `summary` and `cover` (rejecting a `cover` that names none of the message's attachments) and ignore them on other types; store `mentions` (§5.3) and, if the provider offers the §10.1 feed, take a message's mentions from it in place of text parsing when present (§10.1)
+    - Tests: `packages/server/test/message-create-fields.test.ts`, `packages/server/test/message-edit-fields.test.ts`, `packages/shared/test/edits-media-groups.test.ts`, `packages/server/test/message-create-semantics.test.ts`, `packages/server/test/message-mentions-notifications.test.ts`
+    - Context: Forumall offers the §10.1 feed, so the mentions clause binds it: a stored `mentions` list is exactly who is mentioned (`[]` nobody), and only without one is the text parsed.
 36. **partial**: Support single-step media upload at `POST /api/media`, recording its `target` (default: this provider), setting `size` and `hash` from the bytes and `mime` per §5.8 (the declared type is allowed, but an inline type — `image/*` other than SVG, `video/*`, `audio/*` — only when the bytes confirm it, otherwise `application/octet-stream`), and `width`, `height` and `durationMs` from the bytes when they can be determined or from the uploader otherwise, and accepting an uploader's `thumbnail` part; if the provider offers pre-signed uploads, refuse one at completion when its inline `mime` is not confirmed by the bytes (§5.8)
     - Tests: `packages/server/test/media.test.ts`
     - Note: Behaviour gap: the `target` part (stored, canonicalised, `400` for a bad authority) and the `thumbnail` part are not implemented. `mime` must not record an inline-shown type (non-SVG image, video, audio) the bytes do not confirm; today the declared part type is stored unchecked. Forumall offers no pre-signed uploads, so the completion check does not apply.
@@ -247,8 +245,9 @@ Notes marked "spec question" point at wording in the spec that needs clarifying 
     - Note: Caching is done (`Cache-Control: private, max-age=31536000, immutable`, never public). Nothing tracks references or removes a local upload once unreferenced, and no short-lived URLs are minted.
 3. **missing**: Serve attachments from an origin other than the web client's (§5.8)
     - Note: Attachment URLs are on the web client's own origin (`https://{domain}/api/media/{id}`); there is no setting for a separate media origin.
-4. **missing**: Give `article` messages a longer edit window than chat, or none (§7.1)
-    - Note: Every message type gets the same `MESSAGE_EDIT_WINDOW_SECONDS` window (default 900 s); there is no per-type window for articles.
+4. **covered**: Give `article` messages a longer edit window than chat, or none (§7.1)
+    - Tests: `packages/server/test/message-edit-window.test.ts`
+    - Context: Articles get no window (no `editUntil`) unless `ARTICLE_EDIT_WINDOW_SECONDS` sets one; chat types keep `MESSAGE_EDIT_WINDOW_SECONDS`.
 
 ### Provider MAY (optional) (10 items)
 

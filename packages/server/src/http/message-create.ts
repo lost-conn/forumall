@@ -158,6 +158,8 @@ export function createChannelMessage(
   fireMessageCreatedNotifications(deps, groupId, channelId, record, author);
   fireMessageNotifications(db, config, hub, {
     text: body.content.text,
+    // The stored `mentions` replace text parsing when present (§5.3, §10.1).
+    ...(record.message.mentions !== undefined ? { mentions: record.message.mentions } : {}),
     author,
     sourceMessageId: record.message.id,
     channelId,

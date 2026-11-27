@@ -17,6 +17,7 @@ import type { Config } from "../config.ts";
 import type { Db } from "../db/index.ts";
 import { tombstoneDmMessage, updateDmMessageFields } from "../provider/dm-edits.ts";
 import { type DmMessageRecord, getDmConversationItem } from "../provider/dms.ts";
+import { isEditWindowOpen } from "../provider/edit-window.ts";
 import type { Hub } from "../provider/ws-hub.ts";
 import { domainOf } from "./dm-request.ts";
 import { AppError } from "./errors.ts";
@@ -149,7 +150,7 @@ export function applyDmEdit(
   if (args.row.author !== args.actor) {
     throw AppError.forbidden({ detail: "only the author may edit this message" });
   }
-  if (Date.now() > args.row.editUntil) {
+  if (!isEditWindowOpen(args.row.editUntil)) {
     throw AppError.forbidden({ detail: "the edit window for this message has passed" });
   }
   const target = {

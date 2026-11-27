@@ -46,6 +46,7 @@ import { type SQL, and, eq, inArray, sql } from "drizzle-orm";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/index.ts";
 import { type MessageRow, messages } from "../db/schema.ts";
+import { editWindowEnd } from "./edit-window.ts";
 import { decodeCursor, encodeCursor } from "./membership.ts";
 
 /** `id` prefix per the §5.3 wire examples (`msg_…`). */
@@ -104,7 +105,8 @@ export function decodeMessageCursor(cursor: string): number | null {
 
 /**
  * Map a stored row to the canonical, schema-valid `Message` (§5.3), including
- * `permissions.editUntil`. A tombstoned row (`deleted_at` set) keeps its id and
+ * `permissions.editUntil` (no `permissions` when the message has no time
+ * limit). A tombstoned row (`deleted_at` set) keeps its id and
  * carries `deletedAt`; callers may still surface it as a tombstone (§7.1).
  */
 export function rowToMessage(row: MessageRow): Message {
@@ -133,7 +135,11 @@ export function rowToMessage(row: MessageRow): Message {
     createdAt: rfc3339Timestamp(new Date(row.createdAt)),
     ...(row.editedAt != null ? { editedAt: rfc3339Timestamp(new Date(row.editedAt)) } : {}),
     ...(row.deletedAt != null ? { deletedAt: rfc3339Timestamp(new Date(row.deletedAt)) } : {}),
-    permissions: { editUntil: rfc3339Timestamp(new Date(row.editUntil)) },
+    // A message without `editUntil` has no time limit (§7.1); it then has no
+    // permissions to report.
+    ...(row.editUntil != null
+      ? { permissions: { editUntil: rfc3339Timestamp(new Date(row.editUntil)) } }
+      : {}),
     metadata,
   });
 }
@@ -226,15 +232,16 @@ export interface MessageRecord {
 
 /**
  * Insert a new message into `channelId`, assigning its `id`, `created_at`,
- * monotonic `seq` (= `MAX(seq)+1`), and `edit_until` (= `created_at +
- * messageEditWindowSeconds`, surfaced as `permissions.editUntil`). The seq read
+ * monotonic `seq` (= `MAX(seq)+1`), and `edit_until` (the end of the type's
+ * edit window from `created_at`, or null for none — `editWindowEnd`; surfaced
+ * as `permissions.editUntil`). The seq read
  * + insert run in one transaction so concurrent creates get distinct, gap-free
  * positions. Returns the canonical `Message` plus its `seq` and opaque cursor.
  * Authorization (channel visibility + `post`) is the caller's responsibility.
  */
 export function createMessage(db: Db, config: Config, input: CreateMessageInput): MessageRecord {
   const now = Date.now();
-  const editUntil = now + config.messageEditWindowSeconds * 1000;
+  const editUntil = editWindowEnd(config, input.type, now);
   const id = mintMessageId();
 
   let row!: MessageRow;

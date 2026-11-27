@@ -1,9 +1,9 @@
 /**
  * The shared "a channel message was created → derive inbound notifications and
- * fan them to the live inbox" helper (a provider-LOCAL extension). Factored out
- * of the WS create handler so any channel message-create path can call it (today
- * only the WS `message.create` handler creates channel messages; a future REST
- * create path would call the same helper).
+ * fan them to the live inbox" helper (§10.1). Both create paths — WS
+ * `message.create` and REST `POST …/messages` — reach it through
+ * `createChannelMessage` (`http/message-create.ts`); edits never call it, since
+ * edits never create notification entries (§7.1, §10.1).
  *
  * It runs detection ({@link notifyForChannelMessage}) and then fans a
  * `notification.created` WS event to each distinct local recipient via
@@ -33,6 +33,8 @@ export interface NotificationCreatedFanout {
 /** Inputs describing the channel message that was just created. */
 export interface MessageNotificationInput {
   readonly text: string;
+  /** The message's `mentions` (§5.3), or undefined to parse them from `text`. */
+  readonly mentions?: readonly string[] | undefined;
   readonly author: string;
   readonly sourceMessageId: string;
   readonly channelId: string;
@@ -58,6 +60,7 @@ export function fireMessageNotifications(
     const localDomain = canonicalAuthority(config.domain);
     const created = notifyForChannelMessage(db, {
       text: input.text,
+      ...(input.mentions !== undefined ? { mentions: input.mentions } : {}),
       author: input.author,
       sourceMessageId: input.sourceMessageId,
       channelId: input.channelId,

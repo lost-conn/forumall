@@ -31,9 +31,10 @@ export const PROVIDER_OPTIONAL: readonly ChecklistEntry[] = [
   {
     item: "Give `article` messages a longer edit window than chat, or none (§7.1)",
     level: "provider-should",
-    covers: [],
-    status: "missing",
-    note: "Every message type gets the same `MESSAGE_EDIT_WINDOW_SECONDS` window (default 900 s); there is no per-type window for articles.",
+    covers: ["packages/server/test/message-edit-window.test.ts"],
+    status: "covered",
+    context:
+      "Articles get no window (no `editUntil`) unless `ARTICLE_EDIT_WINDOW_SECONDS` sets one; chat types keep `MESSAGE_EDIT_WINDOW_SECONDS`.",
   },
   {
     item: "Maintain and share a known-providers list at `GET /api/providers`, and advertise `capabilities.discovery.sharesKnownProviders` (§8.6)",

@@ -31,8 +31,9 @@ import {
  * never collides across channels.
  *
  * `edit_until` is the absolute time (epoch millis) after which the message may
- * no longer be edited (§5.3 `permissions.editUntil`); `message.update` enforces
- * it. `deleted_at` (nullable) is the tombstone marker (§7.1): a tombstoned
+ * no longer be edited (§5.3 `permissions.editUntil`); edits over REST and WS
+ * enforce it. Null means no time limit (§7.1), the default for an `article`
+ * (`provider/edit-window.ts`). `deleted_at` (nullable) is the tombstone marker (§7.1): a tombstoned
  * message is retained and still returned by history so reply references and
  * resume cursors stay valid.
  *
@@ -79,8 +80,12 @@ export const messages = sqliteTable(
     editedAt: integer("edited_at", { mode: "number" }),
     /** Tombstone time (epoch millis); null unless deleted. `deletedAt` (§7.1). */
     deletedAt: integer("deleted_at", { mode: "number" }),
-    /** Edit-window end (epoch millis); `permissions.editUntil` (§5.3). */
-    editUntil: integer("edit_until", { mode: "number" }).notNull(),
+    /**
+     * Edit-window end (epoch millis); `permissions.editUntil` (§5.3). Null = no
+     * time limit (no `editUntil`, §7.1), an article's default. Nullable since
+     * 0042.
+     */
+    editUntil: integer("edit_until", { mode: "number" }),
     /**
      * Client-chosen idempotency key (§7.1): `(author, channel_id,
      * client_message_id)` is unique; echoed as `clientMessageId`. Nullable.
