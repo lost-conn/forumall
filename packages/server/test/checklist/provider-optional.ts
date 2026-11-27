@@ -83,6 +83,13 @@ export const PROVIDER_OPTIONAL: readonly ChecklistEntry[] = [
     status: "covered",
   },
   {
+    item: "Support DM replies: check the parent only when `reference.provider` is absent or its own (`400` if it is not in the conversation), otherwise require (`400`) a participant's home provider; and serve the reply listing with its `provider` parameter, listing the replies it holds to (`provider`, `{messageId}`) (§7.4)",
+    level: "provider-may",
+    covers: ["packages/server/test/dm-reactions.test.ts"],
+    status: "partial",
+    note: "Behaviour gap: a DM send (`packages/server/src/http/dms-federation.ts:55`) stores `body.reference` unchecked (`:119`): no parent lookup in the conversation, no participant-home-provider check of `reference.provider`, no §2.2 canonicalization. The reply listing (`packages/server/src/http/dms.ts:96`) takes no `provider` query parameter, and `listDmReplies` matches on `reference.id` alone (`packages/server/src/provider/dm-reactions.ts:318`), so it also lists replies whose parent another provider holds under the same id. Only same-provider listing is tested (`dm-reactions.test.ts:414`).",
+  },
+  {
     item: "Keep read markers and unread counts by message id (§7.7)",
     level: "provider-may",
     covers: [

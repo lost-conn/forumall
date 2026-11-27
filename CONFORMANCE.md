@@ -52,16 +52,16 @@ Notes marked "spec question" point at wording in the spec that needs clarifying 
 
 | Level | Items | Covered | Partial | Missing |
 |---|---|---|---|---|
-| Provider MUST | 44 | 17 | 23 | 4 |
+| Provider MUST | 46 | 17 | 24 | 5 |
 | Provider SHOULD | 4 | 0 | 0 | 4 |
-| Provider MAY (optional) | 6 | 5 | 1 | 0 |
-| Client MUST | 13 | 4 | 7 | 2 |
+| Provider MAY (optional) | 7 | 5 | 2 | 0 |
+| Client MUST | 14 | 4 | 7 | 3 |
 | Client SHOULD | 8 | 1 | 2 | 5 |
-| **Total** | 75 | 27 | 33 | 15 |
+| **Total** | 79 | 27 | 35 | 17 |
 
 ## §12 Compliance Checklist coverage map
 
-### Provider MUST (44 items)
+### Provider MUST (46 items)
 
 1. **covered**: Support password-based login, and registration according to the advertised registration mode (§4.1.1)
     - Tests: `packages/server/test/auth.test.ts`, `packages/server/test/server.test.ts`
@@ -110,75 +110,82 @@ Notes marked "spec question" point at wording in the spec that needs clarifying 
 17. **partial**: Support message creation of every type (`message`, `memo`, `article`) with `attachments`, `reference`, `tags` and `metadata`, over both `message.create` and `POST …/messages`, gated by `post:<type>` and by `replyOnly` / `replyOnlyTo` (which only a valid reply, `reference.type` `"reply"` naming an existing message in the channel, satisfies), answering `404` for a channel the actor cannot read (§5.2.1, §7.1)
     - Tests: `packages/server/test/message-create.test.ts`, `packages/server/test/message-create-fields.test.ts`, `packages/server/test/ws-message-create.test.ts`, `packages/server/test/channel-permissions.test.ts`, `packages/server/test/ws-correlation.test.ts`, `packages/server/test/conformance.test.ts`, `packages/shared/test/message-create-schema.test.ts`
     - Note: The WebSocket half is thin: `message.create` to an unreadable channel → `not_found`, the `post:<type>` / `replyOnly` / `replyOnlyTo` refusals, and a `memo` or valid reply over WS are untested; so is a REST create in a missing group → `404`.
-18. **partial**: Treat `(author, channelId, clientMessageId)` as idempotent, running only authentication, visibility and the actor's permission checks before the duplicate lookup and returning the existing message on a duplicate (over WebSocket as a `message.created` with no `cursor`); echo `clientMessageId` on the author's `message.created`, live or replayed, and on every create response (§7.1, §7.4)
+18. **missing**: Treat a `reference.provider` as a canonical authority (§2.2), and one equal to its own authority as absent; reject (`400`) a channel reply whose `provider` is not the channel's own provider (§7.1, §7.2)
+    - Note: Not implemented: `MessageReferenceSchema` (`packages/shared/src/schemas/messaging.ts:37`) has no `provider` field, so it passes through unchecked; `authorizeReplyTarget` (`packages/server/src/http/message-mutations.ts:254`) looks the parent up by `reference.id` alone, so a channel reply naming another provider is accepted, and the reference is stored and served verbatim, never canonicalized (`packages/server/src/provider/messages.ts:255`). No test sends a `reference.provider`.
+    - Context: A `provider` equal to the channel's own authority already behaves as absent, but only because the field is ignored.
+19. **partial**: Serve a `Reaction` whose `reference.provider`, if present, is its own authority, since a reaction is stored with its message (§7.1)
+    - Tests: `packages/server/test/reactions.test.ts`, `packages/server/test/dm-reactions.test.ts`
+    - Note: Untested for DM reactions: no test asserts the `reference` of a served DM `Reaction` (`rowToDmReaction`, `packages/server/src/provider/dm-reactions.ts:82`); `dm-reactions.test.ts` checks keys and authors only.
+    - Context: Both mappers build `reference` as `{ type: "message", id }` with no `provider` (`provider/reactions.ts:71`, `provider/dm-reactions.ts:89`), taking the spec's SHOULD-omit option. The channel `Reaction`'s exact `reference` is asserted over WS and REST (`reactions.test.ts:337`, `:571`).
+20. **partial**: Treat `(author, channelId, clientMessageId)` as idempotent, running only authentication, visibility and the actor's permission checks before the duplicate lookup and returning the existing message on a duplicate (over WebSocket as a `message.created` with no `cursor`); echo `clientMessageId` on the author's `message.created`, live or replayed, and on every create response (§7.1, §7.4)
     - Tests: `packages/server/test/message-create.test.ts`, `packages/server/test/ws-message-create.test.ts`, `packages/server/test/dms-send.test.ts`, `packages/server/test/conformance.test.ts`
     - Note: Untested: the duplicate answer reflects the message as it now stands (edited or tombstoned), the key is scoped by `channelId`, and a reply-restricted actor's retry without `reference` → `403`.
-19. **covered**: Carry the full canonical `Message` in `message.created`, `message.updated` and `dm.message` (§7.1, §7.4)
+21. **covered**: Carry the full canonical `Message` in `message.created`, `message.updated` and `dm.message` (§7.1, §7.4)
     - Tests: `packages/server/test/message-create.test.ts`, `packages/server/test/message-edit-fields.test.ts`, `packages/server/test/conformance.test.ts`, `packages/shared/test/message-create-schema.test.ts`, `packages/shared/test/schemas.test.ts`
-20. **partial**: Support message edit (author-only; within `editUntil` when set, with no limit when absent) replacing any of `content`, `attachments`, `tags`, `mentions` and the article fields, and tombstone delete (§7.1)
+22. **partial**: Support message edit (author-only; within `editUntil` when set, with no limit when absent) replacing any of `content`, `attachments`, `tags`, `mentions` and the article fields, and tombstone delete (§7.1)
     - Tests: `packages/server/test/message-edit-delete.test.ts`, `packages/server/test/message-edit-fields.test.ts`, `packages/server/test/message-edit-dm.test.ts`, `packages/server/test/ws-correlation.test.ts`, `packages/shared/test/edits-media-groups.test.ts`, `packages/server/test/hidden-channels.test.ts`
     - Note: "No limit when `editUntil` is absent" is vacuous: every message is stamped with a 900 s window.
-21. **partial**: Accept `text/plain` and `text/markdown` bodies for every message type; store the article fields `title`, `summary` and `cover` (rejecting a `cover` that names none of the message's attachments) and ignore them on other types; store `mentions` (§5.3) and, if the provider offers the §10.1 feed, take a message's mentions from it in place of text parsing when present (§10.1)
+23. **partial**: Accept `text/plain` and `text/markdown` bodies for every message type; store the article fields `title`, `summary` and `cover` (rejecting a `cover` that names none of the message's attachments) and ignore them on other types; store `mentions` (§5.3) and, if the provider offers the §10.1 feed, take a message's mentions from it in place of text parsing when present (§10.1)
     - Tests: `packages/server/test/message-create-fields.test.ts`, `packages/server/test/message-edit-fields.test.ts`, `packages/shared/test/edits-media-groups.test.ts`
     - Note: Behaviour gap: mention notifications are still parsed from the text, never from `mentions`; and no server test creates or edits a `text/markdown` `message`, `memo` or `article`. (Forumall offers the §10.1 feed, so the mentions clause binds it.)
-22. **partial**: Support single-step media upload at `POST /api/media`, recording its `target` (default: this provider), setting `size` and `hash` from the bytes and `mime` per §5.8 (the declared type is allowed, but an inline type — `image/*` other than SVG, `video/*`, `audio/*` — only when the bytes confirm it, otherwise `application/octet-stream`), and `width`, `height` and `durationMs` from the bytes when they can be determined or from the uploader otherwise, and accepting an uploader's `thumbnail` part; if the provider offers pre-signed uploads, refuse one at completion when its inline `mime` is not confirmed by the bytes (§5.8)
+24. **partial**: Support single-step media upload at `POST /api/media`, recording its `target` (default: this provider), setting `size` and `hash` from the bytes and `mime` per §5.8 (the declared type is allowed, but an inline type — `image/*` other than SVG, `video/*`, `audio/*` — only when the bytes confirm it, otherwise `application/octet-stream`), and `width`, `height` and `durationMs` from the bytes when they can be determined or from the uploader otherwise, and accepting an uploader's `thumbnail` part; if the provider offers pre-signed uploads, refuse one at completion when its inline `mime` is not confirmed by the bytes (§5.8)
     - Tests: `packages/server/test/media.test.ts`
     - Note: Behaviour gap: the `target` part (stored, canonicalised, `400` for a bad authority) and the `thumbnail` part are not implemented. `mime` must not record an inline-shown type (non-SVG image, video, audio) the bytes do not confirm; today the declared part type is stored unchecked. Forumall offers no pre-signed uploads, so the completion check does not apply.
-23. **partial**: Serve attachments as capability URLs: `https`, at least 128 bits of entropy, unlisted, fetchable unsigned, with the §3.4 CORS headers, from any host the provider chooses (§5.8)
+25. **partial**: Serve attachments as capability URLs: `https`, at least 128 bits of entropy, unlisted, fetchable unsigned, with the §3.4 CORS headers, from any host the provider chooses (§5.8)
     - Tests: `packages/server/test/media.test.ts`
     - Note: Behaviour present but untested: ≥128 bits of entropy in the id, that uploads are unlisted (no `GET /api/media` listing), and the §3.4 CORS headers on the media `GET`.
-24. **partial**: Check each attachment in a stored message: for one it hosts (from `POST /api/media` or a completed `POST /api/media/uploads`), that the `id` exists, was uploaded by the author, is a local upload, and matches in `mime`, `size` and `hash`; reject any it does not host from a local author; for a remote author's, that `url` and `thumbnail.url` are `https` and the `thumbnail` has no `thumbnail`, dropping the author's `expiresAt` and fetching only under the §8 outbound rules (§5.8)
+26. **partial**: Check each attachment in a stored message: for one it hosts (from `POST /api/media` or a completed `POST /api/media/uploads`), that the `id` exists, was uploaded by the author, is a local upload, and matches in `mime`, `size` and `hash`; reject any it does not host from a local author; for a remote author's, that `url` and `thumbnail.url` are `https` and the `thumbnail` has no `thumbnail`, dropping the author's `expiresAt` and fetching only under the §8 outbound rules (§5.8)
     - Tests: `packages/server/test/message-create-fields.test.ts`, `packages/server/test/message-edit-fields.test.ts`, `packages/server/test/message-edit-dm.test.ts`, `packages/shared/test/edits-media-groups.test.ts`
     - Note: Behaviour gap: no check that a hosted attachment is a local upload (no upload `target` is recorded). Untested: a remote author's `http` `thumbnail.url` is rejected.
-25. **missing**: Serve attachments with `Content-Disposition: attachment` (or `Content-Security-Policy: sandbox` where the host can send it) for types other than images (or for SVG), video and audio, and with `X-Content-Type-Options: nosniff` where the host can send it (§5.8)
+27. **missing**: Serve attachments with `Content-Disposition: attachment` (or `Content-Security-Policy: sandbox` where the host can send it) for types other than images (or for SVG), video and audio, and with `X-Content-Type-Options: nosniff` where the host can send it (§5.8)
     - Note: `GET /api/media/{id}` sends neither `Content-Disposition: attachment` (or CSP `sandbox`) for non-image/video/audio types or SVG, nor `X-Content-Type-Options: nosniff`, and no test covers it.
-26. **missing**: Give remote uploads a stable `url` without `expiresAt`, and never treat one as unreferenced because no message or profile it holds references it; use short-lived URLs (such as pre-signed `GET` URLs, with `expiresAt`) only for local uploads in messages; keep a pending local upload postable for at least 24 hours before removing it (§5.8)
+28. **missing**: Give remote uploads a stable `url` without `expiresAt`, and never treat one as unreferenced because no message or profile it holds references it; use short-lived URLs (such as pre-signed `GET` URLs, with `expiresAt`) only for local uploads in messages; keep a pending local upload postable for at least 24 hours before removing it (§5.8)
     - Note: No target-aware upload lifecycle exists: remote uploads are not distinguished (no `target`), no short-lived URLs are minted and nothing is ever removed, so the MUSTs hold only vacuously. Untestable until remote uploads and upload removal exist.
-27. **missing**: Keep each user's group list at `GET`/`PUT`/`DELETE /api/me/groups` (its own memberships plus unchecked pointers to remote groups) and emit `groups.updated` (§5.7)
+29. **missing**: Keep each user's group list at `GET`/`PUT`/`DELETE /api/me/groups` (its own memberships plus unchecked pointers to remote groups) and emit `groups.updated` (§5.7)
     - Note: Not implemented: no `/api/me/groups` route, pointer storage or `groups.updated` emission in the server; only the shared schemas exist (`packages/shared/test/edits-media-groups.test.ts`).
-28. **partial**: Answer `PATCH /api/me/profile` with the updated `UserProfile`, clear the avatar on `"avatar": null`, reject a non-`https` `avatar` (SHOULD also reject one it does not host, one whose `mime` is not `image/*`, and a remote upload), and keep a hosted avatar's `url` stable, never short-lived (§6.3)
+30. **partial**: Answer `PATCH /api/me/profile` with the updated `UserProfile`, clear the avatar on `"avatar": null`, reject a non-`https` `avatar` (SHOULD also reject one it does not host, one whose `mime` is not `image/*`, and a remote upload), and keep a hosted avatar's `url` stable, never short-lived (§6.3)
     - Tests: `packages/server/test/media.test.ts`, `packages/server/test/privacy.test.ts`
     - Note: Untested: the response is the updated `UserProfile` (schema, advanced `updatedAt`). The SHOULD to reject a remote upload is not implemented (no upload `target`); a hosted avatar's `url` is stable only because all URLs are.
-29. **partial**: Serve `GET /api/users/{userRef}/profile`, `…/presence` and `…/groups` to signed and anonymous viewers, evaluating visibility per §6.1 (subject always; `denyList`, then `allowList`, then the setting); answer a viewer not permitted with the uniform `200` responses (base profile, `offline`, empty groups), never `403`, and every non-hosted, unknown, disabled or invalid subject with the same `404`; list only hosted groups the viewer may read (§6.1–§6.5)
+31. **partial**: Serve `GET /api/users/{userRef}/profile`, `…/presence` and `…/groups` to signed and anonymous viewers, evaluating visibility per §6.1 (subject always; `denyList`, then `allowList`, then the setting); answer a viewer not permitted with the uniform `200` responses (base profile, `offline`, empty groups), never `403`, and every non-hosted, unknown, disabled or invalid subject with the same `404`; list only hosted groups the viewer may read (§6.1–§6.5)
     - Tests: `packages/server/test/privacy.test.ts`, `packages/server/test/presence.test.ts`, `packages/server/test/remote-presence-federation.test.ts`
     - Note: Behaviour gaps: all three routes require a signature (anonymous viewers get `401`), the groups list is not filtered by what the viewer may read, and a ref containing `%25` is decoded twice (likely `500`, not the uniform `404`). Untested: identical `404` bodies across unknown, invalid and remote subjects, and the groups route's `404`.
-30. **partial**: Treat `PUT /api/me/presence` as a full replace that rejects `offline` with `400`, and `PUT /api/me/privacy` as a partial update that rejects an actor in both lists, or an over-long list, with `400` (§6.4, §6.6)
+32. **partial**: Treat `PUT /api/me/presence` as a full replace that rejects `offline` with `400`, and `PUT /api/me/privacy` as a partial update that rejects an actor in both lists, or an over-long list, with `400` (§6.4, §6.6)
     - Tests: `packages/server/test/presence.test.ts`, `packages/server/test/privacy.test.ts`
     - Note: Related deviation: privacy lists also accept a user-object URI and convert it to an actor; the ofscp `UserRef` schema takes canonical actors only, so a URI must be `400`.
-31. **covered**: Support direct messages: deterministic `dmId` derivation, inbox-only storage (no sender copy), the `{dmId}`/`to` verification on delivery, conversation pointers and `dm.conversation`, conversation listing/reading, `dm.message` real-time delivery, and `dmId` subscriptions from a remote participant, answering a non-participant on every DM path exactly as an unknown `dmId` (`404` / `not_found`) (§7.4)
+33. **covered**: Support direct messages: deterministic `dmId` derivation, inbox-only storage (no sender copy), the `{dmId}`/`to` verification on delivery, conversation pointers and `dm.conversation`, conversation listing/reading, `dm.message` real-time delivery, and `dmId` subscriptions from a remote participant, answering a non-participant on every DM path exactly as an unknown `dmId` (`404` / `not_found`) (§7.4)
     - Tests: `packages/shared/test/dm.test.ts`, `packages/shared/test/conformance.test.ts`, `packages/server/test/dms-send.test.ts`, `packages/server/test/dms-pointers.test.ts`, `packages/server/test/dms-read.test.ts`, `packages/server/test/dms-federation.test.ts`, `packages/server/test/dm-pointer-hygiene.test.ts`, `packages/server/test/message-create.test.ts`, `packages/server/test/canonical-authority.test.ts`, `packages/server/test/remote-handle-impersonation.test.ts`, `packages/server/test/dm-subscriptions.test.ts`, `packages/server/test/dm-reactions.test.ts`, `packages/server/test/message-edit-dm.test.ts`, `packages/server/test/read-markers.test.ts`
     - Context: A participant is an actor the `dmId` derives from together with a local user; a local actor whose counterparty is on another provider is recognised by its consistent conversation row instead, since the one-way `dmId` names no local user then. `dm.typing` is delivered to a remote participant's `dmId` subscription (a MAY).
-32. **partial**: Support the explicit contacts model (request/accept/remove, local and federated) backing the `contacts` visibility tier (§6.7)
+34. **partial**: Support the explicit contacts model (request/accept/remove, local and federated) backing the `contacts` visibility tier (§6.7)
     - Tests: `packages/server/test/contacts.test.ts`, `packages/server/test/privacy.test.ts`, `packages/server/test/presence.test.ts`
     - Note: A federated `action: "remove"` is untested; only `request` and `accept` are sent to `/api/federation/contacts`.
-33. **covered**: Publish provider signing key(s) in discovery and sign provider-to-provider requests (§8.1)
+35. **covered**: Publish provider signing key(s) in discovery and sign provider-to-provider requests (§8.1)
     - Tests: `packages/server/test/server.test.ts`, `packages/server/test/federation.test.ts`, `packages/server/test/signer-resolution.test.ts`, `packages/server/test/notifications.test.ts`, `packages/shared/test/signing.test.ts`, `packages/server/test/conformance.test.ts`
-34. **partial**: Accept direct-WS connections from remote members — resolve remote keys via §4.6, enforce prior membership + tier at subscribe-time — and advertise `capabilities.federation.realtimeDelivery` (§8.5)
+36. **partial**: Accept direct-WS connections from remote members — resolve remote keys via §4.6, enforce prior membership + tier at subscribe-time — and advertise `capabilities.federation.realtimeDelivery` (§8.5)
     - Tests: `packages/server/test/federation-realtime.test.ts`, `packages/server/test/ws-remote-key.test.ts`, `packages/server/test/server.test.ts`, `packages/server/test/federation-actor.test.ts`
     - Note: The `dmId` part of remote subscriptions is tracked under the direct-messages item. No remote-specific test of a member blocked by tier/`view` or of remote `since` resume (both reuse the local path).
-35. **covered**: Support the follow list (`GET`/`POST`/`DELETE /api/me/follows`) as pointers only — no server-side feed compilation or content replication (§7.6)
+37. **covered**: Support the follow list (`GET`/`POST`/`DELETE /api/me/follows`) as pointers only — no server-side feed compilation or content replication (§7.6)
     - Tests: `packages/server/test/follows.test.ts`, `packages/server/test/conformance.test.ts`
-36. **covered**: Support WebSocket resume (`since` replay with per-message cursors) and the `ping`/`pong` heartbeat (§7.1)
+38. **covered**: Support WebSocket resume (`since` replay with per-message cursors) and the `ping`/`pong` heartbeat (§7.1)
     - Tests: `packages/server/test/ws-resume.test.ts`, `packages/server/test/ws-envelope-rules.test.ts`
-37. **partial**: Support real-time presence over WebSocket: `presence.subscribe`/`set`, `presence.update` fan-out, connection-derived online/offline, and §6.1 visibility filtering consistent with the REST presence endpoint (§7.5)
+39. **partial**: Support real-time presence over WebSocket: `presence.subscribe`/`set`, `presence.update` fan-out, connection-derived online/offline, and §6.1 visibility filtering consistent with the REST presence endpoint (§7.5)
     - Tests: `packages/server/test/presence.test.ts`, `packages/server/test/remote-presence-federation.test.ts`, `packages/server/test/conformance.test.ts`
     - Note: Untested: privacy filtering of a live `presence.update` (only snapshots are asserted), `allowList`/`denyList` over WS, heartbeat timeout → offline + `lastSeen`, `PUT /api/me/presence` fan-out, and `presence.unsubscribe`.
-38. **partial**: Support message fan-out + notification endpoints
+40. **partial**: Support message fan-out + notification endpoints
     - Tests: `packages/server/test/notifications.test.ts`, `packages/server/test/ws-hub-fanout.test.ts`, `packages/server/test/ws-message-create.test.ts`
     - Note: Untested: `GET /api/notifications/endpoints` (shape, caller's own only) and `DELETE /api/notifications/endpoints/{id}` (`204`; `404` for another caller's or unknown).
-39. **covered**: Enforce tiers per channel and group, using the single effective-read-access rule (§11.3) on every surface, and end live subscriptions with `unsubscribed` (`reason: "access_revoked"`) when access is lost (§7.1)
+41. **covered**: Enforce tiers per channel and group, using the single effective-read-access rule (§11.3) on every surface, and end live subscriptions with `unsubscribed` (`reason: "access_revoked"`) when access is lost (§7.1)
     - Tests: `packages/server/test/channels.test.ts`, `packages/server/test/groups.test.ts`, `packages/server/test/messages.test.ts`, `packages/server/test/channel-permissions.test.ts`, `packages/server/test/membership.test.ts`, `packages/server/test/ws-subscriptions.test.ts`, `packages/server/test/ws-access-revocation.test.ts`, `packages/server/test/follows.test.ts`, `packages/server/test/read-markers.test.ts`, `packages/server/test/notifications-feed.test.ts`, `packages/server/test/discovery-feed.test.ts`, `packages/server/test/hidden-channels.test.ts`, `packages/server/test/reader-participation.test.ts`
-40. **covered**: Answer a channel the caller may not read (any §11.3 condition fails, including an unreadable group) exactly as a missing channel on every surface except the channel-join alias (`404` / `not_found`, unknown read-marker scope); `403` only when the caller can read the channel but lacks a permission (§11.3)
+42. **covered**: Answer a channel the caller may not read (any §11.3 condition fails, including an unreadable group) exactly as a missing channel on every surface except the channel-join alias (`404` / `not_found`, unknown read-marker scope); `403` only when the caller can read the channel but lacks a permission (§11.3)
     - Tests: `packages/server/test/ws-subscriptions.test.ts`, `packages/server/test/federation-realtime.test.ts`, `packages/server/test/read-markers.test.ts`, `packages/server/test/notifications-feed.test.ts`, `packages/server/test/discovery-feed.test.ts`, `packages/server/test/message-create.test.ts`, `packages/server/test/hidden-channels.test.ts`, `packages/server/test/reader-participation.test.ts`, `packages/server/test/channels.test.ts`, `packages/server/test/messages.test.ts`, `packages/server/test/channel-permissions.test.ts`, `packages/server/test/reactions.test.ts`, `packages/server/test/typing.test.ts`, `packages/server/test/follows.test.ts`
     - Context: `hidden-channels.test.ts` hides one channel three ways (group unreadable, channel tier, `view`) and compares every REST and WS answer with the missing-channel answer. The channel list names only the group, so it answers as `GET /api/groups/{groupId}` does (`403` for an unreadable group, §5.5).
-41. **partial**: Handle an unsigned request to a route that accepts anonymous readers as an anonymous viewer (`public` access only, never `401`), keeping `401` for signed requests that fail §4.5 (§4.5)
+43. **partial**: Handle an unsigned request to a route that accepts anonymous readers as an anonymous viewer (`public` access only, never `401`), keeping `401` for signed requests that fail §4.5 (§4.5)
     - Tests: `packages/server/test/groups.test.ts`, `packages/server/test/channels.test.ts`, `packages/server/test/messages.test.ts`, `packages/server/test/replay-warmup.test.ts`, `packages/server/test/signature.test.ts`
     - Note: Behaviour gap: `GET /api/users/{userRef}/profile`, `…/presence` and `…/groups` require a signature, so an unsigned request gets `401`. Untested: anonymous `…/replies`, and a partial or invalid signature on an anonymous route → `401`.
-42. **covered**: Support the `private` tier
+44. **covered**: Support the `private` tier
     - Tests: `packages/server/test/groups.test.ts`, `packages/server/test/channels.test.ts`, `packages/server/test/membership.test.ts`, `packages/server/test/server.test.ts`
-43. **covered**: Expose `GET /api/tiers` endpoint
+45. **covered**: Expose `GET /api/tiers` endpoint
     - Tests: `packages/server/test/server.test.ts`, `packages/server/test/conformance.test.ts`
-44. **covered**: On create, store `metadata` as given, rejecting (`400`) an invalid metadata object (§5.4, §7.1)
+46. **covered**: On create, store `metadata` as given, rejecting (`400`) an invalid metadata object (§5.4, §7.1)
     - Tests: `packages/server/test/message-create.test.ts`, `packages/shared/test/schemas.test.ts`
 
 ### Provider SHOULD (4 items)
@@ -192,7 +199,7 @@ Notes marked "spec question" point at wording in the spec that needs clarifying 
 4. **missing**: Give `article` messages a longer edit window than chat, or none (§7.1)
     - Note: Every message type gets the same `MESSAGE_EDIT_WINDOW_SECONDS` window (default 900 s); there is no per-type window for articles.
 
-### Provider MAY (optional) (6 items)
+### Provider MAY (optional) (7 items)
 
 1. **covered**: Maintain and share a known-providers list at `GET /api/providers`, and advertise `capabilities.discovery.sharesKnownProviders` (§8.6)
     - Tests: `packages/server/test/discovery-feed.test.ts`
@@ -206,10 +213,13 @@ Notes marked "spec question" point at wording in the spec that needs clarifying 
     - Tests: `packages/server/test/notifications-feed.test.ts`, `packages/server/test/notification-prefs.test.ts`, `packages/server/test/push.test.ts`, `packages/server/test/web-push.test.ts`, `packages/server/test/push-egress-check.test.ts`, `packages/shared/test/push.test.ts`
 5. **covered**: Embed DM reactions inline in DM history (§7.4)
     - Tests: `packages/server/test/dm-reactions.test.ts`
-6. **covered**: Keep read markers and unread counts by message id (§7.7)
+6. **partial**: Support DM replies: check the parent only when `reference.provider` is absent or its own (`400` if it is not in the conversation), otherwise require (`400`) a participant's home provider; and serve the reply listing with its `provider` parameter, listing the replies it holds to (`provider`, `{messageId}`) (§7.4)
+    - Tests: `packages/server/test/dm-reactions.test.ts`
+    - Note: Behaviour gap: a DM send (`packages/server/src/http/dms-federation.ts:55`) stores `body.reference` unchecked (`:119`): no parent lookup in the conversation, no participant-home-provider check of `reference.provider`, no §2.2 canonicalization. The reply listing (`packages/server/src/http/dms.ts:96`) takes no `provider` query parameter, and `listDmReplies` matches on `reference.id` alone (`packages/server/src/provider/dm-reactions.ts:318`), so it also lists replies whose parent another provider holds under the same id. Only same-provider listing is tested (`dm-reactions.test.ts:414`).
+7. **covered**: Keep read markers and unread counts by message id (§7.7)
     - Tests: `packages/server/test/read-markers.test.ts`, `packages/server/test/guest-claim.test.ts`
 
-### Client MUST (13 items)
+### Client MUST (14 items)
 
 1. **covered**: Support Ed25519 request signing over the §4.4.2 canonical string (fresh per-request nonce, body digest) for all authenticated requests
     - Tests: `packages/web/test/ofscp-client.test.ts`, `packages/web/test/ofscp-client-retry.test.ts`, `packages/shared/test/signing.test.ts`, `packages/shared/test/conformance.test.ts`
@@ -220,28 +230,31 @@ Notes marked "spec question" point at wording in the spec that needs clarifying 
     - Note: Not implemented: the web client never references `registration_closed` / `invite_required` or `inviteToken` and shows only a generic error on register and claim. Spec question: does "handle" require an invite-token path for `invite_required`, beyond surfacing the error?
 4. **covered**: Derive `dmId` per §7.4 (no sender copy is stored server-side)
     - Tests: `packages/shared/test/dm.test.ts`, `packages/shared/test/conformance.test.ts`, `packages/web/test/dm-store.test.ts`, `e2e/tests/dms.spec.ts`, `e2e/tests/federation.spec.ts`
-5. **partial**: For remote channels, open the real-time WebSocket to the channel's home provider (not the user's own) and complete the §7.1 handshake there (§8.5)
+5. **missing**: Key messages by (holding provider, `id`) and reply parents by (`reference.provider`, `reference.id`), never merging or de-duplicating messages or DM events across providers; set `reference.provider` on a DM reply whose parent another provider holds, and still show a reply whose parent it cannot resolve (§7.1, §7.2, §7.4)
+    - Note: Not implemented: `DmMessage` records no holding provider (`packages/web/src/stores/dms.ts:27`), so a thread mixing received messages (home ids) with retained sent ones (counterparty ids) is de-duplicated and replaced by bare `id` (`stores/dms.ts:148`, `:162`) and DM reactions are keyed by bare `reference.id` (`stores/dms.ts:317`); a reply is sent as `{ type: "reply", id }` with no `provider` (`packages/web/src/components/dms/DmsPage.tsx:1257`), and its parent and replies are matched by bare id (`DmsPage.tsx:828`, `:837`). Channel stores key by bare `channelId` (`packages/web/src/stores/chat.ts:75`). Untested, including a reply whose parent is unresolved.
+    - Context: A reply whose parent is not loaded still renders, quoting "a message" (`packages/web/src/components/shared/ReplyQuote.tsx:28`).
+6. **partial**: For remote channels, open the real-time WebSocket to the channel's home provider (not the user's own) and complete the §7.1 handshake there (§8.5)
     - Tests: `e2e/tests/federation.spec.ts`, `packages/web/test/ofscp-ws.test.ts`
     - Note: Behaviour gap: only the home feed opens a per-host socket; the chat view always uses the home socket and the groups route is home-only, so a remote channel cannot be opened, read live or posted to outside the feed.
-6. **covered**: Compose the home feed client-side by reading each followed channel live from its source (§7.6); do not rely on a server-compiled feed
+7. **covered**: Compose the home feed client-side by reading each followed channel live from its source (§7.6); do not rely on a server-compiled feed
     - Tests: `packages/web/test/feed-store.test.ts`, `e2e/tests/feed.spec.ts`, `e2e/tests/federation.spec.ts`
-7. **partial**: Support all message types or graceful fallback
+8. **partial**: Support all message types or graceful fallback
     - Tests: `e2e/tests/chat.spec.ts`, `packages/shared/test/schemas.test.ts`
     - Note: The feed and DM renderers have no unknown-type test.
-8. **partial**: Treat the `message.created` that answers a duplicate create (no `cursor`) as the result of the pending send, not as a new message, and never store it as a resume point (§7.1)
+9. **partial**: Treat the `message.created` that answers a duplicate create (no `cursor`) as the result of the pending send, not as a new message, and never store it as a resume point (§7.1)
     - Tests: `packages/web/test/chat-store.test.ts`, `packages/web/test/cursor.test.ts`, `packages/server/test/message-create.test.ts`
     - Note: Untested: a correlated, cursor-less `message.created` driven through the chat controller's handler, and `OfscpWsClient.cursorFor` staying unchanged on a cursor-less event.
-9. **covered**: Set an avatar by uploading it to the home provider (`POST /api/media`) and then sending its `url` in `PATCH /api/me/profile` (§6.3)
+10. **covered**: Set an avatar by uploading it to the home provider (`POST /api/media`) and then sending its `url` in `PATCH /api/me/profile` (§6.3)
     - Tests: `e2e/tests/social.spec.ts`, `packages/web/test/profile-form.test.ts`
-10. **partial**: Upload every attachment to the home provider, including for posts to remote channels and DMs, naming as `target` the provider that will hold the message, and reusing an upload only in messages on its target, uploading again for any other provider (§5.8)
+11. **partial**: Upload every attachment to the home provider, including for posts to remote channels and DMs, naming as `target` the provider that will hold the message, and reusing an upload only in messages on its target, uploading again for any other provider (§5.8)
     - Tests: `e2e/tests/chat.spec.ts`, `e2e/tests/dms.spec.ts`
     - Note: Behaviour gap: `uploadMedia` never sends a `target` part, so cross-provider DM attachments upload as home-local uploads, and nothing tracks an upload's target for reuse. The existing tests cover same-provider upload only.
-11. **partial**: Render `text/plain` and CommonMark `text/markdown`, showing raw HTML in Markdown as text; render `text/html` only through the §5.3 allow-list sanitizer (or as text with tags removed); make only `http`, `https`, `mailto` and `attachment:` links active (§5.3)
+12. **partial**: Render `text/plain` and CommonMark `text/markdown`, showing raw HTML in Markdown as text; render `text/html` only through the §5.3 allow-list sanitizer (or as text with tags removed); make only `http`, `https`, `mailto` and `attachment:` links active (§5.3)
     - Tests: `packages/web/test/markdown.test.ts`, `packages/web/test/inline.test.ts`
     - Note: Behaviour gaps: rendering ignores `content.mime` (`text/plain` gets inline formatting, non-article `text/markdown` gets only the inline subset, `text/html` is neither sanitised nor tag-stripped), the Markdown renderer is a CommonMark subset, and `attachment:` links are inert; `mailto:` being active is untested. Scheme-less and relative links must be inactive (a message has no base URL); today they pass `safeHref`.
-12. **missing**: Resolve `attachment:<id>` references against the message's own attachments, show unreferenced attachments after the body, and, when an article has no `title`, use its body's first block as the title if that block is a level-1 heading (ATX or Setext, or `<h1>`) (§5.3)
+13. **missing**: Resolve `attachment:<id>` references against the message's own attachments, show unreferenced attachments after the body, and, when an article has no `title`, use its body's first block as the title if that block is a level-1 heading (ATX or Setext, or `<h1>`) (§5.3)
     - Note: Not implemented: no `attachment:<id>` resolution, the article view ignores `title` and renders no attachments, and the title fallback takes any `#`–`###` heading or the first line. The e2e tests that touch article titles do not assert the spec rules; spec question: is an article with no `title` and no H1 first block untitled?
-13. **partial**: Treat attachment metadata and files as untrusted, never opening a fetched file as an active document: a plain link to its `url` is allowed, `blob:`/`data:` URLs, `srcdoc` and frames are not (§5.8)
+14. **partial**: Treat attachment metadata and files as untrusted, never opening a fetched file as an active document: a plain link to its `url` is allowed, `blob:`/`data:` URLs, `srcdoc` and frames are not (§5.8)
     - Tests: `packages/web/test/chat-api.test.ts`
     - Note: Untested: a `text/html` or `image/svg+xml` attachment never renders inline as a document. A plain link to the `url` is allowed; `blob:`/`data:` URLs, `srcdoc` and frames must not be used for attachments.
 

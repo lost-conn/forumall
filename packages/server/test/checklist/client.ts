@@ -49,6 +49,15 @@ export const CLIENT: readonly ChecklistEntry[] = [
     status: "covered",
   },
   {
+    item: "Key messages by (holding provider, `id`) and reply parents by (`reference.provider`, `reference.id`), never merging or de-duplicating messages or DM events across providers; set `reference.provider` on a DM reply whose parent another provider holds, and still show a reply whose parent it cannot resolve (§7.1, §7.2, §7.4)",
+    level: "client-must",
+    covers: [],
+    status: "missing",
+    note: 'Not implemented: `DmMessage` records no holding provider (`packages/web/src/stores/dms.ts:27`), so a thread mixing received messages (home ids) with retained sent ones (counterparty ids) is de-duplicated and replaced by bare `id` (`stores/dms.ts:148`, `:162`) and DM reactions are keyed by bare `reference.id` (`stores/dms.ts:317`); a reply is sent as `{ type: "reply", id }` with no `provider` (`packages/web/src/components/dms/DmsPage.tsx:1257`), and its parent and replies are matched by bare id (`DmsPage.tsx:828`, `:837`). Channel stores key by bare `channelId` (`packages/web/src/stores/chat.ts:75`). Untested, including a reply whose parent is unresolved.',
+    context:
+      'A reply whose parent is not loaded still renders, quoting "a message" (`packages/web/src/components/shared/ReplyQuote.tsx:28`).',
+  },
+  {
     item: "For remote channels, open the real-time WebSocket to the channel's home provider (not the user's own) and complete the §7.1 handshake there (§8.5)",
     level: "client-must",
     covers: ["e2e/tests/federation.spec.ts", "packages/web/test/ofscp-ws.test.ts"],
