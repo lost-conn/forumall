@@ -58,14 +58,14 @@ export const REALTIME_FEDERATION: readonly ChecklistEntry[] = [
       "packages/server/test/server.test.ts",
       "packages/server/test/federation-actor.test.ts",
     ],
-    status: "covered",
+    status: "partial",
     note: "The `dmId` part of remote subscriptions is tracked under the direct-messages item. No remote-specific test of a member blocked by tier/`view` or of remote `since` resume (both reuse the local path).",
   },
   {
     item: "Support the follow list (`GET`/`POST`/`DELETE /api/me/follows`) as pointers only — no server-side feed compilation or content replication (§7.6)",
     level: "provider-must",
     covers: ["packages/server/test/follows.test.ts", "packages/server/test/conformance.test.ts"],
-    status: "covered",
+    status: "partial",
     note: "An unreadable channel answers `403`; §11.3 wants `404` (tracked under the hidden-channel item).",
   },
   {

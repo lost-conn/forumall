@@ -48,8 +48,8 @@ export const PROVIDER_OPTIONAL: readonly ChecklistEntry[] = [
       "packages/server/test/discovery-feed.test.ts",
       "packages/server/test/admin-discover.test.ts",
     ],
-    status: "covered",
-    note: "Only local channels are compiled; aggregation from known providers is not implemented (acceptable for a MAY).",
+    status: "partial",
+    note: "Only local channels are compiled; aggregation from known providers is not implemented.",
   },
   {
     item: "Offer guest upgrade via `/api/me/claim` (subject to the registration mode, §4.1.1) and `/api/me/merge` (§4.8.1)",
@@ -60,7 +60,8 @@ export const PROVIDER_OPTIONAL: readonly ChecklistEntry[] = [
       "packages/server/test/ws-access-revocation.test.ts",
     ],
     status: "covered",
-    note: 'Only the `open` registration mode exists, so "subject to the registration mode" holds trivially.',
+    context:
+      'Only the `open` registration mode exists, so "subject to the registration mode" holds trivially.',
   },
   {
     item: "Offer a notification feed with mentions, per-scope notification settings, and Web Push (§10.1–§10.3)",

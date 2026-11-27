@@ -24,11 +24,15 @@ the gaps are grouped into pull requests.
 
 | Level | Items | covered | partial / tests only | behaviour | spec question |
 |---|---|---|---|---|---|
-| Provider MUST | 44 | 16 | 15 | 13 | 0 |
+| Provider MUST | 44 | 12 | 15 | 17 | 0 |
 | Provider SHOULD | 4 | 0 | 0 | 4 | 0 |
-| Provider MAY | 6 | 6 | 0 | 0 | 0 |
-| Client MUST | 13 | 5 | 6 | 2 | 0 |
-| Client SHOULD | 8 | 1 | 3 | 4 | 0 |
+| Provider MAY | 6 | 5 | 1 | 0 | 0 |
+| Client MUST | 13 | 4 | 3 | 6 | 0 |
+| Client SHOULD | 8 | 1 | 2 | 5 | 0 |
+
+The `covered` column matches the coverage map (`CONFORMANCE.md`), which is the
+authority from here on; the map folds "tests only" and "behaviour" into
+`partial` or `missing`.
 
 The old map (28 Provider + 7 Client MUST items) predated the spec PRs #23–#30;
 16 Provider and 6 Client MUST items were not in it at all.
@@ -66,12 +70,12 @@ The old map (28 Provider + 7 Client MUST items) predated the spec PRs #23–#30;
 | 31 | `/api/me/groups` + `groups.updated` (§5.7) | behaviour | Not implemented (known gap). | U8 |
 | 32 | `PATCH /api/me/profile` avatar rules (§6.3) | partial | Remote-upload avatar not rejected (needs `target`); the `UserProfile` response and `updatedAt` untested. | U6 |
 | 33 | Users' profile/presence/groups visibility (§6.1–§6.5) | behaviour | Routes require a signature, so anonymous viewers get `401`; `…/groups` lists every membership with no tier filter; `requireParam` decodes twice, so `%25` → `500`; uniform `404` bodies untested. | U4 |
-| 34 | `PUT /api/me/presence`, `PUT /api/me/privacy` | covered | Related: privacy lists accept a user URI and convert it (`UserRefSchema`); the ofscp schema takes canonical actors only (known gap). | U4 |
+| 34 | `PUT /api/me/presence`, `PUT /api/me/privacy` | behaviour | Related: privacy lists accept a user URI and convert it (`UserRefSchema`); the ofscp schema takes canonical actors only (known gap). | U4 |
 | 35 | Direct messages (§7.4) | behaviour | A remote participant can't subscribe to a `dmId` (known gap), so no `dm.*` delivery or resume for it. Non-participant subscribe → `not_found`, non-participant read → `404` where the spec says `forbidden`/`403` (spec question 8). Untested: `dm.conversation`, non-local `to`, `with` = caller, remote `PUT /api/me/dms`. | U10 |
 | 36 | Contacts (§6.7) | tests only | Federated `remove` untested. | U11 |
 | 37 | Provider keys and provider signing (§8.1) | covered | — | — |
-| 38 | Direct-WS from remote members (§8.5) | covered | — | — |
-| 39 | Follows as pointers (§7.6) | covered | An unreadable channel answers `403` (see L44). | U3 |
+| 38 | Direct-WS from remote members (§8.5) | tests only | No remote-specific test of a member blocked by tier or `view`, or of remote `since` resume (both reuse the local path). | U12 |
+| 39 | Follows as pointers (§7.6) | behaviour | An unreadable channel answers `403` (see L44). | U3 |
 | 40 | WS resume, `ping`/`pong` | covered | — | — |
 | 41 | WS presence (§7.5) | tests only | Live `presence.update` filtering, allow/deny lists on WS, heartbeat timeout → offline, `PUT` fan-out, `presence.unsubscribe` untested. | U12 |
 | 42 | Fan-out + notification endpoints | tests only | `GET` and `DELETE /api/notifications/endpoints` untested. | U12 |
@@ -93,9 +97,10 @@ The old map (28 Provider + 7 Client MUST items) predated the spec PRs #23–#30;
 
 ## Provider MAY
 
-All six (known providers, discover feed, guest claim/merge, notification
+Five of six (known providers, guest claim/merge, notification
 feed/settings/Web Push, inline DM reactions, read markers) are implemented and
-tested. The discover feed compiles local channels only, which the MAY allows.
+tested. The discover feed is partial: the item says "local + known providers",
+and only local channels are compiled.
 
 ## Client MUST
 
@@ -107,7 +112,7 @@ tested. The discover feed compiles local channels only, which the MAY allows.
 | 71 | Derive `dmId` | covered | — | — |
 | 72 | Remote channels: WS to the channel's home provider | behaviour | The chat view always uses the home socket, so a remote channel can't be opened or posted to outside the feed. | U15 |
 | 73 | Client-side home feed | covered | — | — |
-| 74 | All message types or fallback | covered | — | — |
+| 74 | All message types or fallback | tests only | The feed and DM renderers have no unknown-type test. | U14 |
 | 75 | Duplicate-create `message.created` | tests only | No controller-level test of a correlated, cursor-less duplicate; WS client cursor unchanged by a cursor-less event untested. | U13 |
 | 76 | Avatar upload then `PATCH` | covered | — | — |
 | 77 | Attachments to home with `target` | behaviour | `uploadMedia` never sends `target`; no reuse-by-target tracking. | U13 |

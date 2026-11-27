@@ -12,7 +12,8 @@ export const AUTH_SIGNING: readonly ChecklistEntry[] = [
     level: "provider-must",
     covers: ["packages/server/test/auth.test.ts", "packages/server/test/server.test.ts"],
     status: "covered",
-    note: "Only the `open` registration mode is implemented (allowed: a provider picks its mode), so `registration_closed` / `invite_required` are defined but never sent.",
+    context:
+      "Only the `open` registration mode is implemented (allowed: a provider picks its mode), so `registration_closed` / `invite_required` are defined but never sent.",
   },
   {
     item: "Issue scoped, short-lived bootstrap tokens on registration/login (§4.2)",
@@ -113,7 +114,8 @@ export const AUTH_SIGNING: readonly ChecklistEntry[] = [
       "packages/shared/test/ws-envelope-schema.test.ts",
     ],
     status: "covered",
-    note: "An unsupported standard command is only unit-tested through `routeCommand`: every standard command has a handler, so no socket-level case exists.",
+    context:
+      "An unsupported standard command is only unit-tested through `routeCommand`: every standard command has a handler, so no socket-level case exists.",
   },
   {
     item: "Subscribe the readable channels of a partially refused `subscribe` and refuse the rest with one `not_found` `error` naming them in `details.channels` (only the `error` when none is readable); refuse a `subscribe` that would exceed the subscription cap as a whole with `subscription_limit` (a provider may do this without evaluating access when the list names more distinct channels than the cap); never answer `bad_request` to a well-formed `subscribe` because its list is long (§7.1)",
@@ -124,7 +126,8 @@ export const AUTH_SIGNING: readonly ChecklistEntry[] = [
       "packages/server/test/federation-realtime.test.ts",
     ],
     status: "covered",
-    note: "The optional early refusal (without evaluating access) of an over-long list is not implemented.",
+    context:
+      "The optional early refusal (without evaluating access) of an over-long list is not implemented.",
   },
   {
     item: "Serve user public keys via the `/.well-known/ofscp/users/{handle}/keys` endpoint (`200` + `keys: []` for any well-formed unknown, disabled or keyless handle, and `404` for a handle that is not well-formed, §4.6)",

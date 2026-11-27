@@ -76,7 +76,7 @@ export const MEDIA_USERS: readonly ChecklistEntry[] = [
     item: "Treat `PUT /api/me/presence` as a full replace that rejects `offline` with `400`, and `PUT /api/me/privacy` as a partial update that rejects an actor in both lists, or an over-long list, with `400` (§6.4, §6.6)",
     level: "provider-must",
     covers: ["packages/server/test/presence.test.ts", "packages/server/test/privacy.test.ts"],
-    status: "covered",
+    status: "partial",
     note: "Related deviation: privacy lists also accept a user-object URI and convert it to an actor; the ofscp `UserRef` schema takes canonical actors only, so a URI must be `400`.",
   },
 ];

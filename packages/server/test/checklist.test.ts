@@ -7,7 +7,8 @@
  *  - for each level, the map's items equal the spec's §12 items exactly (§12 is parsed
  *    from the sibling `ofscp` repo's spec at test time, so there are no hard-coded counts),
  *  - every `covered`/`partial` item maps to at least one test, and every mapped file exists,
- *  - every item that is not `covered` has a note,
+ *  - every item that is not `covered` has a note, and no `covered` item has one (a gap makes
+ *    it `partial`; neutral context goes in `context`),
  *  - CONFORMANCE.md equals the rendered map (`bun run conformance:render` regenerates it).
  */
 import { describe, expect, test } from "bun:test";
@@ -55,6 +56,11 @@ describe("§12 Compliance Checklist coverage map", () => {
   test("every item that is not covered says what is missing", () => {
     const silent = CHECKLIST.filter((e) => e.status !== "covered" && !e.note?.trim());
     expect(silent.map((e) => e.item)).toEqual([]);
+  });
+
+  test("a covered item records no gap", () => {
+    const contradicted = CHECKLIST.filter((e) => e.status === "covered" && e.note !== undefined);
+    expect(contradicted.map((e) => e.item)).toEqual([]);
   });
 
   test("CONFORMANCE.md is the rendered map", () => {

@@ -69,7 +69,7 @@ export const CLIENT: readonly ChecklistEntry[] = [
     item: "Support all message types or graceful fallback",
     level: "client-must",
     covers: ["e2e/tests/chat.spec.ts", "packages/shared/test/schemas.test.ts"],
-    status: "covered",
+    status: "partial",
     note: "The feed and DM renderers have no unknown-type test.",
   },
   {

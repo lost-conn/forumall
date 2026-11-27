@@ -105,6 +105,7 @@ function renderEntry(entry: ChecklistEntry, index: number): string {
     lines.push(`    - Tests: ${entry.covers.map((f) => `\`${f}\``).join(", ")}`);
   }
   if (entry.note) lines.push(`    - Note: ${entry.note}`);
+  if (entry.context) lines.push(`    - Context: ${entry.context}`);
   return lines.join("\n");
 }
 

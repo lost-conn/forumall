@@ -52,12 +52,12 @@ Notes marked "spec question" point at wording in the spec that needs clarifying 
 
 | Level | Items | Covered | Partial | Missing |
 |---|---|---|---|---|
-| Provider MUST | 44 | 15 | 25 | 4 |
+| Provider MUST | 44 | 12 | 28 | 4 |
 | Provider SHOULD | 4 | 0 | 0 | 4 |
-| Provider MAY (optional) | 6 | 6 | 0 | 0 |
-| Client MUST | 13 | 5 | 6 | 2 |
+| Provider MAY (optional) | 6 | 5 | 1 | 0 |
+| Client MUST | 13 | 4 | 7 | 2 |
 | Client SHOULD | 8 | 1 | 2 | 5 |
-| **Total** | 75 | 27 | 33 | 15 |
+| **Total** | 75 | 22 | 38 | 15 |
 
 ## §12 Compliance Checklist coverage map
 
@@ -65,7 +65,7 @@ Notes marked "spec question" point at wording in the spec that needs clarifying 
 
 1. **covered**: Support password-based login, and registration according to the advertised registration mode (§4.1.1)
     - Tests: `packages/server/test/auth.test.ts`, `packages/server/test/server.test.ts`
-    - Note: Only the `open` registration mode is implemented (allowed: a provider picks its mode), so `registration_closed` / `invite_required` are defined but never sent.
+    - Context: Only the `open` registration mode is implemented (allowed: a provider picks its mode), so `registration_closed` / `invite_required` are defined but never sent.
 2. **partial**: Issue scoped, short-lived bootstrap tokens on registration/login (§4.2)
     - Tests: `packages/server/test/auth.test.ts`, `packages/server/test/device-keys.test.ts`
     - Note: Untested: a bootstrap token sent to any other endpoint (e.g. `GET`/`DELETE /api/auth/device-keys`, `/api/me`) is rejected with `401`; the behaviour holds because only `POST /api/auth/device-keys` reads the bearer. The ≥128-bit entropy is asserted only as `length > 20`.
@@ -90,10 +90,10 @@ Notes marked "spec question" point at wording in the spec that needs clarifying 
     - Tests: `packages/server/test/ws-handshake.test.ts`, `packages/server/test/ws-remote-key.test.ts`, `packages/server/test/federation-realtime.test.ts`, `packages/shared/test/ws-auth.test.ts`, `packages/shared/test/conformance.test.ts`
 10. **covered**: Follow the WebSocket envelope and command rules (§7.1): accept commands without `ts` and ignore its value; answer a missing `id` (after authentication), malformed `data` (other than in `authenticate`, which fails authentication) or a standard command the provider does not support with `error` `bad_request`; ignore unknown non-standard command types (§2.3); use `4001`/`4003` only for the reasons in the close-code table
     - Tests: `packages/server/test/ws-envelope-rules.test.ts`, `packages/server/test/ws-handshake.test.ts`, `packages/server/test/ws-access-revocation.test.ts`, `packages/shared/test/ws-envelope-schema.test.ts`
-    - Note: An unsupported standard command is only unit-tested through `routeCommand`: every standard command has a handler, so no socket-level case exists.
+    - Context: An unsupported standard command is only unit-tested through `routeCommand`: every standard command has a handler, so no socket-level case exists.
 11. **covered**: Subscribe the readable channels of a partially refused `subscribe` and refuse the rest with one `not_found` `error` naming them in `details.channels` (only the `error` when none is readable); refuse a `subscribe` that would exceed the subscription cap as a whole with `subscription_limit` (a provider may do this without evaluating access when the list names more distinct channels than the cap); never answer `bad_request` to a well-formed `subscribe` because its list is long (§7.1)
     - Tests: `packages/server/test/ws-subscriptions.test.ts`, `packages/server/test/dms-send.test.ts`, `packages/server/test/federation-realtime.test.ts`
-    - Note: The optional early refusal (without evaluating access) of an over-long list is not implemented.
+    - Context: The optional early refusal (without evaluating access) of an over-long list is not implemented.
 12. **partial**: Serve user public keys via the `/.well-known/ofscp/users/{handle}/keys` endpoint (`200` + `keys: []` for any well-formed unknown, disabled or keyless handle, and `404` for a handle that is not well-formed, §4.6)
     - Tests: `packages/server/test/device-keys.test.ts`, `packages/server/test/conformance.test.ts`
     - Note: Behaviour gap: a handle that is not well-formed must get `404`; today one containing `@` or whitespace answers `500` and a non-canonical one such as `Alice` an empty `200`. Untested: the unknown-handle and keyless (never-added-a-key) answers are identical, `cache_until` included.
@@ -142,7 +142,7 @@ Notes marked "spec question" point at wording in the spec that needs clarifying 
 29. **partial**: Serve `GET /api/users/{userRef}/profile`, `…/presence` and `…/groups` to signed and anonymous viewers, evaluating visibility per §6.1 (subject always; `denyList`, then `allowList`, then the setting); answer a viewer not permitted with the uniform `200` responses (base profile, `offline`, empty groups), never `403`, and every non-hosted, unknown, disabled or invalid subject with the same `404`; list only hosted groups the viewer may read (§6.1–§6.5)
     - Tests: `packages/server/test/privacy.test.ts`, `packages/server/test/presence.test.ts`, `packages/server/test/remote-presence-federation.test.ts`
     - Note: Behaviour gaps: all three routes require a signature (anonymous viewers get `401`), the groups list is not filtered by what the viewer may read, and a ref containing `%25` is decoded twice (likely `500`, not the uniform `404`). Untested: identical `404` bodies across unknown, invalid and remote subjects, and the groups route's `404`.
-30. **covered**: Treat `PUT /api/me/presence` as a full replace that rejects `offline` with `400`, and `PUT /api/me/privacy` as a partial update that rejects an actor in both lists, or an over-long list, with `400` (§6.4, §6.6)
+30. **partial**: Treat `PUT /api/me/presence` as a full replace that rejects `offline` with `400`, and `PUT /api/me/privacy` as a partial update that rejects an actor in both lists, or an over-long list, with `400` (§6.4, §6.6)
     - Tests: `packages/server/test/presence.test.ts`, `packages/server/test/privacy.test.ts`
     - Note: Related deviation: privacy lists also accept a user-object URI and convert it to an actor; the ofscp `UserRef` schema takes canonical actors only, so a URI must be `400`.
 31. **partial**: Support direct messages: deterministic `dmId` derivation, inbox-only storage (no sender copy), the `{dmId}`/`to` verification on delivery, conversation pointers and `dm.conversation`, conversation listing/reading, `dm.message` real-time delivery, and `dmId` subscriptions from a remote participant (§7.4)
@@ -153,10 +153,10 @@ Notes marked "spec question" point at wording in the spec that needs clarifying 
     - Note: A federated `action: "remove"` is untested; only `request` and `accept` are sent to `/api/federation/contacts`.
 33. **covered**: Publish provider signing key(s) in discovery and sign provider-to-provider requests (§8.1)
     - Tests: `packages/server/test/server.test.ts`, `packages/server/test/federation.test.ts`, `packages/server/test/signer-resolution.test.ts`, `packages/server/test/notifications.test.ts`, `packages/shared/test/signing.test.ts`, `packages/server/test/conformance.test.ts`
-34. **covered**: Accept direct-WS connections from remote members — resolve remote keys via §4.6, enforce prior membership + tier at subscribe-time — and advertise `capabilities.federation.realtimeDelivery` (§8.5)
+34. **partial**: Accept direct-WS connections from remote members — resolve remote keys via §4.6, enforce prior membership + tier at subscribe-time — and advertise `capabilities.federation.realtimeDelivery` (§8.5)
     - Tests: `packages/server/test/federation-realtime.test.ts`, `packages/server/test/ws-remote-key.test.ts`, `packages/server/test/server.test.ts`, `packages/server/test/federation-actor.test.ts`
     - Note: The `dmId` part of remote subscriptions is tracked under the direct-messages item. No remote-specific test of a member blocked by tier/`view` or of remote `since` resume (both reuse the local path).
-35. **covered**: Support the follow list (`GET`/`POST`/`DELETE /api/me/follows`) as pointers only — no server-side feed compilation or content replication (§7.6)
+35. **partial**: Support the follow list (`GET`/`POST`/`DELETE /api/me/follows`) as pointers only — no server-side feed compilation or content replication (§7.6)
     - Tests: `packages/server/test/follows.test.ts`, `packages/server/test/conformance.test.ts`
     - Note: An unreadable channel answers `403`; §11.3 wants `404` (tracked under the hidden-channel item).
 36. **covered**: Support WebSocket resume (`since` replay with per-message cursors) and the `ping`/`pong` heartbeat (§7.1)
@@ -198,12 +198,12 @@ Notes marked "spec question" point at wording in the spec that needs clarifying 
 
 1. **covered**: Maintain and share a known-providers list at `GET /api/providers`, and advertise `capabilities.discovery.sharesKnownProviders` (§8.6)
     - Tests: `packages/server/test/discovery-feed.test.ts`
-2. **covered**: Compile a discovery feed at `GET /api/discover` from discoverable channels (local + known providers) as pointers, and advertise `capabilities.discovery.discoverFeed` (§11.2)
+2. **partial**: Compile a discovery feed at `GET /api/discover` from discoverable channels (local + known providers) as pointers, and advertise `capabilities.discovery.discoverFeed` (§11.2)
     - Tests: `packages/server/test/discovery-feed.test.ts`, `packages/server/test/admin-discover.test.ts`
-    - Note: Only local channels are compiled; aggregation from known providers is not implemented (acceptable for a MAY).
+    - Note: Only local channels are compiled; aggregation from known providers is not implemented.
 3. **covered**: Offer guest upgrade via `/api/me/claim` (subject to the registration mode, §4.1.1) and `/api/me/merge` (§4.8.1)
     - Tests: `packages/server/test/guest-claim.test.ts`, `packages/server/test/guest-merge.test.ts`, `packages/server/test/ws-access-revocation.test.ts`
-    - Note: Only the `open` registration mode exists, so "subject to the registration mode" holds trivially.
+    - Context: Only the `open` registration mode exists, so "subject to the registration mode" holds trivially.
 4. **covered**: Offer a notification feed with mentions, per-scope notification settings, and Web Push (§10.1–§10.3)
     - Tests: `packages/server/test/notifications-feed.test.ts`, `packages/server/test/notification-prefs.test.ts`, `packages/server/test/push.test.ts`, `packages/server/test/web-push.test.ts`, `packages/server/test/push-egress-check.test.ts`, `packages/shared/test/push.test.ts`
 5. **covered**: Embed DM reactions inline in DM history (§7.4)
@@ -227,7 +227,7 @@ Notes marked "spec question" point at wording in the spec that needs clarifying 
     - Note: Behaviour gap: only the home feed opens a per-host socket; the chat view always uses the home socket and the groups route is home-only, so a remote channel cannot be opened, read live or posted to outside the feed.
 6. **covered**: Compose the home feed client-side by reading each followed channel live from its source (§7.6); do not rely on a server-compiled feed
     - Tests: `packages/web/test/feed-store.test.ts`, `e2e/tests/feed.spec.ts`, `e2e/tests/federation.spec.ts`
-7. **covered**: Support all message types or graceful fallback
+7. **partial**: Support all message types or graceful fallback
     - Tests: `e2e/tests/chat.spec.ts`, `packages/shared/test/schemas.test.ts`
     - Note: The feed and DM renderers have no unknown-type test.
 8. **partial**: Treat the `message.created` that answers a duplicate create (no `cursor`) as the result of the pending send, not as a new message, and never store it as a resume point (§7.1)
