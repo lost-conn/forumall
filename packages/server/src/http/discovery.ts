@@ -12,7 +12,7 @@ import { Hono } from "hono";
 
 import { buildDiscoveryDocument, discoveryETag } from "../provider/discovery.ts";
 import { ifNoneMatchMatches } from "./conditional.ts";
-import { optionalActorOrProviderSignature } from "./signature.ts";
+import { optionalSignature } from "./signature.ts";
 import type { AppBindings } from "./types.ts";
 
 /** Clients may cache discovery; re-validate after this window. */
@@ -22,7 +22,7 @@ export function createDiscoveryRouter() {
   const router = new Hono<AppBindings>();
 
   // Signed requests still run §4.5 so the §8 inbound policy applies (403).
-  router.get("/.well-known/ofscp-provider", optionalActorOrProviderSignature(), (c) => {
+  router.get("/.well-known/ofscp-provider", optionalSignature(), (c) => {
     const { config, db } = c.var;
     const doc = buildDiscoveryDocument(config, db);
     const etag = discoveryETag(doc);
