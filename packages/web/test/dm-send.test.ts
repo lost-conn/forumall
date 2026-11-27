@@ -1,7 +1,8 @@
 /** DM send (`dm-send.ts`): one idempotency key per logical send, and `mentions` on the wire. */
 import { beforeEach, describe, expect, test } from "bun:test";
 import { DmUnconfirmedError } from "../src/components/dms/dm-errors.ts";
-import { retrySendDm, sendDm } from "../src/components/dms/dm-send.ts";
+import { resendOf, retrySendDm, sendDm } from "../src/components/dms/dm-send.ts";
+import { COMPOSED_MIME } from "../src/lib/content/body.ts";
 import { DmSentStore } from "../src/lib/dm-store.ts";
 import { OfscpClient } from "../src/lib/ofscp-client.ts";
 import { type DmMessage, clearDms, dmThread } from "../src/stores/dms.ts";
@@ -98,6 +99,49 @@ describe("sendDm / retrySendDm: one clientMessageId per logical send", () => {
       text: "ask @carol and @dave@d.example, not mail@x.example",
     });
     expect(bodies[0]?.mentions).toEqual(["carol@b.example", "dave@d.example"]);
+  });
+
+  test("the composer's mime goes on the wire and on the echo; none defaults to text/plain", async () => {
+    const { client, bodies } = scriptedClient([drops]);
+    const sentStore = new DmSentStore("me@h", memBackend());
+    await expect(
+      sendDm({ ...args(client, sentStore), text: "**hi**", mime: COMPOSED_MIME }),
+    ).rejects.toBeInstanceOf(DmUnconfirmedError);
+    expect(bodies[0]?.content).toEqual({ mime: "text/markdown", text: "**hi**" });
+    expect(dmThread(DM)[0]?.content.mime).toBe("text/markdown");
+
+    clearDms();
+    await expect(sendDm(args(client, sentStore))).rejects.toBeInstanceOf(DmUnconfirmedError);
+    expect(bodies[1]?.content).toEqual({ mime: "text/plain", text: "hi" });
+  });
+
+  test("a retry re-sends the echo under its own mime, attachments and reply pointer", async () => {
+    const { client, bodies } = scriptedClient([rejects(400), stores("msg_1")]);
+    const sentStore = new DmSentStore("me@h", memBackend());
+    const reference = { type: "reply", id: "msg_0" };
+    await expect(
+      sendDm({ ...args(client, sentStore), text: "_hi_", mime: COMPOSED_MIME, reference }),
+    ).rejects.toThrow(/400/);
+    const echo = dmThread(DM)[0] as DmMessage;
+    expect(echo.failed).toBe(true);
+
+    const resend = resendOf(echo);
+    expect(resend).toEqual({
+      text: "_hi_",
+      mime: "text/markdown",
+      reference,
+      clientMessageId: echo.clientMessageId as string,
+    });
+    await retrySendDm({ ...args(client, sentStore), ...(resend as NonNullable<typeof resend>) });
+    expect(bodies[1]?.content).toEqual({ mime: "text/markdown", text: "_hi_" });
+    expect(bodies[1]?.clientMessageId).toBe(bodies[0]?.clientMessageId);
+    expect(bodies[1]?.reference).toEqual(reference);
+  });
+
+  test("a row that is not an echo has nothing to resend", () => {
+    expect(
+      resendOf({ id: "msg_1", author: "me@h", content: { text: "x" }, createdAt: "2026" }),
+    ).toBeNull();
   });
 
   test("text naming nobody sends no `mentions`", async () => {

@@ -1,38 +1,31 @@
 /**
  * ArticleReadingPane (§5.3 / §7.2) — the dedicated reading view for an `article`
  * message, shown in the channel's main pane when an article is opened from the
- * stream. Renders the title (first heading of the markdown), author + tags, the
- * sanitized markdown body, a reaction bar, the thread of replies, and a reply
- * composer that posts a reply referencing the article.
+ * stream. Renders the cover and title (§5.3 article fields and title rule),
+ * author + tags, the body by its `content.mime` with its inline attachments,
+ * the attachments it does not reference, a reaction bar, the thread of
+ * replies, and a reply composer that posts a reply referencing the article.
  */
 import { type Component, For, Show, createMemo, createSignal, onMount } from "solid-js";
-import { renderMarkdown } from "../../lib/markdown.ts";
+import { COMPOSED_MIME, articleView, attachmentLayout } from "../../lib/content/body.ts";
+import { promotedFrom, topicTags } from "../../lib/promote-tag.ts";
 import { formatTime } from "../../lib/time.ts";
 import { type ChatMessage, reactionsFor } from "../../stores/chat.ts";
 import { session, sessionWs } from "../../stores/session.ts";
 import { Icon } from "../Icon.tsx";
+import { AttachmentView } from "../shared/AttachmentView.tsx";
+import {
+  BodyContent,
+  MessageContent,
+  TrailingAttachments,
+  useParsedBody,
+} from "../shared/BodyContent.tsx";
 import { addReactionCmd, removeReactionCmd, sendMessage } from "./chat-controller.ts";
-
-/** The promote-lineage tag marker (mirrors ChatView). */
-const PROMOTE_TAG_PREFIX = "promoted-from:";
 
 /** Local-part of an actor handle (full as fallback). */
 function displayName(actor: string): string {
   const at = actor.indexOf("@");
   return at > 0 ? actor.slice(0, at) : actor;
-}
-
-/** Split an article's markdown into a leading title (first heading) + the body. */
-export function splitArticle(md: string): { title: string; body: string } {
-  const lines = (md ?? "").split("\n");
-  const idx = lines.findIndex((l) => /^#{1,3}\s+/.test(l.trim()));
-  if (idx === -1) {
-    const firstNonEmpty = lines.find((l) => l.trim().length > 0) ?? "Untitled article";
-    return { title: firstNonEmpty.trim().slice(0, 120), body: md };
-  }
-  const title = (lines[idx] ?? "").replace(/^#{1,3}\s+/, "").trim();
-  const body = [...lines.slice(0, idx), ...lines.slice(idx + 1)].join("\n").trim();
-  return { title: title || "Untitled article", body };
 }
 
 const QUICK_REACTIONS: { key: string; unicode: string }[] = [
@@ -43,8 +36,8 @@ const QUICK_REACTIONS: { key: string; unicode: string }[] = [
 
 export const ArticleReadingPane: Component<{
   article: ChatMessage;
-  /** Long-form kind being read. Memos render as a plain post (no markdown title);
-   *  articles render their markdown title + body. Defaults to "article". */
+  /** Long-form kind being read. Memos render as a post (no title or cover);
+   *  articles render their cover, title and body. Defaults to "article". */
   kind?: "article" | "memo";
   groupId: string;
   channelId: string;
@@ -55,12 +48,10 @@ export const ArticleReadingPane: Component<{
 }> = (props) => {
   const a = () => props.article;
   const kind = () => props.kind ?? "article";
-  const parts = createMemo(() => splitArticle(a().content.text ?? ""));
-  const promotedFrom = createMemo(() => {
-    const t = a().tags?.find((x) => x.startsWith(PROMOTE_TAG_PREFIX));
-    return t ? t.slice(PROMOTE_TAG_PREFIX.length) : undefined;
-  });
-  const otherTags = () => (a().tags ?? []).filter((t) => !t.startsWith(PROMOTE_TAG_PREFIX));
+  const body = useParsedBody(a);
+  const view = createMemo(() => articleView(a(), body()));
+  const cover = createMemo(() => attachmentLayout(a(), body().referencedAttachmentIds).cover);
+  const lineage = () => promotedFrom(a().tags);
 
   onMount(() => props.onLoadReplies());
 
@@ -101,6 +92,7 @@ export const ArticleReadingPane: Component<{
       author: session.actor ?? "",
       text: body,
       type: "message",
+      mime: COMPOSED_MIME,
       reference: { type: "reply", id: a().id },
     });
     setReplyText("");
@@ -137,7 +129,7 @@ export const ArticleReadingPane: Component<{
       {/* Body */}
       <div class="min-h-0 flex-1 overflow-auto px-6 py-6 fa-scroll">
         <div class="mx-auto max-w-3xl">
-          <Show when={promotedFrom()}>
+          <Show when={lineage()}>
             {(from) => (
               <div
                 class="mb-3 inline-flex items-center gap-1.5 rounded-sm border-[1.5px] border-dashed border-ember bg-ember-soft px-2 py-0.5 text-[11px] font-mono uppercase tracking-wide text-ember"
@@ -150,8 +142,19 @@ export const ArticleReadingPane: Component<{
           </Show>
 
           <Show when={kind() === "article"}>
-            <h1 class="fa-h1 mb-3" data-testid="article-title">
-              {parts().title}
+            <Show when={cover()}>
+              {(att) => (
+                <div class="mb-4" data-testid="article-cover">
+                  <AttachmentView attachment={att()} />
+                </div>
+              )}
+            </Show>
+            <h1
+              class="fa-h1 mb-3"
+              classList={{ "italic text-muted": view().title === null }}
+              data-testid="article-title"
+            >
+              {view().title ?? "Untitled article"}
             </h1>
           </Show>
 
@@ -161,28 +164,19 @@ export const ArticleReadingPane: Component<{
             </span>
             <span class="font-mono text-[13px] text-ink">{displayName(a().author)}</span>
             <span class="fa-meta">{formatTime(a().createdAt)}</span>
-            <For each={otherTags()}>{(t) => <span class="fa-tag">{t}</span>}</For>
+            <For each={topicTags(a().tags)}>{(t) => <span class="fa-tag">{t}</span>}</For>
           </div>
 
-          {/* Articles render sanitized markdown (XSS-safe: escapes input,
-              allowlists schemes); memos render as plain text. */}
-          <Show
-            when={kind() === "article"}
-            fallback={
-              <p
-                class="whitespace-pre-wrap break-words text-sm text-ink"
-                data-testid="article-body"
-              >
-                {a().content.text ?? ""}
-              </p>
-            }
-          >
-            <div
-              class="prose-chat text-sm text-ink"
-              data-testid="article-body"
-              innerHTML={renderMarkdown(parts().body)}
-            />
-          </Show>
+          {/* The body by its mime (§5.3); an article's leading title heading
+              is shown above as the title, not repeated here. */}
+          <BodyContent
+            body={body()}
+            nodes={kind() === "article" ? view().nodes : body().nodes}
+            attachments={a().attachments ?? []}
+            class="text-sm text-ink"
+            testid="article-body"
+          />
+          <TrailingAttachments message={a()} body={body()} testid="article-attachments" />
 
           {/* Reactions */}
           <div class="fa-rx mt-6">
@@ -244,9 +238,7 @@ export const ArticleReadingPane: Component<{
                       <span class="font-mono text-[13px] text-ink">{displayName(r.author)}</span>
                       <span class="fa-meta">{formatTime(r.createdAt)}</span>
                     </div>
-                    <p class="whitespace-pre-wrap break-words text-sm text-ink">
-                      {r.content.text ?? ""}
-                    </p>
+                    <MessageContent message={r} class="text-sm text-ink" />
                   </div>
                 </li>
               )}

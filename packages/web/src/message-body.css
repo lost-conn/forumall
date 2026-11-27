@@ -1,0 +1,85 @@
+/* Rendered Markdown / HTML message bodies (components/shared/BodyContent.tsx).
+   Only the §5.3 allow-listed elements can appear inside `.fa-body`. */
+
+.fa-body > :first-child {
+  margin-top: 0;
+}
+.fa-body > :last-child {
+  margin-bottom: 0;
+}
+.fa-body :where(p, ul, ol, blockquote, pre, table) {
+  margin: 0 0 0.6em;
+}
+.fa-body :where(h1, h2, h3, h4, h5, h6) {
+  margin: 0.8em 0 0.4em;
+  font-family: var(--font-display);
+  color: var(--ink);
+}
+.fa-body h1 {
+  font: var(--t-h1);
+}
+.fa-body h2 {
+  font: var(--t-h2);
+}
+.fa-body :where(h3, h4, h5, h6) {
+  font: var(--t-h3);
+}
+.fa-body :where(ul, ol) {
+  padding-left: 1.4em;
+}
+.fa-body ul {
+  list-style: disc;
+}
+.fa-body ol {
+  list-style: decimal;
+}
+.fa-body blockquote {
+  padding-left: 0.8em;
+  border-left: var(--bw) solid var(--line-strong);
+  color: var(--ink-2);
+}
+.fa-body code {
+  padding: 0.1em 0.3em;
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+}
+.fa-body pre {
+  overflow-x: auto;
+  padding: 0.6em 0.8em;
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  white-space: pre;
+}
+.fa-body pre code {
+  padding: 0;
+  background: none;
+}
+.fa-body hr {
+  margin: 0.8em 0;
+  border: 0;
+  border-top: var(--bw) dashed var(--line);
+}
+.fa-body :where(th, td) {
+  padding: 0.2em 0.5em;
+  border: 1px solid var(--line);
+}
+.fa-body :where(strong, b) {
+  font-weight: 600;
+}
+.fa-body :where(em, i) {
+  font-style: italic;
+}
+.fa-body u {
+  text-decoration: underline;
+}
+.fa-body :where(s, del) {
+  text-decoration: line-through;
+}
+.fa-body a {
+  color: var(--phosphor);
+}
+.fa-body a:hover {
+  text-decoration: underline;
+}

@@ -3,7 +3,7 @@
  * addressed to the provider that HOLDS the message ({@link deliveryClientFor}).
  */
 import type { Attachment, Reaction } from "@forumall/shared";
-import { rfc3339Timestamp } from "@forumall/shared";
+import { MessageSchema, rfc3339Timestamp } from "@forumall/shared";
 import {
   addDmReaction as apiAddDmReaction,
   removeDmReaction as apiRemoveDmReaction,
@@ -14,13 +14,16 @@ import type { DmSentStore } from "../../lib/dm-store.ts";
 import { mentionedActors } from "../../lib/mentions.ts";
 import { type OfscpClient, isDefinitiveRejection } from "../../lib/ofscp-client.ts";
 import {
+  type DmVersion,
   addDmReactionAgg,
   applyDmEdit,
   removeDmReactionAgg,
-  restoreDmMessage,
   tombstoneDmMessage,
 } from "../../stores/dms.ts";
 import { DmUnconfirmedError } from "./dm-errors.ts";
+import { type DmMessageLike, beginDmMutation } from "./dm-mutation-chain.ts";
+
+export type { DmMessageLike } from "./dm-mutation-chain.ts";
 export interface DmReactionArgs {
   client: OfscpClient;
   /**
@@ -141,6 +144,17 @@ function deliveryClientFor(
  * drop, 5xx — is an unknown outcome: the optimistic state is KEPT and a
  * {@link DmUnconfirmedError} is thrown for the UI to distinguish.
  *
+ * Edits and deletes of one message are ordered by `dm-mutation-chain.ts`: each
+ * request waits for the earlier ones, the optimistic copy outranks every server
+ * copy until the last of them settles, and then the settled version is
+ * installed: the provider's answer (with the provider's `editedAt`), the kept
+ * unconfirmed edit, or, after a rejection, the version before the rejected
+ * edit. The optimistic copy is marked as a local version (`localVersion`, based
+ * on the server version it edits), so the client's clock never orders it; a
+ * kept unconfirmed edit is replaced by any later server copy of the message,
+ * while a stale copy (an older history page) still cannot undo it
+ * (`lib/merge-message.ts`).
+ *
  * The request goes to the provider that HOLDS the message ({@link deliveryClientFor}):
  * for a message the caller SENT that is the recipient's provider (the same
  * delivery target `sendDm` uses, §8.3), otherwise the caller's home provider.
@@ -163,78 +177,77 @@ export async function editDm(args: {
   const { client, dmId, message, me, text, mime, sentStore } = args;
   const target = deliveryClientFor(client, args.deliveryClient, message.author, me);
   const content = { mime: mime ?? message.content.mime ?? "text/plain", text };
-  /** The pre-edit snapshot, captured before the optimistic apply overwrites it. */
-  const priorContent = {
-    mime: message.content.mime ?? "text/plain",
-    text: message.content.text ?? "",
-  };
+  /** Display only: the copy is ordered by `localVersion`, never by this stamp. */
   const editedAt = rfc3339Timestamp();
-  const mine = message.author === me;
-  const attachmentsPart =
-    message.attachments && message.attachments.length > 0
+  const edited: DmVersion = {
+    content,
+    ...(message.attachments && message.attachments.length > 0
       ? { attachments: message.attachments }
-      : {};
-  const referencePart = message.reference ? { reference: message.reference } : {};
-
-  // Optimistic apply: in-memory thread + local sent-store (survives reload).
-  applyDmEdit(dmId, {
-    id: message.id,
-    author: message.author,
-    content,
-    ...attachmentsPart,
-    ...referencePart,
-    createdAt: message.createdAt,
+      : {}),
+    ...(message.reference ? { reference: message.reference } : {}),
     editedAt,
-    mine,
-  });
-  sentStore.append(dmId, {
-    id: message.id,
-    author: message.author,
-    content,
-    ...attachmentsPart,
-    ...referencePart,
-    createdAt: message.createdAt,
-    editedAt,
-  });
-
+  };
   // §5.3 `mentions` is authoritative and §7.1 keeps a field the edit omits, so
   // resend it recomputed from the new text (`[]` once it names nobody). A bare
   // `@handle` names a user of the provider holding the message: `target`.
   const mentions = mentionedActors(text, target.host);
+  const identity = { id: message.id, author: message.author, createdAt: message.createdAt };
+  const mutation = beginDmMutation({ dmId, message, sentStore });
 
+  // Optimistic apply: in-memory thread (unsettled, so no server copy undoes it
+  // meanwhile) + local sent-store (survives reload).
+  applyDmEdit(dmId, {
+    ...identity,
+    ...edited,
+    localVersion: { ...mutation.basedOn, unsettled: true },
+    mine: message.author === me,
+  });
+  sentStore.append(dmId, { ...identity, ...edited, localVersion: mutation.basedOn });
+
+  let answer: unknown;
   try {
-    await editDmMessage(target, dmId, message.id, content, mentions);
+    await mutation.turn;
+    answer = await editDmMessage(target, dmId, message.id, content, mentions);
   } catch (err) {
     // Unknown outcome (aborted fetch, network drop, 5xx): the server may well
     // have applied the edit, so KEEP the optimistic state — see
     // {@link DmUnconfirmedError} for why a wrong revert is the worse failure.
-    if (!isDefinitiveRejection(err)) throw new DmUnconfirmedError(err);
-    // Definitive 4xx (expired window, etc.): the edit did NOT land — rewind to
-    // the prior snapshot so the author's view + local store stay truthful. Both
-    // stores REPLACE rather than merge here, so the `editedAt` this call stamped
-    // is actually removed (a merge would leave the message rendering "(edited)"
-    // with its pre-edit text).
-    restoreDmMessage(dmId, {
-      id: message.id,
-      content: priorContent,
-      ...attachmentsPart,
-      ...referencePart,
-      ...(message.editedAt !== undefined ? { editedAt: message.editedAt } : {}),
-    });
-    sentStore.restore(dmId, {
-      id: message.id,
-      author: message.author,
-      content: priorContent,
-      ...attachmentsPart,
-      ...referencePart,
-      createdAt: message.createdAt,
-      ...(message.editedAt !== undefined ? { editedAt: message.editedAt } : {}),
-      ...(message.clientMessageId !== undefined
-        ? { clientMessageId: message.clientMessageId }
-        : {}),
-    });
+    if (!isDefinitiveRejection(err)) {
+      mutation.settle({ kind: "unconfirmed", version: edited });
+      throw new DmUnconfirmedError(err);
+    }
+    // Definitive 4xx (expired window, etc.): the edit did NOT land — the
+    // settle rewinds both stores to the version before it.
+    mutation.settle({ kind: "rejected" });
     throw err;
   }
+
+  // The edit landed: the provider's stored copy is the settled version. An
+  // answer that is not this message keeps the local version, to be confirmed
+  // by the next server copy (a live `dm.message`, a history page).
+  const confirmed = storedCopy(answer, message.id);
+  mutation.settle(
+    confirmed
+      ? { kind: "confirmed", version: confirmed }
+      : { kind: "unconfirmed", version: edited },
+  );
+}
+
+/**
+ * The version in a provider's answer to an edit of `messageId`: the stored
+ * §5.3 message, or `null` when the answer is not a valid copy of it.
+ */
+function storedCopy(answer: unknown, messageId: string): DmVersion | null {
+  const parsed = MessageSchema.safeParse(answer);
+  if (!parsed.success || parsed.data.id !== messageId) return null;
+  const m = parsed.data;
+  return {
+    content: m.content,
+    ...(m.attachments && m.attachments.length > 0 ? { attachments: m.attachments } : {}),
+    ...(m.reference ? { reference: m.reference } : {}),
+    ...(m.editedAt ? { editedAt: m.editedAt } : {}),
+    ...(m.deletedAt ? { deletedAt: m.deletedAt } : {}),
+  };
 }
 
 /**
@@ -245,7 +258,9 @@ export async function editDm(args: {
  * ({@link deliveryClientFor}). We tombstone optimistically (own view + local
  * sent-store) and — as in {@link editDm} — un-tombstone ONLY on a definitive 4xx
  * refusal; an unknown outcome keeps the tombstone and throws
- * {@link DmUnconfirmedError}.
+ * {@link DmUnconfirmedError}. It is ordered with the message's edits
+ * (`dm-mutation-chain.ts`): sent after them, and a rejection rewinds to the
+ * version they settled to.
  */
 export async function deleteDm(args: {
   client: OfscpClient;
@@ -259,73 +274,28 @@ export async function deleteDm(args: {
   const { client, dmId, message, me, sentStore } = args;
   const target = deliveryClientFor(client, args.deliveryClient, message.author, me);
   const deletedAt = rfc3339Timestamp();
-  /** The pre-delete snapshot, captured before the optimistic tombstone lands. */
-  const priorContent = {
-    mime: message.content.mime ?? "text/plain",
-    text: message.content.text ?? "",
-  };
-  const attachmentsPart =
-    message.attachments && message.attachments.length > 0
-      ? { attachments: message.attachments }
-      : {};
-  const referencePart = message.reference ? { reference: message.reference } : {};
+  const tombstone: DmVersion = { content: { mime: "text/plain", text: "" }, deletedAt };
+  const identity = { id: message.id, author: message.author, createdAt: message.createdAt };
+  const mutation = beginDmMutation({ dmId, message, sentStore });
 
   // Optimistic tombstone: in-memory thread + local sent-store (survives reload).
-  tombstoneDmMessage(dmId, message.id, deletedAt);
-  sentStore.append(dmId, {
-    id: message.id,
-    author: message.author,
-    content: { mime: "text/plain", text: "" },
-    createdAt: message.createdAt,
-    deletedAt,
-  });
+  tombstoneDmMessage(dmId, message.id, deletedAt, { local: true });
+  sentStore.append(dmId, { ...identity, ...tombstone });
 
   try {
+    await mutation.turn;
     await deleteDmMessage(target, dmId, message.id);
   } catch (err) {
     // Unknown outcome: the tombstone may already be the server's truth — keep it
     // (see {@link DmUnconfirmedError}).
-    if (!isDefinitiveRejection(err)) throw new DmUnconfirmedError(err);
-    // Definitive 4xx: the delete did NOT land — un-tombstone back to the prior
-    // snapshot. Both stores REPLACE rather than merge, so `deletedAt` is actually
-    // removed (a merge would leave the message rendering as a tombstone).
-    restoreDmMessage(dmId, {
-      id: message.id,
-      content: priorContent,
-      ...attachmentsPart,
-      ...referencePart,
-      ...(message.editedAt !== undefined ? { editedAt: message.editedAt } : {}),
-    });
-    sentStore.restore(dmId, {
-      id: message.id,
-      author: message.author,
-      content: priorContent,
-      ...attachmentsPart,
-      ...referencePart,
-      createdAt: message.createdAt,
-      ...(message.editedAt !== undefined ? { editedAt: message.editedAt } : {}),
-      ...(message.clientMessageId !== undefined
-        ? { clientMessageId: message.clientMessageId }
-        : {}),
-    });
+    if (!isDefinitiveRejection(err)) {
+      mutation.settle({ kind: "unconfirmed", version: tombstone });
+      throw new DmUnconfirmedError(err);
+    }
+    // Definitive 4xx: the delete did NOT land — the settle un-tombstones both
+    // stores back to the version before it.
+    mutation.settle({ kind: "rejected" });
     throw err;
   }
-}
-
-/** The fields {@link editDm} / {@link deleteDm} read off the current message. */
-export interface DmMessageLike {
-  id: string;
-  author: string;
-  content: { mime?: string; text?: string };
-  attachments?: Attachment[];
-  reference?: { type: string; id: string };
-  createdAt: string;
-  /**
-   * The message's CURRENT `editedAt`, if it was already edited before this call.
-   * Carried so a revert rewinds to the true prior state rather than blanket-
-   * clearing the marker off a message that legitimately had one.
-   */
-  editedAt?: string;
-  /** Echo linkage on the retained sent copy — preserved across a revert. */
-  clientMessageId?: string;
+  mutation.settle({ kind: "confirmed", version: tombstone });
 }

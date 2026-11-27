@@ -245,6 +245,7 @@ export async function openConversation(deps: OpenConversationDeps): Promise<Conv
         ...(sent.reference ? { reference: sent.reference } : {}),
         createdAt: sent.createdAt,
         ...(sent.editedAt ? { editedAt: sent.editedAt } : {}),
+        ...(sent.localVersion ? { localVersion: sent.localVersion } : {}),
         ...(sent.clientMessageId !== undefined ? { clientMessageId: sent.clientMessageId } : {}),
         mine: true,
       });

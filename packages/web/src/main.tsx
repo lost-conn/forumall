@@ -5,6 +5,7 @@ import "uno.css";
 // Terminal Garden design tokens (CSS variables + .fa-* component classes).
 // MUST load after uno.css so the variable layer the UnoCSS tokens resolve to wins.
 import "./forumall.css";
+import "./message-body.css";
 import { render } from "solid-js/web";
 import { App } from "./App.tsx";
 import { applyAppearance } from "./stores/appearance.ts";

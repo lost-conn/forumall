@@ -116,9 +116,9 @@ and only local channels are compiled.
 | 75 | Duplicate-create `message.created` | tests only | No controller-level test of a correlated, cursor-less duplicate; WS client cursor unchanged by a cursor-less event untested. | U13 |
 | 76 | Avatar upload then `PATCH` | covered | — | — |
 | 77 | Attachments to home with `target` | behaviour | `uploadMedia` never sends `target`; no reuse-by-target tracking. | U13 |
-| 78 | Rendering by `mime`, link allow-list | behaviour | Rendering follows the message type, not `content.mime`: `text/plain` gets inline Markdown, `text/html` is neither sanitized nor stripped, `attachment:` links are inactive, `mailto:` untested. Relative links: spec question 6. | U14 |
-| 79 | `attachment:<id>`, unreferenced attachments, article title | behaviour | No `attachment:` resolution; the `title` field is ignored; title taken from any heading anywhere; reading pane shows no attachments. | U14 |
-| 80 | Attachments untrusted | partial | No test that html/svg attachments never render inline; new-tab links: spec question 7. | U14 |
+| 78 | Rendering by `mime`, link allow-list | covered | Met by U14 (#44): bodies render by `content.mime` (`lib/content/`), `text/html` through the §5.3 allow-list, only `http`/`https`/`mailto`/`attachment:` links active, scheme-less/relative inactive (spec question 6). | U14 |
+| 79 | `attachment:<id>`, unreferenced attachments, article title | covered | Met by U14 (#44): `attachment:` resolves to the message's own attachments, unreferenced ones follow the body, article title = `title` field, else a first-block level-1 heading, else untitled. | U14 |
+| 80 | Attachments untrusted | covered | Met by U14 (#44): only `http`/`https` URLs, as plain links or media elements; html/svg never framed, no `blob:`/`data:`/`srcdoc` (asserted in the browser, spec question 7). | U14 |
 
 ## Client SHOULD
 

@@ -25,9 +25,9 @@ import {
   dmThread,
   dmTypingFor,
   removeDmReactionAgg,
-  restoreDmMessage,
   setDmOlderCursor,
   setDmTyping,
+  settleDmMessage,
   tombstoneDmMessage,
   upsertConversation,
   upsertDmMessage,
@@ -332,7 +332,9 @@ describe("un-edit: reverting an optimistic edit/delete clears its markers", () =
     });
     expect(dmThread(DM)[0]?.editedAt).toBe("2026-06-05T00:01:00Z");
 
-    restoreDmMessage(DM, { id: "m1", content: { mime: "text/plain", text: "original" } });
+    settleDmMessage(DM, "m1", {
+      content: { mime: "text/plain", text: "original" },
+    });
     const m = dmThread(DM)[0];
     expect(m?.content.text).toBe("original");
     expect(m?.editedAt).toBeUndefined();
@@ -350,8 +352,7 @@ describe("un-edit: reverting an optimistic edit/delete clears its markers", () =
       content: { mime: "text/plain", text: "edited twice" },
       editedAt: "2026-06-05T00:01:00Z",
     });
-    restoreDmMessage(DM, {
-      id: "m1",
+    settleDmMessage(DM, "m1", {
       content: { mime: "text/plain", text: "original" },
       editedAt: "2026-06-05T00:00:30Z",
     });
@@ -363,7 +364,9 @@ describe("un-edit: reverting an optimistic edit/delete clears its markers", () =
     tombstoneDmMessage(DM, "m1", "2026-06-05T00:02:00Z");
     expect(dmThread(DM)[0]?.deletedAt).toBe("2026-06-05T00:02:00Z");
 
-    restoreDmMessage(DM, { id: "m1", content: { mime: "text/plain", text: "original" } });
+    settleDmMessage(DM, "m1", {
+      content: { mime: "text/plain", text: "original" },
+    });
     const m = dmThread(DM)[0];
     expect(m?.deletedAt).toBeUndefined();
     expect(Object.hasOwn(m as object, "deletedAt")).toBe(false);
@@ -371,7 +374,9 @@ describe("un-edit: reverting an optimistic edit/delete clears its markers", () =
   });
 
   test("thread store: restoring an unloaded message is a no-op", () => {
-    restoreDmMessage(DM, { id: "nope", content: { text: "x" } });
+    settleDmMessage(DM, "nope", {
+      content: { text: "x" },
+    });
     expect(dmThread(DM)).toHaveLength(0);
   });
 

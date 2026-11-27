@@ -15,6 +15,7 @@ import { domainOf } from "../../lib/federation.ts";
 import { mentionedActors } from "../../lib/mentions.ts";
 import { type OfscpClient, isDefinitiveRejection } from "../../lib/ofscp-client.ts";
 import {
+  type DmMessage,
   addDmOptimistic,
   dropDmOptimistic,
   markDmFailed,
@@ -174,4 +175,26 @@ export async function sendDm(args: SendDmArgs): Promise<string> {
 export async function retrySendDm(args: SendDmArgs & { clientMessageId: string }): Promise<string> {
   dropDmOptimistic(args.dmId, args.clientMessageId);
   return sendDm(args);
+}
+
+/** What a retry of a failed echo re-sends ({@link resendOf}). */
+export type DmResend = Pick<SendDmArgs, "text" | "mime" | "attachments" | "reference"> & {
+  clientMessageId: string;
+};
+
+/**
+ * The message a retry of the failed echo `echo` re-sends: its own text under its
+ * own `mime` (a Markdown body stays Markdown), attachments and reply pointer,
+ * and its ORIGINAL `clientMessageId` ({@link retrySendDm}). `null` for a row
+ * that is not an echo (no `clientMessageId`).
+ */
+export function resendOf(echo: DmMessage): DmResend | null {
+  if (echo.clientMessageId === undefined) return null;
+  return {
+    text: echo.content.text ?? "",
+    ...(echo.content.mime !== undefined ? { mime: echo.content.mime } : {}),
+    ...(echo.attachments && echo.attachments.length > 0 ? { attachments: echo.attachments } : {}),
+    ...(echo.reference ? { reference: echo.reference } : {}),
+    clientMessageId: echo.clientMessageId,
+  };
 }

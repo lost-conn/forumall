@@ -12,7 +12,8 @@
  */
 import type { Attachment } from "@forumall/shared";
 import { type Component, Match, Show, Switch } from "solid-js";
-import { attachmentKind, resolveAttachmentUrl } from "../../lib/chat-api.ts";
+import { attachmentUrl } from "../../lib/attachment-url.ts";
+import { attachmentKind } from "../../lib/chat-api.ts";
 
 /**
  * The 📎 download affordance. Used in three roles, which carry DIFFERENT testids
@@ -22,21 +23,41 @@ import { attachmentKind, resolveAttachmentUrl } from "../../lib/chat-api.ts";
  * inline and inside the lightbox. They must stay distinguishable — one testid
  * for both would mean a selector counting download links also matched a hidden
  * fallback inside every player.
+ *
+ * It is a plain top-level link to the file's own URL: the browser opens it
+ * under the attachment host's origin, where the §5.8 serving headers apply.
+ * The client never fetches the bytes itself to show them (no `blob:`/`data:`
+ * URL, `srcdoc` or frame), so a file can never run as a page of the client's
+ * origin (§5.8, lost-conn/ofscp#31). With no usable `url` it is a plain label.
  */
 export const attachmentDownloadLink = (
   attachment: Attachment,
-  url: string,
+  url: string | null,
   testid: string,
 ): ReturnType<Component> => (
-  <a
-    href={url}
-    target="_blank"
-    rel="noopener noreferrer"
-    class="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface-2 px-3 py-2 text-xs text-muted hover:text-ink"
-    data-testid={testid}
+  <Show
+    when={url}
+    fallback={
+      <span
+        class="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface-2 px-3 py-2 text-xs text-faint"
+        data-testid="attachment-unavailable"
+      >
+        📎 {attachment.filename ?? attachment.id}
+      </span>
+    }
   >
-    📎 {attachment.filename ?? attachment.id}
-  </a>
+    {(href) => (
+      <a
+        href={href()}
+        target="_blank"
+        rel="noopener noreferrer"
+        class="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface-2 px-3 py-2 text-xs text-muted hover:text-ink"
+        data-testid={testid}
+      >
+        📎 {attachment.filename ?? attachment.id}
+      </a>
+    )}
+  </Show>
 );
 
 /**
@@ -50,27 +71,33 @@ export const attachmentDownloadLink = (
  * surface itself clickable would fight the native controls, where a click means
  * play/pause. Without `onExpand` an image falls back to the old
  * open-in-a-new-tab link, so the component still stands alone.
+ *
+ * Only the media kinds load inline, each in an element that cannot run the
+ * file as a document (`<img>`, `<video>`, `<audio>`; an SVG in `<img>` runs no
+ * script), whatever the untrusted `mime` claims (§5.8). An attachment whose
+ * `url` may not be used ({@link attachmentUrl}) is a label and loads nothing.
  */
 export const AttachmentView: Component<{ attachment: Attachment; onExpand?: () => void }> = (
   props,
 ) => {
-  const url = () => resolveAttachmentUrl(props.attachment.url);
+  const url = () => attachmentUrl(props.attachment);
   const name = () => props.attachment.filename ?? props.attachment.id;
+  const kind = () => (url() === null ? "file" : attachmentKind(props.attachment));
 
   return (
     <Switch fallback={attachmentDownloadLink(props.attachment, url(), "attachment-link")}>
-      <Match when={attachmentKind(props.attachment) === "image"}>
+      <Match when={kind() === "image"}>
         <Show
           when={props.onExpand}
           fallback={
             <a
-              href={url()}
+              href={url() ?? undefined}
               target="_blank"
               rel="noopener noreferrer"
               data-testid="attachment-image-link"
             >
               <img
-                src={url()}
+                src={url() ?? undefined}
                 alt={name()}
                 class="max-h-64 max-w-xs rounded-lg border border-border object-contain"
                 data-testid="attachment-image"
@@ -86,7 +113,7 @@ export const AttachmentView: Component<{ attachment: Attachment; onExpand?: () =
             data-testid="attachment-image-button"
           >
             <img
-              src={url()}
+              src={url() ?? undefined}
               alt={name()}
               class="max-h-64 max-w-xs rounded-lg border border-border object-contain"
               data-testid="attachment-image"
@@ -94,7 +121,7 @@ export const AttachmentView: Component<{ attachment: Attachment; onExpand?: () =
           </button>
         </Show>
       </Match>
-      <Match when={attachmentKind(props.attachment) === "video"}>
+      <Match when={kind() === "video"}>
         <div class="relative inline-block">
           {/* biome-ignore lint/a11y/useMediaCaption: user-uploaded media has no caption track to attach; controls + accessible name + a fallback download link are provided instead. */}
           <video
@@ -105,7 +132,7 @@ export const AttachmentView: Component<{ attachment: Attachment; onExpand?: () =
             class="max-h-64 max-w-xs rounded-lg border border-border"
             data-testid="attachment-video"
           >
-            <source src={url()} type={props.attachment.mime} />
+            <source src={url() ?? undefined} type={props.attachment.mime} />
             {attachmentDownloadLink(props.attachment, url(), "attachment-fallback-link")}
           </video>
           <Show when={props.onExpand}>
@@ -121,10 +148,10 @@ export const AttachmentView: Component<{ attachment: Attachment; onExpand?: () =
           </Show>
         </div>
       </Match>
-      <Match when={attachmentKind(props.attachment) === "audio"}>
+      <Match when={kind() === "audio"}>
         {/* biome-ignore lint/a11y/useMediaCaption: user-uploaded media has no caption track to attach; controls + accessible name + a fallback download link are provided instead. */}
         <audio controls preload="metadata" aria-label={name()} data-testid="attachment-audio">
-          <source src={url()} type={props.attachment.mime} />
+          <source src={url() ?? undefined} type={props.attachment.mime} />
           {attachmentDownloadLink(props.attachment, url(), "attachment-fallback-link")}
         </audio>
       </Match>
