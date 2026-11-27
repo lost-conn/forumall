@@ -12,8 +12,8 @@ import type { NonceStore } from "../../provider/nonce-store.ts";
 import type { PresenceRegistry } from "../../provider/presence.ts";
 import type { Hub, HubConnection, HubSocket, OutboundEvent } from "../../provider/ws-hub.ts";
 import { type RegistryErrorCode, errorCodeStatus } from "../errors.ts";
-import type { ChannelTypingRegistry } from "./channel-typing.ts";
 import type { RemoteKeyWatch } from "./remote-key-watch.ts";
+import type { TypingRegistry } from "./typing-registry.ts";
 
 /**
  * Application close code (§7.1 "Close codes"): authentication failed, the
@@ -148,14 +148,6 @@ export interface ConnState {
   authTimer?: ReturnType<typeof setTimeout>;
   /** Periodic server-`ping` + idle-timeout sweep. */
   heartbeatTimer?: ReturnType<typeof setInterval>;
-  /**
-   * Active DM typing indicators for THIS connection, keyed by `dmId`: each
-   * entry holds the auto-expiry timer that fans out a `stop` if no refreshing
-   * `typing.start` arrives within {@link Config.typingTimeoutMs}, and the
-   * `counterparty` actor to fan a `dm.typing` stop to (§7.4). Ephemeral.
-   * (Channel typing is the actor's, across connections: `WsCtx.channelTyping`.)
-   */
-  dmTypingTimers: Map<string, { timer: ReturnType<typeof setTimeout>; counterparty: string }>;
 }
 
 /**
@@ -224,7 +216,9 @@ export interface WsCtx {
   readonly authority: string;
   readonly issueChallengeNonce: () => string;
   /** Every actor's active channel `typing.start`s (§7.1), across connections. */
-  readonly channelTyping: ChannelTypingRegistry;
+  readonly channelTyping: TypingRegistry;
+  /** Every actor's active DM `typing.start`s by `dmId` (§7.4), across connections. */
+  readonly dmTyping: TypingRegistry;
 }
 
 /**

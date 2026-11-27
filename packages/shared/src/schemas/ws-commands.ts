@@ -7,7 +7,6 @@
 import { z } from "zod";
 
 import {
-  DmIdSchema,
   HttpsUriSchema,
   OpaqueCursorSchema,
   Rfc3339DateTimeSchema,
@@ -133,21 +132,20 @@ export const WsReactionRemoveSchema = wsCommand(
 export type WsReactionRemove = z.infer<typeof WsReactionRemoveSchema>;
 
 /**
- * `typing.start` command. Targets either a channel (`channelId`) OR a DM
- * conversation (`dmId`) — exactly one. Both fields are optional on the schema
- * (open-world) and the server requires one of them; a DM-scoped typing frame
- * fans out a `dm.typing` event to the counterparty (§7.4).
+ * `typing.start` command. `channelId` names a channel, or a DM conversation by
+ * its `dmId` (`dm_…`, §7.4): the provider fans out `channel.typing` to the
+ * channel's subscribers, or `dm.typing` to the counterparty.
  */
 export const WsTypingStartSchema = wsCommand(
   "typing.start",
-  z.object({ channelId: z.string().min(1).optional(), dmId: DmIdSchema.optional() }).passthrough(),
+  z.object({ channelId: z.string().min(1) }).passthrough(),
 );
 export type WsTypingStart = z.infer<typeof WsTypingStartSchema>;
 
-/** `typing.stop` command. Targets either a channel (`channelId`) or a DM (`dmId`). */
+/** `typing.stop` command. `channelId` names a channel or a `dmId`, as for `typing.start`. */
 export const WsTypingStopSchema = wsCommand(
   "typing.stop",
-  z.object({ channelId: z.string().min(1).optional(), dmId: DmIdSchema.optional() }).passthrough(),
+  z.object({ channelId: z.string().min(1) }).passthrough(),
 );
 export type WsTypingStop = z.infer<typeof WsTypingStopSchema>;
 

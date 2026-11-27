@@ -1,8 +1,9 @@
 /**
  * §7.1 "Typing indicators" (channels) and §7.4 DM typing: `typing.start` /
- * `typing.stop`, the auto-expiry timers (channel starts are the actor's, kept
- * in `ctx.channelTyping`; DM starts per connection), and clearing them all
- * when a connection goes away (so no indicator is left stuck).
+ * `typing.stop`, whose `channelId` names a channel or, as `dm_…`, a DM
+ * conversation. Typing is the actor's state across connections, with an
+ * auto-expiry timer per connection (`ctx.channelTyping` / `ctx.dmTyping`), and
+ * a closing connection's starts are dropped (so no indicator is left stuck).
  */
 import {
   MessageKindSchema,
@@ -98,30 +99,23 @@ function deliverDmTyping(
   );
 }
 
-/** Clear a connection's DM typing timer for `dmId` without fanning out. */
-function clearDmTypingTimer(state: ConnState, dmId: string): void {
-  const entry = state.dmTypingTimers.get(dmId);
-  if (entry !== undefined) {
-    clearTimeout(entry.timer);
-    state.dmTypingTimers.delete(dmId);
-  }
-}
-
 /**
- * Clear every active DM typing indicator for a connection, optionally fanning
- * out a `stop` to each counterparty first (on disconnect, so a dropped
- * connection never leaves a stuck indicator — mirrors {@link clearAllTyping}).
+ * Drop every DM typing start a closing connection holds. Where that ends the
+ * actor's typing in a conversation (no other connection of theirs still types
+ * there) a `stop` is delivered to the counterparty, so a dropped connection
+ * never leaves an indicator stuck (§7.4, mirrors {@link clearAllTyping}).
  */
-export function clearAllDmTyping(ctx: WsCtx, state: ConnState, emitStop: boolean): void {
-  const { hub, authority } = ctx;
-  for (const [dmId, entry] of state.dmTypingTimers) {
-    clearTimeout(entry.timer);
-    if (emitStop && state.actor) {
-      const stop = dmTypingEvent(dmId, state.actor, "stop");
-      deliverDmTyping(hub, authority, dmId, entry.counterparty, stop);
+export function clearAllDmTyping(ctx: WsCtx, state: ConnState): void {
+  const { hub, authority, dmTyping } = ctx;
+  const actor = state.actor;
+  if (!actor) return; // an unauthenticated connection never typed
+  for (const dmId of dmTyping.dropConnection(state, actor)) {
+    // The actor typed here, so it is a participant and the lookup succeeds.
+    const counterparty = dmTypingCounterparty(ctx, state, dmId);
+    if (counterparty !== null) {
+      deliverDmTyping(hub, authority, dmId, counterparty, dmTypingEvent(dmId, actor, "stop"));
     }
   }
-  state.dmTypingTimers.clear();
 }
 
 /**
@@ -149,7 +143,8 @@ export function clearAllTyping(ctx: WsCtx, state: ConnState): void {
  * auto-expiry timer in `ctx.channelTyping`: if no refreshing `typing.start`
  * arrives within {@link Config.typingTimeoutMs}, and no other connection of
  * the actor's still types there, an automatic `stop` is fanned out. Typing is
- * ephemeral soft state — never persisted.
+ * ephemeral soft state — never persisted. A `dm_…` target is a DM start
+ * ({@link dmTypingStart}).
  */
 export function handleTypingStart(
   ctx: WsCtx,
@@ -158,7 +153,7 @@ export function handleTypingStart(
   rawFrame: unknown,
   frameId: string,
 ): void {
-  const { config, db, hub, authority } = ctx;
+  const { config, db, hub } = ctx;
   const parsed = WsTypingStartSchema.safeParse(rawFrame);
   if (!parsed.success) {
     hub.send(ws, errorEvent("bad_request", "malformed typing.start command", frameId));
@@ -167,32 +162,9 @@ export function handleTypingStart(
   const actor = state.actor;
   if (!actor) return; // unreachable: only authenticated connections reach here
 
-  const dmId = parsed.data.data.dmId;
-  // --- DM-scoped typing (§7.4) ------------------------------------------
-  if (dmId !== undefined) {
-    // A non-participant gets exactly what an unknown dmId gets (§7.4
-    // "Non-participants answer as unknown").
-    const counterparty = dmTypingCounterparty(ctx, state, dmId);
-    if (counterparty === null) {
-      hub.send(ws, errorEvent("not_found", "No such conversation", frameId));
-      return;
-    }
-    // Fan the `start` to the counterparty (the typer doesn't need its own echo
-    // for a 2-party DM, mirroring how DM messages deliver to the recipient).
-    deliverDmTyping(hub, authority, dmId, counterparty, dmTypingEvent(dmId, actor, "start"));
-    // (Re)arm the per-(connection, dmId) auto-expiry timer.
-    clearDmTypingTimer(state, dmId);
-    const timer = setTimeout(() => {
-      state.dmTypingTimers.delete(dmId);
-      deliverDmTyping(hub, authority, dmId, counterparty, dmTypingEvent(dmId, actor, "stop"));
-    }, config.typingTimeoutMs);
-    state.dmTypingTimers.set(dmId, { timer, counterparty });
-    return;
-  }
-
   const channelId = parsed.data.data.channelId;
-  if (channelId === undefined) {
-    hub.send(ws, errorEvent("bad_request", "typing.start needs a channelId or dmId", frameId));
+  if (isDmId(channelId)) {
+    dmTypingStart(ctx, ws, state, actor, channelId, frameId);
     return;
   }
   const refusal = typingStartRefusal(db, channelId, actor);
@@ -222,8 +194,8 @@ export function handleTypingStart(
  * auto-expiry cancelled) and `channel.typing { state: "stop" }` fanned out;
  * that holds even for an actor who has just lost access, so their indicator
  * does not linger. A stop with no active start is a no-op that sends nothing,
- * to subscribers or to the requester (§7.1). DM stops (§7.4) are per
- * connection.
+ * to subscribers or to the requester (§7.1). A `dm_…` target is a DM stop
+ * ({@link dmTypingStop}).
  */
 export function handleTypingStop(
   ctx: WsCtx,
@@ -232,7 +204,7 @@ export function handleTypingStop(
   rawFrame: unknown,
   frameId: string,
 ): void {
-  const { db, hub, authority } = ctx;
+  const { db, hub } = ctx;
   const parsed = WsTypingStopSchema.safeParse(rawFrame);
   if (!parsed.success) {
     hub.send(ws, errorEvent("bad_request", "malformed typing.stop command", frameId));
@@ -241,22 +213,9 @@ export function handleTypingStop(
   const actor = state.actor;
   if (!actor) return; // unreachable: only authenticated connections reach here
 
-  const dmId = parsed.data.data.dmId;
-  if (dmId !== undefined) {
-    // Resolve the counterparty (prefer the live timer's, fall back to the
-    // participant lookup) so an explicit stop still reaches the other party.
-    const counterparty =
-      state.dmTypingTimers.get(dmId)?.counterparty ?? dmTypingCounterparty(ctx, state, dmId);
-    clearDmTypingTimer(state, dmId);
-    if (counterparty !== null) {
-      deliverDmTyping(hub, authority, dmId, counterparty, dmTypingEvent(dmId, actor, "stop"));
-    }
-    return;
-  }
-
   const channelId = parsed.data.data.channelId;
-  if (channelId === undefined) {
-    hub.send(ws, errorEvent("bad_request", "typing.stop needs a channelId or dmId", frameId));
+  if (isDmId(channelId)) {
+    dmTypingStop(ctx, ws, state, actor, channelId, frameId);
     return;
   }
   // End the actor's typing here, on every connection of theirs. Only a start
@@ -266,5 +225,64 @@ export function handleTypingStop(
   }
   if (!getReadableChannel(db, channelId, actor)) {
     hub.send(ws, errorEvent(CHANNEL_NOT_FOUND.code, CHANNEL_NOT_FOUND.message, frameId));
+  }
+}
+
+/** Does a typing `channelId` name a DM conversation (`dm_…`, §7.4)? */
+function isDmId(channelId: string): boolean {
+  return channelId.startsWith("dm_");
+}
+
+/**
+ * §7.4 DM typing start: any participant may type (no group permission); a
+ * non-participant gets exactly what an unknown `dmId` gets (`not_found`, §7.4
+ * "Non-participants answer as unknown"). A successful start is not
+ * acknowledged: the `start` goes to the counterparty only (the typer needs no
+ * echo in a two-party DM) and (re)arms this connection's auto-expiry timer in
+ * `ctx.dmTyping`, after which — if no other connection of the actor's still
+ * types there — a `stop` is delivered.
+ */
+function dmTypingStart(
+  ctx: WsCtx,
+  ws: WsContext,
+  state: ConnState,
+  actor: string,
+  dmId: string,
+  frameId: string,
+): void {
+  const { config, hub, authority } = ctx;
+  const counterparty = dmTypingCounterparty(ctx, state, dmId);
+  if (counterparty === null) {
+    hub.send(ws, errorEvent("not_found", "No such conversation", frameId));
+    return;
+  }
+  deliverDmTyping(hub, authority, dmId, counterparty, dmTypingEvent(dmId, actor, "start"));
+  ctx.dmTyping.start(state, actor, dmId, config.typingTimeoutMs, () => {
+    deliverDmTyping(hub, authority, dmId, counterparty, dmTypingEvent(dmId, actor, "stop"));
+  });
+}
+
+/**
+ * §7.4 DM typing stop: a non-participant gets `not_found`, as for an unknown
+ * `dmId`. A participant's stop ends the actor's typing in the conversation on
+ * every connection of theirs and delivers a `stop` to the counterparty; with
+ * no active start it is a no-op that sends nothing.
+ */
+function dmTypingStop(
+  ctx: WsCtx,
+  ws: WsContext,
+  state: ConnState,
+  actor: string,
+  dmId: string,
+  frameId: string,
+): void {
+  const { hub, authority } = ctx;
+  const counterparty = dmTypingCounterparty(ctx, state, dmId);
+  if (counterparty === null) {
+    hub.send(ws, errorEvent("not_found", "No such conversation", frameId));
+    return;
+  }
+  if (ctx.dmTyping.stop(actor, dmId)) {
+    deliverDmTyping(hub, authority, dmId, counterparty, dmTypingEvent(dmId, actor, "stop"));
   }
 }

@@ -10,7 +10,7 @@
  *    (state `removed`) + drops from the aggregate.
  *  - reply listing: a DM that references another DM message appears under the
  *    parent's `/replies`.
- *  - DM typing: `typing.start { dmId }` fans `dm.typing` to the counterparty.
+ *  - DM typing: `typing.start { channelId: dmId }` fans `dm.typing` to the counterparty.
  *  - cross-provider storage-follows-message: alice@a reacts (via her home
  *    provider a) to a message she SENT to bob@b (which lives only in bob's
  *    inbox on b) → the reaction is FORWARDED to and stored on b (both add AND
@@ -439,7 +439,7 @@ describe("DM replies — local path", () => {
 });
 
 describe("DM typing", () => {
-  test("typing.start { dmId } fans dm.typing to the counterparty", async () => {
+  test("typing.start { channelId: dmId } fans dm.typing to the counterparty", async () => {
     const b = boot("dmreact-typing");
     const alice = await register(b, "alice");
     const bob = await register(b, "bob");
@@ -458,7 +458,7 @@ describe("DM typing", () => {
       id: "ts1",
       type: "typing.start",
       ts: rfc3339Timestamp(),
-      data: { dmId },
+      data: { channelId: dmId },
     });
     const evt = await bobWs.ofType("dm.typing");
     const d = evt.data as { dmId: string; user: string; state: string };
@@ -467,7 +467,12 @@ describe("DM typing", () => {
     expect(d.state).toBe("start");
 
     // Explicit stop also reaches bob.
-    aliceWs.send({ id: "ts2", type: "typing.stop", ts: rfc3339Timestamp(), data: { dmId } });
+    aliceWs.send({
+      id: "ts2",
+      type: "typing.stop",
+      ts: rfc3339Timestamp(),
+      data: { channelId: dmId },
+    });
     const stopEvt = await bobWs.ofType("dm.typing");
     expect((stopEvt.data as { state: string }).state).toBe("stop");
 

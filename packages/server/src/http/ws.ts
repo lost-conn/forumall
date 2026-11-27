@@ -61,7 +61,6 @@ import type { NonceStore } from "../provider/nonce-store.ts";
 import { type PresenceRegistry, fanOutPresence, markLastSeen } from "../provider/presence.ts";
 import type { Hub, OutboundEvent } from "../provider/ws-hub.ts";
 import { handleAuthenticate } from "./ws/authenticate.ts";
-import { ChannelTypingRegistry } from "./ws/channel-typing.ts";
 import {
   type CommandHandler,
   type ConnState,
@@ -86,6 +85,7 @@ import {
 import { handleReactionAdd, handleReactionRemove } from "./ws/reactions.ts";
 import { checkRemoteKey, stopRemoteKeyWatch } from "./ws/remote-key-watch.ts";
 import { handleSubscribe, handleUnsubscribe } from "./ws/subscriptions.ts";
+import { TypingRegistry } from "./ws/typing-registry.ts";
 import {
   clearAllDmTyping,
   clearAllTyping,
@@ -195,7 +195,8 @@ export function createWsHandlers(deps: WsHandlerDeps): WsHandlers {
     timings: { ...DEFAULT_WS_TIMINGS, ...deps.timings },
     authority: canonicalAuthority(deps.config.domain),
     issueChallengeNonce: deps.mintChallengeNonce ?? mintChallengeNonce,
-    channelTyping: new ChannelTypingRegistry(),
+    channelTyping: new TypingRegistry(),
+    dmTyping: new TypingRegistry(),
   };
   const { config, db, hub, presenceRegistry, nonceStore, timings } = ctx;
 
@@ -227,7 +228,7 @@ export function createWsHandlers(deps: WsHandlerDeps): WsHandlers {
     // channel's other subscribers (§7.1: a dropped connection must not leave a
     // stuck indicator).
     clearAllTyping(ctx, state);
-    clearAllDmTyping(ctx, state, true);
+    clearAllDmTyping(ctx, state);
     stopRemoteKeyWatch(state);
 
     const hubConn = state.hubConn;
@@ -267,7 +268,6 @@ export function createWsHandlers(deps: WsHandlerDeps): WsHandlers {
         lastSeen: now,
         terminated: false,
         closed: false,
-        dmTypingTimers: new Map(),
       };
       stateBySocket.set(keyOf(ws), state);
       openSockets.set(keyOf(ws), ws);

@@ -167,7 +167,7 @@ describe("a remote participant's dmId subscription (§7.4, §8.5)", () => {
     const fedReact = `/api/federation/dms/${dmId}/messages/${sent.id}/reactions/star`;
     expect((await signedTo(fed.b, alice, "PUT", fedReact)).status).toBe(200);
     const bobOnB = await ws(fed.b, bob);
-    bobOnB.send({ id: "typ", type: "typing.start", data: { dmId } });
+    bobOnB.send({ id: "typ", type: "typing.start", data: { channelId: dmId } });
 
     expect(await aliceOnB.none(isDm, 300)).toBe(true);
   });
@@ -183,14 +183,14 @@ describe("a remote participant's dmId subscription (§7.4, §8.5)", () => {
     const bobOnB = await ws(fed.b, bob);
 
     // alice (remote, a participant by derivation) types → bob sees it.
-    aliceOnB.send({ id: "a_typ", type: "typing.start", data: { dmId } });
+    aliceOnB.send({ id: "a_typ", type: "typing.start", data: { channelId: dmId } });
     const toBob = await bobOnB.ofType("dm.typing");
     expect(toBob.data).toEqual({ dmId, user: alice.actor, state: "start" });
     // bob types → it reaches alice through her dmId subscription.
-    bobOnB.send({ id: "b_typ", type: "typing.start", data: { dmId } });
+    bobOnB.send({ id: "b_typ", type: "typing.start", data: { channelId: dmId } });
     const toAlice = await aliceOnB.ofType("dm.typing");
     expect(toAlice.data).toEqual({ dmId, user: bob.actor, state: "start" });
-    bobOnB.send({ id: "b_stop", type: "typing.stop", data: { dmId } });
+    bobOnB.send({ id: "b_stop", type: "typing.stop", data: { channelId: dmId } });
     const stop = await aliceOnB.ofType("dm.typing");
     expect(stop.data).toEqual({ dmId, user: bob.actor, state: "stop" });
     expect(await aliceOnB.none((f) => f.type === "error", 200)).toBe(true);
@@ -434,9 +434,9 @@ describe("a non-participant gets the unknown-dmId answer on every DM path", () =
       const subKnown = await answer(dmId, "subscribe", { channels: [dmId] });
       expect(subKnown).toContain('"code":"not_found"');
       expect(subKnown).toBe(await answer(UNKNOWN, "subscribe", { channels: [UNKNOWN] }));
-      const typKnown = await answer(dmId, "typing.start", { dmId });
+      const typKnown = await answer(dmId, "typing.start", { channelId: dmId });
       expect(typKnown).toContain('"code":"not_found"');
-      expect(typKnown).toBe(await answer(UNKNOWN, "typing.start", { dmId: UNKNOWN }));
+      expect(typKnown).toBe(await answer(UNKNOWN, "typing.start", { channelId: UNKNOWN }));
     });
   }
 });

@@ -54,10 +54,10 @@ Notes marked "spec question" point at wording in the spec that needs clarifying 
 |---|---|---|---|---|
 | Provider MUST | 58 | 31 | 23 | 4 |
 | Provider SHOULD | 4 | 1 | 1 | 2 |
-| Provider MAY (optional) | 10 | 5 | 5 | 0 |
+| Provider MAY (optional) | 10 | 6 | 4 | 0 |
 | Client MUST | 14 | 8 | 4 | 2 |
 | Client SHOULD | 8 | 3 | 1 | 4 |
-| **Total** | 94 | 48 | 34 | 12 |
+| **Total** | 94 | 49 | 33 | 12 |
 
 ## §12 Compliance Checklist coverage map
 
@@ -269,10 +269,9 @@ Notes marked "spec question" point at wording in the spec that needs clarifying 
     - Tests: `packages/server/test/dm-reactions.test.ts`, `packages/server/test/message-edit-dm.test.ts`
     - Note: Behaviour gap: the inbox owner may delete a message they did not author (`requireAuthor: false`, `packages/server/src/http/dm-edit-routes.ts:153`, asserted as intended by `dm-reactions.test.ts:815`); `applyDmEdit` never checks `deletedAt`, so a tombstone can be edited (`packages/server/src/http/dm-events.ts:134`); and a repeated `DELETE` fans out `dm.message` again (`dm-events.ts:195`). Untested: the tombstone `PATCH` and the repeated `DELETE`.
     - Context: Edits are author-only within the edit window (`dm-reactions.test.ts:815`, `:846`); a third party gets `404` (`:1038`). There is no `moderate` path.
-8. **partial**: Support DM typing for any participant (no `post` grant), answering a non-participant `not_found`, sending no acknowledgement of a successful `typing.start` and nothing for a `typing.stop` with no active `start` (§7.4)
-    - Tests: `packages/server/test/dm-reactions.test.ts`, `packages/server/test/dm-subscriptions.test.ts`
-    - Note: Behaviour gap: a `typing.stop { dmId }` from a non-participant is silently dropped instead of answered `not_found`, and one with no active `start` is still delivered to the counterparty (`packages/server/src/http/ws/typing.ts:259`). Untested: the absent acknowledgement of a successful `typing.start`, and both stop cases.
-    - Context: Any participant may type, with no group permission (`typing.ts:185`); `typing.start` reaches the counterparty (`dm-reactions.test.ts:442`); a non-participant's `typing.start` answers as an unknown `dmId` (`dm-subscriptions.test.ts:437`).
+8. **covered**: Support DM typing for any participant (no `post` grant), answering a non-participant `not_found`, sending no acknowledgement of a successful `typing.start` and nothing for a `typing.stop` with no active `start` (§7.4)
+    - Tests: `packages/server/test/dm-typing.test.ts`, `packages/server/test/dm-subscriptions.test.ts`
+    - Context: The DM is the command's `channelId` (`dm_…`), per §7.4 and `ws/typing-start.json`; a frame with only the non-spec `dmId` field is `bad_request`. Any participant may type with no group permission; a successful start is unacknowledged and not echoed; a stop with no active start, from this connection or another of the actor's, sends nothing; a non-participant's start and stop are `not_found` (`dm-typing.test.ts`); a remote participant types both ways and is answered as an unknown `dmId` when not a participant (`dm-subscriptions.test.ts`).
 9. **partial**: Support DM replies: check the parent only when `reference.provider` is absent or its own (`400` if it is not in the conversation), otherwise require (`400`) a participant's home provider; and serve the reply listing with its `provider` parameter, listing the replies it holds to (`provider`, `{messageId}`) (§7.4)
     - Tests: `packages/server/test/dm-reactions.test.ts`
     - Note: Behaviour gap: a DM send (`packages/server/src/http/dms-federation.ts:55`) stores `body.reference` unchecked (`:119`): no parent lookup in the conversation, no participant-home-provider check of `reference.provider`, no §2.2 canonicalization. The reply listing (`packages/server/src/http/dms.ts:96`) takes no `provider` query parameter, and `listDmReplies` matches on `reference.id` alone (`packages/server/src/provider/dm-reactions.ts:318`), so it also lists replies whose parent another provider holds under the same id. Only same-provider listing is tested (`dm-reactions.test.ts:414`).

@@ -182,7 +182,7 @@ numbers are in the spec at `e94447d`.
 | 53 (P MUST) | Resume: current state, deleted → `message.created` then `message.deleted`; cursors shared with REST, DM too | covered | Fixed by U20: replay emits `message.deleted` after a tombstone (`ws/subscriptions.ts`). `ws-resume.test.ts`, `cursor-interchange.test.ts`. | U20 |
 | 77 (P MAY) | DM reactions: tombstone `404`, no-op remove and repeated add emit no `dm.reaction` | behaviour | Tombstone add stored, and both no-ops fan out `dm.reaction` (`http/dm-reaction-routes.ts:102`, `:104`, `:119`). | U10 |
 | 78 (P MAY) | DM edit/delete author-only; tombstone `PATCH` → `404`; repeated `DELETE` no second `dm.message` | behaviour | Inbox owner may delete others' messages (`http/dm-edit-routes.ts:153`); tombstone editable (`http/dm-events.ts:134`); repeat delete re-fans (`:195`). | U10 |
-| 79 (P MAY) | DM typing for any participant; no-op stop sends nothing | behaviour | A non-participant's stop is dropped, not `not_found`; a stop with no `start` is delivered (`ws/typing.ts:259`). | U10 |
+| 79 (P MAY) | DM typing for any participant; no-op stop sends nothing | covered | Fixed in #53: the target is `channelId: dm_…` (the non-spec `dmId` field is gone); a non-participant's start and stop are `not_found`; DM typing is the actor's across connections (`ws/typing-registry.ts`), so a stop with no active start sends nothing. `dm-typing.test.ts`. | U10 |
 | 107 (C SHOULD) | Set `mentions`; `@handle@domain` in a DM for users off the recipient's provider | behaviour | Neither is done. | U13 |
 
 The DM and resume items were `covered` before; both are now `partial`. New

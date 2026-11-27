@@ -224,10 +224,12 @@ describe("ignored conversation rows over WS (§7.4 pointer hygiene)", () => {
     const subErr = await aConn.ofType("error");
     expect(subErr.data).toMatchObject({ code: "not_found", details: { channels: [dmId] } });
 
-    aConn.send({ id: "a_typ", type: "typing.start", data: { dmId } });
+    aConn.send({ id: "a_typ", type: "typing.start", data: { channelId: dmId } });
     const typErr = await aConn.ofType("error");
     expect((typErr.data as { code: string }).code).toBe("not_found");
-    aConn.send({ id: "a_stop", type: "typing.stop", data: { dmId } });
+    aConn.send({ id: "a_stop", type: "typing.stop", data: { channelId: dmId } });
+    const stopErr = await aConn.next((f) => f.correlationId === "a_stop");
+    expect((stopErr.data as { code: string }).code).toBe("not_found");
     await expect(await bConn.none((f) => f.type === "dm.typing", 300)).toBe(true);
 
     aConn.close();
