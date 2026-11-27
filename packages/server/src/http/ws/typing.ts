@@ -1,9 +1,11 @@
 /**
  * §7.1 "Typing indicators" (channels) and §7.4 DM typing: `typing.start` /
- * `typing.stop`, the per-connection auto-expiry timers, and clearing them all
+ * `typing.stop`, the auto-expiry timers (channel starts are the actor's, kept
+ * in `ctx.channelTyping`; DM starts per connection), and clearing them all
  * when a connection goes away (so no indicator is left stuck).
  */
 import {
+  MessageKindSchema,
   WsChannelTypingSchema,
   WsDmTypingSchema,
   WsTypingStartSchema,
@@ -12,11 +14,11 @@ import {
 import type { Db } from "../../db/index.ts";
 import { getReadableChannel } from "../../provider/channels.ts";
 import { getDmConversationRow } from "../../provider/dms.ts";
-import { getMembership } from "../../provider/permissions.ts";
+import { canPostKind } from "../../provider/permissions.ts";
 import type { Hub, OutboundEvent } from "../../provider/ws-hub.ts";
 import { CHANNEL_NOT_FOUND } from "../channel-access.ts";
 import { domainOf, resolveLocalDmOwner } from "../dm-request.ts";
-import type { MutationError } from "../message-mutations.ts";
+import { type MutationError, memberChannelContext } from "../message-mutations.ts";
 import { type ConnState, type WsContext, type WsCtx, errorEvent } from "./connection.ts";
 
 /** Build a validated `channel.typing` event (§7.1 "Typing indicators"). */
@@ -32,36 +34,22 @@ function typingEvent(
 }
 
 /**
- * May `actor` type in `channelId`? `null` when allowed, else the error to send:
+ * May `actor` start typing in `channelId` (§7.1 "Typing indicators")? `null`
+ * when allowed, else the error to send:
  *
  *  - a channel that does not exist or that the actor cannot read → `not_found`,
  *    exactly as for a missing channel (§11.3);
- *  - a reader who is not a member of the channel's group → `forbidden`:
- *    reading a `public` channel never implies typing in it (§11).
- *
- * §11 requires "membership plus the relevant permission"; no permission is
- * defined for typing (§5.2.1 names `view`, `post:<type>` and `react`), so
- * membership is the bar.
+ *  - a reader who holds no `post:<type>` grant there, for any `type` (§5.2.1:
+ *    the channel's override, else the group's `post`) → `forbidden`. A
+ *    non-member holds no grant: reading a `public` channel never implies
+ *    typing in it (§11). A reply-restricted actor holds a grant, so it types.
  */
-function typingRefusal(db: Db, channelId: string, actor: string): MutationError | null {
+function typingStartRefusal(db: Db, channelId: string, actor: string): MutationError | null {
   const channel = getReadableChannel(db, channelId, actor);
   if (!channel) return CHANNEL_NOT_FOUND;
-  if (!getMembership(db, channel.groupId, actor)) {
-    return { code: "forbidden", message: "only group members may type in this channel" };
-  }
-  return null;
-}
-
-/**
- * Clear a connection's typing timer for `channelId` without fanning out. Used
- * on explicit stop (we fan out separately) and when resetting on refresh.
- */
-function clearTypingTimer(state: ConnState, channelId: string): void {
-  const timer = state.typingTimers.get(channelId);
-  if (timer !== undefined) {
-    clearTimeout(timer);
-    state.typingTimers.delete(channelId);
-  }
+  const ctx = memberChannelContext(db, channel, actor);
+  if (ctx && MessageKindSchema.options.some((kind) => canPostKind(ctx, kind))) return null;
+  return { code: "forbidden", message: "typing here needs permission to post in this channel" };
 }
 
 /** Build a validated `dm.typing` event (§7.4, mirrors `channel.typing`). */
@@ -137,32 +125,31 @@ export function clearAllDmTyping(ctx: WsCtx, state: ConnState, emitStop: boolean
 }
 
 /**
- * Clear every active typing indicator for a connection, optionally fanning out
- * a `stop` for each first. On disconnect (`emitStop`) we MUST emit a `stop` per
- * channel the actor was typing in, so a dropped connection never leaves an
- * indicator stuck (§7.1). On a clean teardown after the hub is gone we still
- * clear the timers so none leak past the connection.
+ * Drop every channel typing start a closing connection holds. Where that ends
+ * the actor's typing (no other connection of theirs still types there) a
+ * `stop` is fanned out, so a dropped connection never leaves an indicator
+ * stuck (§7.1).
  */
-export function clearAllTyping(ctx: WsCtx, state: ConnState, emitStop: boolean): void {
-  const { hub } = ctx;
-  for (const [channelId, timer] of state.typingTimers) {
-    clearTimeout(timer);
-    if (emitStop && state.actor) {
-      hub.publishToChannel(channelId, typingEvent(channelId, state.actor, "stop"));
-    }
+export function clearAllTyping(ctx: WsCtx, state: ConnState): void {
+  const { hub, channelTyping } = ctx;
+  const actor = state.actor;
+  if (!actor) return; // an unauthenticated connection never typed
+  for (const channelId of channelTyping.dropConnection(state, actor)) {
+    hub.publishToChannel(channelId, typingEvent(channelId, actor, "stop"));
   }
-  state.typingTimers.clear();
 }
 /**
  * §7.1 Typing indicators: signal that the connection's actor started typing in
- * a channel. Authorize via {@link typingRefusal} — a missing or unreadable
- * channel gets `not_found`, a non-member reader `forbidden`, and neither any
- * fan-out. On success fan out `channel.typing
+ * a channel. Authorize via {@link typingStartRefusal} — a missing or unreadable
+ * channel gets `not_found`, a reader with no `post:<type>` grant `forbidden`,
+ * and neither any fan-out. On success fan out `channel.typing
  * { channelId, user, state: "start" }` to every channel subscriber (matching
- * message fan-out, which includes the sender; clients filter their own user)
- * and (re)arm the per-(connection, channel) auto-expiry timer: if no refreshing
- * `typing.start` arrives within {@link Config.typingTimeoutMs}, the timer fans
- * out an automatic `stop`. Typing is ephemeral soft state — never persisted.
+ * message fan-out, which includes the sender; clients filter their own user),
+ * with no acknowledgement to the requester, and (re)arm this connection's
+ * auto-expiry timer in `ctx.channelTyping`: if no refreshing `typing.start`
+ * arrives within {@link Config.typingTimeoutMs}, and no other connection of
+ * the actor's still types there, an automatic `stop` is fanned out. Typing is
+ * ephemeral soft state — never persisted.
  */
 export function handleTypingStart(
   ctx: WsCtx,
@@ -208,36 +195,35 @@ export function handleTypingStart(
     hub.send(ws, errorEvent("bad_request", "typing.start needs a channelId or dmId", frameId));
     return;
   }
-  const refusal = typingRefusal(db, channelId, actor);
+  const refusal = typingStartRefusal(db, channelId, actor);
   if (refusal) {
     hub.send(ws, errorEvent(refusal.code, refusal.message, frameId));
     return;
   }
 
-  // Fan out the `start` (includes the typer's own connection, like message
-  // fan-out; clients drop their own user).
+  // Fan out the `start`, uncorrelated (a successful start is not acknowledged,
+  // §7.1); it reaches the typer's own subscribed connections like any
+  // subscriber's, and clients drop their own user.
   hub.publishToChannel(channelId, typingEvent(channelId, actor, "start"));
 
-  // (Re)arm the auto-expiry timer: a refreshing `typing.start` resets it.
-  clearTypingTimer(state, channelId);
-  const timer = setTimeout(() => {
-    // Window elapsed with no refresh → auto-emit a `stop` (§7.1) and forget it.
-    state.typingTimers.delete(channelId);
+  // (Re)arm this connection's auto-expiry timer: a refreshing `typing.start`
+  // resets it. When it lapses with no other connection of the actor's still
+  // typing here, auto-emit a `stop` (§7.1).
+  ctx.channelTyping.start(state, actor, channelId, config.typingTimeoutMs, () => {
     hub.publishToChannel(channelId, typingEvent(channelId, actor, "stop"));
-  }, config.typingTimeoutMs);
-  state.typingTimers.set(channelId, timer);
+  });
 }
 
 /**
  * §7.1 Typing indicators: signal that the connection's actor stopped typing in
- * a channel. Cancels the auto-expiry timer (so it doesn't double-emit) and fans
- * out `channel.typing { channelId, user, state: "stop" }` — when this
- * connection had a pending `start` there (so an actor who lost access can still
- * clear their own indicator), or when the actor may type there now (a `start`
- * from another of their connections). Otherwise nothing happens: there is no
- * error, so a missing and a hidden channel answer alike (§11.3), and a
- * non-member reader cannot inject typing events (§11). A malformed frame still
- * errors.
+ * a channel. A channel that does not exist or that the actor cannot read is
+ * answered `not_found`, as a missing channel (§11.3). An active start of the
+ * actor's there — from this connection or another of theirs — is ended (its
+ * auto-expiry cancelled) and `channel.typing { state: "stop" }` fanned out;
+ * that holds even for an actor who has just lost access, so their indicator
+ * does not linger. A stop with no active start is a no-op that sends nothing,
+ * to subscribers or to the requester (§7.1). DM stops (§7.4) are per
+ * connection.
  */
 export function handleTypingStop(
   ctx: WsCtx,
@@ -269,11 +255,16 @@ export function handleTypingStop(
   }
 
   const channelId = parsed.data.data.channelId;
-  if (channelId === undefined) return; // nothing to stop
-  const hadStart = state.typingTimers.has(channelId);
-  // Cancel the pending auto-expiry; we're emitting the `stop` explicitly now.
-  clearTypingTimer(state, channelId);
-  if (hadStart || typingRefusal(db, channelId, actor) === null) {
+  if (channelId === undefined) {
+    hub.send(ws, errorEvent("bad_request", "typing.stop needs a channelId or dmId", frameId));
+    return;
+  }
+  // End the actor's typing here, on every connection of theirs. Only a start
+  // that was active is announced as stopped: otherwise nothing is sent.
+  if (ctx.channelTyping.stop(actor, channelId)) {
     hub.publishToChannel(channelId, typingEvent(channelId, actor, "stop"));
+  }
+  if (!getReadableChannel(db, channelId, actor)) {
+    hub.send(ws, errorEvent(CHANNEL_NOT_FOUND.code, CHANNEL_NOT_FOUND.message, frameId));
   }
 }

@@ -144,6 +144,11 @@ export function rowToMessage(row: MessageRow): Message {
   });
 }
 
+/** A stored row as a {@link MessageRecord}: the message, its `seq` and cursor. */
+export function rowToRecord(row: MessageRow): MessageRecord {
+  return { message: rowToMessage(row), seq: row.seq, cursor: encodeMessageCursor(row.seq) };
+}
+
 /** The raw stored row for `messageId` in `channelId`, or `null` if none. */
 export function getMessageRow(db: Db, channelId: string, messageId: string): MessageRow | null {
   return (
@@ -189,7 +194,7 @@ export function getMessageByClientId(
       .limit(1)
       .all()[0] ?? null;
   if (!row) return null;
-  return { message: rowToMessage(row), seq: row.seq, cursor: encodeMessageCursor(row.seq) };
+  return rowToRecord(row);
 }
 
 /** Arguments to {@link createMessage}. */
@@ -279,7 +284,7 @@ export function createMessage(db: Db, config: Config, input: CreateMessageInput)
     db.drizzle.insert(messages).values(row).run();
   })();
 
-  return { message: rowToMessage(row), seq: row.seq, cursor: encodeMessageCursor(row.seq) };
+  return rowToRecord(row);
 }
 
 /**
@@ -355,7 +360,7 @@ export function updateMessageFields(
     .run();
   const row = getMessageRow(db, channelId, messageId);
   if (!row) throw new Error(`updateMessageFields: no such message ${messageId}`);
-  return { message: rowToMessage(row), seq: row.seq, cursor: encodeMessageCursor(row.seq) };
+  return rowToRecord(row);
 }
 
 /**
@@ -375,7 +380,7 @@ export function tombstoneMessage(db: Db, channelId: string, messageId: string): 
     .run();
   const row = getMessageRow(db, channelId, messageId);
   if (!row) throw new Error(`tombstoneMessage: no such message ${messageId}`);
-  return { message: rowToMessage(row), seq: row.seq, cursor: encodeMessageCursor(row.seq) };
+  return rowToRecord(row);
 }
 
 /**

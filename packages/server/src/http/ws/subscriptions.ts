@@ -12,6 +12,7 @@ import {
 } from "../../provider/messages.ts";
 import type { OutboundEvent } from "../../provider/ws-hub.ts";
 import { createdEvent } from "../message-create.ts";
+import { deletedEvent } from "../message-delete.ts";
 import { type ConnState, type WsContext, type WsCtx, errorEvent } from "./connection.ts";
 import { dmReplayEvent, mayFollowDm, resolveDmReplay } from "./dm-subscriptions.ts";
 
@@ -47,7 +48,9 @@ import { dmReplayEvent, mayFollowDm, resolveDmReplay } from "./dm-subscriptions.
  * and replay every message with `seq > sinceSeq`, in ascending `seq` order, as
  * a `message.created` event carrying the message's CURRENT canonical state (so
  * an edit/delete since the cursor is reflected in the replayed copy) and its
- * `cursor`. We register the subscription FIRST, then replay synchronously —
+ * `cursor`; a tombstone's `message.created` is followed by its
+ * `message.deleted`, at the same position and `cursor` ({@link
+ * channelReplayEvents}). We register the subscription FIRST, then replay synchronously —
  * the single-process hub means no live event for that channel can interleave
  * ahead of the replay, so the client sees the gap-closing replay strictly
  * before live events. (At-least-once delivery, §7.1: the boundary message MAY
@@ -170,8 +173,8 @@ export function handleSubscribe(
       truncated.push(target.channelId);
     } else {
       replays.push(
-        outcome.messages.map((record: MessageRecord) =>
-          createdEvent(target.groupId, target.channelId, record, frameId),
+        outcome.messages.flatMap((record: MessageRecord) =>
+          channelReplayEvents(target.groupId, target.channelId, record, frameId),
         ),
       );
     }
@@ -195,6 +198,24 @@ export function handleSubscribe(
   for (const events of replays) {
     for (const event of events) hub.send(ws, event);
   }
+}
+
+/**
+ * The resume replay of one channel message (§7.1 "Resuming after a
+ * disconnect"): a `message.created` carrying the message as it now stands and,
+ * for a message deleted since, its `message.deleted` right after it. Both keep
+ * the message's own position and `cursor` (edits and deletes never move a
+ * message in the timeline), and correlate to the `subscribe` being answered.
+ */
+function channelReplayEvents(
+  groupId: string,
+  channelId: string,
+  record: MessageRecord,
+  frameId: string,
+): OutboundEvent[] {
+  const created = createdEvent(groupId, channelId, record, frameId);
+  if (record.message.deletedAt === undefined) return [created];
+  return [created, deletedEvent(groupId, channelId, record, frameId)];
 }
 
 /** §7.1: remove channels from the connection's set and ack `unsubscribed`. */

@@ -22,26 +22,24 @@ import {
   MessagesPageSchema,
   PagedResponseSchema,
   ReactionSchema,
-  WsMessageDeletedSchema,
   WsMessageUpdatedSchema,
-  WsReactionAddedSchema,
-  WsReactionRemovedSchema,
-  rfc3339Timestamp,
 } from "@forumall/shared";
 import { type Context, Hono } from "hono";
 
-import { listMessages, listReplies, tombstoneMessage } from "../provider/messages.ts";
-import { addReaction, hasReaction, listReactions, removeReaction } from "../provider/reactions.ts";
+import { listMessages, listReplies } from "../provider/messages.ts";
+import { listReactions } from "../provider/reactions.ts";
 import { requireReadableChannel } from "./channel-access.ts";
 import { AppError, slugForErrorCode } from "./errors.ts";
 import { createChannelMessage } from "./message-create.ts";
+import { deleteChannelMessage } from "./message-delete.ts";
 import { editChannelMessage } from "./message-edit.ts";
+import type { MutationError } from "./message-mutations.ts";
+import { parseReactionPutBody, reactionExtras } from "./reaction-body.ts";
 import {
-  type MutationError,
-  authorizeMessageDelete,
-  authorizeReaction,
-} from "./message-mutations.ts";
-import { reactionExtras, readReactionPutBody } from "./reaction-body.ts";
+  type ReactionTarget,
+  addChannelReaction,
+  removeChannelReaction,
+} from "./reaction-mutations.ts";
 import { optionalSignature, requireSignature } from "./signature.ts";
 import type { AppBindings } from "./types.ts";
 
@@ -57,6 +55,17 @@ function toAppError(error: MutationError): AppError {
  */
 function requireParam(c: Context<AppBindings>, name: string): string {
   return c.req.param(name) ?? "";
+}
+
+/** The reaction a `…/reactions/{key}` route names, for `actor`. */
+function reactionTarget(c: Context<AppBindings>, actor: string): ReactionTarget {
+  return {
+    groupId: requireParam(c, "groupId"),
+    channelId: requireParam(c, "channelId"),
+    messageId: requireParam(c, "messageId"),
+    key: requireParam(c, "key"),
+    actor,
+  };
 }
 
 export function createMessagesRouter() {
@@ -183,33 +192,20 @@ export function createMessagesRouter() {
   });
 
   // -- DELETE .../messages/:messageId (§7.1 tombstone, signed) ------------
-  // Author OR a `moderate` member; soft-delete → 204. Fans out
-  // `message.deleted` to WS subscribers via the shared hub.
+  // Author OR a `moderate` member; soft-delete → 204, fanning out
+  // `message.deleted` to WS subscribers via the shared hub. A repeated delete
+  // of a tombstone is also 204 and fans out nothing (`message-delete.ts`).
   router.delete("/:messageId", signed, (c) => {
     const { db, hub } = c.var;
     const actor = c.var.actor;
     if (!actor) throw AppError.unauthorized();
-    const groupId = requireParam(c, "groupId");
-    const channelId = requireParam(c, "channelId");
-    const messageId = requireParam(c, "messageId");
-
-    const outcome = authorizeMessageDelete(db, groupId, channelId, messageId, actor.actor);
-    if (outcome.error) throw toAppError(outcome.error);
-
-    const record = tombstoneMessage(db, channelId, messageId);
-    const deletedAt = record.message.deletedAt ?? rfc3339Timestamp();
-
-    hub.publishToChannel(channelId, {
-      type: "message.deleted",
-      data: WsMessageDeletedSchema.shape.data.parse({
-        groupId,
-        channelId,
-        messageId,
-        cursor: record.cursor,
-        deletedAt,
-      }),
+    const outcome = deleteChannelMessage(db, hub, {
+      groupId: requireParam(c, "groupId"),
+      channelId: requireParam(c, "channelId"),
+      messageId: requireParam(c, "messageId"),
+      actor: actor.actor,
     });
-
+    if (outcome.kind === "rejected") throw toAppError(outcome.error);
     return c.body(null, 204);
   });
 
@@ -243,73 +239,31 @@ export function createMessagesRouter() {
   });
 
   // -- PUT .../messages/:messageId/reactions/:key (§7.1, signed) ------------
-  // Add your reaction (optional body `{ unicode?, image? }`); idempotent →
-  // returns the Reaction (201 first add, 200 idempotent repeat). Fans out
-  // `reaction.added` with the full object to WS subscribers via the hub.
+  // Add your reaction (optional body `{ unicode?, image? }`), judged after the
+  // 404/403 checks; idempotent → returns the Reaction (201 first add, 200 for a
+  // repeated add, which changes nothing). Only a first add fans out
+  // `reaction.added` to WS subscribers (`reaction-mutations.ts`).
   router.put("/:messageId/reactions/:key", signed, async (c) => {
     const { db, hub } = c.var;
     const actor = c.var.actor;
     if (!actor) throw AppError.unauthorized();
-    const groupId = requireParam(c, "groupId");
-    const channelId = requireParam(c, "channelId");
-    const messageId = requireParam(c, "messageId");
-    const key = requireParam(c, "key");
-
-    const body = await readReactionPutBody(c);
-
-    const outcome = authorizeReaction(db, "add", groupId, channelId, messageId, actor.actor);
-    if (outcome.error) throw toAppError(outcome.error);
-
-    // Idempotency: a repeat add returns the existing reaction (same id) → 200;
-    // a brand-new reaction → 201.
-    const existed = hasReaction(db, messageId, actor.actor, key);
-
-    const reaction = addReaction(db, {
-      messageId,
-      channelId,
-      groupId,
-      author: actor.actor,
-      key,
-      ...reactionExtras(body),
-    });
-
-    hub.publishToChannel(channelId, {
-      type: "reaction.added",
-      data: WsReactionAddedSchema.shape.data.parse({ groupId, channelId, reaction }),
-    });
-
-    return c.json(ReactionSchema.parse(reaction), existed ? 200 : 201);
+    const text = await c.req.text();
+    const outcome = addChannelReaction(db, hub, reactionTarget(c, actor.actor), () =>
+      reactionExtras(parseReactionPutBody(text)),
+    );
+    if (outcome.kind === "rejected") throw toAppError(outcome.error);
+    return c.json(ReactionSchema.parse(outcome.reaction), outcome.kind === "added" ? 201 : 200);
   });
 
   // -- DELETE .../messages/:messageId/reactions/:key (§7.1, signed) --------
-  // Remove your reaction → 204. Fans out `reaction.removed` to WS subscribers.
+  // Remove your reaction → 204 either way; only a removal that happened fans
+  // out `reaction.removed` (`reaction-mutations.ts`).
   router.delete("/:messageId/reactions/:key", signed, (c) => {
     const { db, hub } = c.var;
     const actor = c.var.actor;
     if (!actor) throw AppError.unauthorized();
-    const groupId = requireParam(c, "groupId");
-    const channelId = requireParam(c, "channelId");
-    const messageId = requireParam(c, "messageId");
-    const key = requireParam(c, "key");
-
-    const outcome = authorizeReaction(db, "remove", groupId, channelId, messageId, actor.actor);
-    if (outcome.error) throw toAppError(outcome.error);
-
-    // Idempotent (204 either way), but only a removal that happened is fanned
-    // out: a reader who holds no such reaction must not broadcast one (§11).
-    if (removeReaction(db, messageId, actor.actor, key)) {
-      hub.publishToChannel(channelId, {
-        type: "reaction.removed",
-        data: WsReactionRemovedSchema.shape.data.parse({
-          groupId,
-          channelId,
-          messageId,
-          key,
-          author: actor.actor,
-        }),
-      });
-    }
-
+    const outcome = removeChannelReaction(db, hub, reactionTarget(c, actor.actor));
+    if (outcome.kind === "rejected") throw toAppError(outcome.error);
     return c.body(null, 204);
   });
 

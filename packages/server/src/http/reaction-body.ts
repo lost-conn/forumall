@@ -22,7 +22,16 @@ import type { AppBindings } from "./types.ts";
  * from it). Throws `400` when the body is not JSON or does not match.
  */
 export async function readReactionPutBody(c: Context<AppBindings>): Promise<ReactionPutRequest> {
-  const text = await c.req.text();
+  return parseReactionPutBody(await c.req.text());
+}
+
+/**
+ * Validate the text of an optional reaction `PUT` body, as
+ * {@link readReactionPutBody} does. For a route that must read the body before
+ * its earlier checks but judge it only after them (§7.1 "Order of checks":
+ * the body rules are step 5).
+ */
+export function parseReactionPutBody(text: string): ReactionPutRequest {
   if (text.trim().length === 0) return {};
   let raw: unknown;
   try {
