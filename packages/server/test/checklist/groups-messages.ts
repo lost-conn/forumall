@@ -53,11 +53,11 @@ export const GROUPS_MESSAGES: readonly ChecklistEntry[] = [
       "`requestToJoin` returns the existing pending row as stored (`packages/server/src/provider/membership.ts:355`); the owner's `409` is tested (`membership.test.ts:257`).",
   },
   {
-    item: "Gate join-request approve and deny on `manage` or `moderate`, without the subset rule; give an approved requester role `member`, and answer an approval for someone already a member with `200` and the existing `Member`, marking the request `approved` (§5.7)",
+    item: "Gate join-request approve and deny on `manage` or `moderate`, without the subset rule; give an approved requester role `member` (`guest` for a guest account, and `403` with the request unchanged for a guest past its `expiresAt`), and answer an approval for someone already a member with `200` and the existing `Member`, marking the request `approved` (§5.7)",
     level: "provider-must",
     covers: ["packages/server/test/membership.test.ts"],
     status: "partial",
-    note: "Untested: approve and deny by a role holding only `moderate`, and their `403` for a caller holding neither (only the listing's `403` is, `membership.test.ts:678`); an approval for a requester who is already a member → `200` with the existing `Member` unchanged and the request `approved` (`packages/server/src/provider/membership.ts:395`).",
+    note: "Behaviour gap: approval always adds the requester as `member` (`packages/server/src/provider/membership.ts:418`), so a guest account is given `member`, not `guest`, and nothing checks a guest's `expiresAt`, so an expired guest's request is approved rather than refused with `403` and left unchanged; forumall#52 is the open fix for §5.6/§5.7 invites and join requests. Untested: approve and deny by a role holding only `moderate`, and their `403` for a caller holding neither (only the listing's `403` is, `membership.test.ts:678`); an approval for a requester who is already a member → `200` with the existing `Member` unchanged and the request `approved` (`packages/server/src/provider/membership.ts:395`).",
     context:
       "Approve and deny check `manage` or `moderate` and apply no subset rule (`packages/server/src/http/membership.ts:432`, `:456`); the owner's approval → `member` is tested (`membership.test.ts:611`).",
   },
@@ -80,20 +80,20 @@ export const GROUPS_MESSAGES: readonly ChecklistEntry[] = [
       "The `201` carries `token`, validated against `invite-create-response.json` (`conformance.test.ts:413`). Tokens are 256 bits from `crypto.getRandomValues` (`provider/invites.ts:21`, `:40`). No code logs a token. The listing also returns `token`, which the spec allows.",
   },
   {
-    item: "On `redeem`, check the invite first (`404` unknown or expired, `409` exhausted, whoever the caller is); answer a valid invite redeemed by a caller who is already a member (the owner included) with `200`, the invite's `channelId` and their current role, changing no role and consuming no use of the invite; let a redemption whose invite names a since-deleted channel succeed, omitting `channelId` (§5.6)",
+    item: "On `redeem`, check the invite first (`404` unknown or expired, `409` exhausted, whoever the caller is); answer a valid invite redeemed by a caller who is already a member (the owner included) with `200`, the invite's `channelId` and their current role, changing no role and consuming no use of the invite; let a redemption whose invite names a since-deleted channel succeed, omitting `channelId`; refuse a non-member's redemption of an invite whose `role` the group no longer defines with `403`, consuming no use and creating no membership (§5.6)",
     level: "provider-must",
     covers: ["packages/server/test/invites.test.ts"],
     status: "partial",
-    note: "Behaviour gap: an exhausted invite redeemed by an existing member gets `200`, not `409`, because the membership short-circuit (`packages/server/src/http/invites.ts:181`) runs before `consumeInviteUse` (`:194`). A redemption whose channel was since deleted still echoes its `channelId` (`:186`, `:203`): deleting a channel leaves `invites.channel_id` set. Untested: a member's or the owner's redeem → `200` with the invite's `channelId` and their current role, role and `uses` unchanged; the deleted-channel case.",
+    note: "Behaviour gap: an exhausted invite redeemed by an existing member gets `200`, not `409`, because the membership short-circuit (`packages/server/src/http/invites.ts:181`) runs before `consumeInviteUse` (`:194`). A redemption whose channel was since deleted still echoes its `channelId` (`:186`, `:203`): deleting a channel leaves `invites.channel_id` set. A non-member redeeming an invite whose `role` the group no longer defines is not refused: the use is consumed and the membership added with the dead role (`:194`, `:198`), not `403`. forumall#52 is the open fix for these. Untested: a member's or the owner's redeem → `200` with the invite's `channelId` and their current role, role and `uses` unchanged; the deleted-channel case.",
     context:
       "Tested: an expired invite → `404` (`invites.test.ts:241`), a revoked (so unknown) token → `404` (`:157`), an exhausted one → `409` for a non-member (`:222`).",
   },
   {
-    item: "Give a guest provisioned through `/invites/{token}/guest` role `guest`, whatever the invite's `role`, and join it to the group even when the invite names a since-deleted channel (§4.8, §5.6)",
+    item: "Give a guest provisioned through `/invites/{token}/guest` role `guest`, whatever the invite's `role`, and join it to the group even when the invite names a since-deleted channel; let a guest that left or was removed rejoin its own group (redeem or join) only as `guest`, and refuse with `403` a guest's join or redemption into any other group or after its `expiresAt` (§4.8, §5.6, §5.7)",
     level: "provider-must",
     covers: ["packages/server/test/invites.test.ts"],
     status: "partial",
-    note: "Behaviour gap: `/guest` maps only `member` to `guest` and otherwise keeps the invite's role (`packages/server/src/http/invites.ts:261`), so an invite with role `admin` or a custom role provisions a guest holding it. Only the default-role case is tested (`invites.test.ts:263`); so is no invite naming a since-deleted channel.",
+    note: "Behaviour gap: `/guest` maps only `member` to `guest` and otherwise keeps the invite's role (`packages/server/src/http/invites.ts:261`), so an invite with role `admin` or a custom role provisions a guest holding it. Neither `redeem` nor `/join` knows about guest accounts: a guest that left or was removed rejoins with the invite's role (`http/invites.ts:198`) or `member` (`packages/server/src/http/membership.ts:137`), not `guest`; a guest's redeem or join into another group is accepted, not `403`; and a guest's `expiresAt` is stored (`packages/server/src/provider/guests.ts:140`) but never enforced, so an expired guest is not refused. forumall#52 is the open fix for these. Only the default-role case is tested (`invites.test.ts:263`); so is no invite naming a since-deleted channel.",
     context:
       "`/guest` joins the group without looking at the invite's channel (`http/invites.ts:275`), so a deleted channel does not block it.",
   },
