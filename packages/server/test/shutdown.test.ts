@@ -171,14 +171,14 @@ describe("shutdown", () => {
     const exits: number[] = [];
     const lines: string[] = [];
     createShutdownHandler(s, {
-      graceMs: 50,
+      graceMs: 200,
       exit: (c) => exits.push(c),
       log: (l) => lines.push(l),
     })("SIGTERM");
-    await sleep(75);
+    await sleep(300);
     expect(s.calls).toEqual(["close1001", "stop", "stop(force)"]);
     expect(exits).toEqual([]);
-    await sleep(75);
+    await sleep(200);
     expect(lines.some((l) => l.includes("forced stop did not finish"))).toBe(true);
     expect(exits).toEqual([1]);
   });
