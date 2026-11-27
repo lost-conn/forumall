@@ -3,8 +3,9 @@
  *
  * Attachment URLs are capability URLs served from the provider's own origin
  * (the same origin as the web client), and the stored `mime` is the uploader's
- * declared type. So every response is hardened against a file being run as a
- * page of that origin:
+ * declared type wherever that is not an inline type (an inline one is stored
+ * only when the bytes confirm it, `provider/media-type.ts`). So every response
+ * is hardened against a file being run as a page of that origin:
  *
  *  - `Content-Disposition: attachment` for every type except `image/*`,
  *    `video/*` and `audio/*`, and always for `image/svg+xml` (which can carry
@@ -25,23 +26,15 @@
  * `sha-256` content hash, which identifies exactly those bytes.
  */
 import type { MediaRow } from "../db/schema.ts";
+import { rendersInline } from "../provider/media-type.ts";
+
+export { rendersInline };
 
 /** `Cache-Control` for an attachment: private (never shared caches), immutable. */
 export const MEDIA_CACHE_CONTROL = "private, max-age=31536000, immutable";
 
 /** `Content-Security-Policy` for an attachment (§5.8's sandbox alternative). */
 export const MEDIA_CSP = "sandbox";
-
-/**
- * Whether a browser may render `mime` inline: `image/*`, `video/*` and
- * `audio/*`, except `image/svg+xml`. Media types are case-insensitive
- * (RFC 9110 §8.3.1), so the comparison is too.
- */
-export function rendersInline(mime: string): boolean {
-  const type = mime.split(";")[0]?.trim().toLowerCase() ?? "";
-  if (type === "image/svg+xml") return false;
-  return type.startsWith("image/") || type.startsWith("video/") || type.startsWith("audio/");
-}
 
 /**
  * Characters RFC 8187 §3.2.1 allows unencoded in an `ext-value` (`attr-char`).

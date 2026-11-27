@@ -441,11 +441,17 @@ test("attachment upload: A attaches a video → it renders as an attachment-vide
 }) => {
   const { a, b } = await twoUsersInChannel(page, browser, appServer.baseUrl);
 
-  // The composer has no `accept` filter and the server stores any mime, so a
-  // handful of arbitrary bytes with a video/mp4 mime type is enough to exercise
-  // client-side kind classification — this isn't a real, decodable video, and
-  // the assertion below is about which ELEMENT the client renders, not playback.
-  const buffer = Buffer.from("not-real-mp4-bytes");
+  // The server records an inline type such as video/mp4 only when the bytes
+  // confirm it (§5.8), so the file starts with an MP4 `ftyp` box (size 24,
+  // major brand `isom`, compatible `isom` + `mp41`). That header is all it is:
+  // not a decodable video, and the assertion below is about which ELEMENT the
+  // client renders, not playback.
+  const buffer = Buffer.concat([
+    Buffer.from([0, 0, 0, 24]),
+    Buffer.from("ftypisom"),
+    Buffer.from([0, 0, 2, 0]),
+    Buffer.from("isommp41"),
+  ]);
 
   await a.getByTestId("file-input").setInputFiles({
     name: "clip.mp4",

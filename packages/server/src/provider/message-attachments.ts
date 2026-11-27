@@ -7,27 +7,35 @@
  *
  *  - An attachment this provider **hosts** (its `POST /api/media` issued it) is
  *    checked against the stored upload: the `id` is a stored upload, the
- *    message's author uploaded it, and `mime`, `size` and `hash` equal the
- *    stored values. The message keeps the provider's own record of it, not the
- *    client's copy of the optional fields.
+ *    message's author uploaded it, it is a **local** upload (its §5.8 target is
+ *    this provider: a remote upload is for messages on another provider), and
+ *    `mime`, `size` and `hash` equal the stored values. The message keeps the
+ *    provider's own record of it, its `thumbnail` included, not the client's
+ *    copy of the optional fields.
  *  - A **local** author's attachments must all be hosted here: local users
  *    upload to their home provider (§5.8 *Where to upload*).
  *  - An attachment from a **remote** author that this provider does not host
- *    must use `https` for `url` and `thumbnail.url` (the shared schema already
- *    enforces both, and that a thumbnail carries no thumbnail), and loses any
- *    `expiresAt` the author supplied, on it or its thumbnail: only the provider
- *    that mints a short-lived URL sets `expiresAt` (§5.8 *Revocation*). The URL
- *    is never fetched.
+ *    must use `https` for `url` and `thumbnail.url`, and its `thumbnail` must
+ *    carry no `thumbnail` (every request schema already enforces these; they
+ *    are checked here too, so no caller can store one that skipped it). It
+ *    loses any `expiresAt` the author supplied, on it or its thumbnail: only
+ *    the provider that mints a short-lived URL sets `expiresAt` (§5.8
+ *    *Revocation*). The URL is never fetched.
  *
- * Uploads here have no `target` yet (every upload is a local one) and this
- * provider mints no short-lived URLs, so no stored attachment carries
+ * This provider mints no short-lived URLs, so no stored attachment carries
  * `expiresAt`.
  */
 import { type Attachment, canonicalAuthority } from "@forumall/shared";
 
 import type { Config } from "../config.ts";
 import type { Db } from "../db/index.ts";
-import { getMediaRow, hostedMediaRowForUrl, mediaUrl, rowToAttachment } from "./media.ts";
+import {
+  getMediaRow,
+  hostedAttachment,
+  hostedMediaRowForUrl,
+  isLocalUpload,
+  mediaUrl,
+} from "./media.ts";
 
 /** The checked attachments to store, or why the message is a 400. */
 export type AttachmentCheckOutcome =
@@ -43,6 +51,11 @@ function isHostedUrl(config: Config, url: string): boolean {
 function isLocalAuthor(config: Config, actor: string): boolean {
   const at = actor.lastIndexOf("@");
   return at > 0 && canonicalAuthority(actor.slice(at + 1)) === canonicalAuthority(config.domain);
+}
+
+/** Whether `url` is an absolute `https` URL. */
+function isHttpsUrl(url: string): boolean {
+  return URL.canParse(url) && new URL(url).protocol === "https:";
 }
 
 /** `attachment` without an author-supplied `expiresAt`, on it or its thumbnail. */
@@ -77,6 +90,11 @@ export function checkMessageAttachments(
       if (row.owner !== author) {
         return { error: `${where}: uploaded by another user` };
       }
+      if (!isLocalUpload(row)) {
+        return {
+          error: `${where}: a remote upload (for messages on ${row.target}); upload it again with this provider as its target`,
+        };
+      }
       if (
         attachment.mime !== row.mime ||
         attachment.size !== row.size ||
@@ -84,13 +102,20 @@ export function checkMessageAttachments(
       ) {
         return { error: `${where}: mime, size or hash differs from the stored upload` };
       }
-      checked.push(rowToAttachment(config, row));
+      checked.push(hostedAttachment(db, config, row));
       continue;
     }
     if (local) {
       return {
         error: `${where}: not hosted here; upload attachments to your home provider (POST /api/media)`,
       };
+    }
+    const { thumbnail } = attachment;
+    if (!isHttpsUrl(attachment.url) || (thumbnail !== undefined && !isHttpsUrl(thumbnail.url))) {
+      return { error: `${where}: \`url\` and \`thumbnail.url\` must be https` };
+    }
+    if (thumbnail !== undefined && "thumbnail" in thumbnail) {
+      return { error: `${where}: a thumbnail must not itself carry a thumbnail` };
     }
     checked.push(withoutExpiresAt(attachment));
   }

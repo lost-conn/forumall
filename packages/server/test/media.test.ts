@@ -31,6 +31,7 @@ import { type Argon2Params, type Config, loadConfig } from "../src/config.ts";
 import { openDb } from "../src/db/index.ts";
 import { migrate, migrations, runMigrations } from "../src/db/migrate.ts";
 import { createMessage } from "../src/provider/messages.ts";
+import { SAMPLES, pngHeader } from "./helpers/media-samples.ts";
 import { type FormFields, uploadMedia } from "./helpers/media-upload.ts";
 
 const FAST_ARGON2: Argon2Params = { memoryKib: 1024, iterations: 1, parallelism: 1 };
@@ -87,20 +88,6 @@ async function registerUserWithKey(app: App, handle: string): Promise<Signer> {
   expect(res.status).toBe(201);
   const keyId = ((await res.json()) as { key_id: string }).key_id;
   return { keyId, privateKey, actor: `${handle}@${DOMAIN}` };
-}
-
-/** A 2x3 (width x height) minimal PNG: signature + IHDR header is enough. */
-function fakePng(width: number, height: number): Uint8Array {
-  const bytes = new Uint8Array(33);
-  // PNG signature.
-  bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
-  // IHDR chunk length (13) + type "IHDR" (8..15); width/height as BE u32 at 16/20.
-  bytes.set([0x00, 0x00, 0x00, 0x0d], 8);
-  bytes.set([0x49, 0x48, 0x44, 0x52], 12);
-  const dv = new DataView(bytes.buffer);
-  dv.setUint32(16, width);
-  dv.setUint32(20, height);
-  return bytes;
 }
 
 async function makeGroupChannel(app: App, signer: Signer) {
@@ -191,7 +178,7 @@ describe("POST /api/media (§5.8)", () => {
     const { app } = freshApp("upload-png");
     const alice = await registerUserWithKey(app, "alice");
 
-    const png = fakePng(1024, 768);
+    const png = pngHeader(1024, 768);
     const res = await uploadMedia(app, alice, png, "diagram.png", "image/png");
     expect(res.status).toBe(201);
     const att = (await res.json()) as Attachment;
@@ -265,7 +252,7 @@ describe("POST /api/media dimensions and duration (§5.8)", () => {
     const res = await uploadMedia(
       app,
       alice,
-      new Uint8Array([0, 1, 2, 3]),
+      SAMPLES.mp4?.bytes ?? new Uint8Array(),
       "clip.mp4",
       "video/mp4",
       [
@@ -276,13 +263,13 @@ describe("POST /api/media dimensions and duration (§5.8)", () => {
     );
     expect(res.status).toBe(201);
     const att = AttachmentSchema.parse(await res.json());
-    expect(att).toMatchObject({ width: 1920, height: 1080, durationMs: 4500 });
+    expect(att).toMatchObject({ mime: "video/mp4", width: 1920, height: 1080, durationMs: 4500 });
   });
 
   test("dimensions read from the image header win over supplied parts", async () => {
     const { app } = freshApp("hints-png");
     const alice = await registerUserWithKey(app, "alice");
-    const res = await uploadMedia(app, alice, fakePng(640, 480), "pic.png", "image/png", [
+    const res = await uploadMedia(app, alice, pngHeader(640, 480), "pic.png", "image/png", [
       ["width", "1"],
       ["height", "2"],
       ["durationMs", "0"],
@@ -339,7 +326,7 @@ describe("PATCH /api/me/profile avatar (§6.3)", () => {
   test("a hosted image is accepted; null removes it", async () => {
     const { app } = freshApp("avatar-hosted");
     const alice = await registerUserWithKey(app, "alice");
-    const up = await uploadMedia(app, alice, fakePng(64, 64), "me.png", "image/png");
+    const up = await uploadMedia(app, alice, pngHeader(64, 64), "me.png", "image/png");
     const att = (await up.json()) as Attachment;
 
     const set = await patchProfile(app, alice, { avatar: att.url });
@@ -367,7 +354,7 @@ describe("PATCH /api/me/profile avatar (§6.3)", () => {
     const up = await uploadMedia(app, alice, new TextEncoder().encode("hi"), "a.txt", "text/plain");
     const text = (await up.json()) as Attachment;
     const png = (await (
-      await uploadMedia(app, alice, fakePng(8, 8), "p.png", "image/png")
+      await uploadMedia(app, alice, pngHeader(8, 8), "p.png", "image/png")
     ).json()) as Attachment;
 
     for (const avatar of [

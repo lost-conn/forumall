@@ -39,13 +39,17 @@ export interface Booted {
   url: string;
 }
 
-/** Boot the app under `dir` (one SQLite file per `name`) with a real WS server. */
-export function boot(dir: string, name: string): Booted {
+/**
+ * Boot the app under `dir` (one SQLite file per `name`) with a real WS server.
+ * `env` adds `loadConfig` overrides (e.g. `MAX_UPLOAD_BYTES`).
+ */
+export function boot(dir: string, name: string, env: Record<string, string> = {}): Booted {
   const base = loadConfig({
     DATA_DIR: dir,
     DB_PATH: join(dir, `${name}.sqlite`),
     WEB_DIR: join(dir, `${name}-web`),
     DOMAIN,
+    ...env,
   });
   const config: Config = Object.freeze({ ...base, argon2: FAST_ARGON2 });
   const db = openDb(config.dbPath);

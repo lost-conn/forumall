@@ -3,10 +3,14 @@
  *
  *  - `POST /api/media` (signed, §4.4): single-step `multipart/form-data` upload.
  *    Stores the blob via the injected {@link StorageBackend} and returns the
- *    hosted `Attachment`. → 201. Enforces `config.maxUploadBytes` → 413.
- *    `width` / `height` come from the image header when it can be read;
- *    otherwise, like `durationMs`, from optional form parts of the same names
- *    beside `file` (a malformed one → 400).
+ *    hosted `Attachment`. → 201. Enforces `config.maxUploadBytes` on each file
+ *    part → 413. Reading the form (`provider/media-upload.ts`): the optional
+ *    `target` part (recorded; a remote one makes a remote upload), the
+ *    optional `thumbnail` part (stored as its own upload, returned as
+ *    `thumbnail`), the guarded `mime` (`provider/media-type.ts`), and
+ *    `width` / `height` from the image header when it can be read, otherwise,
+ *    like `durationMs`, from optional form parts of the same names beside
+ *    `file`. A malformed part → 400.
  *  - `GET /api/media/:id` (and `HEAD`): serve the stored bytes with the stored
  *    content type and the §5.8 serving headers (`media-headers.ts`:
  *    disposition, sandbox CSP, nosniff, private caching, strong `ETag`).
@@ -30,16 +34,10 @@
  */
 import { Hono } from "hono";
 
-import {
-  contentHash,
-  getMediaRow,
-  insertMediaRow,
-  mintMediaId,
-  parseImageDimensions,
-  parseUploaderHints,
-  resolveMediaDimensions,
-  rowToAttachment,
-} from "../provider/media.ts";
+import type { Config } from "../config.ts";
+import { readUploadForm, storeUpload } from "../provider/media-upload.ts";
+import { getMediaRow, hostedAttachment } from "../provider/media.ts";
+import { multipartPartHeaders } from "../provider/multipart-headers.ts";
 import { FsStorage, type StorageBackend } from "../provider/storage.ts";
 import { ifNoneMatchMatches } from "./conditional.ts";
 import { AppError } from "./errors.ts";
@@ -54,6 +52,22 @@ export interface MediaRouterOptions {
    * tests / a future S3 card can supply their own.
    */
   storage?: StorageBackend;
+}
+
+/**
+ * Room in a multipart body for everything but the file bytes: part headers,
+ * boundaries and the small text parts (`target`, `width`, `height`,
+ * `durationMs`). Generous, since it only gates the early `Content-Length`
+ * reject; each file part is then held to the exact limit.
+ */
+const MULTIPART_ENVELOPE_BYTES = 64 * 1024;
+
+/**
+ * The largest body an acceptable upload can have: a `file` and a `thumbnail`
+ * each at the limit, plus the envelope. Larger is a `413` before parsing.
+ */
+function maxUploadBodyBytes(config: Config): number {
+  return 2 * config.maxUploadBytes + MULTIPART_ENVELOPE_BYTES;
 }
 
 export function createMediaRouter(opts: MediaRouterOptions = {}): Hono<AppBindings> {
@@ -73,7 +87,7 @@ export function createMediaRouter(opts: MediaRouterOptions = {}): Hono<AppBindin
     // body we will reject anyway. The signature middleware has already buffered
     // the raw bytes, but the multipart parse + storage write are still skipped.
     const contentLength = Number(c.req.header("content-length"));
-    if (Number.isFinite(contentLength) && contentLength > config.maxUploadBytes) {
+    if (Number.isFinite(contentLength) && contentLength > maxUploadBodyBytes(config)) {
       throw AppError.payloadTooLarge({
         detail: `upload exceeds the ${config.maxUploadBytes}-byte limit`,
       });
@@ -96,49 +110,15 @@ export function createMediaRouter(opts: MediaRouterOptions = {}): Hono<AppBindin
       .catch(() => {
         throw AppError.badRequest({ detail: "request body must be multipart/form-data" });
       });
-    const file = form.get("file");
-    if (!(file instanceof File)) {
-      throw AppError.badRequest({ detail: "multipart body must include a `file` part" });
-    }
-    const hinted = parseUploaderHints(form);
-    if ("error" in hinted) throw AppError.badRequest({ detail: hinted.error });
-
-    const bytes = new Uint8Array(await file.arrayBuffer());
-
-    // Enforce on the actual byte length too (Content-Length may be absent or a
-    // lie; the part is the source of truth).
-    if (bytes.byteLength > config.maxUploadBytes) {
-      throw AppError.payloadTooLarge({
-        detail: `upload exceeds the ${config.maxUploadBytes}-byte limit`,
-      });
+    const declared = multipartPartHeaders(new Uint8Array(rawBody), contentType);
+    const read = await readUploadForm(form, declared, config);
+    if (read.refusal !== undefined) {
+      const { status, detail } = read.refusal;
+      throw status === 413 ? AppError.payloadTooLarge({ detail }) : AppError.badRequest({ detail });
     }
 
-    const id = mintMediaId();
-    // `file.type` is the part's declared content type. Strip any parameters
-    // (e.g. the `;charset=utf-8` the multipart parser may append) so the stored
-    // `mime` is a bare IANA media type per the `Attachment` schema. Fall back to
-    // a generic binary type if the client omitted one.
-    const rawMime = (file.type ?? "").split(";")[0]?.trim() ?? "";
-    const mime = rawMime.length > 0 ? rawMime : "application/octet-stream";
-    const hash = contentHash(bytes);
-    const dims = resolveMediaDimensions(parseImageDimensions(bytes), hinted.hints);
-    const filename = typeof file.name === "string" && file.name.length > 0 ? file.name : undefined;
-
-    await storageFor(config.mediaDir).put(id, bytes, mime);
-
-    const row = insertMediaRow(db, {
-      id,
-      mime,
-      size: bytes.byteLength,
-      filename,
-      hash,
-      width: dims.width,
-      height: dims.height,
-      durationMs: dims.durationMs,
-      owner: actor.actor,
-    });
-
-    return c.json(rowToAttachment(config, row), 201);
+    const row = await storeUpload(db, storageFor(config.mediaDir), read.upload, actor.actor);
+    return c.json(hostedAttachment(db, config, row), 201);
   });
 
   // -- GET /api/media/:id (serve the blob; unauthenticated, see file header) -
