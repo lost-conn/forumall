@@ -1,128 +1,24 @@
 /**
- * Membership + join-request tests (spec §5.7, §7.2).
- *
- * Drives the app in-process via `app.request(...)`, signing requests with the
- * shared `sign()` against a registered device key. Covers join (open/request/
- * invite), leave + owner-transfer rule, the opaque-cursor member listing, role
- * changes (incl. single-owner transfer), kicks (role-rank rule), and the
- * approve/deny join-request flow.
- *
- * Argon2id cost is reduced (TEST-ONLY) so register stays fast.
+ * Membership tests (spec §5.7, §7.2): join (open/request/invite), leave +
+ * owner-transfer rule, the opaque-cursor member listing, role changes (incl.
+ * single-owner transfer) and kicks (role-rank rule). The join-request
+ * approve/deny flow is in `membership-requests.test.ts`.
  */
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import {
-  type AuthBootstrapResponse,
-  type Group,
-  type JoinRequest,
-  JoinRequestSchema,
-  type Member,
-  MemberSchema,
-  generateKeyPair,
-  sign,
-} from "@forumall/shared";
-
+import { describe, expect, test } from "bun:test";
+import { type JoinRequest, JoinRequestSchema, type Member, MemberSchema } from "@forumall/shared";
 import { eq } from "drizzle-orm";
-import { createApp } from "../src/app.ts";
-import { type Argon2Params, type Config, loadConfig } from "../src/config.ts";
-import { type Db, openDb } from "../src/db/index.ts";
-import { migrate } from "../src/db/migrate.ts";
 import { groupMembers } from "../src/db/schema.ts";
+import {
+  DOMAIN,
+  createGroup,
+  ref,
+  registerUserWithKey,
+  seedMember,
+  signedRequest,
+  useMembershipApp,
+} from "./helpers/membership-app.ts";
 
-const FAST_ARGON2: Argon2Params = { memoryKib: 1024, iterations: 1, parallelism: 1 };
-const DOMAIN = "providera.test";
-
-let tmp: string;
-beforeAll(() => {
-  tmp = mkdtempSync(join(tmpdir(), "forumall-membership-"));
-});
-afterAll(() => {
-  rmSync(tmp, { recursive: true, force: true });
-});
-
-function freshApp(name: string) {
-  const base = loadConfig({
-    DATA_DIR: tmp,
-    DB_PATH: join(tmp, `${name}.sqlite`),
-    WEB_DIR: join(tmp, `${name}-web`),
-    DOMAIN,
-  });
-  const config: Config = Object.freeze({ ...base, argon2: FAST_ARGON2 });
-  const db = openDb(config.dbPath);
-  migrate(db);
-  const app = createApp(config, { testOnlySkipReplayWarmup: true, db });
-  return { app, config, db };
-}
-
-type App = ReturnType<typeof freshApp>["app"];
-
-interface Signer {
-  keyId: string;
-  privateKey: string;
-  actor: string;
-}
-
-async function registerUserWithKey(app: App, handle: string): Promise<Signer> {
-  const reg = await app.request("/api/auth/register", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ handle, password: "correct-horse" }),
-  });
-  expect(reg.status).toBe(201);
-  const token = ((await reg.json()) as AuthBootstrapResponse).bootstrap_token;
-
-  const { publicKey, privateKey } = generateKeyPair();
-  const res = await app.request("/api/auth/device-keys", {
-    method: "POST",
-    headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
-    body: JSON.stringify({ public_key: publicKey, algorithm: "Ed25519", device_name: "dev" }),
-  });
-  expect(res.status).toBe(201);
-  const keyId = ((await res.json()) as { key_id: string }).key_id;
-  return { keyId, privateKey, actor: `${handle}@${DOMAIN}` };
-}
-
-function signedRequest(app: App, signer: Signer, method: string, path: string, bodyObj?: unknown) {
-  const body = bodyObj === undefined ? undefined : JSON.stringify(bodyObj);
-  const { headers } = sign({
-    actor: signer.actor,
-    keyId: signer.keyId,
-    privateKey: signer.privateKey,
-    authority: DOMAIN,
-    method,
-    // The canonical string carries the query on its own line (§4.4.2).
-    path: path.split("?")[0] as string,
-    query: path.includes("?") ? path.slice(path.indexOf("?") + 1) : "",
-    ...(body !== undefined ? { body } : {}),
-  });
-  return app.request(path, {
-    method,
-    headers: body !== undefined ? { ...headers, "content-type": "application/json" } : headers,
-    ...(body !== undefined ? { body } : {}),
-  });
-}
-
-async function createGroup(
-  app: App,
-  signer: Signer,
-  body: Record<string, unknown>,
-): Promise<Group> {
-  const res = await signedRequest(app, signer, "POST", "/api/groups", body);
-  expect(res.status).toBe(201);
-  return (await res.json()) as Group;
-}
-
-/** Directly insert a membership row (bypassing the join flow) for setup. */
-function seedMember(db: Db, groupId: string, user: string, role: string, joinedAt = Date.now()) {
-  db.drizzle.insert(groupMembers).values({ groupId, user, role, joinedAt }).run();
-}
-
-/** URL-encoded actor for use in a `{userRef}` path segment. */
-function ref(actor: string): string {
-  return encodeURIComponent(actor);
-}
+const freshApp = useMembershipApp("membership");
 
 // ---------------------------------------------------------------------------
 // POST /join
@@ -627,100 +523,5 @@ describe("DELETE /api/groups/{groupId}/members/{userRef} (§5.7)", () => {
       `/api/groups/${group.id}/members/${ref(alice.actor)}`,
     );
     expect(res.status).toBe(403);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Join requests: list / approve / deny
-// ---------------------------------------------------------------------------
-
-describe("Join requests (§5.7, request policy)", () => {
-  test("approve creates membership → 200 Member; user is now a member", async () => {
-    const { app, db } = freshApp("req-approve");
-    const alice = await registerUserWithKey(app, "alice");
-    const bob = await registerUserWithKey(app, "bob");
-    const group = await createGroup(app, alice, {
-      name: "Req",
-      tier: "public",
-      joinPolicy: "request",
-    });
-
-    const reqRes = await signedRequest(app, bob, "POST", `/api/groups/${group.id}/join`);
-    expect(reqRes.status).toBe(202);
-    const jr = (await reqRes.json()) as JoinRequest;
-
-    const approve = await signedRequest(
-      app,
-      alice,
-      "POST",
-      `/api/groups/${group.id}/requests/${jr.id}/approve`,
-    );
-    expect(approve.status).toBe(200);
-    const member = (await approve.json()) as Member;
-    expect(() => MemberSchema.parse(member)).not.toThrow();
-    expect(member.user).toBe(bob.actor);
-    expect(member.role).toBe("member");
-
-    // bob is now a member.
-    expect(
-      db.drizzle.select().from(groupMembers).where(eq(groupMembers.user, bob.actor)).all(),
-    ).toHaveLength(1);
-
-    // The request is no longer pending → re-approve 404s.
-    const again = await signedRequest(
-      app,
-      alice,
-      "POST",
-      `/api/groups/${group.id}/requests/${jr.id}/approve`,
-    );
-    expect(again.status).toBe(404);
-  });
-
-  test("deny → 204; request no longer pending", async () => {
-    const { app, db } = freshApp("req-deny");
-    const alice = await registerUserWithKey(app, "alice");
-    const bob = await registerUserWithKey(app, "bob");
-    const group = await createGroup(app, alice, {
-      name: "Req",
-      tier: "public",
-      joinPolicy: "request",
-    });
-    const jr = (await (
-      await signedRequest(app, bob, "POST", `/api/groups/${group.id}/join`)
-    ).json()) as JoinRequest;
-
-    const deny = await signedRequest(
-      app,
-      alice,
-      "POST",
-      `/api/groups/${group.id}/requests/${jr.id}/deny`,
-    );
-    expect(deny.status).toBe(204);
-    // Not a member.
-    expect(
-      db.drizzle.select().from(groupMembers).where(eq(groupMembers.user, bob.actor)).all(),
-    ).toHaveLength(0);
-  });
-
-  test("listing requires manage/moderate (a plain member → 403)", async () => {
-    const { app, db } = freshApp("req-list-auth");
-    const alice = await registerUserWithKey(app, "alice");
-    const member = await registerUserWithKey(app, "plain");
-    const mod = await registerUserWithKey(app, "moduser");
-    const group = await createGroup(app, alice, {
-      name: "Req",
-      tier: "public",
-      joinPolicy: "request",
-    });
-    seedMember(db, group.id, member.actor, "member");
-    seedMember(db, group.id, mod.actor, "admin");
-
-    const denied = await signedRequest(app, member, "GET", `/api/groups/${group.id}/requests`);
-    expect(denied.status).toBe(403);
-
-    // A manager (admin) can list.
-    const ok = await signedRequest(app, mod, "GET", `/api/groups/${group.id}/requests`);
-    expect(ok.status).toBe(200);
-    expect(Array.isArray(((await ok.json()) as { items: JoinRequest[] }).items)).toBe(true);
   });
 });

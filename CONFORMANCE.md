@@ -107,7 +107,7 @@ Notes marked "spec question" point at wording in the spec that needs clarifying 
     - Tests: `packages/server/test/groups.test.ts`, `packages/server/test/channels.test.ts`, `packages/server/test/channel-permissions.test.ts`, `packages/server/test/group-creation-policy.test.ts`, `packages/server/test/conformance.test.ts`, `packages/server/test/hidden-channels.test.ts`
     - Context: `GET`/`PATCH`/`DELETE` of a channel the caller cannot read answer `404` before the `manage` check; `GET …/channels` of an unreadable group answers `403`, as `GET /api/groups/{groupId}` does (§5.5).
 16. **partial**: Support group membership: join/leave, member listing, roles, per-group nicknames, `member.updated`, and the `request` approval flow (§5.7)
-    - Tests: `packages/server/test/membership.test.ts`, `packages/server/test/display-name.test.ts`, `packages/server/test/conformance.test.ts`
+    - Tests: `packages/server/test/membership.test.ts`, `packages/server/test/membership-requests.test.ts`, `packages/server/test/display-name.test.ts`, `packages/server/test/conformance.test.ts`
     - Note: Untested: nickname validation (>64 chars → `400`, blank clears) and its `404`, the role-change subset rule against the target's current role, and `member.updated` to the affected member's own connections.
 17. **partial**: List the owner among the members with role `owner`, keep `joinedAt` across role changes and ownership transfers, and keep the member list's order stable for cursor paging (§5.7)
     - Tests: `packages/server/test/membership.test.ts`, `packages/server/test/groups.test.ts`
