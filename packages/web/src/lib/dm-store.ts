@@ -180,6 +180,12 @@ export class DmSentStore {
    * version rules (`mergeCanonical`): a copy confirming or superseding an
    * unconfirmed local edit replaces it (clearing `localVersion`), an older copy
    * leaves the entry's version as it is. A no-op when no entry has its `id`.
+   *
+   * The DM controller calls it (`components/dms/dm-sent-copies.ts`) for every
+   * server copy of a message this user wrote (a live `dm.message`, a history
+   * or replies page), so a reload shows the server's latest version of it,
+   * except while a mutation of the message is unsettled: that mutation's settle
+   * then writes the entry.
    */
   mergeCopy(dmId: string, copy: SentDmMessage): void {
     const list = this.list(dmId);
@@ -187,6 +193,22 @@ export class DmSentStore {
     if (!entry) return;
     mergeCanonical(entry, copy, SENT_VERSION_KEYS);
     list.sort(compareByCreatedAt);
+    this.store.write(this.storageKey(dmId), JSON.stringify(list));
+  }
+
+  /**
+   * Re-base a retained unconfirmed local edit on a newer server version: set
+   * its `localVersion`, ordering it just above that version
+   * (`lib/merge-message.ts`). For an edit still pending after an earlier edit
+   * of the message was confirmed: the provider applies it over the confirmed
+   * version. A no-op when the entry is missing, is not a local edit, or is a
+   * tombstone.
+   */
+  rebaseLocalEdit(dmId: string, messageId: string, localVersion: LocalVersion): void {
+    const list = this.list(dmId);
+    const entry = list.find((m) => m.id === messageId);
+    if (!entry || entry.localVersion === undefined || entry.deletedAt !== undefined) return;
+    entry.localVersion = localVersion;
     this.store.write(this.storageKey(dmId), JSON.stringify(list));
   }
 

@@ -17,7 +17,7 @@
  */
 import type { Attachment, DmConversation, Message, Reaction } from "@forumall/shared";
 import { newClientMessageId } from "./chat-api.ts";
-import type { OfscpClient } from "./ofscp-client.ts";
+import type { OfscpClient, RequestOptions } from "./ofscp-client.ts";
 
 /** Result of reading one page of a DM inbox timeline. */
 export interface DmMessagesPageResult {
@@ -185,6 +185,7 @@ export async function removeDmReaction(
 /**
  * Edit a DM message in place via `PATCH …` (author-only, edit window). `mentions`
  * is the full new §5.3 list (`[]` for none): an omitted field would be kept.
+ * `opts.timeoutMs` bounds the request ({@link RequestOptions.timeoutMs}).
  */
 export async function editDmMessage(
   client: OfscpClient,
@@ -192,23 +193,25 @@ export async function editDmMessage(
   messageId: string,
   content: { mime: string; text: string },
   mentions: string[],
+  opts: Pick<RequestOptions, "timeoutMs"> = {},
 ): Promise<Message> {
   // An edit replaces the fields it carries wholesale → safe to resend after a 503.
   const res = await client.patch<Message>(
     `/api/dms/${dmId}/messages/${messageId}`,
     { content, mentions },
-    { idempotent: true },
+    { ...opts, idempotent: true },
   );
   return res.data;
 }
 
-/** Delete (tombstone) a DM message via `DELETE …` (204). */
+/** Delete (tombstone) a DM message via `DELETE …` (204). `opts` as {@link editDmMessage}. */
 export async function deleteDmMessage(
   client: OfscpClient,
   dmId: string,
   messageId: string,
+  opts: Pick<RequestOptions, "timeoutMs"> = {},
 ): Promise<void> {
-  await client.delete<unknown>(`/api/dms/${dmId}/messages/${messageId}`);
+  await client.delete<unknown>(`/api/dms/${dmId}/messages/${messageId}`, opts);
 }
 
 // Re-export the reaction type so callers can fold the embedded history aggregate.

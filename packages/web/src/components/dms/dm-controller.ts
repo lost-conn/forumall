@@ -61,6 +61,7 @@ import {
   timelineHeadFor,
 } from "../../stores/timeline-heads.ts";
 import { closedError, closedReason } from "../shared/open-session.ts";
+import { retainServerCopy } from "./dm-sent-copies.ts";
 
 /** History page size for the inbox backfill + each "load older" page. */
 export const DM_HISTORY_PAGE_SIZE = 50;
@@ -322,6 +323,8 @@ export async function openConversation(deps: OpenConversationDeps): Promise<Conv
       if (m.deletedAt) {
         tombstoneDmMessage(dmId, m.id, m.deletedAt);
       }
+      // A self/same-node DM's history holds the caller's own messages too.
+      retainServerCopy(sentStore, dmId, me, m);
       // Fold the reactions the server embeds onto each inbox message.
       for (const r of (m as { reactions?: Reaction[] }).reactions ?? []) {
         addDmReactionAgg(dmId, r);
@@ -388,6 +391,9 @@ export async function openConversation(deps: OpenConversationDeps): Promise<Conv
         advanceTimelineHead(dmId, m.id);
       }
     }
+    // A copy of the caller's own message (an edit's confirmation, another
+    // device's edit or delete) is what a reload must show: retain it.
+    retainServerCopy(sentStore, dmId, me, m);
     if (m.deletedAt) {
       tombstoneDmMessage(dmId, m.id, m.deletedAt);
       return;

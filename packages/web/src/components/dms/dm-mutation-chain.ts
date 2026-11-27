@@ -23,6 +23,13 @@
  *   settles, that version (or a newer server copy kept aside) is installed in
  *   the thread and the sent store, so a rejected second edit rolls back to the
  *   confirmed first one.
+ * - Meanwhile the sent store holds the user's LATEST mutation, so a reload
+ *   mid-chain still shows it. Server copies of the message are not merged into
+ *   the sent store while it is unsettled ({@link hasUnsettledDmMutation}); and
+ *   when an earlier edit is confirmed, the retained later edit is re-based on
+ *   the confirmed version (the provider applies it over that one), so after a
+ *   reload the earlier edit's server copy cannot replace it, while the later
+ *   edit's own copy, or any newer one, still does.
  */
 import type { DmSentStore } from "../../lib/dm-store.ts";
 import { type LocalVersion, localVersionOf } from "../../lib/merge-message.ts";
@@ -71,6 +78,16 @@ interface Chain {
 
 const chains = new Map<string, Chain>();
 
+/** The {@link chains} key of a message. */
+function chainKey(dmId: string, messageId: string): string {
+  return `${dmId}\u0000${messageId}`;
+}
+
+/** Whether a mutation of the message is begun and not yet settled. */
+export function hasUnsettledDmMutation(dmId: string, messageId: string): boolean {
+  return chains.has(chainKey(dmId, messageId));
+}
+
 /**
  * Begin an optimistic mutation of `message` in `dmId`. Call it before the
  * optimistic apply, send the request after `turn`, and `settle` it once.
@@ -82,7 +99,7 @@ export function beginDmMutation(args: {
 }): DmMutation {
   const { dmId, sentStore } = args;
   const { id, author, createdAt, clientMessageId } = args.message;
-  const key = `${dmId}\u0000${id}`;
+  const key = chainKey(dmId, id);
   let chain = chains.get(key);
   if (chain === undefined) {
     // Detached now: `message` may be the thread's stored object, which the
@@ -118,7 +135,14 @@ export function beginDmMutation(args: {
       }
       own.unsettled -= 1;
       release();
-      if (own.unsettled > 0) return;
+      if (own.unsettled > 0) {
+        // A later mutation is still pending: the provider applies it over this
+        // version, so the retained copy of it is now based on this one.
+        if (outcome.kind === "confirmed") {
+          sentStore.rebaseLocalEdit(dmId, id, localVersionOf(own.settled));
+        }
+        return;
+      }
       chains.delete(key);
       const installed = settleDmMessage(dmId, id, own.settled) ?? own.settled;
       sentStore.restore(dmId, {

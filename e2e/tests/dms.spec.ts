@@ -475,6 +475,58 @@ test("edit + delete: A edits then deletes their own DM → BOTH author and recip
   await b.context().close();
 });
 
+test("a refused edit rolls back in the open editor and shows why; a refused delete shows why", async ({
+  page,
+  browser,
+  appServer,
+}) => {
+  // The settle that rewinds a refused edit/delete must keep the row mounted:
+  // its error is written to that row, and the open editor lives in it.
+  await registerUser(page, appServer.baseUrl, uniqueHandle());
+  const b = await newUser(browser, appServer.baseUrl);
+  await startDm(page, b.actor);
+  const text = `refuse-${Date.now().toString(36)}`;
+  await sendDm(page, text);
+  const row = dmRow(page, text).first();
+  await expect.poll(() => row.getAttribute("data-message-id")).not.toMatch(/^optimistic:/);
+  const id = await row.getAttribute("data-message-id");
+  const byId = page.locator(`[data-testid="dm-message"][data-message-id="${id}"]`);
+
+  // The provider refuses every edit and delete of it (e.g. a closed edit window).
+  await page.route(`**/api/dms/*/messages/${id}`, (route) =>
+    route.fulfill({
+      status: 403,
+      contentType: "application/problem+json",
+      body: JSON.stringify({ errorCode: "forbidden", detail: "edit window closed" }),
+    }),
+  );
+
+  await byId.hover();
+  await byId.getByTestId("dm-edit-message").click();
+  await byId.getByTestId("dm-edit-input").fill(`${text}-edited`);
+  await byId.getByTestId("dm-save-edit").click();
+  await expect(byId.getByTestId("dm-edit-error")).toContainText("edit window closed", {
+    timeout: 10_000,
+  });
+  // Still editing what was typed, while the message itself rolled back.
+  await expect(byId.getByTestId("dm-edit-input")).toHaveValue(`${text}-edited`);
+  await byId.getByRole("button", { name: "Cancel" }).click();
+  await expect(byId).toContainText(text);
+  await expect(byId).not.toContainText(`${text}-edited`);
+  await expect(byId.getByTestId("dm-message-edited")).toHaveCount(0);
+
+  page.once("dialog", (d) => void d.accept());
+  await byId.hover();
+  await byId.getByTestId("dm-delete-message").click();
+  await expect(byId.getByTestId("dm-action-error")).toContainText("edit window closed", {
+    timeout: 10_000,
+  });
+  await expect(byId.getByTestId("dm-message-tombstone")).toHaveCount(0);
+  await expect(byId).toContainText(text);
+
+  await b.page.context().close();
+});
+
 test("attachment: A attaches an image to a DM → it renders for both", async ({
   page,
   browser,

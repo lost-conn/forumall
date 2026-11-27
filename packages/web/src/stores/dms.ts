@@ -321,6 +321,24 @@ export interface DmVersion {
   deletedAt?: string;
 }
 
+/** The optional fields a {@link DmVersion} owns (`content` is always present). */
+const OPTIONAL_VERSION_KEYS = [
+  "attachments",
+  "reference",
+  "editedAt",
+  "localVersion",
+  "deletedAt",
+] as const satisfies readonly (keyof DmVersion)[];
+
+/** Assign one version field, typed by its key. */
+function setVersionField<K extends keyof DmVersion>(
+  target: DmVersion,
+  key: K,
+  value: DmVersion[K],
+): void {
+  target[key] = value;
+}
+
 /**
  * Settle a message once no optimistic mutation of it is unsettled any more:
  * install `outcome` (the confirmed copy, the kept unconfirmed edit, or, after a
@@ -332,12 +350,18 @@ export interface DmVersion {
  * This is NOT expressible as an upsert: {@link upsertDmMessage} never clears
  * `deletedAt` (a tombstone is terminal for it) and an unsettled copy outranks
  * every server copy, so a merge could neither rewind a rejected tombstone nor
- * replace a pending edit. The row is therefore REBUILT from the version: the
- * mutation-owned fields (`content`, `attachments`, `reference`, `editedAt`,
- * `localVersion`, `deletedAt`, `serverCopy`) come from it and are simply absent
- * when it has none, while identity + placement (`author`, `createdAt`,
- * `cursor`, `mine`, echo state) are carried over so the message keeps its
+ * replace a pending edit. The mutation-owned fields (`content`, `attachments`,
+ * `reference`, `editedAt`, `localVersion`, `deletedAt`, `serverCopy`) are
+ * therefore OVERWRITTEN from the version: each one it has is assigned and each
+ * one it lacks is removed, while identity + placement (`author`, `createdAt`,
+ * `cursor`, `mine`, echo state) are left alone so the message keeps its
  * position and echo linkage.
+ *
+ * In place, like every merge (`lib/merge-message.ts`): the stored object stays
+ * the same, so `<For>` keeps the rendered row mounted. A settle that rewinds a
+ * rejected edit or delete is followed by the error the mutation throws, which
+ * the row shows (and an open editor stays open); a replaced object would
+ * remount the row and drop both.
  */
 export function settleDmMessage(
   dmId: string,
@@ -356,19 +380,13 @@ export function settleDmMessage(
         shadow !== undefined && !isOlderCopy(outcome, shadow) ? shadow : outcome,
       );
       installed = version;
-      list[idx] = {
-        id: existing.id,
-        author: existing.author,
-        createdAt: existing.createdAt,
-        ...version,
-        ...(existing.clientMessageId !== undefined
-          ? { clientMessageId: existing.clientMessageId }
-          : {}),
-        ...(existing.cursor !== undefined ? { cursor: existing.cursor } : {}),
-        ...(existing.mine !== undefined ? { mine: existing.mine } : {}),
-        ...(existing.pending !== undefined ? { pending: existing.pending } : {}),
-        ...(existing.failed !== undefined ? { failed: existing.failed } : {}),
-      };
+      existing.content = version.content;
+      for (const key of OPTIONAL_VERSION_KEYS) {
+        if (version[key] === undefined) delete existing[key];
+        else setVersionField(existing, key, version[key]);
+      }
+      // The server copy kept aside is decided now (installed or older).
+      Reflect.deleteProperty(existing, "serverCopy");
     }),
   );
   return installed;

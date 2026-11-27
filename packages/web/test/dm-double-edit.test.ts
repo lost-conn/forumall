@@ -9,106 +9,24 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { deleteDm, editDm } from "../src/components/dms/dm-mutations.ts";
 import { DmSentStore } from "../src/lib/dm-store.ts";
-import { OfscpClient } from "../src/lib/ofscp-client.ts";
-import {
-  type DmMessage,
-  clearDms,
-  dmThread,
-  tombstoneDmMessage,
-  upsertDmMessage,
-} from "../src/stores/dms.ts";
+import type { OfscpClient } from "../src/lib/ofscp-client.ts";
+import { clearDms, tombstoneDmMessage, upsertDmMessage } from "../src/stores/dms.ts";
 import { DM, memBackend, sent } from "./helpers/dm-fixtures.ts";
-
-const ME = "alice@h.example";
-const CREATED = "2026-11-27T10:00:00Z";
-/** The provider's stamps on the first and second edit. */
-const E1 = "2026-11-27T10:05:00Z";
-const E2 = "2026-11-27T10:05:01Z";
-/** A later edit made from another device. */
-const E3 = "2026-11-27T10:06:00Z";
-
-/** One request the provider has received and not answered yet. */
-interface Held {
-  method: string;
-  body: { content?: { text?: string } } | null;
-  answer(status: number, body?: unknown): void;
-}
-
-/** A client whose every request waits until the test answers it. */
-function heldClient(): { client: OfscpClient; requests: Held[] } {
-  const requests: Held[] = [];
-  const fetchImpl = (_input: unknown, init?: RequestInit): Promise<Response> =>
-    new Promise((resolve) => {
-      requests.push({
-        method: init?.method ?? "GET",
-        body: typeof init?.body === "string" ? JSON.parse(init.body) : null,
-        answer: (status, body) =>
-          resolve(
-            new Response(body === undefined ? null : JSON.stringify(body), {
-              status,
-              headers: {
-                "content-type": status >= 400 ? "application/problem+json" : "application/json",
-              },
-            }),
-          ),
-      });
-    });
-  return {
-    client: new OfscpClient({ baseUrl: "https://h", fetch: fetchImpl as unknown as typeof fetch }),
-    requests,
-  };
-}
-
-/** Let pending promise callbacks run until `done()` holds (bounded). */
-async function until(done: () => boolean): Promise<void> {
-  for (let i = 0; i < 50 && !done(); i++) await new Promise((r) => setTimeout(r, 0));
-  if (!done()) throw new Error("condition never held");
-}
-
-/** Let every queued callback run. */
-async function drain(): Promise<void> {
-  for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0));
-}
-
-/** The provider's stored copy of the message at a version. */
-function stored(text: string, editedAt?: string): Record<string, unknown> {
-  return {
-    id: "m1",
-    type: "message",
-    author: ME,
-    content: { mime: "text/markdown", text },
-    createdAt: CREATED,
-    ...(editedAt !== undefined ? { editedAt } : {}),
-    attachments: [],
-    metadata: [],
-  };
-}
-
-/** A live `dm.message` copy of the message, as the DM controller folds it. */
-function echo(text: string, editedAt: string): DmMessage {
-  return {
-    id: "m1",
-    author: ME,
-    content: { mime: "text/markdown", text },
-    createdAt: CREATED,
-    editedAt,
-    mine: true,
-  };
-}
-
-/** The thread's copy of the message. */
-function shown(): DmMessage {
-  const m = dmThread(DM).find((x) => x.id === "m1");
-  if (m === undefined) throw new Error("message not in the thread");
-  return m;
-}
-
-/** The sent store's copy of the message. */
-function retained(sentStore: DmSentStore) {
-  const m = sentStore.list(DM).find((x) => x.id === "m1");
-  if (m === undefined) throw new Error("message not retained");
-  return m;
-}
+import {
+  CREATED,
+  E1,
+  E2,
+  E3,
+  type Held,
+  ME,
+  drain,
+  echo,
+  heldClient,
+  retained,
+  shown,
+  stored,
+  until,
+} from "./helpers/dm-held.ts";
 
 describe("two rapid edits of one DM", () => {
   let sentStore: DmSentStore;

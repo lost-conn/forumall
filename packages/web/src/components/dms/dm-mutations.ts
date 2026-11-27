@@ -21,7 +21,12 @@ import {
   tombstoneDmMessage,
 } from "../../stores/dms.ts";
 import { DmUnconfirmedError } from "./dm-errors.ts";
-import { type DmMessageLike, beginDmMutation } from "./dm-mutation-chain.ts";
+import {
+  type DmMessageLike,
+  type DmMutation,
+  type DmMutationOutcome,
+  beginDmMutation,
+} from "./dm-mutation-chain.ts";
 
 export type { DmMessageLike } from "./dm-mutation-chain.ts";
 export interface DmReactionArgs {
@@ -130,6 +135,98 @@ function deliveryClientFor(
 }
 
 /**
+ * How long one edit or delete request may take before its outcome counts as
+ * unknown (a `TimeoutError`, {@link DmUnconfirmedError}). Every later mutation
+ * of the message waits for it (`dm-mutation-chain.ts`), so a hung request must
+ * not hold them forever. Longer than the client's `Retry-After` budget
+ * (`DEFAULT_RETRY_MAX_WAIT_MS`), so a provider warming up is still waited out.
+ */
+export const DM_MUTATION_TIMEOUT_MS = 30_000;
+
+/**
+ * The RECIPIENT's provider client for a cross-provider conversation (built via
+ * `clientForHost`, exactly as for {@link sendDm}), `null`/`undefined` for a
+ * same-provider recipient (the home client is used). It may still be resolving
+ * (the device key is read from IndexedDB): the mutation joins the message's
+ * order when it is called, and the client is awaited only when its turn comes.
+ */
+export type DmDeliveryClient = OfscpClient | null | undefined;
+
+/** The arguments {@link editDm} and {@link deleteDm} share. */
+interface DmMutationArgs {
+  client: OfscpClient;
+  /** See {@link DmDeliveryClient}. */
+  deliveryClient?: DmDeliveryClient | Promise<DmDeliveryClient>;
+  dmId: string;
+  message: DmMessageLike;
+  me: string;
+  sentStore: DmSentStore;
+  /** Bound on the request, in ms. Default {@link DM_MUTATION_TIMEOUT_MS}. */
+  timeoutMs?: number;
+}
+
+/** Where a mutation's request goes, once known, or why that is not known. */
+type Target = { ok: true; client: OfscpClient } | { ok: false; error: unknown };
+
+/**
+ * The client a mutation of `message` is addressed to ({@link deliveryClientFor}),
+ * as a promise that never rejects: it is awaited only after the mutation's turn,
+ * and a failure to resolve it is the mutation's own rejection.
+ */
+function mutationTarget(args: DmMutationArgs): Promise<Target> {
+  const { client, message, me } = args;
+  return Promise.resolve(args.deliveryClient).then(
+    (delivery): Target => ({
+      ok: true,
+      client: deliveryClientFor(client, delivery ?? undefined, message.author, me),
+    }),
+    (error: unknown): Target => ({ ok: false, error }),
+  );
+}
+
+/**
+ * Run one optimistic mutation from its local apply to its settle, which is
+ * GUARANTEED: whatever throws after {@link beginDmMutation} (the optimistic
+ * apply, a full `localStorage`, resolving the target, the request), the
+ * mutation settles exactly once, so the message's later mutations are never
+ * left waiting and no unsettled copy is left outranking every server copy.
+ *
+ * The outcome: `send`'s, or `kept` as unconfirmed when the request fails with
+ * an unknown outcome (aborted, network drop, timeout, 5xx; thrown as
+ * {@link DmUnconfirmedError}), or rejected for a definitive 4xx and for any
+ * failure before the request was sent (it certainly did not land).
+ */
+async function runDmMutation(steps: {
+  mutation: DmMutation;
+  target: Promise<Target>;
+  kept: DmVersion;
+  apply(): void;
+  send(target: OfscpClient): Promise<DmMutationOutcome>;
+}): Promise<void> {
+  const { mutation } = steps;
+  let outcome: DmMutationOutcome = { kind: "rejected" };
+  try {
+    steps.apply();
+    await mutation.turn;
+    const target = await steps.target;
+    if (!target.ok) throw target.error;
+    try {
+      outcome = await steps.send(target.client);
+    } catch (err) {
+      // Unknown outcome: the server may well have applied it, so KEEP the
+      // optimistic state — see {@link DmUnconfirmedError} for why a wrong
+      // revert is the worse failure. A definitive 4xx did NOT land: the
+      // rejected settle rewinds both stores to the version before it.
+      if (isDefinitiveRejection(err)) throw err;
+      outcome = { kind: "unconfirmed", version: steps.kept };
+      throw new DmUnconfirmedError(err);
+    }
+  } finally {
+    mutation.settle(outcome);
+  }
+}
+
+/**
  * Edit one of the caller's OWN DM messages in place.
  *
  * §8.3 reality: the author's sent copy is retained CLIENT-SIDE (the server keeps
@@ -141,41 +238,32 @@ function deliveryClientFor(
  * optimistically (own view + local sent-store, so it survives reload) and revert
  * it ONLY on a DEFINITIVE 4xx refusal (e.g. an expired edit window → 403), which
  * proves the edit did not land. Any other rejection — aborted fetch, network
- * drop, 5xx — is an unknown outcome: the optimistic state is KEPT and a
- * {@link DmUnconfirmedError} is thrown for the UI to distinguish.
+ * drop, timeout ({@link DM_MUTATION_TIMEOUT_MS}), 5xx — is an unknown outcome:
+ * the optimistic state is KEPT and a {@link DmUnconfirmedError} is thrown for
+ * the UI to distinguish. Either way the message has settled (and its row shows
+ * the settled version) by the time the promise rejects.
  *
- * Edits and deletes of one message are ordered by `dm-mutation-chain.ts`: each
- * request waits for the earlier ones, the optimistic copy outranks every server
- * copy until the last of them settles, and then the settled version is
- * installed: the provider's answer (with the provider's `editedAt`), the kept
- * unconfirmed edit, or, after a rejection, the version before the rejected
- * edit. The optimistic copy is marked as a local version (`localVersion`, based
- * on the server version it edits), so the client's clock never orders it; a
- * kept unconfirmed edit is replaced by any later server copy of the message,
- * while a stale copy (an older history page) still cannot undo it
- * (`lib/merge-message.ts`).
+ * Edits and deletes of one message are ordered by `dm-mutation-chain.ts`, in the
+ * order of the calls: the mutation joins the message's chain synchronously, when
+ * `editDm` is called (so call it at submit time; a still-resolving
+ * `deliveryClient` is awaited only once its turn comes). Each request waits for
+ * the earlier ones, the optimistic copy outranks every server copy until the
+ * last of them settles, and then the settled version is installed: the
+ * provider's answer (with the provider's `editedAt`), the kept unconfirmed edit,
+ * or, after a rejection, the version before the rejected edit. The optimistic
+ * copy is marked as a local version (`localVersion`, based on the server
+ * version it edits), so the client's clock never orders it; a kept unconfirmed
+ * edit is replaced by any later server copy of the message, while a stale copy
+ * (an older history page) still cannot undo it (`lib/merge-message.ts`).
  *
  * The request goes to the provider that HOLDS the message ({@link deliveryClientFor}):
  * for a message the caller SENT that is the recipient's provider (the same
  * delivery target `sendDm` uses, §8.3), otherwise the caller's home provider.
  */
-export async function editDm(args: {
-  client: OfscpClient;
-  /**
-   * The RECIPIENT's provider client for a cross-provider conversation (built by
-   * the caller via `clientForHost`, exactly as for {@link sendDm}). Omitted /
-   * `undefined` for a same-provider recipient → the home `client` is used.
-   */
-  deliveryClient?: OfscpClient;
-  dmId: string;
-  message: DmMessageLike;
-  me: string;
-  text: string;
-  mime?: string;
-  sentStore: DmSentStore;
-}): Promise<void> {
-  const { client, dmId, message, me, text, mime, sentStore } = args;
-  const target = deliveryClientFor(client, args.deliveryClient, message.author, me);
+export async function editDm(
+  args: DmMutationArgs & { text: string; mime?: string },
+): Promise<void> {
+  const { dmId, message, me, text, mime, sentStore } = args;
   const content = { mime: mime ?? message.content.mime ?? "text/plain", text };
   /** Display only: the copy is ordered by `localVersion`, never by this stamp. */
   const editedAt = rfc3339Timestamp();
@@ -187,50 +275,42 @@ export async function editDm(args: {
     ...(message.reference ? { reference: message.reference } : {}),
     editedAt,
   };
-  // §5.3 `mentions` is authoritative and §7.1 keeps a field the edit omits, so
-  // resend it recomputed from the new text (`[]` once it names nobody). A bare
-  // `@handle` names a user of the provider holding the message: `target`.
-  const mentions = mentionedActors(text, target.host);
   const identity = { id: message.id, author: message.author, createdAt: message.createdAt };
+  const target = mutationTarget(args);
   const mutation = beginDmMutation({ dmId, message, sentStore });
 
-  // Optimistic apply: in-memory thread (unsettled, so no server copy undoes it
-  // meanwhile) + local sent-store (survives reload).
-  applyDmEdit(dmId, {
-    ...identity,
-    ...edited,
-    localVersion: { ...mutation.basedOn, unsettled: true },
-    mine: message.author === me,
+  await runDmMutation({
+    mutation,
+    target,
+    kept: edited,
+    apply() {
+      // In-memory thread (unsettled, so no server copy undoes it meanwhile) +
+      // local sent-store (survives reload).
+      applyDmEdit(dmId, {
+        ...identity,
+        ...edited,
+        localVersion: { ...mutation.basedOn, unsettled: true },
+        mine: message.author === me,
+      });
+      sentStore.append(dmId, { ...identity, ...edited, localVersion: mutation.basedOn });
+    },
+    async send(client) {
+      // §5.3 `mentions` is authoritative and §7.1 keeps a field the edit omits,
+      // so resend it recomputed from the new text (`[]` once it names nobody). A
+      // bare `@handle` names a user of the provider holding the message.
+      const mentions = mentionedActors(text, client.host);
+      const answer = await editDmMessage(client, dmId, message.id, content, mentions, {
+        timeoutMs: args.timeoutMs ?? DM_MUTATION_TIMEOUT_MS,
+      });
+      // The edit landed: the provider's stored copy is the settled version. An
+      // answer that is not this message keeps the local version, to be
+      // confirmed by the next server copy (a live `dm.message`, a history page).
+      const confirmed = storedCopy(answer, message.id);
+      return confirmed
+        ? { kind: "confirmed", version: confirmed }
+        : { kind: "unconfirmed", version: edited };
+    },
   });
-  sentStore.append(dmId, { ...identity, ...edited, localVersion: mutation.basedOn });
-
-  let answer: unknown;
-  try {
-    await mutation.turn;
-    answer = await editDmMessage(target, dmId, message.id, content, mentions);
-  } catch (err) {
-    // Unknown outcome (aborted fetch, network drop, 5xx): the server may well
-    // have applied the edit, so KEEP the optimistic state — see
-    // {@link DmUnconfirmedError} for why a wrong revert is the worse failure.
-    if (!isDefinitiveRejection(err)) {
-      mutation.settle({ kind: "unconfirmed", version: edited });
-      throw new DmUnconfirmedError(err);
-    }
-    // Definitive 4xx (expired window, etc.): the edit did NOT land — the
-    // settle rewinds both stores to the version before it.
-    mutation.settle({ kind: "rejected" });
-    throw err;
-  }
-
-  // The edit landed: the provider's stored copy is the settled version. An
-  // answer that is not this message keeps the local version, to be confirmed
-  // by the next server copy (a live `dm.message`, a history page).
-  const confirmed = storedCopy(answer, message.id);
-  mutation.settle(
-    confirmed
-      ? { kind: "confirmed", version: confirmed }
-      : { kind: "unconfirmed", version: edited },
-  );
 }
 
 /**
@@ -258,44 +338,32 @@ function storedCopy(answer: unknown, messageId: string): DmVersion | null {
  * ({@link deliveryClientFor}). We tombstone optimistically (own view + local
  * sent-store) and — as in {@link editDm} — un-tombstone ONLY on a definitive 4xx
  * refusal; an unknown outcome keeps the tombstone and throws
- * {@link DmUnconfirmedError}. It is ordered with the message's edits
- * (`dm-mutation-chain.ts`): sent after them, and a rejection rewinds to the
- * version they settled to.
+ * {@link DmUnconfirmedError}. It joins the message's order when called, like
+ * {@link editDm} (`dm-mutation-chain.ts`): sent after the edits made before it,
+ * and a rejection rewinds to the version they settled to.
  */
-export async function deleteDm(args: {
-  client: OfscpClient;
-  /** As {@link editDm}: the RECIPIENT's provider client, cross-provider only. */
-  deliveryClient?: OfscpClient;
-  dmId: string;
-  message: DmMessageLike;
-  me: string;
-  sentStore: DmSentStore;
-}): Promise<void> {
-  const { client, dmId, message, me, sentStore } = args;
-  const target = deliveryClientFor(client, args.deliveryClient, message.author, me);
+export async function deleteDm(args: DmMutationArgs): Promise<void> {
+  const { dmId, message, sentStore } = args;
   const deletedAt = rfc3339Timestamp();
   const tombstone: DmVersion = { content: { mime: "text/plain", text: "" }, deletedAt };
   const identity = { id: message.id, author: message.author, createdAt: message.createdAt };
+  const target = mutationTarget(args);
   const mutation = beginDmMutation({ dmId, message, sentStore });
 
-  // Optimistic tombstone: in-memory thread + local sent-store (survives reload).
-  tombstoneDmMessage(dmId, message.id, deletedAt, { local: true });
-  sentStore.append(dmId, { ...identity, ...tombstone });
-
-  try {
-    await mutation.turn;
-    await deleteDmMessage(target, dmId, message.id);
-  } catch (err) {
-    // Unknown outcome: the tombstone may already be the server's truth — keep it
-    // (see {@link DmUnconfirmedError}).
-    if (!isDefinitiveRejection(err)) {
-      mutation.settle({ kind: "unconfirmed", version: tombstone });
-      throw new DmUnconfirmedError(err);
-    }
-    // Definitive 4xx: the delete did NOT land — the settle un-tombstones both
-    // stores back to the version before it.
-    mutation.settle({ kind: "rejected" });
-    throw err;
-  }
-  mutation.settle({ kind: "confirmed", version: tombstone });
+  await runDmMutation({
+    mutation,
+    target,
+    kept: tombstone,
+    apply() {
+      // In-memory thread + local sent-store (survives reload).
+      tombstoneDmMessage(dmId, message.id, deletedAt, { local: true });
+      sentStore.append(dmId, { ...identity, ...tombstone });
+    },
+    async send(client) {
+      await deleteDmMessage(client, dmId, message.id, {
+        timeoutMs: args.timeoutMs ?? DM_MUTATION_TIMEOUT_MS,
+      });
+      return { kind: "confirmed", version: tombstone };
+    },
+  });
 }

@@ -33,6 +33,7 @@ import {
 } from "./dm-errors.ts";
 import { deleteDm, editDm, toggleDmReaction } from "./dm-mutations.ts";
 import { resendOf, retrySendDm } from "./dm-send.ts";
+import { retainServerCopy } from "./dm-sent-copies.ts";
 import { isRemoteActor } from "./remote-actor.ts";
 
 export const DmMessageRow: Component<{
@@ -83,7 +84,9 @@ export const DmMessageRow: Component<{
     setActionError(null);
     void fetchDmReplies(client, props.dmId, m().id, { limit: 50 })
       .then((page) => {
+        const store = props.sentStore();
         for (const r of page.messages) {
+          if (store) retainServerCopy(store, props.dmId, me, r);
           if (r.deletedAt) continue;
           upsertDmMessage(props.dmId, {
             id: r.id,
@@ -144,19 +147,18 @@ export const DmMessageRow: Component<{
     setEditError(null);
     // Storage-follows-message (§8.3): a message the caller SENT lives on the
     // RECIPIENT's provider, so the edit is addressed there — the same delivery
-    // client the send used (null → same provider → the home client).
-    void resolveDeliveryClient(props.counterparty)
-      .then((deliveryClient) =>
-        editDm({
-          client,
-          ...(deliveryClient ? { deliveryClient } : {}),
-          dmId: props.dmId,
-          message: m(),
-          me,
-          text,
-          sentStore: store,
-        }),
-      )
+    // client the send used (null → same provider → the home client). `editDm`
+    // is called NOW, with the client still resolving, so this edit takes its
+    // place in the message's order at submit time (`dm-mutation-chain.ts`).
+    void editDm({
+      client,
+      deliveryClient: resolveDeliveryClient(props.counterparty),
+      dmId: props.dmId,
+      message: m(),
+      me,
+      text,
+      sentStore: store,
+    })
       .then(() => setEditing(false))
       .catch((err) => {
         // An unconfirmed outcome is NOT a failure: the optimistic edit is kept.
@@ -177,27 +179,24 @@ export const DmMessageRow: Component<{
     if (!confirm("Delete this message?")) return;
     setActionError(null);
     // Same §8.3 routing as the edit above (`deleteDm` keeps a received message's
-    // delete on the home provider — that copy lives in the caller's own inbox).
-    void resolveDeliveryClient(props.counterparty)
-      .then((deliveryClient) =>
-        deleteDm({
-          client,
-          ...(deliveryClient ? { deliveryClient } : {}),
-          dmId: props.dmId,
-          message: m(),
-          me,
-          sentStore: store,
-        }),
-      )
-      .catch((err) => {
-        // As in `submitEdit`: an unconfirmed delete keeps its optimistic
-        // tombstone, so say "couldn't confirm", not "couldn't delete".
-        if (err instanceof DmUnconfirmedError) {
-          setActionError(DM_UNCONFIRMED_NOTICE);
-          return;
-        }
-        setActionError(err instanceof Error ? err.message : "Could not delete this message.");
-      });
+    // delete on the home provider — that copy lives in the caller's own inbox),
+    // and joins the message's order at once, as the edit does.
+    void deleteDm({
+      client,
+      deliveryClient: resolveDeliveryClient(props.counterparty),
+      dmId: props.dmId,
+      message: m(),
+      me,
+      sentStore: store,
+    }).catch((err) => {
+      // As in `submitEdit`: an unconfirmed delete keeps its optimistic
+      // tombstone, so say "couldn't confirm", not "couldn't delete".
+      if (err instanceof DmUnconfirmedError) {
+        setActionError(DM_UNCONFIRMED_NOTICE);
+        return;
+      }
+      setActionError(err instanceof Error ? err.message : "Could not delete this message.");
+    });
   };
 
   const retry = (): void => {
