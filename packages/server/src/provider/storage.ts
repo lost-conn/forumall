@@ -5,7 +5,7 @@
  * interface so the persistence layer is swappable: the self-host default is the
  * zero-dependency {@link FsStorage} (one file per blob on the local filesystem),
  * and a future card can drop in an S3-backed implementation behind the same
- * same few methods without touching the upload/serve routes.
+ * few methods without touching the upload/serve routes.
  *
  * The interface is intentionally minimal — content-addressed-ish by the caller's
  * opaque `id` (the attachment id), with the `mime` passed through to `put` so an

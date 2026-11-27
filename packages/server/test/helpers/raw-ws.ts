@@ -142,8 +142,7 @@ export class RawWsClient {
         close(_sock, err) {
           fail(
             new Error(
-              `raw WS ${path}: socket closed${client ? "" : " before the response head"}` +
-                (err ? `: ${err.message}` : ""),
+              `raw WS ${path}: socket closed${client ? "" : " before the response head"}${err ? `: ${err.message}` : ""}`,
             ),
           );
         },
