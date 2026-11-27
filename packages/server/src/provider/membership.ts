@@ -10,12 +10,11 @@
  * `join_requests` row lifecycle and the single-owner invariant on transfer.
  *
  * ## Pagination
- * {@link encodeCursor} / {@link decodeCursor} implement the §7.2 opaque cursor as
- * a base64url-encoded keyset position. They are generic over the keyset tuple so
- * later message/DM cards reuse the same helper rather than re-deriving a cursor
- * scheme. For members the keyset is `(joinedAt, user)` — a stable, total order
- * (the unique `user` breaks `joinedAt` ties), so paging never overlaps or skips
- * even when many members share a `joinedAt`.
+ * The member listing pages with the shared §7.2 cursor (`cursor.ts`). Its keyset
+ * is `(joinedAt, user)` — a stable, total order (the unique `user` breaks
+ * `joinedAt` ties), so paging never overlaps or skips even when many members
+ * share a `joinedAt`, and a role change (which keeps `joinedAt`) never moves a
+ * member.
  */
 import {
   type JoinRequest,
@@ -25,6 +24,7 @@ import {
   rfc3339Timestamp,
 } from "@forumall/shared";
 import { and, eq, or, sql } from "drizzle-orm";
+import { z } from "zod";
 
 import type { Db } from "../db/index.ts";
 import {
@@ -34,6 +34,7 @@ import {
   groups,
   joinRequests,
 } from "../db/schema.ts";
+import { decodeCursor, encodeCursor } from "./cursor.ts";
 import { tierReadableBy } from "./tiers.ts";
 
 /** `id` prefix for a join request per the §5.2 id convention (`jrq_…`). */
@@ -54,35 +55,6 @@ function mintJoinRequestId(): string {
   const raw = new Uint8Array(JOIN_REQUEST_ID_BYTES);
   crypto.getRandomValues(raw);
   return `${JOIN_REQUEST_ID_PREFIX}${toBase64Url(raw)}`;
-}
-
-// ---------------------------------------------------------------------------
-// Opaque cursor (§7.2) — reusable keyset codec for later message/DM cards.
-// ---------------------------------------------------------------------------
-
-/**
- * Encode an arbitrary keyset position as an opaque base64url cursor (§7.2).
- * The position is JSON-serialized then base64url-encoded, so the cursor is an
- * opaque string to clients but a stable, decodable keyset to the server. Reuse
- * this for any keyset-paginated list (members, messages, DMs).
- */
-export function encodeCursor(position: unknown): string {
-  return toBase64Url(new TextEncoder().encode(JSON.stringify(position)));
-}
-
-/**
- * Decode an opaque cursor produced by {@link encodeCursor} back into its keyset
- * position, or `null` if it is malformed (a forged/garbage cursor is treated as
- * "no cursor" by the caller rather than crashing).
- */
-export function decodeCursor<T>(cursor: string): T | null {
-  try {
-    const b64 = cursor.replace(/-/g, "+").replace(/_/g, "/");
-    const json = Buffer.from(b64, "base64").toString("utf8");
-    return JSON.parse(json) as T;
-  } catch {
-    return null;
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -125,10 +97,7 @@ export function getOwnerRow(db: Db, groupId: string): GroupMemberRow | null {
 }
 
 /** Keyset position for the member listing: `(joinedAt, user)` — a total order. */
-interface MemberCursor {
-  readonly joinedAt: number;
-  readonly user: string;
-}
+const MemberCursorSchema = z.object({ joinedAt: z.number().int(), user: z.string() });
 
 export interface MemberPage {
   readonly items: Member[];
@@ -153,7 +122,7 @@ export function listMembersPage(
   limit: number,
   cursor: string | null,
 ): MemberPage {
-  const after = cursor ? decodeCursor<MemberCursor>(cursor) : null;
+  const after = cursor ? decodeCursor(cursor, MemberCursorSchema) : null;
 
   // Keyset predicate: rows strictly after (joinedAt, user) in the total order.
   // (joinedAt > a) OR (joinedAt = a AND user > u).

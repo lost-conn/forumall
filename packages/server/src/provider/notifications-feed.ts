@@ -29,6 +29,7 @@
  */
 import { type Notification, NotificationSchema, rfc3339Timestamp } from "@forumall/shared";
 import { and, desc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
+import { z } from "zod";
 
 import type { Db } from "../db/index.ts";
 import {
@@ -39,7 +40,7 @@ import {
   users,
 } from "../db/schema.ts";
 import { canViewChannel, getChannelRow } from "./channels.ts";
-import { decodeCursor, encodeCursor } from "./membership.ts";
+import { decodeCursor, encodeCursor } from "./cursor.ts";
 import { getEffectiveMode } from "./notification-prefs.ts";
 
 /** `id` prefix for a notification (`ntf_<base64url>`). */
@@ -376,10 +377,7 @@ function localMemberHandles(db: Db, groupId: string, localDomain: string): strin
 // ---------------------------------------------------------------------------
 
 /** Keyset position for the feed: `(createdAt, id)` — a stable total order. */
-interface NotificationCursor {
-  readonly createdAt: number;
-  readonly id: string;
-}
+const NotificationCursorSchema = z.object({ createdAt: z.number().int(), id: z.string() });
 
 /** Options for {@link listNotifications}. */
 export interface ListNotificationsOptions {
@@ -411,7 +409,7 @@ export function listNotifications(
     opts.limit && Number.isFinite(opts.limit) && opts.limit > 0
       ? Math.min(Math.floor(opts.limit), MAX_NOTIFICATION_PAGE_SIZE)
       : DEFAULT_NOTIFICATION_PAGE_SIZE;
-  const after = opts.cursor ? decodeCursor<NotificationCursor>(opts.cursor) : null;
+  const after = opts.cursor ? decodeCursor(opts.cursor, NotificationCursorSchema) : null;
 
   const base = opts.type
     ? and(eq(notifications.recipient, recipient), eq(notifications.type, opts.type))
