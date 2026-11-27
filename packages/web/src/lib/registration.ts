@@ -79,3 +79,28 @@ export function inviteLinkFrom(url: URL): InviteLink | null {
   if (!token) return null;
   return { authority: canonicalAuthority(url.host), token };
 }
+
+/** The parts of `window` {@link takePageInvite} reads and rewrites. */
+export interface PageLocation {
+  location: { href: string };
+  history: { state: unknown; replaceState(data: unknown, unused: string, url: string): void };
+}
+
+/**
+ * Read the account invite from the page's invite link (§4.1.1) and remove the
+ * `invite` parameter from the address bar with `history.replaceState`: tokens
+ * in links leak (history, bookmarks, a shared screen, a copied URL), so once
+ * the page holds the token the URL stops carrying it. The rest of the URL (path,
+ * other parameters, hash) and the history entry's state are kept.
+ *
+ * Read it ONCE per page load and keep the result: after this call the URL no
+ * longer names the token.
+ */
+export function takePageInvite(page: PageLocation): InviteLink | null {
+  const url = new URL(page.location.href);
+  if (url.pathname !== "/register" || !url.searchParams.has("invite")) return null;
+  const link = inviteLinkFrom(url);
+  url.searchParams.delete("invite");
+  page.history.replaceState(page.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+  return link;
+}

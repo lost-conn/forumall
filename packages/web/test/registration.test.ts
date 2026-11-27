@@ -1,7 +1,8 @@
 /**
  * Registration modes and account invites (§4.1.1): the advertised mode, the
  * mapping of the two registration-mode refusals (read from the problem
- * `errorCode`) to distinct messages, invite-link parsing, the request bodies
+ * `errorCode`) to distinct messages, invite-link parsing and stripping the
+ * token from the address bar, the request bodies
  * that carry an `inviteToken` (register and guest claim), and the
  * spent-token → login retry.
  */
@@ -16,6 +17,7 @@ import {
   registrationModeOf,
   registrationRefusalMessage,
   registrationRefusalOf,
+  takePageInvite,
 } from "../src/lib/registration.ts";
 
 const problem = (status: number, errorCode: string) =>
@@ -109,6 +111,49 @@ describe("inviteLinkFrom", () => {
     expect(inviteLinkFrom(new URL("https://a.example/invite/abc"))).toBeNull();
     expect(inviteLinkFrom(new URL("https://a.example/register"))).toBeNull();
     expect(inviteLinkFrom(new URL("https://a.example/register?invite=%20"))).toBeNull();
+  });
+});
+
+describe("takePageInvite (§4.1.1: tokens in links leak)", () => {
+  /** A fake `window` whose `replaceState` calls are recorded. */
+  const page = (href: string) => {
+    const replaced: Array<{ data: unknown; url: string }> = [];
+    return {
+      replaced,
+      location: { href },
+      history: {
+        state: { idx: 3 },
+        replaceState(data: unknown, _unused: string, url: string) {
+          replaced.push({ data, url });
+        },
+      },
+    };
+  };
+
+  test("returns the invite and strips `invite` from the address bar, keeping the rest", () => {
+    const p = page("https://chat.example/register?invite=tok_1&ref=mail#top");
+    expect(takePageInvite(p)).toEqual({ authority: "chat.example", token: "tok_1" });
+    expect(p.replaced).toEqual([{ data: { idx: 3 }, url: "/register?ref=mail#top" }]);
+  });
+
+  test("a lone token leaves a bare `/register`", () => {
+    const p = page("http://localhost:3000/register?invite=x");
+    expect(takePageInvite(p)?.token).toBe("x");
+    expect(p.replaced).toEqual([{ data: { idx: 3 }, url: "/register" }]);
+  });
+
+  test("a blank `invite` is still stripped, and yields no invite", () => {
+    const p = page("https://a.example/register?invite=%20");
+    expect(takePageInvite(p)).toBeNull();
+    expect(p.replaced.map((r) => r.url)).toEqual(["/register"]);
+  });
+
+  test("a page that is not an invite link is left alone", () => {
+    for (const href of ["https://a.example/register", "https://a.example/other?invite=x"]) {
+      const p = page(href);
+      expect(takePageInvite(p)).toBeNull();
+      expect(p.replaced).toEqual([]);
+    }
   });
 });
 

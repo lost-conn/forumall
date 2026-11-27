@@ -16,9 +16,10 @@ import {
   storeProviderHost,
 } from "../lib/provider.ts";
 import {
-  inviteLinkFrom,
+  type InviteLink,
   registrationRefusalMessage,
   registrationRefusalOf,
+  takePageInvite,
 } from "../lib/registration.ts";
 import { doLogin, doRegister } from "../stores/auth-controller.ts";
 import { brandIconUrl, brandName } from "../stores/branding.ts";
@@ -96,13 +97,16 @@ const Brand: Component<{ title: string; sub: string }> = (props) => (
 );
 
 /**
- * The account invite in this page's URL (`/register?invite=…`, §4.1.1), when
- * it is for `host`: a link for another provider is not offered to this one.
+ * The account invite this page was opened with (`/register?invite=…`, §4.1.1),
+ * read once at load: {@link takePageInvite} then strips the token from the
+ * address bar, so the card (which remounts when the provider is changed) reads
+ * this copy rather than the URL.
  */
+const pageInvite: InviteLink | null = typeof window === "undefined" ? null : takePageInvite(window);
+
+/** The page's invite token when it is for `host`: a link for another provider is not offered to this one. */
 function pageInviteFor(host: string): string | null {
-  if (typeof location === "undefined") return null;
-  const link = inviteLinkFrom(new URL(location.href));
-  return link && link.authority === canonicalAuthority(host) ? link.token : null;
+  return pageInvite && pageInvite.authority === canonicalAuthority(host) ? pageInvite.token : null;
 }
 
 /** The single welcome / credentials card. */

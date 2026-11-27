@@ -13,9 +13,19 @@
  *    `null` so the caller can fall through to the 404 handler — the app still
  *    boots cleanly with no web build present.
  *
+ *  - The sign-up page at the invite-link path `/register` (§4.1.1: links of the
+ *    form `https://{authority}/register?invite={token}`) is sent with
+ *    `Referrer-Policy: no-referrer`, so the token in its URL never leaks to
+ *    another origin through a `Referer` header.
+ *
  * Path traversal (`..`, leading `/`) is normalized away before touching disk.
  */
 import { join, normalize } from "node:path";
+
+/** Whether `pathname` is the §4.1.1 invite-link sign-up page (`/register`). */
+function isSignUpPage(pathname: string): boolean {
+  return pathname === "/register" || pathname === "/register/";
+}
 
 /** Resolve a URL pathname to a safe absolute path inside `webDir`. */
 function resolveSafe(webDir: string, pathname: string): string {
@@ -47,7 +57,10 @@ export function createStaticHandler(webDir: string) {
     // SPA fallback: serve index.html for any remaining route.
     if (await indexFile.exists()) {
       return new Response(indexFile, {
-        headers: { "content-type": "text/html; charset=utf-8" },
+        headers: {
+          "content-type": "text/html; charset=utf-8",
+          ...(isSignUpPage(pathname) ? { "referrer-policy": "no-referrer" } : {}),
+        },
       });
     }
 
